@@ -67,6 +67,9 @@ pub mod flow_execution_event;
 /// See the module docs: the flow an alias routes to, and the path a request's input
 /// travels through that flow's own definition.
 pub mod flow_invocation;
+/// See the module docs: the flow metadata and definition an execution was started against,
+/// which a later edit of the flow does not move.
+pub mod flow_snapshot;
 /// See the module docs: the response a knowledge-base query is answered with, and the
 /// model it is generated against.
 pub mod generated_answer;

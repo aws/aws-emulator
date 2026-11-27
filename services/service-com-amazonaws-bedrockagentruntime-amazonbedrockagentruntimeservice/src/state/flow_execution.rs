@@ -118,6 +118,11 @@ pub struct FlowExecution {
     /// The version the alias routed to AT THE START, so an alias repointed afterwards does
     /// not change what this execution ran.
     pub flow_version: String,
+    /// The flow metadata and definition that version packaged AT THE START
+    /// ([`super::flow_snapshot::FlowSnapshot`]), which is what
+    /// `GetExecutionFlowSnapshot` reports: a flow edited after the start does not move it,
+    /// because the copy was taken when the start resolved the run.
+    pub snapshot: super::flow_snapshot::FlowSnapshot,
     pub started_at: DateTime,
     /// The instant the run is due to finish, stored rather than waited for: see the module
     /// docs.

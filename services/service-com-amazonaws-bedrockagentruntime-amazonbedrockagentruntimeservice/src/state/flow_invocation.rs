@@ -206,6 +206,10 @@ pub struct FlowRun {
     pub alias_id: String,
     /// The `flowVersion` the alias routed to when the run was resolved.
     pub flow_version: String,
+    /// The flow metadata and definition that version packaged at that instant
+    /// ([`super::flow_snapshot::FlowSnapshot`]), copied so that an operation which PERSISTS
+    /// a run can report what the run went through however the flow moves afterwards.
+    pub snapshot: super::flow_snapshot::FlowSnapshot,
     /// What the walk came to: the values it delivered, or the sentence saying which of the
     /// flow's own nodes it could compute no value for.
     ///
@@ -308,8 +312,18 @@ pub fn run_resolved<Eng: Send + Sync + 'static>(
     };
 
     // The definition the alias routes to, and the status of the thing that packages it.
-    let (definition, status) = if routed == agent_state::DRAFT_VERSION {
-        (flow.definition.as_ref(), flow.status.as_wire())
+    // The two members that travel WITH that definition in the execution's snapshot are read
+    // from the same thing, so an execution on a published version reports that version's
+    // role and key rather than the draft's (`super::flow_snapshot`).
+    let (definition, status, execution_role_arn, encryption_key) = if routed
+        == agent_state::DRAFT_VERSION
+    {
+        (
+            flow.definition.as_ref(),
+            flow.status.as_wire(),
+            flow.execution_role_arn.clone(),
+            flow.customer_encryption_key_arn.clone(),
+        )
     } else {
         let Some(version) = routed
             .parse::<u32>()
@@ -318,7 +332,12 @@ pub fn run_resolved<Eng: Send + Sync + 'static>(
         else {
             return Err(FlowRefusal::NotFound(FlowResourceType::FlowVersion));
         };
-        (version.definition.as_ref(), version.status.as_wire())
+        (
+            version.definition.as_ref(),
+            version.status.as_wire(),
+            version.execution_role_arn.clone(),
+            version.customer_encryption_key_arn.clone(),
+        )
     };
     if status != PREPARED {
         return Err(FlowRefusal::Unservable(format!(
@@ -337,6 +356,14 @@ pub fn run_resolved<Eng: Send + Sync + 'static>(
         flow_id: flow_id.to_string(),
         alias_id,
         flow_version: routed,
+        // Copied here, under the one hold of the build-time store the resolution took, so
+        // the snapshot is the flow as it stood when this run resolved it and no later edit
+        // of the flow can move it (`super::flow_snapshot`).
+        snapshot: super::flow_snapshot::FlowSnapshot {
+            definition: definition.clone(),
+            execution_role_arn,
+            customer_encryption_key_arn: encryption_key,
+        },
         outcome: walked.outcome,
         trace: walked.trace,
     })

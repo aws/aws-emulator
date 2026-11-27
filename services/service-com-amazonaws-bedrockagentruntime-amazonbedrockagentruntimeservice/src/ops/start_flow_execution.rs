@@ -28,7 +28,11 @@
 //!
 //! A started execution is this plane's own resource (`crate::state::flow_execution`): it is
 //! `Running`, its run is due to finish `FLOW_EXECUTION_SPAN` later, and `GetFlowExecution`
-//! and `StopFlowExecution` read and move exactly what is written here.
+//! and `StopFlowExecution` read and move exactly what is written here. The flow the run
+//! resolved — the definition the routed version packages, the role it runs with and the key
+//! it is encrypted with — is COPIED into that record as well
+//! (`crate::state::flow_snapshot`), because that is the snapshot
+//! `GetExecutionFlowSnapshot` reports and a flow edited after the start does not move it.
 //!
 //! ## Input
 //!
@@ -272,6 +276,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             flow_id: run.flow_id,
             alias_id: run.alias_id,
             flow_version: run.flow_version,
+            // The flow as it stood when this start resolved the run, copied into the
+            // execution's own record: `GetExecutionFlowSnapshot` reports it, and a later
+            // edit of the flow leaves it unchanged (`crate::state::flow_snapshot`).
+            snapshot: run.snapshot,
             started_at: ::aws_smithy_types::DateTime::from(started),
             completes_at: started + executions::FLOW_EXECUTION_SPAN,
             completes_as,
