@@ -217,6 +217,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The credential half, which no read reports and every invocation
         // through this connection carries.
         let secret = connection_secret(&input.auth_parameters);
+        // The document the secret EventBridge owns for this connection holds —
+        // the credential itself, projected ONCE here
+        // ([`crate::state::connection_secret`]). `None` for a connection holding
+        // no credential at all, which there is no secret to create for.
+        let document = crate::state::connection_secret::credential_document(&secret);
         // "OAUTH tokens are refreshed when a 401 or 407 response is returned"
         // (`AuthorizationType`): an OAuth connection's client credentials are not
         // the authorization, they are exchanged for a token at the connection's
@@ -236,7 +241,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // refused create makes no request at all, and how many exchanges a
         // caller can cause is bounded by the quota rather than by how often it
         // calls.
-        let created = {
+        let (created, connection_arn, id) = {
             let mut store = state.lock();
             // A connection whose clock has already moved it on is settled first,
             // so a name freed by a due deletion is free for this create.
@@ -267,7 +272,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let record = crate::state::ConnectionRecord {
                 name: input.name.clone(),
                 arn: crate::state::connection_arn(&region, &input.name, &id),
-                secret_arn: crate::state::connection_secret_arn(&region, &input.name, &id),
+                // The ARN of the connection's secret is the one Secrets Manager
+                // allocates for it below: this call has not made that secret
+                // yet, so the connection names none.
+                secret_arn: None,
                 description: input.description,
                 authorization_type: input.authorization_type,
                 auth_parameters,
@@ -330,13 +338,60 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
                 .into());
             };
-            CreateConnectionOutput {
+            let output = CreateConnectionOutput {
                 connection_arn: Some(stored.arn.clone()),
                 connection_state: Some(stored.state.clone()),
                 creation_time: Some(crate::state::to_wire_timestamp(stored.created)),
                 last_modified_time: Some(crate::state::to_wire_timestamp(stored.last_modified)),
-            }
+            };
+            (output, stored.arn.clone(), id)
         };
+
+        // The credential goes into the secret EventBridge OWNS for this
+        // connection, with NO lock held: "the secret created from the
+        // authorization parameters specified for the connection"
+        // (`DescribeConnection$SecretArn`) is a real secret of Secrets Manager,
+        // so it is created THERE and the ARN that service allocated is what the
+        // connection then reports
+        // ([`crate::state::connection_secret::store_connection_secret`]).
+        if let Some(document) = document {
+            let name = crate::state::connection_secret::connection_secret_name(&input.name, &id);
+            match crate::state::connection_secret::store_connection_secret(
+                &*self.engine,
+                ctx,
+                &region,
+                &connection_arn,
+                &name,
+                &document,
+            )
+            .await
+            {
+                Ok(secret_arn) => {
+                    // The connection this call stored is the one that gets the
+                    // ARN; a connection no longer there gets none and the secret
+                    // is released
+                    // ([`crate::state::connection_secret::record_secret`]).
+                    crate::state::connection_secret::record_secret(
+                        &*self.engine,
+                        ctx,
+                        &region,
+                        &input.name,
+                        &connection_arn,
+                        secret_arn,
+                    )
+                    .await;
+                }
+                // The connection exists either way — it is this service's
+                // resource, written before anything was asked of another service
+                // — so a secret this emulator could not create leaves the
+                // connection naming none rather than naming one nothing holds.
+                Err(detail) => ::tracing::debug!(
+                    connection = %connection_arn,
+                    %detail,
+                    "the connection's credential was not stored in AWS Secrets Manager"
+                ),
+            }
+        }
 
         // The token exchange, with NO lock held, and only for a connection this
         // call stored. It goes through the in-process emulator transport and

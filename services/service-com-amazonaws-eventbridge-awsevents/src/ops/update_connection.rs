@@ -211,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // requested on the connection's behalf: a refused update makes no
         // request at all, and the exchange below is made for a connection this
         // account holds rather than for any name a caller sends.
-        let (updated, exchange) = {
+        let (updated, exchange, rotation) = {
             let mut store = state.lock();
             // A connection whose clock has already moved it on is settled first,
             // so a connection whose deletion fell due is gone rather than
@@ -359,6 +359,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Reported from the STORED record rather than from the request, so
             // this response and `DescribeConnection`'s cannot disagree.
             let arn = connection.arn.clone();
+            // The write the connection's secret is owed: an update that supplied
+            // credentials REPLACED what the connection holds, so the secret
+            // EventBridge owns for it takes a new version holding that
+            // credential ([`crate::state::connection_secret::CredentialWrite`]).
+            // It is read off the connection as this call left it and performed
+            // below, with no lock held.
+            let rotation = reauthorizes
+                .then(|| crate::state::connection_secret::CredentialWrite::owed(connection))
+                .flatten();
             let output = UpdateConnectionOutput {
                 connection_arn: Some(arn.clone()),
                 connection_state: Some(connection.state.clone()),
@@ -381,8 +390,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if settled_here {
                 store.carry_connection_authorization(&arn);
             }
-            (output, exchange)
+            (output, exchange, rotation)
         };
+
+        // The credential the update supplied is staked as a new version of the
+        // connection's OWN secret, with NO lock held: the connection keeps the
+        // same `SecretArn` across an update, and what that secret holds is the
+        // credential the connection holds now
+        // ([`crate::state::connection_secret`]).
+        if let Some(rotation) = rotation {
+            rotation
+                .perform(&*self.engine, ctx, &region, &input.name)
+                .await;
+        }
 
         // The token exchange, with NO lock held. It goes through the in-process
         // emulator transport and nothing else

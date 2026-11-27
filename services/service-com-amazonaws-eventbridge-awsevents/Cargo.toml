@@ -125,6 +125,12 @@ service-com-amazonaws-appsync-awsdeepdishcontrolplaneservice = { workspace = tru
 # which health checks exist. Only the generated client is needed — the emulator
 # supplies the transport.
 aws-sdk-route53 = { version = "1", default-features = false }
+# The AWS SDK for Secrets Manager, driven over the same in-process callback: the
+# credential a CONNECTION authorizes with is held in a secret EventBridge owns
+# (`DescribeConnection$SecretArn`), which is created, re-versioned and deleted
+# through that service's own API as this service's own service principal
+# (`state::connection_secret`).
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 # `uuid`: a state-machine target's execution is named `<event id>_<uuid>`, whose
 # suffix is a fresh v4 UUID per invocation (`ops::put_events`).
 uuid = { version = "1", features = ["v4"] }
@@ -185,6 +191,11 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # EventBridge on one engine: the endpoint suites create the health check through that
 # service's own CreateHealthCheck, which is where the existence check reads it.
 service-com-amazonaws-route53-awsdnsv20130401 = { workspace = true }
+# Secrets Manager, mounted beside EventBridge on one engine: a connection's credential
+# lives in a secret that service holds, so the suites that assert what the connection's
+# `SecretArn` names read it back through that service's own GetSecretValue and
+# DescribeSecret.
+service-com-amazonaws-secretsmanager-secretsmanager = { workspace = true }
 
 [lints]
 workspace = true

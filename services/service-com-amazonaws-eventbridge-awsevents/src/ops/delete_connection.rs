@@ -124,7 +124,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(DeleteConnectionErrorModeled::InternalException(InternalException {
@@ -133,58 +133,98 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        // A connection whose deletion was already due is gone before this call
-        // looks for it, so a second delete reports the modelled missing-resource
-        // error rather than deleting it twice.
-        store.settle_connections(now);
-        let Some(stored) = store.connection_mut(&input.name) else {
-            return Err(DeleteConnectionErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::no_such_connection(VERB, &input.name)),
-                },
-            )
-            .into());
-        };
-
-        // A connection already on its way OUT is not deleted twice: the removal
-        // the clock owes it will happen, and a second delete would answer as if
-        // it had started another. Every other non-terminal state (`CREATING`,
-        // `DEAUTHORIZING`) is deletable, as it is in AWS — a client that creates
-        // a connection and deletes it at once is not refused.
-        if stored.is_being_removed() {
-            return Err(
-                DeleteConnectionErrorModeled::ConcurrentModificationException(
-                    ConcurrentModificationException {
-                        message: Some(crate::state::connection_refusal(
-                            VERB,
-                            &format!(
-                                "Connection '{}' is in state {} and cannot be deleted.",
-                                stored.name, stored.state
-                            ),
-                        )),
+        // The connection is written first, under the lock, and the secret it
+        // held is released after it — with no lock held, because that release is
+        // a call to another service.
+        let (deleted, connection_arn, secret_arn) = {
+            let mut store = state.lock();
+            // A connection whose deletion was already due is gone before this
+            // call looks for it, so a second delete reports the modelled
+            // missing-resource error rather than deleting it twice.
+            store.settle_connections(now);
+            let Some(stored) = store.connection_mut(&input.name) else {
+                return Err(DeleteConnectionErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::no_such_connection(VERB, &input.name)),
                     },
                 )
-                .into(),
-            );
-        }
+                .into());
+            };
 
-        stored.state = crate::state::CONNECTION_STATE_DELETING.to_string();
-        stored.last_modified = now;
-        stored.pending = Some(crate::state::PendingTransition {
-            due: now + crate::state::CONNECTION_TRANSITION,
-            to: crate::state::ConnectionTransition::Removed,
-        });
-        Ok(DeleteConnectionOutput {
-            connection_arn: Some(stored.arn.clone()),
-            connection_state: Some(stored.state.clone()),
-            creation_time: Some(crate::state::to_wire_timestamp(stored.created)),
-            last_modified_time: Some(crate::state::to_wire_timestamp(stored.last_modified)),
-            last_authorized_time: stored
-                .last_authorized
-                .map(crate::state::to_wire_timestamp),
-        })
+            // A connection already on its way OUT is not deleted twice: the
+            // removal the clock owes it will happen, and a second delete would
+            // answer as if it had started another. Every other non-terminal
+            // state (`CREATING`, `DEAUTHORIZING`) is deletable, as it is in AWS
+            // — a client that creates a connection and deletes it at once is not
+            // refused.
+            if stored.is_being_removed() {
+                return Err(
+                    DeleteConnectionErrorModeled::ConcurrentModificationException(
+                        ConcurrentModificationException {
+                            message: Some(crate::state::connection_refusal(
+                                VERB,
+                                &format!(
+                                    "Connection '{}' is in state {} and cannot be deleted.",
+                                    stored.name, stored.state
+                                ),
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+
+            stored.state = crate::state::CONNECTION_STATE_DELETING.to_string();
+            stored.last_modified = now;
+            stored.pending = Some(crate::state::PendingTransition {
+                due: now + crate::state::CONNECTION_TRANSITION,
+                to: crate::state::ConnectionTransition::Removed,
+            });
+            // The connection no longer holds the credential, so the secret it
+            // was held in goes with it: the ARN is taken OFF the record here, so
+            // no read of a connection on its way out names a secret this call is
+            // removing.
+            let secret_arn = stored.secret_arn.take();
+            let output = DeleteConnectionOutput {
+                connection_arn: Some(stored.arn.clone()),
+                connection_state: Some(stored.state.clone()),
+                creation_time: Some(crate::state::to_wire_timestamp(stored.created)),
+                last_modified_time: Some(crate::state::to_wire_timestamp(stored.last_modified)),
+                last_authorized_time: stored
+                    .last_authorized
+                    .map(crate::state::to_wire_timestamp),
+            };
+            (output, stored.arn.clone(), secret_arn)
+        };
+
+        // "Only DeleteConnection removes the secret": the credential a deleted
+        // connection held can no longer be read, and the delete goes through
+        // Secrets Manager's own `DeleteSecret`, which owns a secret's lifecycle
+        // ([`crate::state::connection_secret::release_connection_secret`]). The
+        // connection is deleted either way — it is this service's resource — so a
+        // release this emulator could not make is recorded in the trace rather
+        // than answered as a failed delete.
+        if let Some(secret_arn) = secret_arn {
+            if let Err(detail) = crate::state::connection_secret::release_connection_secret(
+                &*self.engine,
+                ctx,
+                &region,
+                &connection_arn,
+                &secret_arn,
+            )
+            .await
+            {
+                ::tracing::debug!(
+                    connection = %connection_arn,
+                    secret = %secret_arn,
+                    %detail,
+                    "the deleted connection's secret was not removed from AWS Secrets Manager"
+                );
+            }
+        }
+        Ok(deleted)
     }
 }
 

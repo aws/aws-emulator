@@ -84,11 +84,17 @@ async fn events(router: &MultiServiceRouter, operation: &str, body: &Value) -> (
     (status, parsed)
 }
 
+/// The emulator the suite calls: EventBridge, and Secrets Manager beside it on the
+/// SAME engine — a connection's credential is held in a secret that service holds,
+/// so the ARN a read reports is one Secrets Manager allocated.
 fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
-    router.register_service(EmulatedService::new(engine));
+    router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    router.register_service(
+        service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService::new(engine),
+    );
     router
 }
 

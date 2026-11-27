@@ -1336,10 +1336,17 @@ pub struct ConnectionRecord {
     /// ARN carries a unique id segment, so a connection deleted and recreated
     /// under one name has a different ARN.
     pub arn: String,
-    /// The secret the connection's credentials are held in, named after the
-    /// connection itself. The secret VALUE is never reported, and no caller can
-    /// read it through this service.
-    pub secret_arn: String,
+    /// The secret the connection's credentials are held in: the ARN AWS Secrets
+    /// Manager allocated for the secret this service owns for the connection
+    /// ([`connection_secret`]), kept exactly as that service answered it.
+    ///
+    /// `None` for a connection no such secret stands for — one holding no
+    /// credential at all, or one whose secret this emulator could not create
+    /// because no Secrets Manager is mounted beside this service — so a read
+    /// reports an ARN only when a secret really answers for it. The secret's
+    /// VALUE is never reported by this service: no operation of it hands a
+    /// connection's credentials back.
+    pub secret_arn: Option<String>,
     pub description: Option<String>,
     /// One of `ConnectionAuthorizationType`'s values.
     pub authorization_type: String,
@@ -1441,7 +1448,7 @@ impl ConnectionRecord {
             connection_state: Some(self.state.clone()),
             state_reason: self.state_reason.clone(),
             authorization_type: Some(self.authorization_type.clone()),
-            secret_arn: Some(self.secret_arn.clone()),
+            secret_arn: self.secret_arn.clone(),
             kms_key_identifier: self.kms_key_identifier.clone(),
             auth_parameters: Some(self.auth_parameters.clone()),
             creation_time: Some(to_wire_timestamp(self.created)),
@@ -2584,10 +2591,6 @@ pub fn rule_arn(region: &str, event_bus_name: &str, rule_name: &str) -> String {
     ::engine::emulator_arn(ARN_NAMESPACE, region, &resource)
 }
 
-/// The ARN namespace of AWS Secrets Manager, where a connection's credentials
-/// are held ([`connection_secret_arn`]).
-pub const SECRETS_MANAGER_ARN_NAMESPACE: &str = "secretsmanager";
-
 /// `arn:aws:events:<region>:<account>:connection/<name>/<id>`.
 ///
 /// `ConnectionArn`'s modelled pattern is
@@ -2597,24 +2600,6 @@ pub const SECRETS_MANAGER_ARN_NAMESPACE: &str = "secretsmanager";
 /// mints one).
 pub fn connection_arn(region: &str, name: &str, id: &str) -> String {
     ::engine::emulator_arn(ARN_NAMESPACE, region, &format!("connection/{name}/{id}"))
-}
-
-/// The ARN of the secret a connection's credentials are held in.
-///
-/// `DescribeConnection$SecretArn` is "the ARN of the secret created from the
-/// authorization parameters specified for the connection", and its modelled
-/// pattern is
-/// `^arn:aws([a-z]|\-)*:secretsmanager:([a-z]|\d|\-)*:([0-9]{12})?:secret:[\/_+=\.@\-A-Za-z0-9]+$`
-/// — so the secret is named after the connection it belongs to, under this
-/// service's own `events/connection/` prefix. The secret's VALUE is held on the
-/// connection record's behalf by this service and is never reported: no operation
-/// of this service hands a connection's credentials back.
-pub fn connection_secret_arn(region: &str, name: &str, id: &str) -> String {
-    ::engine::emulator_arn(
-        SECRETS_MANAGER_ARN_NAMESPACE,
-        region,
-        &format!("secret:events/connection/{name}/{id}"),
-    )
 }
 
 /// The IAM store a target's `RoleArn` is resolved against.
@@ -4989,5 +4974,10 @@ pub mod graphql_handovers;
 /// published on — the attempt-series total beside
 /// [`SUCCESSFUL_INVOCATION_ATTEMPTS_METRIC`], which is the part of it the target
 /// accepted.
+/// The AWS Secrets Manager secret a connection's authorization credential is held
+/// in — the one `DescribeConnection$SecretArn` names, created and removed with the
+/// connection and re-versioned whenever an update supplies new credentials.
+pub mod connection_secret;
+
 mod invocation_attempts;
 pub use invocation_attempts::*;
