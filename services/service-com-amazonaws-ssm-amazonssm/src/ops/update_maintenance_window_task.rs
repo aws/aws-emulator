@@ -374,7 +374,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // would have persisted: nothing at all for a member a read reports only when a write
         // set it, the empty list the modelled length admits for the targets, no parameters at
         // all for the parameter map, the account's service-linked role for the role the task
-        // runs as, and the documented default for the priority and the cutoff behaviour.
+        // runs as, and the modelled default for the priority.
         //
         // What the update does NOT touch is the task's identity — its minted id, its window,
         // its Region, its task type and the idempotency token its register carried — nor when
@@ -427,10 +427,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             updated_optional_member(input.logging_info, record.logging_info, replace);
         record.name = updated_optional_member(input.name, record.name, replace);
         record.description = updated_optional_member(input.description, record.description, replace);
-        record.cutoff_behavior = updated_member(
+        record.cutoff_behavior = updated_optional_member(
             input.cutoff_behavior,
             record.cutoff_behavior,
-            tasks::DEFAULT_CUTOFF_BEHAVIOR.to_string(),
             replace,
         );
         record.alarm_configuration = updated_optional_member(
@@ -461,7 +460,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             logging_info: record.logging_info.clone(),
             name: record.name.clone(),
             description: record.description.clone(),
-            cutoff_behavior: Some(record.cutoff_behavior.clone()),
+            cutoff_behavior: record.cutoff_behavior.clone(),
             alarm_configuration: record.alarm_configuration.clone(),
         };
         store.insert_maintenance_window_task(record);

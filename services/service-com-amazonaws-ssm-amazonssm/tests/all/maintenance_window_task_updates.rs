@@ -58,6 +58,9 @@ const UNKNOWN_TASK_ID: &str = "00000000-0000-0000-0000-000000000000";
 /// `ServiceRoleArn` and `TaskParameters` are NOT among them: the role a task runs as and the
 /// parameter map it carries are materialised for every registered task, so an update reports
 /// both whatever it stated (see `all/maintenance_window_task_service_role.rs`).
+/// `CutoffBehavior` IS among them: its documented `CONTINUE_TASK` is how a task that chose
+/// nothing behaves at the cutoff rather than a value a write stores, and
+/// `MaintenanceWindowTask$CutoffBehavior` carries no modelled default.
 const OPTIONAL_MEMBERS: &[&str] = &[
     "Name",
     "Description",
@@ -66,6 +69,7 @@ const OPTIONAL_MEMBERS: &[&str] = &[
     "TaskInvocationParameters",
     "MaxConcurrency",
     "MaxErrors",
+    "CutoffBehavior",
 ];
 
 /// Create a window at `region`'s endpoint and answer the id it minted.
@@ -555,12 +559,11 @@ async fn a_replacing_update_clears_what_it_leaves_out() {
                 "TaskType": "RUN_COMMAND",
                 "TaskArn": "AWS-RunShellScript",
                 // Everything else the register stated is cleared to what a register that named
-                // it nothing would have persisted: the service's own default for the priority
-                // and the cutoff behaviour, the account's service-linked role for the role the
-                // task runs as, the empty map for the parameters, and nothing at all for the
-                // rest.
+                // it nothing would have persisted: the modelled default for the priority, the
+                // account's service-linked role for the role the task runs as, the empty map
+                // for the parameters, and nothing at all for the rest — the cutoff behaviour
+                // included.
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "tag:Team", "Values": ["payments"] }],
@@ -573,7 +576,6 @@ async fn a_replacing_update_clears_what_it_leaves_out() {
                 "TaskType": "RUN_COMMAND",
                 "TaskArn": "AWS-RunShellScript",
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 // Cleared to the empty list the modelled length admits, which leaves the task

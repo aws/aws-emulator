@@ -276,7 +276,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             logging_info: held.logging_info.clone(),
             name: held.name.clone(),
             description: held.description.clone(),
-            cutoff_behavior: Some(held.cutoff_behavior.clone()),
+            cutoff_behavior: held.cutoff_behavior.clone(),
             alarm_configuration: held.alarm_configuration.clone(),
         })
     }

@@ -19,10 +19,12 @@
 //! names a registered target of the same window by id, which is the reference
 //! `DeregisterTargetFromMaintenanceWindow` refuses to orphan.
 //!
-//! Three members are NOT echoes of the request, because the model states what the service
+//! Two members are NOT echoes of the request, because the model states what the service
 //! puts there instead: `MaxConcurrency` and `MaxErrors` hold the documented placeholder for a
-//! targetless task, `CutoffBehavior` holds the documented default and `Priority` the modelled
-//! one (see [`crate::state::maintenance_window_tasks`]).
+//! targetless task, and `Priority` the modelled default
+//! (see [`crate::state::maintenance_window_tasks`]). `CutoffBehavior` is NOT one of them: its
+//! documented default is how a task that chose nothing behaves at the cutoff, so a register
+//! that stated none stores none and a read reports nothing for it.
 //!
 //! The id is the SERVICE's to choose — no input member carries one — and a retry carrying the
 //! same `ClientToken` reports the task that register already minted rather than minting a
@@ -303,11 +305,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: input.name,
             description: input.description,
             // "CONTINUE_TASK: When the cutoff time is reached, any tasks that are running
-            // continue. The default value" — what a register carrying no cutoff behaviour
-            // asks for.
-            cutoff_behavior: input
-                .cutoff_behavior
-                .unwrap_or_else(|| tasks::DEFAULT_CUTOFF_BEHAVIOR.to_string()),
+            // continue. The default value" states how a task that chose nothing BEHAVES at the
+            // cutoff, not a value this register stores: the member is held only where the
+            // request stated it, so a read reports no cutoff behaviour for a task whose
+            // registration chose none.
+            cutoff_behavior: input.cutoff_behavior,
             alarm_configuration: input.alarm_configuration,
             client_token: input.client_token,
             registered_at: now,

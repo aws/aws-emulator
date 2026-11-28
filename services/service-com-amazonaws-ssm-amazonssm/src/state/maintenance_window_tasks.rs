@@ -28,8 +28,11 @@
 //!   ([`held_bound`]).
 //! * `CutoffBehavior` — "CONTINUE_TASK: When the cutoff time is reached, any tasks that are
 //!   running continue. The default value"
-//!   (`RegisterTaskWithMaintenanceWindowRequest$CutoffBehavior`), so a register carrying none
-//!   holds [`DEFAULT_CUTOFF_BEHAVIOR`].
+//!   (`RegisterTaskWithMaintenanceWindowRequest$CutoffBehavior`) states how a task whose
+//!   registration chose nothing BEHAVES at the cutoff, not a value the registration stores:
+//!   `MaintenanceWindowTask$CutoffBehavior` carries no modelled default, so a register that
+//!   named no cutoff behaviour leaves the member unset and a read reports nothing for it,
+//!   rather than reporting a choice the caller never made back to it.
 //! * `ServiceRoleArn` — "if you do not specify a service role ARN, Systems Manager uses a
 //!   service-linked role in your account" (`MaintenanceWindowTask$ServiceRoleArn`), so a task
 //!   whose register (or replacing update) named no role holds the account's service-linked role
@@ -64,11 +67,6 @@ use super::ComAmazonawsSsmAmazonssmState;
 /// system inserts a placeholder value of 1"
 /// (`RegisterTaskWithMaintenanceWindowRequest$MaxConcurrency`).
 pub const TARGETLESS_PLACEHOLDER: &str = "1";
-
-/// What `CutoffBehavior` holds for a register that carried none: "CONTINUE_TASK: When the
-/// cutoff time is reached, any tasks that are running continue. The default value"
-/// (`RegisterTaskWithMaintenanceWindowRequest$CutoffBehavior`).
-pub const DEFAULT_CUTOFF_BEHAVIOR: &str = "CONTINUE_TASK";
 
 /// What `Priority` holds for a register that carried none, from the modelled default of
 /// `MaintenanceWindowTask$Priority` (`default 0`) — "the lower the number the higher the
@@ -248,9 +246,9 @@ pub struct MaintenanceWindowTaskRecord {
     /// "An optional description for the task", or `None`.
     pub description: Option<String>,
     /// "Indicates whether tasks should continue to run after the cutoff time specified in the
-    /// maintenance windows is reached", defaulted to [`DEFAULT_CUTOFF_BEHAVIOR`] by the
-    /// register.
-    pub cutoff_behavior: String,
+    /// maintenance windows is reached", held exactly as the register (or a later update)
+    /// stated it and `None` where neither stated it (see the module docs).
+    pub cutoff_behavior: Option<String>,
     /// "The CloudWatch alarm you want to apply to your maintenance window task", or `None`.
     pub alarm_configuration: Option<AlarmConfiguration>,
     /// The "user-provided idempotency token" the register carried, or `None`: what makes a
@@ -282,7 +280,7 @@ impl MaintenanceWindowTaskRecord {
             max_errors: self.max_errors.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
-            cutoff_behavior: Some(self.cutoff_behavior.clone()),
+            cutoff_behavior: self.cutoff_behavior.clone(),
             alarm_configuration: self.alarm_configuration.clone(),
         }
     }
@@ -393,7 +391,7 @@ impl MaintenanceWindowTaskRecord {
             self.service_role_arn,
             self.name.as_deref().unwrap_or_default(),
             self.description.as_deref().unwrap_or_default(),
-            self.cutoff_behavior,
+            self.cutoff_behavior.as_deref().unwrap_or_default(),
             self.alarm_configuration,
         )
     }

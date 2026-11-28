@@ -53,7 +53,10 @@ const UNKNOWN_TASK_ID: &str = "00000000-0000-0000-0000-000000000000";
 /// `ServiceRoleArn` and `TaskParameters` are NOT among them either: the role a task runs as and
 /// the parameter map it carries are materialised for every registered task, so the listing
 /// reports both whatever the register stated (see
-/// `all/maintenance_window_task_service_role.rs`).
+/// `all/maintenance_window_task_service_role.rs`). `CutoffBehavior` IS among them: its
+/// documented `CONTINUE_TASK` is how a task that chose nothing behaves at the cutoff rather
+/// than a value the register stores, and `MaintenanceWindowTask$CutoffBehavior` carries no
+/// modelled default.
 const OPTIONAL_MEMBERS: &[&str] = &[
     "Name",
     "Description",
@@ -61,6 +64,7 @@ const OPTIONAL_MEMBERS: &[&str] = &[
     "AlarmConfiguration",
     "MaxConcurrency",
     "MaxErrors",
+    "CutoffBehavior",
 ];
 
 /// Create a window at `region`'s endpoint and answer the id it minted.
@@ -204,9 +208,9 @@ async fn the_listing_reports_what_each_register_persisted() {
                 "MaxConcurrency": "10%",
                 "MaxErrors": "0",
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
-                // The register named no role and no parameters, so the task runs as the
-                // account's service-linked role and holds the empty map.
+                // The register named no role, no parameters and no cutoff behaviour, so the
+                // task runs as the account's service-linked role, holds the empty map, and is
+                // reported with no CutoffBehavior at all.
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "tag:Environment", "Values": ["production", "staging"] }],
@@ -224,7 +228,6 @@ async fn the_listing_reports_what_each_register_persisted() {
                 "Type": "LAMBDA",
                 "TaskArn": "arn:aws:lambda:us-west-2:123456789012:function:window-task",
                 "Priority": 10,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [],
@@ -258,7 +261,6 @@ async fn the_listing_reports_what_each_register_persisted() {
                 "MaxConcurrency": "1",
                 "MaxErrors": "1",
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "InstanceIds", "Values": ["i-00000000000000001"] }],

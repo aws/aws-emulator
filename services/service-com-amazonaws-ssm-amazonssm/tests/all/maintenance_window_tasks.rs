@@ -17,11 +17,11 @@
 //! 1. **A read reports what the register persisted.** For the task the request names, the get
 //!    reports exactly the members the register supplied, under the id the service minted, and
 //!    nothing for a member the register left out.
-//! 2. **Three members are the SERVICE's, not the request's.** A task registered without
+//! 2. **Two members are the SERVICE's, not the request's.** A task registered without
 //!    targets holds the documented placeholder `1` for `MaxConcurrency` and `MaxErrors`
-//!    whatever the register stated, a register carrying no `CutoffBehavior` holds the
-//!    documented default `CONTINUE_TASK`, and one carrying no `Priority` holds the modelled
-//!    default `0`.
+//!    whatever the register stated, and one carrying no `Priority` holds the modelled
+//!    default `0` — while a register carrying no `CutoffBehavior` stores none, so a read
+//!    reports nothing for it.
 //! 3. **A task belongs to ONE window of ONE Region.** A register naming a window this
 //!    endpoint holds none of is refused `DoesNotExistException` and writes nothing, a task of
 //!    one window is no task of another, and deleting the window takes its tasks.
@@ -58,6 +58,9 @@ const UNKNOWN_TASK_ID: &str = "00000000-0000-0000-0000-000000000000";
 /// `ServiceRoleArn` and `TaskParameters` are NOT among them: the role a task runs as and the
 /// parameter map it carries are materialised for every registered task, so a read reports both
 /// whatever the register stated (see `all/maintenance_window_task_service_role.rs`).
+/// `CutoffBehavior` IS among them: its documented `CONTINUE_TASK` is how a task that chose
+/// nothing behaves at the cutoff rather than a value the register stores, and
+/// `MaintenanceWindowTask$CutoffBehavior` carries no modelled default.
 const OPTIONAL_MEMBERS: &[&str] = &[
     "Name",
     "Description",
@@ -66,6 +69,7 @@ const OPTIONAL_MEMBERS: &[&str] = &[
     "TaskInvocationParameters",
     "MaxConcurrency",
     "MaxErrors",
+    "CutoffBehavior",
 ];
 
 /// Create a window at `region`'s endpoint and answer the id it minted.
@@ -343,11 +347,11 @@ async fn a_read_reports_what_the_register_persisted() {
                 "TaskArn": "AWS-RestartEC2Instance",
                 "MaxConcurrency": "50%",
                 "MaxErrors": "0",
-                // The register carried no Priority and no CutoffBehavior, so the service's
-                // own defaults stand, and no ServiceRoleArn and no TaskParameters, so the
-                // task runs as the account's service-linked role and holds the empty map.
+                // The register carried no Priority, so the modelled default stands, and no
+                // CutoffBehavior, so nothing is reported for it; it named no ServiceRoleArn
+                // and no TaskParameters, so the task runs as the account's service-linked
+                // role and holds the empty map.
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "WindowTargetIds", "Values": [window_target_id] }],
@@ -370,7 +374,6 @@ async fn a_read_reports_what_the_register_persisted() {
                 "TaskType": "LAMBDA",
                 "TaskArn": "arn:aws:lambda:us-west-2:123456789012:function:maintenance",
                 "Priority": 10,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [],
@@ -409,7 +412,6 @@ async fn a_read_reports_what_the_register_persisted() {
                 "MaxConcurrency": "100%",
                 "MaxErrors": "100%",
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "tag:Environment", "Values": ["production"] }],
@@ -442,7 +444,6 @@ async fn a_read_reports_what_the_register_persisted() {
                 "MaxConcurrency": "1",
                 "MaxErrors": "1",
                 "Priority": 0,
-                "CutoffBehavior": "CONTINUE_TASK",
                 "ServiceRoleArn": service_linked_role_arn(),
                 "TaskParameters": {},
                 "Targets": [{ "Key": "tag-key", "Values": ["Patch"] }],
@@ -552,11 +553,12 @@ async fn the_bounds_of_a_targetless_task_are_the_documented_placeholder() {
     }
 }
 
-/// RULE 2 (the other two members the service chooses): `CutoffBehavior` holds the documented
-/// default only when the register carried none, and `Priority` the modelled default — every
-/// priority the modelled range admits is held as stated.
+/// RULE 2 (the other members the service chooses): `Priority` holds the modelled default when
+/// the register carried none — every priority the modelled range admits is held as stated —
+/// while `CutoffBehavior` is held exactly as the register stated it and reported not at all
+/// when it stated none.
 #[tokio::test]
-async fn the_cutoff_behaviour_and_priority_defaults_are_the_documented_ones() {
+async fn the_priority_default_is_the_modelled_one_and_the_cutoff_behaviour_is_held_as_stated() {
     let router = router();
     let case = "the defaults table";
     let window_id = window(&router, case, REGION, "defaults-window").await;
@@ -566,7 +568,7 @@ async fn the_cutoff_behaviour_and_priority_defaults_are_the_documented_ones() {
         why: &'static str,
         cutoff: Option<&'static str>,
         priority: Option<i64>,
-        expected_cutoff: &'static str,
+        expected_cutoff: Option<&'static str>,
         expected_priority: i64,
     }
     let rows: Vec<Row> = vec![
@@ -574,35 +576,35 @@ async fn the_cutoff_behaviour_and_priority_defaults_are_the_documented_ones() {
             why: "neither member stated",
             cutoff: None,
             priority: None,
-            expected_cutoff: "CONTINUE_TASK",
+            expected_cutoff: None,
             expected_priority: 0,
         },
         Row {
-            why: "the default stated explicitly",
+            why: "the documented cutoff behaviour stated explicitly",
             cutoff: Some("CONTINUE_TASK"),
             priority: Some(0),
-            expected_cutoff: "CONTINUE_TASK",
+            expected_cutoff: Some("CONTINUE_TASK"),
             expected_priority: 0,
         },
         Row {
             why: "the other cutoff behaviour the enum admits",
             cutoff: Some("CANCEL_TASK"),
             priority: Some(1),
-            expected_cutoff: "CANCEL_TASK",
+            expected_cutoff: Some("CANCEL_TASK"),
             expected_priority: 1,
         },
         Row {
             why: "a priority past the single digits",
             cutoff: None,
             priority: Some(42),
-            expected_cutoff: "CONTINUE_TASK",
+            expected_cutoff: None,
             expected_priority: 42,
         },
         Row {
             why: "the lowest priority this emulator is asked for",
             cutoff: Some("CANCEL_TASK"),
             priority: Some(1_000),
-            expected_cutoff: "CANCEL_TASK",
+            expected_cutoff: Some("CANCEL_TASK"),
             expected_priority: 1_000,
         },
     ];
@@ -630,7 +632,7 @@ async fn the_cutoff_behaviour_and_priority_defaults_are_the_documented_ones() {
                 reported["CutoffBehavior"].as_str(),
                 reported_priority(&reported)
             ),
-            (Some(row.expected_cutoff), row.expected_priority),
+            (row.expected_cutoff, row.expected_priority),
             "case {why:?}: expected CutoffBehavior {:?} and Priority {}, got {reported}",
             row.expected_cutoff,
             row.expected_priority
