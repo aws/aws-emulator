@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! What a request addressed to a CUSTOM DOMAIN NAME of this account reaches: the record its
-//! `Host` names, the api mapping of that record which answers the path, and the path WITHIN
-//! the api that mapping selects.
+//! `Host` names, the statement of that record which answers the request — a routing rule whose
+//! conditions it meets, or the api mapping whose base path its path begins with — and the path
+//! WITHIN the api that statement selects.
 //!
 //! A custom domain name is a host of the CALLER's own choosing — `CreateDomainName` takes the
 //! name and `CreateApiMapping` says what answers under it, "the API mapping key" and the
@@ -26,11 +27,12 @@
 //!   ([`carried_domain_name`]), the one rewriting every data plane of this tree is addressed
 //!   through.
 //!
-//! Both front doors read ONE statement of which mapping answers a path
-//! ([`crate::service::domain_name_socket::matching_mapping`]), ONE statement of which host
-//! names a record ([`crate::service::domain_name_socket::host_names_domain_name`]) and ONE
-//! statement of the path within the api a mapping selects ([`invoke_path`], which the socket
-//! re-addresses with), so the address a request arrives at cannot change which api answers it.
+//! Both front doors read ONE statement of WHICH of the record's own statements answers a
+//! request (`crate::service::domain_name_socket::routing::target`), ONE statement of which
+//! host names a record ([`crate::service::domain_name_socket::host_names_domain_name`]) and
+//! ONE statement of the path within the api a selection makes ([`invoke_path`], which the
+//! socket re-addresses with), so the address a request arrives at cannot change which api
+//! answers it.
 //!
 //! Nothing here writes: every reading is of records the control plane persisted.
 
@@ -38,7 +40,7 @@ use super::Addressed;
 use crate::state::ComAmazonawsApigatewayv2Apigatewayv2State as ServiceStore;
 
 /// What a request addressed to a custom domain name reaches: the record it arrived on, the api
-/// the mapping that answers its path names, and the path within that api's endpoint.
+/// the statement that answers it names, and the path within that api's endpoint.
 ///
 /// The path is OWNED, because it is COMPOSED — the stage the mapping names, then what the
 /// client carried under the base path — rather than a slice of the request.
@@ -47,7 +49,7 @@ pub(super) struct Arrival<'s> {
     /// The custom domain name the request was addressed to, which is what says it did NOT
     /// arrive on the api's own default `execute-api` endpoint.
     pub(super) domain_name: &'s str,
-    /// The api the mapping that answers this path names.
+    /// The api the statement of the record that answers this request names.
     pub(super) api_id: &'s str,
     /// `/{stage}/{path-under-the-base-path}`, the path within the api's endpoint — what the
     /// stage and the route are read from, exactly as for a request that reached the api's own
@@ -56,18 +58,19 @@ pub(super) struct Arrival<'s> {
 }
 
 /// What `addressed` reaches through the account's custom domain names, or `None` when it
-/// reaches none: a host that names no record of the account, and a path no api mapping of that
-/// record answers.
-pub(super) fn arrival<'s>(
+/// reaches none: a host that names no record of the account, and a request no statement of
+/// that record answers.
+pub(super) fn arrival<'s, 'r>(
     store: &'s ServiceStore,
-    addressed: &Addressed<'_>,
+    addressed: &Addressed<'r>,
 ) -> Option<Arrival<'s>> {
     let (record, path) = addressed_record(store, addressed)?;
-    let (mapping, under) = crate::service::domain_name_socket::matching_mapping(record, path)?;
+    let served =
+        crate::service::domain_name_socket::routing::target(record, path, addressed.headers)?;
     Some(Arrival {
         domain_name: &record.domain_name,
-        api_id: &mapping.api_id,
-        invoke_path: invoke_path(&mapping.stage, under),
+        api_id: served.api_id,
+        invoke_path: invoke_path(served.stage, served.under),
     })
 }
 

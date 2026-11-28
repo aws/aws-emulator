@@ -10682,6 +10682,7 @@ dependencies = [
  "boon",
  "bytes",
  "futures-util",
+ "globset",
  "hex",
  "http",
  "http-body-util",

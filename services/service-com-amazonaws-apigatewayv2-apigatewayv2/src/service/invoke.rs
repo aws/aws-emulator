@@ -383,8 +383,8 @@ const CORS_RESPONSE_HEADERS: [&str; 6] = [
     MAX_AGE_HEADER,
 ];
 
-/// The parts of a request this data plane reads: the method, and the host and path it is
-/// addressed at.
+/// The parts of a request this data plane reads: the method, the host and path it is
+/// addressed at, and the headers it carries.
 ///
 /// One reader for BOTH request shapes the seams are handed — `http::request::Parts` in
 /// `Service::can_handle` and the runtime-API request everywhere else — so the claim and
@@ -395,6 +395,11 @@ struct Addressed<'r> {
     /// `None` when the request carries no host at all, which names no api and no service.
     host: Option<&'r str>,
     path: &'r str,
+    /// The fields the request carries, read through the one trait both shapes implement: a
+    /// routing rule of a custom domain name may condition the selection on a header
+    /// (`RoutingRuleCondition$MatchHeaders`), so the arrival reading needs them
+    /// ([`custom_domain_arrival`]).
+    headers: &'r dyn crate::service::domain_name_socket::routing::MatchedHeaders,
 }
 
 impl<'r> Addressed<'r> {
@@ -413,6 +418,7 @@ impl<'r> Addressed<'r> {
                 header_of(&parts.headers, "host"),
             ),
             path: parts.uri.path(),
+            headers: &parts.headers,
         }
     }
 
@@ -425,6 +431,7 @@ impl<'r> Addressed<'r> {
                 req.headers().get("host"),
             ),
             path: path_of(req.uri()),
+            headers: req.headers(),
         }
     }
 }

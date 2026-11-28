@@ -95,6 +95,11 @@ http-body-util = "0.1"
 # Balancing crates terminate a listener's handshake with.
 rustls = { workspace = true }
 tokio-rustls = "0.26"
+# Matches the header-value GLOB of a custom domain name's routing rule
+# (`RoutingRuleMatchHeaderValue$ValueGlob`) against the field a request carries, which is how a
+# routing rule conditions the api stage that serves the request: globset is the pure-Rust glob
+# matcher this tree matches caller-written globs with.
+globset = "0.4"
 # Matches an `IntegrationResponseKey` written as a regular expression (`/2\d\d/`), which is
 # how a WebSocket integration's responses are selected by the status a call produced.
 regex = "1"

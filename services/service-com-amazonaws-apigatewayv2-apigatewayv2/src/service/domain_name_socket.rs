@@ -41,18 +41,20 @@
 //!    ([`::service_common::acm_certificate_termination`]);
 //! 2. the request is read, bounded and handed on by the one HTTP endpoint both core-owned
 //!    sockets of this service share ([`super::websocket::endpoint_http`]);
-//! 3. before it is handed on, it is RE-ADDRESSED: the api mapping whose base path the
-//!    request's path begins with decides the api and stage, and the request is addressed at
-//!    that stage's own invoke path on this emulator's front door — which is what makes the
-//!    answer the stage's own, with its routes, authorizers, throttles, CORS configuration and
-//!    integrations all applied by [`super::invoke`]. A path no mapping of the domain name
-//!    answers to reaches no api at all and is refused `403`, the status API Gateway's front
-//!    door turns such a request away with.
+//! 3. before it is handed on, it is RE-ADDRESSED: the record's own statement of what answers
+//!    under it — the routing rule whose conditions the request meets, or the api mapping whose
+//!    base path its path begins with, as the record's `RoutingMode` admits
+//!    ([`super::domain_name_routing`]) — decides the api and stage, and the request is
+//!    addressed at that stage's own invoke path on this emulator's front door — which is what
+//!    makes the answer the stage's own, with its routes, authorizers, throttles, CORS
+//!    configuration and integrations all applied by [`super::invoke`]. A request the record
+//!    answers nothing for reaches no api at all and is refused `403`, the status API Gateway's
+//!    front door turns such a request away with.
 //!
-//! The mapping is read PER REQUEST, so a mapping created or deleted after the connection was
-//! opened decides the next request on it; and the domain name is read by the KEY its record is
-//! stored under, which never changes, so the socket always serves the record a client dialled
-//! the address of.
+//! The record's statements are read PER REQUEST, so a rule or a mapping created or deleted
+//! after the connection was opened decides the next request on it; and the domain name is read
+//! by the KEY its record is stored under, which never changes, so the socket always serves the
+//! record a client dialled the address of.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -68,6 +70,14 @@ use ::tokio::io::AsyncReadExt as _;
 
 use super::websocket::endpoint_http::{Addressed, Readdress};
 use crate::state::ComAmazonawsApigatewayv2Apigatewayv2State as ServiceStore;
+
+// WHICH statement of the record answers a request — a routing rule of it or one of its api
+// mappings, as its `RoutingMode` admits. A child of THIS module because the api-mapping half
+// of that reading ([`matching_mapping`]) lives here and both front doors of a custom domain
+// name already ask it here; its file sits beside this one rather than in a directory of its
+// own, which is what the path says.
+#[path = "domain_name_routing.rs"]
+pub(in crate::service) mod routing;
 
 /// The host the re-addressed request names this emulator's front door by — the one every
 /// core-owned socket of this service re-addresses at
@@ -369,7 +379,7 @@ fn presented_certificates(
 ///   is published for ONE domain name, and what a client sends as `Host` is the name it
 ///   resolved — so the name this socket serves, and the loopback address the socket itself
 ///   landed on, are the two fields it answers for;
-/// * a path no api mapping of the record answers to ([`addressed_mapping`]), which reaches no
+/// * a request no statement of the record answers ([`addressed_target`]), which reaches no
 ///   api of the account.
 fn invoke_target(
     state: &::engine::ServiceState<ServiceStore>,
@@ -383,7 +393,7 @@ fn invoke_target(
     let Some(record) = store.domain_names.get(domain_name) else {
         return Addressed::Refused(FORBIDDEN, FORBIDDEN_MESSAGE);
     };
-    addressed_mapping(record, &parts.uri)
+    addressed_target(record, &parts.uri, &parts.headers)
 }
 
 /// Whether the `Host` of `parts` names what this socket stands for: the domain name it was
@@ -449,18 +459,28 @@ const WILDCARD_LABEL: &str = "*.";
 /// socket's decision above is made of, so what a request is re-addressed at is decided in one
 /// place.
 ///
-/// `Refused` for a path no mapping of the record answers to, and for a request whose path does
-/// not render as one UNDER the reserved data-plane prefix of the api that mapping names — the
+/// `Refused` for a request no statement of the record answers, and for one whose path does
+/// not render as one UNDER the reserved data-plane prefix of the api that statement names — the
 /// one thing a path the CLIENT chose must not be able to leave.
-fn addressed_mapping(record: &crate::state::DomainName, target: &::http::Uri) -> Addressed {
-    let Some((mapping, under)) = matching_mapping(record, target.path()) else {
+///
+/// WHICH statement answers — a routing rule of the record or one of its api mappings, as its
+/// `RoutingMode` admits — is the one reading both front doors of a custom domain name share
+/// ([`routing::target`]), and a rule's conditions are read from the
+/// request's own headers as well as its path, so `headers` are the ones the client sent.
+fn addressed_target(
+    record: &crate::state::DomainName,
+    target: &::http::Uri,
+    headers: &dyn routing::MatchedHeaders,
+) -> Addressed {
+    let Some(served) = routing::target(record, target.path(), headers) else {
         return Addressed::Refused(FORBIDDEN, FORBIDDEN_MESSAGE);
     };
-    // The path WITHIN the api that the mapping selects — the stage it names, then what the
+    // The path WITHIN the api that the statement selects — the stage it names, then what the
     // client carried under the base path — read through the ONE statement of that composition
     // both front doors of a custom domain name share
     // ([`super::invoke::custom_domain_arrival::invoke_path`]).
-    let within_api = super::invoke::custom_domain_arrival::invoke_path(&mapping.stage, under);
+    let within_api =
+        super::invoke::custom_domain_arrival::invoke_path(served.stage, served.under);
     let query = target
         .query()
         .map(|query| format!("?{query}"))
@@ -472,7 +492,7 @@ fn addressed_mapping(record: &crate::state::DomainName, target: &::http::Uri) ->
     super::data_plane::readdressed_within(
         super::data_plane::Readdressing {
             label: crate::state::EXECUTE_API_LABEL,
-            resource_id: &mapping.api_id,
+            resource_id: served.api_id,
             within: &within_api,
             query: &query,
         },
@@ -616,7 +636,7 @@ mod tests {
         ];
         for (case, target, expected) in cases {
             let target = ::http::Uri::try_from(target).expect("the row's target is a URI");
-            let addressed = addressed_mapping(&record, &target);
+            let addressed = addressed_target(&record, &target, &::http::HeaderMap::new());
             let expected = match expected {
                 Some(under) => Addressed::At {
                     uri: format!(
@@ -640,7 +660,7 @@ mod tests {
         let record = domain(Vec::new());
         for (case, path) in [("the domain root", "/"), ("a path under it", "/items")] {
             let target = ::http::Uri::try_from(path).expect("the row's target is a URI");
-            let addressed = addressed_mapping(&record, &target);
+            let addressed = addressed_target(&record, &target, &::http::HeaderMap::new());
             assert_eq!(
                 addressed,
                 Addressed::Refused(FORBIDDEN, FORBIDDEN_MESSAGE),

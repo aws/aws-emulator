@@ -131,25 +131,44 @@ pub(crate) async fn given_domain_name(
     case: &str,
     domain: &str,
 ) -> String {
-    let (status, created) = control(
-        emulator,
-        "POST",
-        "/v2/domainnames",
-        Some(json!({
-            "domainName": domain,
-            "domainNameConfigurations": [{
-                "certificateArn": format!(
-                    "arn:aws:acm:{REGION}:000000000000:certificate/\
-                     11111111-2222-3333-4444-555555555555"
-                )
-            }]
-        })),
-    )
-    .await;
+    given_domain_name_in_mode(emulator, case, domain, None).await
+}
+
+/// [`given_domain_name`] for a record created in a stated `RoutingMode`, which is what
+/// decides whether the front door reads the record's routing rules or its api mappings
+/// (`custom_domain_routing_rule_invoke` creates one of each mode this way); `None` leaves the
+/// mode the service's own default, which is what every case below creates.
+pub(crate) async fn given_domain_name_in_mode(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    domain: &str,
+    routing_mode: Option<&str>,
+) -> String {
+    let mut request = json!({
+        "domainName": domain,
+        "domainNameConfigurations": [{
+            "certificateArn": format!(
+                "arn:aws:acm:{REGION}:000000000000:certificate/\
+                 11111111-2222-3333-4444-555555555555"
+            )
+        }]
+    });
+    if let Some(mode) = routing_mode {
+        request["routingMode"] = json!(mode);
+    }
+    let (status, created) = control(emulator, "POST", "/v2/domainnames", Some(request)).await;
     assert_eq!(
         status, 201,
         "case {case:?}: CreateDomainName answered {status} {created}"
     );
+    if let Some(mode) = routing_mode {
+        assert_eq!(
+            created.get("routingMode").and_then(Value::as_str),
+            Some(mode),
+            "case {case:?}: expected the record to carry the routing mode it was created \
+             with, got {created}"
+        );
+    }
     let published = created
         .pointer("/domainNameConfigurations/0/apiGatewayDomainName")
         .and_then(Value::as_str)

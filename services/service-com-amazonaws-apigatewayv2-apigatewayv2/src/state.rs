@@ -49,6 +49,7 @@ pub mod route_request_parameters;
 pub mod route_response_key;
 pub mod route_throttle;
 pub mod routing_rule_action;
+pub mod routing_rule_condition;
 pub mod selection_expression;
 pub mod websocket_transport;
 pub mod wire_status;
@@ -597,8 +598,10 @@ pub const EMPTY_ROUTING_RULE_CONDITIONS: &str =
 /// least one condition (`Conditions`); every condition names EXACTLY ONE of the two
 /// alternatives its structure offers, since a condition naming neither says nothing and
 /// one naming both says two things; a condition's `AnyOf` names at least one value to
-/// match on; and the whole list carries at most [`MAX_MATCH_HEADERS_CONDITIONS`]
-/// `matchHeaders` and [`MAX_MATCH_BASE_PATHS_CONDITIONS`] `matchBasePaths` conditions.
+/// match on; the whole list carries at most [`MAX_MATCH_HEADERS_CONDITIONS`]
+/// `matchHeaders` and [`MAX_MATCH_BASE_PATHS_CONDITIONS`] `matchBasePaths` conditions; and
+/// each condition stays within the size the front door reads one on every request
+/// ([`validate_condition_size`]).
 ///
 /// Shared by every writer of the resource, so `CreateRoutingRule` and `PutRoutingRule`
 /// cannot drift. `Err` carries the message for the operation's `BadRequestException`.
@@ -624,6 +627,9 @@ pub fn validate_routing_rule(
         if named != 1 {
             return Err(ROUTING_RULE_CONDITION_ALTERNATIVES.to_string());
         }
+        // The SIZE of the lists a condition matches on, which decides what every later
+        // request the domain name serves costs (see [`routing_rule_condition`]).
+        validate_condition_size(condition)?;
         if let Some(base_paths) = &condition.match_base_paths {
             match_base_paths += 1;
             if base_paths.any_of.is_empty() {
@@ -4810,6 +4816,13 @@ pub use route_key::{
 /// resolved to the value the rule is served under — see
 /// [`routing_rule_action::resolve_routing_rule_actions`].
 pub use routing_rule_action::{resolve_routing_rule_actions, DEFAULT_STRIP_BASE_PATH};
+
+/// The size a routing rule's conditions may reach, and the refusals past it — see
+/// [`routing_rule_condition::validate_condition_size`].
+pub use routing_rule_condition::{
+    condition_value_count_message, condition_value_length_message, validate_condition_size,
+    MAX_CONDITION_VALUES, MAX_CONDITION_VALUE_BYTES,
+};
 
 /// The variable namespaces a selection expression may read — see
 /// [`selection_expression::SELECTION_EXPRESSION_VARIABLES`].
