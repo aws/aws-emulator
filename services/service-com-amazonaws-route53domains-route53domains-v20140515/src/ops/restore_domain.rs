@@ -215,12 +215,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `Consent` "[s]pecifies the maximum price that you agree to pay to restore the
         // domain name", and "[i]f you include it and the restoration price is more than
         // MaxPrice, the request fails". The restoration price is the one this registrar
-        // quotes (`ListPrices`'s `RestorationPrice`), so the check is against that quote
-        // and against nothing in the request.
+        // quotes for the name's TLD (`ListPrices`'s `RestorationPrice`), so the check is
+        // against that quote and against nothing in the request.
         if let Some(consent) = &input.consent {
-            if let Some(problem) =
-                crate::state::consent_shortfall(consent, &crate::state::restoration_price())
-            {
+            let price = crate::state::restoration_price(crate::state::tld_of(&name));
+            if let Some(problem) = crate::state::consent_shortfall(consent, &price) {
                 return Err(RestoreDomainErrorModeled::InvalidInput(InvalidInput {
                     message: Some(problem),
                 })

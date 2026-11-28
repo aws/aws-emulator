@@ -30,23 +30,6 @@
 use crate::domain_lifecycle::{error_code, person_contact, registration, Emulator};
 use serde_json::{json, Value};
 
-/// The standard yearly registration rates these cases expect, in USD. Source: the
-/// per-TLD table `STANDARD_REGISTRATION_RATES` in
-/// `src/state/registry.rs`, which carries Route 53's published registration price per
-/// TLD; a TLD the table does not list takes `DEFAULT_STANDARD_REGISTRATION_RATE`
-/// (20.00), which the `.shop` row below exercises.
-const EXPECTED_RATES: &[(&str, f64)] = &[
-    ("com", 16.00),
-    ("net", 17.00),
-    ("org", 16.00),
-    ("io", 47.00),
-    ("co.uk", 10.00),
-    ("dev", 15.00),
-    ("jp", 95.00),
-    // Not in the table: the stated default rate.
-    ("shop", 20.00),
-];
-
 /// `CheckDomainAvailability` for `name`, asserting a 200 and returning the body.
 async fn check(emulator: &Emulator, name: &str) -> Value {
     let (status, body) = emulator
@@ -118,7 +101,7 @@ async fn an_available_name_carries_the_standard_price_of_its_tld() {
     let labels = ["sim-probe-free", "z0-9"];
     let emulator = Emulator::new();
 
-    for (tld, rate) in EXPECTED_RATES {
+    for (tld, rate, _) in EXPECTED_PRICES {
         for label in labels {
             let name = format!("{label}.{tld}");
             let body = check(&emulator, &name).await;
@@ -1296,7 +1279,7 @@ async fn a_name_the_registry_cannot_answer_for_is_refused_by_the_suggestions_too
 }
 
 // ---------------------------------------------------------------------------
-// The rule: a TLD's price row is derived from that TLD's standard rate
+// The rule: a TLD's price row carries each of the five prices as its own line item
 // ---------------------------------------------------------------------------
 
 /// What an owner change costs at this registrar, in USD. Source: `CHANGE_OWNERSHIP_RATE`
@@ -1304,9 +1287,41 @@ async fn a_name_the_registry_cannot_answer_for_is_refused_by_the_suggestions_too
 /// registration year, so the published list charges nothing for it.
 const CHANGE_OWNERSHIP: f64 = 0.00;
 
-/// What restoring an expired registration costs, in USD. Source: `RESTORATION_RATE` in
-/// `src/state/registry.rs` — one flat registrar fee, the same for every TLD.
-const RESTORATION: f64 = 40.00;
+/// What restoring an expired registration costs per TLD, in USD, beside that TLD's
+/// standard yearly rate. Source: the per-TLD tables `RESTORATION_FEES` and
+/// `STANDARD_REGISTRATION_RATES` in `src/state/registry.rs` — a restoration is the
+/// redemption charge of the TLD's own registry, a line item of its own rather than
+/// anything derived from the yearly rate.
+///
+/// Rows: `(tld, yearly rate, restoration fee)`. They span what the fee varies along —
+/// generic and country-code TLDs, a two-label suffix, two TLDs that register for the SAME
+/// amount and restore for different ones (`.es` and `.us`, both 13.00 a year), two that
+/// restore for the same amount and register for different ones (`.com` and `.net`), and a
+/// TLD neither table lists (`.shop`), which takes the stated defaults
+/// (`DEFAULT_STANDARD_REGISTRATION_RATE` 20.00, `DEFAULT_RESTORATION_FEE` 78.00).
+const EXPECTED_PRICES: &[(&str, f64, f64)] = &[
+    ("com", 16.00, 78.00),
+    ("net", 17.00, 78.00),
+    ("org", 16.00, 78.00),
+    ("io", 47.00, 120.00),
+    ("co.uk", 10.00, 25.00),
+    ("dev", 15.00, 78.00),
+    ("jp", 95.00, 130.00),
+    ("es", 13.00, 30.00),
+    ("us", 13.00, 60.00),
+    ("ai", 110.00, 150.00),
+    // In neither table: the stated default rate and the stated default fee.
+    ("shop", 20.00, 78.00),
+];
+
+/// The restoration fee [`EXPECTED_PRICES`] states for `tld`.
+fn expected_restoration(tld: &str) -> f64 {
+    EXPECTED_PRICES
+        .iter()
+        .find(|(name, _, _)| *name == tld)
+        .map(|(_, _, fee)| *fee)
+        .unwrap_or_else(|| panic!("case {tld:?}: no expected restoration fee is stated"))
+}
 
 /// `ListPrices` with `request`, asserting a 200 and returning its `Prices` rows and its
 /// `NextPageMarker`.
@@ -1333,10 +1348,12 @@ fn priced_names(rows: &[Value]) -> Vec<String> {
 }
 
 /// Assert that `row` is the price row of `name`, a TLD whose standard yearly rate is
-/// `rate`: registration, transfer and renewal each buy one year at that rate, an owner
-/// change costs [`CHANGE_OWNERSHIP`] and a restoration [`RESTORATION`], and every one of
-/// the five is quoted in the required `Currency` at `PriceType` `STANDARD`.
-fn assert_price_row(row: &Value, case: &str, name: &str, rate: f64) {
+/// `rate` and whose restoration fee is `restoration`: registration, transfer and renewal
+/// each buy one year at that rate, an owner change costs [`CHANGE_OWNERSHIP`] and a
+/// restoration that TLD's own fee. Every one of the five carries the two required members
+/// and only those: `PriceType` qualifies an individual DOMAIN's pricing, so a price quoted
+/// for a TLD leaves the optional member unset.
+fn assert_price_row(row: &Value, case: &str, name: &str, rate: f64, restoration: f64) {
     assert_eq!(
         row["Name"].as_str(),
         Some(name),
@@ -1347,7 +1364,7 @@ fn assert_price_row(row: &Value, case: &str, name: &str, rate: f64) {
         ("TransferPrice", rate),
         ("RenewalPrice", rate),
         ("ChangeOwnershipPrice", CHANGE_OWNERSHIP),
-        ("RestorationPrice", RESTORATION),
+        ("RestorationPrice", restoration),
     ] {
         let price = &row[member];
         assert_eq!(
@@ -1364,12 +1381,29 @@ fn assert_price_row(row: &Value, case: &str, name: &str, rate: f64) {
             Some("USD"),
             "case {case:?}: {member} carries the required Currency member, got {price}"
         );
-        assert_eq!(
-            price["PriceType"].as_str(),
-            Some("STANDARD"),
-            "case {case:?}: a regular TLD rate is PriceType STANDARD, got {price}"
-        );
+        assert_tld_price_members(price, case, member);
     }
+}
+
+/// Assert that `price` is a `PriceWithCurrency` quoted for a TLD: the two required members
+/// and nothing else, so no `PriceType`, which qualifies an individual domain's pricing.
+fn assert_tld_price_members(price: &Value, case: &str, member: &str) {
+    assert!(
+        price["PriceType"].is_null(),
+        "case {case:?}: {member} is quoted for a TLD, which carries no PriceType, got {price}"
+    );
+    let mut members: Vec<&str> = price
+        .as_object()
+        .unwrap_or_else(|| panic!("case {case:?}: expected {member} to be a structure, got {price}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    members.sort_unstable();
+    assert_eq!(
+        members,
+        ["Currency", "Price"],
+        "case {case:?}: {member} carries the two required members and no other, got {price}"
+    );
 }
 
 #[tokio::test]
@@ -1381,7 +1415,7 @@ async fn the_price_row_of_one_tld_is_derived_from_that_tlds_standard_rate() {
     // sensitive.
     let emulator = Emulator::new();
 
-    for (tld, rate) in EXPECTED_RATES {
+    for (tld, rate, restoration) in EXPECTED_PRICES {
         for requested in [(*tld).to_string(), format!(".{tld}"), tld.to_uppercase()] {
             let (rows, marker) =
                 list_prices(&emulator, &requested, &json!({ "Tld": requested })).await;
@@ -1390,7 +1424,7 @@ async fn the_price_row_of_one_tld_is_derived_from_that_tlds_standard_rate() {
                 1,
                 "case {requested:?}: a request for one TLD prices exactly that TLD, got {rows:?}"
             );
-            assert_price_row(&rows[0], &requested, tld, *rate);
+            assert_price_row(&rows[0], &requested, tld, *rate, *restoration);
             assert!(
                 marker.is_none(),
                 "case {requested:?}: one TLD is one page, so no NextPageMarker, got {marker:?}"
@@ -1478,13 +1512,147 @@ async fn the_whole_price_list_comes_back_in_tld_order_and_agrees_with_the_other_
             "case {tld:?}: the list's row and the one-TLD row are the same prices"
         );
 
+        // The amount and the currency agree across the two surfaces; the quote for a NAME
+        // carries `PriceType` as well, because that member qualifies an individual
+        // domain's pricing rather than the TLD's published rate.
         let name = format!("sim-probe-prices.{tld}");
         let body = check(&emulator, &name).await;
+        let listed = &row["RegistrationPrice"];
         assert_eq!(
-            body["Price"], row["RegistrationPrice"],
+            (body["Price"]["Price"].as_f64(), body["Price"]["Currency"].as_str()),
+            (listed["Price"].as_f64(), listed["Currency"].as_str()),
             "case {tld:?}: an available name is priced at the registration price its TLD \
              is listed at, got {body}"
         );
+        assert_eq!(
+            body["Price"]["PriceType"].as_str(),
+            Some("STANDARD"),
+            "case {tld:?}: a name priced at its TLD's regular rate is PriceType STANDARD, \
+             got {body}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The rule: a TLD's price row is {Price, Currency} per line item, each line item
+// priced in its own right
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_restoration_fee_is_the_tlds_own_published_line_item() {
+    // A restoration is the redemption charge of the TLD's own registry, so it is a line
+    // item of the published row in its own right and is not derived from that TLD's yearly
+    // rate. The rows of `EXPECTED_PRICES` span that: TLDs with the same yearly rate and
+    // different restoration fees, TLDs with the same restoration fee and different yearly
+    // rates, and one the published tables do not list, which takes the stated defaults.
+    let emulator = Emulator::new();
+
+    for (tld, rate, restoration) in EXPECTED_PRICES {
+        let (rows, _) = list_prices(&emulator, tld, &json!({ "Tld": tld })).await;
+        let row = rows
+            .first()
+            .unwrap_or_else(|| panic!("case {tld:?}: expected one price row, got {rows:?}"));
+        let fee = row["RestorationPrice"]["Price"].as_f64();
+        assert_eq!(
+            fee,
+            Some(*restoration),
+            "case {tld:?}: expected the TLD's published restoration fee {restoration}, got {row}"
+        );
+        assert_eq!(
+            row["RegistrationPrice"]["Price"].as_f64(),
+            Some(*rate),
+            "case {tld:?}: expected the TLD's yearly rate {rate}, got {row}"
+        );
+
+        // A second call quotes the same fee: a published fee belongs to the TLD, not to
+        // the call.
+        let (again, _) = list_prices(&emulator, tld, &json!({ "Tld": tld })).await;
+        assert_eq!(
+            again.first().map(|row| row["RestorationPrice"].clone()),
+            Some(row["RestorationPrice"].clone()),
+            "case {tld:?}: a second call quotes the same restoration fee, got {again:?}"
+        );
+    }
+
+    // Two TLDs that register for the same amount restore for different ones, and two that
+    // restore for the same amount register for different ones: the fee is neither the
+    // yearly rate nor a function of it.
+    assert_eq!(
+        (expected_restoration("es"), expected_restoration("us")),
+        (30.00, 60.00),
+        "the table's own rows must keep the two equal-rate TLDs at different fees"
+    );
+    let (es, _) = list_prices(&emulator, "es", &json!({ "Tld": "es" })).await;
+    let (us, _) = list_prices(&emulator, "us", &json!({ "Tld": "us" })).await;
+    assert_eq!(
+        es[0]["RegistrationPrice"]["Price"].as_f64(),
+        us[0]["RegistrationPrice"]["Price"].as_f64(),
+        "the two TLDs of this case register for the same amount, got {es:?} and {us:?}"
+    );
+    assert_ne!(
+        es[0]["RestorationPrice"]["Price"].as_f64(),
+        us[0]["RestorationPrice"]["Price"].as_f64(),
+        "two TLDs that register for the same amount may restore for different ones, got \
+         {es:?} and {us:?}"
+    );
+    let (com, _) = list_prices(&emulator, "com", &json!({ "Tld": "com" })).await;
+    let (net, _) = list_prices(&emulator, "net", &json!({ "Tld": "net" })).await;
+    assert_eq!(
+        com[0]["RestorationPrice"]["Price"].as_f64(),
+        net[0]["RestorationPrice"]["Price"].as_f64(),
+        "the two TLDs of this case restore for the same amount, got {com:?} and {net:?}"
+    );
+    assert_ne!(
+        com[0]["RegistrationPrice"]["Price"].as_f64(),
+        net[0]["RegistrationPrice"]["Price"].as_f64(),
+        "two TLDs that restore for the same amount may register for different ones, got \
+         {com:?} and {net:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_price_quoted_for_a_tld_carries_no_price_type() {
+    // `PriceType` "[i]ndicates whether the domain has standard or premium pricing": it
+    // qualifies an individual DOMAIN's pricing, so a price quoted for a TLD leaves the
+    // optional member unset while the quote for a NAME under that TLD carries it. Asked
+    // of every one of the five line items, of a TLD request in each form a caller may
+    // write it, and of every row of the whole published list.
+    let emulator = Emulator::new();
+    let members = [
+        "RegistrationPrice",
+        "TransferPrice",
+        "RenewalPrice",
+        "ChangeOwnershipPrice",
+        "RestorationPrice",
+    ];
+
+    for (tld, _, _) in EXPECTED_PRICES {
+        for requested in [(*tld).to_string(), format!(".{tld}"), tld.to_uppercase()] {
+            let (rows, _) = list_prices(&emulator, &requested, &json!({ "Tld": &requested })).await;
+            let row = rows
+                .first()
+                .unwrap_or_else(|| panic!("case {requested:?}: expected one row, got {rows:?}"));
+            for member in members {
+                assert_tld_price_members(&row[member], &requested, member);
+            }
+        }
+
+        // The same TLD's rate quoted for a NAME under it does carry the member, so the
+        // absence above is the TLD scope and not a member this emulator never writes.
+        let body = check(&emulator, &format!("sim-probe-pricetype.{tld}")).await;
+        assert_eq!(
+            body["Price"]["PriceType"].as_str(),
+            Some("STANDARD"),
+            "case {tld:?}: a price quoted for a name says which pricing the name has, got {body}"
+        );
+    }
+
+    let (rows, _) = list_prices(&emulator, "all TLDs", &json!({})).await;
+    for row in &rows {
+        let case = row["Name"].as_str().unwrap_or_default().to_string();
+        for member in members {
+            assert_tld_price_members(&row[member], &case, member);
+        }
     }
 }
 

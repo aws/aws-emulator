@@ -21,11 +21,11 @@
 
 mod registry;
 pub use registry::{
-    change_ownership_price, consent_shortfall, price_record, priced_tlds, restoration_price,
-    seeded_registrations, standard_registration_price, standard_registration_rate,
-    standard_renewal_price, standard_transfer_price, unavailable_domain_message, Transferability,
-    AVAILABILITY_AVAILABLE, AVAILABILITY_UNAVAILABLE, CHANGE_OWNERSHIP_RATE, CURRENCY_USD,
-    DEFAULT_STANDARD_REGISTRATION_RATE, PRICE_TYPE_STANDARD, RESTORATION_RATE,
+    consent_shortfall, priced_tlds, restoration_fee, restoration_price, seeded_registrations,
+    standard_registration_price, standard_registration_rate, standard_transfer_price,
+    tld_price_record, unavailable_domain_message, Transferability, AVAILABILITY_AVAILABLE,
+    AVAILABILITY_UNAVAILABLE, CHANGE_OWNERSHIP_RATE, CURRENCY_USD, DEFAULT_RESTORATION_FEE,
+    DEFAULT_STANDARD_REGISTRATION_RATE, PRICE_TYPE_STANDARD, RESTORATION_FEES,
     STANDARD_REGISTRATION_RATES, TRANSFERABLE_DOMAIN_IN_OWN_ACCOUNT, TRANSFERABLE_UNTRANSFERABLE,
 };
 

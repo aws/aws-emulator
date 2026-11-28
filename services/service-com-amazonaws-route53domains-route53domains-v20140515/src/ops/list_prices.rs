@@ -2,10 +2,9 @@
 
 //! @op ListPrices
 //! The registrar's published price list: one `DomainPrice` per TLD it publishes a price
-//! for, or just the requested TLD's row. Every row is derived from that TLD's standard
-//! yearly rate by the one rule in [`crate::state::price_record`], so the registration
-//! price here and the one `CheckDomainAvailability` quotes for a name under the same TLD
-//! are the same amount.
+//! for, or just the requested TLD's row. Every row is the one in
+//! [`crate::state::tld_price_record`], so the registration price here and the one
+//! `CheckDomainAvailability` quotes for a name under the same TLD are the same amount.
 //!
 //! A `Tld` that is not a suffix a registry delegates names under is refused with the
 //! modelled `UnsupportedTLD`, the same answer every other surface that takes a TLD gives
@@ -192,7 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `NextPageMarker` is left off for the same reason: one TLD is one row, and
             // there is no further page to walk to.
             return Ok(ListPricesOutput {
-                prices: Some(vec![crate::state::price_record(&tld, &tld)]),
+                prices: Some(vec![crate::state::tld_price_record(&tld)]),
                 next_page_marker: None,
             });
         }
@@ -240,7 +239,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let page: Vec<DomainPrice> = tlds[start..]
             .iter()
             .take(max_items)
-            .map(|tld| crate::state::price_record(tld, tld))
+            .map(|tld| crate::state::tld_price_record(tld))
             .collect();
         // Omitted on the last page: "If there are more prices than you specified for
         // MaxItems in the request, submit another request and include the value of
