@@ -25,6 +25,7 @@ pub struct UsageRecord {
     pub customer_identifier: Option<String>,
     pub dimension: String,
     pub quantity: Option<i32>,
+    pub quantity_as_decimal: Option<String>,
     pub usage_allocations: Option<Vec<UsageAllocation>>,
     pub customer_aws_account_id: Option<String>,
     pub license_arn: Option<String>,

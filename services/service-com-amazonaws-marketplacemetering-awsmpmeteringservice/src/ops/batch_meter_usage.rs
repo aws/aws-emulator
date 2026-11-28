@@ -14,6 +14,12 @@
 //! * `DuplicateRecord` — "A previously metered UsageRecord had the same customer,
 //!   dimension, and time, but a different quantity."
 //!
+//! A record spells its quantity in `Quantity` or in `QuantityAsDecimal` — never both —
+//! and the ledger compares quantities by VALUE, so a retry that switches the spelling
+//! repeats the stored record rather than conflicting with it. A record's usage
+//! allocations split that quantity, so they spell their shares in the matching member
+//! and must add up to it.
+//!
 //! Anything that makes the REQUEST invalid rather than one record unbillable is a
 //! modelled operation error and no record is written: an unknown `ProductCode`, an
 //! unpublished dimension, allocations that do not add up, a record naming no customer
@@ -276,6 +282,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // applied, so nothing is written until every record has been checked.
         let now = crate::state::now_epoch_secs();
         for record in &input.usage_records {
+            // One quantity per record, in whichever of its two quantity members spelled
+            // it. A record that names both reports no single quantity, and the model
+            // declares no error of this operation for a member combination that cannot
+            // hold together, so the batch is refused as invalid input.
+            let reported = record_quantity(record).map_err(BatchMeterUsageError::validation)?;
             let timestamp_secs = record.timestamp.secs();
             if timestamp_secs > now
                 || timestamp_secs < now - crate::state::BATCH_METER_USAGE_BACKDATING_SECS
@@ -303,7 +314,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             if let Some(message) = crate::state::allocations_problem(
                 record.usage_allocations.as_deref().unwrap_or_default(),
-                record.quantity.unwrap_or(0),
+                reported,
+                crate::state::USAGE_RECORD_QUANTITY_MEMBERS,
             ) {
                 return Err(
                     BatchMeterUsageErrorModeled::InvalidUsageAllocationsException(
@@ -335,7 +347,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .unwrap_or_default()
                 .to_string();
             let timestamp_secs = record.timestamp.secs();
-            let quantity = record.quantity.unwrap_or(0);
+            // Read by value, and already validated by the pass above, so a record whose
+            // pair cannot be read never reaches here.
+            let quantity = record_quantity(&record)
+                .map(|reported| reported.value)
+                .unwrap_or_default();
 
             // Not entitled: the record is reported back unhonored, and nothing is
             // written for it.
@@ -400,4 +416,21 @@ fn record_customer(record: &UsageRecord) -> Option<&str> {
         .as_deref()
         .filter(|identifier| !identifier.is_empty())
         .or(record.customer_aws_account_id.as_deref())
+}
+
+/// The quantity one record reports, in whichever of its two quantity members spelled
+/// it, or why the pair cannot hold together.
+///
+/// `UsageRecord$QuantityAsDecimal`: "You can't specify both `Quantity` and
+/// `QuantityAsDecimal` in a usage record. ... If any usage record fails these checks,
+/// the entire `BatchMeterUsage` request fails and no records are processed" — so the
+/// whole-batch validation pass below answers this before anything is written.
+fn record_quantity(
+    record: &UsageRecord,
+) -> Result<crate::state::ReportedQuantity, String> {
+    crate::state::reported_quantity_or_zero(
+        record.quantity,
+        record.quantity_as_decimal.as_deref(),
+        crate::state::USAGE_RECORD_QUANTITY_MEMBERS,
+    )
 }

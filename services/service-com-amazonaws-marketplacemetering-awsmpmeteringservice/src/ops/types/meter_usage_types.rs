@@ -18,6 +18,7 @@ pub struct MeterUsageInput {
     pub timestamp: ::aws_smithy_types::DateTime,
     pub usage_dimension: String,
     pub usage_quantity: Option<i32>,
+    pub usage_quantity_as_decimal: Option<String>,
     pub dry_run: Option<bool>,
     pub usage_allocations: Option<Vec<UsageAllocation>>,
     pub client_token: Option<String>,

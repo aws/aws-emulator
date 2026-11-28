@@ -21,7 +21,7 @@ use smithy_server_runtime::MultiServiceRouter;
 use service_com_amazonaws_marketplacemetering_awsmpmeteringservice::ops::types::Metadata;
 use service_com_amazonaws_marketplacemetering_awsmpmeteringservice::state::{
     ComAmazonawsMarketplacemeteringAwsmpmeteringserviceState as MeteringState, IdempotencyEntry,
-    MeteringRecord, Product, PublicKeyEntry, Registration, TokenEntry,
+    MeteringRecord, Product, PublicKeyEntry, Quantity, Registration, TokenEntry,
     BATCH_METER_USAGE_BACKDATING_SECS, MAX_IDEMPOTENCY_TOKENS, MAX_METERING_RECORDS,
     MAX_REGISTRATIONS, METER_USAGE_BACKDATING_SECS,
 };
@@ -420,7 +420,7 @@ async fn caller_driven_stores_are_bounded() {
             customer_identifier: caller_account(),
             customer_aws_account_id: None,
             dimension: "Users".to_string(),
-            quantity: 1,
+            quantity: Quantity::from_whole(1),
             // A distinct hour per record, so each one takes its own dedup key.
             timestamp_secs: i64::try_from(index).unwrap() * 3600,
             usage_allocations: Vec::new(),
@@ -846,7 +846,12 @@ async fn meter_usage_deduplicates_within_the_reported_hour() {
                 record.quantity,
                 record.timestamp_secs
             ),
-            (ids[index].as_str(), *dimension, *quantity, *timestamp),
+            (
+                ids[index].as_str(),
+                *dimension,
+                Quantity::from_whole(*quantity),
+                *timestamp,
+            ),
             "case {label:?}: the stored record must be what the response named, got {record:?}"
         );
     }
@@ -1218,7 +1223,8 @@ async fn batch_meter_usage_computes_a_status_per_record() {
         state.metering_records[0]
     );
     assert_eq!(
-        state.metering_records[0].quantity, 10,
+        state.metering_records[0].quantity,
+        Quantity::from_whole(10),
         "a DuplicateRecord must not overwrite the stored quantity, got {:?}",
         state.metering_records[0]
     );
@@ -1398,5 +1404,472 @@ async fn batch_meter_usage_refuses_an_invalid_request_whole() {
             .map(Vec::len),
         Some(0),
         "an empty batch meters nothing, got {empty}"
+    );
+}
+
+/// The quantity a decimal string names, or an explanation of why it is not one.
+fn decimal(text: &str) -> Quantity {
+    Quantity::from_decimal(text)
+        .unwrap_or_else(|| panic!("{text:?} is a decimal quantity the model's pattern admits"))
+}
+
+/// A `MeterUsage` request whose quantity is spelled by `quantity`: a fragment naming
+/// `UsageQuantity`, `UsageQuantityAsDecimal`, both, or neither.
+fn meter_usage_request(dimension: &str, timestamp: i64, quantity: &Value) -> Value {
+    let mut body = json!({
+        "ProductCode": PRODUCT,
+        "UsageDimension": dimension,
+        "Timestamp": timestamp,
+    });
+    for (member, value) in quantity
+        .as_object()
+        .unwrap_or_else(|| panic!("a quantity fragment is a JSON object, got {quantity}"))
+    {
+        body[member] = value.clone();
+    }
+    body
+}
+
+/// The quantity a `MeterUsage` quantity fragment names — what the ledger must store
+/// for it, whichever member spelled it.
+fn fragment_quantity(fragment: &Value) -> Quantity {
+    if let Some(text) = fragment
+        .get("UsageQuantityAsDecimal")
+        .and_then(Value::as_str)
+    {
+        return decimal(text);
+    }
+    fragment
+        .get("UsageQuantity")
+        .and_then(Value::as_i64)
+        .map_or(Quantity::ZERO, |whole| {
+            Quantity::from_whole(i32::try_from(whole).expect("a whole quantity fits in an i32"))
+        })
+}
+
+/// One row of the quantity-spelling table: the value, every member spelling that names
+/// it, and a spelling of a DIFFERENT value for the same hour.
+struct SpellingRow {
+    label: &'static str,
+    dimension: &'static str,
+    value: Quantity,
+    spellings: Vec<Value>,
+    other_value: Value,
+}
+
+/// A quantity is compared by VALUE, never by the member or the text it arrived in:
+/// every spelling of one quantity is the same metered hour, and only a different VALUE
+/// in that hour is a duplicate request.
+#[tokio::test]
+async fn meter_usage_compares_quantities_by_value_across_both_quantity_members() {
+    let (router, engine) = seeded();
+    let now = now_secs();
+
+    // The rows differ along the value and along how many fraction digits spell it; the
+    // spellings within a row differ along which member carries it and how the text
+    // writes it. The last row is the smallest step the model's six-digit fraction
+    // allows, which no whole-number member can name at all.
+    let rows = [
+        SpellingRow {
+            label: "a whole number, in both members and with trailing zeros",
+            dimension: "Users",
+            value: Quantity::from_whole(17),
+            spellings: vec![
+                json!({"UsageQuantity": 17}),
+                json!({"UsageQuantityAsDecimal": "17"}),
+                json!({"UsageQuantityAsDecimal": "17.0"}),
+                json!({"UsageQuantityAsDecimal": "17.00"}),
+            ],
+            other_value: json!({"UsageQuantityAsDecimal": "17.5"}),
+        },
+        SpellingRow {
+            label: "zero, which is also what naming neither member reports",
+            dimension: "Bandwidth",
+            value: Quantity::ZERO,
+            spellings: vec![
+                json!({}),
+                json!({"UsageQuantity": 0}),
+                json!({"UsageQuantityAsDecimal": "0"}),
+                json!({"UsageQuantityAsDecimal": "0.000000"}),
+            ],
+            other_value: json!({"UsageQuantity": 1}),
+        },
+        SpellingRow {
+            label: "a fractional quantity only the decimal member can carry",
+            dimension: "Hours",
+            value: decimal("17.42"),
+            spellings: vec![
+                json!({"UsageQuantityAsDecimal": "17.42"}),
+                json!({"UsageQuantityAsDecimal": "17.420"}),
+                json!({"UsageQuantityAsDecimal": "17.420000"}),
+            ],
+            other_value: json!({"UsageQuantity": 17}),
+        },
+        SpellingRow {
+            label: "the smallest step the six-digit fraction allows",
+            dimension: "Users",
+            value: decimal("0.000001"),
+            spellings: vec![json!({"UsageQuantityAsDecimal": "0.000001"})],
+            other_value: json!({"UsageQuantity": 0}),
+        },
+    ];
+
+    for (index, row) in rows.iter().enumerate() {
+        let label = row.label;
+        // Its own hour per row, so a row's rule is read from its own record.
+        let timestamp =
+            now - 60 - 3600 * i64::try_from(index).expect("the row index fits in an i64");
+
+        let mut ids: Vec<String> = Vec::new();
+        for spelling in &row.spellings {
+            let request = meter_usage_request(row.dimension, timestamp, spelling);
+            let body = ok_call(&router, "MeterUsage", &request).await;
+            ids.push(metering_record_id(label, &body));
+        }
+        let distinct: BTreeSet<&String> = ids.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            1,
+            "case {label:?}: every spelling of one quantity must name the one metered record, got {ids:?}"
+        );
+
+        {
+            let state = engine.state::<MeteringState>();
+            let state = state.lock();
+            let record = state
+                .metering_records
+                .iter()
+                .find(|record| record.metering_record_id == ids[0])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "case {label:?}: expected the ledger to hold {}, got {:?}",
+                        ids[0], state.metering_records
+                    )
+                });
+            assert_eq!(
+                record.quantity, row.value,
+                "case {label:?}: expected the quantity stored by value as {}, got {:?}",
+                row.value, record.quantity
+            );
+        }
+
+        // A different VALUE in the same hour still cannot change what was recorded.
+        expect_error(
+            &router,
+            label,
+            "MeterUsage",
+            &meter_usage_request(row.dimension, timestamp, &row.other_value),
+            400,
+            "DuplicateRequestException",
+        )
+        .await;
+    }
+}
+
+/// A quantity pair spells ONE quantity, so a request naming BOTH its members reports
+/// no single quantity at all: it is refused (HTTP 400) and nothing is metered. For
+/// `BatchMeterUsage` that refusal is whole-request, as the model's own rule for a
+/// record that fails its checks requires.
+#[tokio::test]
+async fn naming_both_quantity_members_is_refused_and_meters_nothing() {
+    let (router, engine) = seeded();
+    let now = now_secs();
+
+    // The rows differ along the operation, along whether the two members agree on the
+    // value, and along where in a batch the offending record sits.
+    let rows: &[(&str, &str, Value)] = &[
+        (
+            "MeterUsage, both members naming the same value",
+            "MeterUsage",
+            json!({
+                "ProductCode": PRODUCT,
+                "UsageDimension": "Users",
+                "Timestamp": now - 10,
+                "UsageQuantity": 5,
+                "UsageQuantityAsDecimal": "5",
+            }),
+        ),
+        (
+            "MeterUsage, both members naming different values",
+            "MeterUsage",
+            json!({
+                "ProductCode": PRODUCT,
+                "UsageDimension": "Users",
+                "Timestamp": now - 10,
+                "UsageQuantity": 5,
+                "UsageQuantityAsDecimal": "7.5",
+            }),
+        ),
+        (
+            "BatchMeterUsage, the only record naming both members",
+            "BatchMeterUsage",
+            json!({"ProductCode": PRODUCT, "UsageRecords": [
+                {"Timestamp": now - 10, "CustomerIdentifier": CUSTOMER_BY_IDENTIFIER,
+                 "Dimension": "Users", "Quantity": 3, "QuantityAsDecimal": "3.5"},
+            ]}),
+        ),
+        (
+            "BatchMeterUsage, a valid record beside one naming both members",
+            "BatchMeterUsage",
+            json!({"ProductCode": PRODUCT, "UsageRecords": [
+                {"Timestamp": now - 10, "CustomerIdentifier": CUSTOMER_BY_IDENTIFIER,
+                 "Dimension": "Users", "QuantityAsDecimal": "1"},
+                {"Timestamp": now - 10, "CustomerAWSAccountId": CUSTOMER_BY_ACCOUNT,
+                 "Dimension": "Hours", "Quantity": 2, "QuantityAsDecimal": "2"},
+            ]}),
+        ),
+    ];
+
+    for (label, operation, request) in rows {
+        expect_error(&router, label, operation, request, 400, "ValidationException").await;
+        assert!(
+            engine
+                .state::<MeteringState>()
+                .lock()
+                .metering_records
+                .is_empty(),
+            "case {label:?}: a request that reports no single quantity must write nothing"
+        );
+    }
+}
+
+/// Usage allocations split the quantity they are reported with: each names exactly one
+/// of its own two members, in the SAME member the quantity used, and the shares add up
+/// to it by value.
+#[tokio::test]
+async fn usage_allocations_must_match_the_quantity_member_and_add_up() {
+    let (router, engine) = seeded();
+    let now = now_secs();
+
+    // The rows differ along the member the quantity uses, the member the shares use,
+    // how the shares are spelled, and whether they add up.
+    let rows: &[(&str, Value, Value, bool)] = &[
+        (
+            "decimal shares adding up to a decimal quantity",
+            json!({"UsageQuantityAsDecimal": "10.5"}),
+            json!([
+                {"AllocatedUsageQuantityAsDecimal": "6.25", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "4.25", "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            true,
+        ),
+        (
+            "decimal shares spelled with trailing zeros",
+            json!({"UsageQuantityAsDecimal": "4"}),
+            json!([
+                {"AllocatedUsageQuantityAsDecimal": "1.500000", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "2.5", "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            true,
+        ),
+        (
+            "one untagged share equal to the smallest decimal step",
+            json!({"UsageQuantityAsDecimal": "0.000001"}),
+            json!([{"AllocatedUsageQuantityAsDecimal": "0.000001"}]),
+            true,
+        ),
+        (
+            "whole shares under a decimal quantity",
+            json!({"UsageQuantityAsDecimal": "10"}),
+            json!([
+                {"AllocatedUsageQuantity": 6, "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantity": 4, "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            false,
+        ),
+        (
+            "decimal shares under a whole quantity",
+            json!({"UsageQuantity": 10}),
+            json!([
+                {"AllocatedUsageQuantityAsDecimal": "6", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "4", "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            false,
+        ),
+        (
+            "decimal shares summing one step below the quantity",
+            json!({"UsageQuantityAsDecimal": "10.5"}),
+            json!([
+                {"AllocatedUsageQuantityAsDecimal": "6.25", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "4.249999", "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            false,
+        ),
+        (
+            "decimal shares summing above the quantity",
+            json!({"UsageQuantityAsDecimal": "10.5"}),
+            json!([
+                {"AllocatedUsageQuantityAsDecimal": "6.25", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "4.26", "Tags": [{"Key": "team", "Value": "green"}]},
+            ]),
+            false,
+        ),
+        (
+            "a share naming neither of its members",
+            json!({"UsageQuantity": 10}),
+            json!([{"Tags": [{"Key": "team", "Value": "blue"}]}]),
+            false,
+        ),
+        (
+            "a share naming both of its members",
+            json!({"UsageQuantity": 10}),
+            json!([{"AllocatedUsageQuantity": 10, "AllocatedUsageQuantityAsDecimal": "10"}]),
+            false,
+        ),
+    ];
+
+    for (label, quantity, allocations, accepted) in rows {
+        let mut request = meter_usage_request("Users", now - 10, quantity);
+        request["UsageAllocations"] = allocations.clone();
+        if *accepted {
+            let body = ok_call(&router, "MeterUsage", &request).await;
+            let id = metering_record_id(label, &body);
+            let state = engine.state::<MeteringState>();
+            let mut state = state.lock();
+            let stored = state
+                .metering_records
+                .iter()
+                .find(|record| record.metering_record_id == id)
+                .map(|record| record.quantity);
+            assert_eq!(
+                stored,
+                Some(fragment_quantity(quantity)),
+                "case {label:?}: expected the allocated quantity stored by value, got {stored:?}"
+            );
+            // The next row reports the same hour, so the hour is released rather than
+            // answering a duplicate request for a quantity this row already metered.
+            state.dedup_index.clear();
+        } else {
+            expect_error(
+                &router,
+                label,
+                "MeterUsage",
+                &request,
+                400,
+                "InvalidUsageAllocationsException",
+            )
+            .await;
+        }
+    }
+}
+
+/// `BatchMeterUsage` reads a record's quantity from either member and compares it by
+/// value: a retry that switches the spelling repeats the stored record, and only a
+/// different value is a `DuplicateRecord`.
+#[tokio::test]
+async fn batch_meter_usage_reads_record_quantities_from_either_member() {
+    let (router, engine) = seeded();
+    let now = now_secs();
+
+    // The records differ along the quantity's fraction, the member that spells it and
+    // whether the record splits it into allocations.
+    let request = json!({"ProductCode": PRODUCT, "UsageRecords": [
+        {"Timestamp": now - 30, "CustomerIdentifier": CUSTOMER_BY_IDENTIFIER,
+         "Dimension": "Users", "QuantityAsDecimal": "9.75"},
+        {"Timestamp": now - 30, "CustomerAWSAccountId": CUSTOMER_BY_ACCOUNT,
+         "Dimension": "Hours", "QuantityAsDecimal": "9"},
+        {"Timestamp": now - 30, "CustomerAWSAccountId": CUSTOMER_BY_ACCOUNT,
+         "Dimension": "Bandwidth", "QuantityAsDecimal": "2.5",
+         "UsageAllocations": [
+            {"AllocatedUsageQuantityAsDecimal": "1.5", "Tags": [{"Key": "team", "Value": "blue"}]},
+            {"AllocatedUsageQuantityAsDecimal": "1", "Tags": [{"Key": "team", "Value": "green"}]},
+         ]},
+    ]});
+    let first = ok_call(&router, "BatchMeterUsage", &request).await;
+    let expected: &[(&str, &str)] = &[
+        ("a fractional quantity", "9.75"),
+        ("a whole number in the decimal member", "9"),
+        ("a quantity split into decimal allocations", "2.5"),
+    ];
+    for (index, (label, value)) in expected.iter().enumerate() {
+        assert_eq!(
+            first["Results"][index].get("Status").and_then(Value::as_str),
+            Some("Success"),
+            "case {label:?}: expected Success, got {}",
+            first["Results"][index]
+        );
+        let id = first["Results"][index]
+            .get("MeteringRecordId")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {label:?}: an accepted record reports its MeteringRecordId, got {}",
+                    first["Results"][index]
+                )
+            });
+        let state = engine.state::<MeteringState>();
+        let state = state.lock();
+        let stored = state
+            .metering_records
+            .iter()
+            .find(|record| record.metering_record_id == id)
+            .map(|record| record.quantity);
+        assert_eq!(
+            stored,
+            Some(decimal(value)),
+            "case {label:?}: expected {value} stored by value, got {stored:?}"
+        );
+    }
+
+    // The same records, each quantity spelled in the other member or with trailing
+    // zeros: the same quantities, so the same stored records.
+    let retried = ok_call(
+        &router,
+        "BatchMeterUsage",
+        &json!({"ProductCode": PRODUCT, "UsageRecords": [
+            {"Timestamp": now - 30, "CustomerIdentifier": CUSTOMER_BY_IDENTIFIER,
+             "Dimension": "Users", "QuantityAsDecimal": "9.750000"},
+            {"Timestamp": now - 30, "CustomerAWSAccountId": CUSTOMER_BY_ACCOUNT,
+             "Dimension": "Hours", "Quantity": 9},
+            {"Timestamp": now - 30, "CustomerAWSAccountId": CUSTOMER_BY_ACCOUNT,
+             "Dimension": "Bandwidth", "QuantityAsDecimal": "2.500",
+             "UsageAllocations": [
+                {"AllocatedUsageQuantityAsDecimal": "1.500", "Tags": [{"Key": "team", "Value": "blue"}]},
+                {"AllocatedUsageQuantityAsDecimal": "1.0", "Tags": [{"Key": "team", "Value": "green"}]},
+             ]},
+        ]}),
+    )
+    .await;
+    for (index, (label, _)) in expected.iter().enumerate() {
+        assert_eq!(
+            retried["Results"][index].get("MeteringRecordId"),
+            first["Results"][index].get("MeteringRecordId"),
+            "case {label:?}: a retry spelled in the other member replays the stored MeteringRecordId, got {}",
+            retried["Results"][index]
+        );
+    }
+    assert_eq!(
+        engine
+            .state::<MeteringState>()
+            .lock()
+            .metering_records
+            .len(),
+        expected.len(),
+        "a retry of the same quantities stores no second record"
+    );
+
+    // One step more usage in the same hour is a different quantity: the documented
+    // duplicate record, which changes nothing.
+    let conflicting = ok_call(
+        &router,
+        "BatchMeterUsage",
+        &json!({"ProductCode": PRODUCT, "UsageRecords": [
+            {"Timestamp": now - 30, "CustomerIdentifier": CUSTOMER_BY_IDENTIFIER,
+             "Dimension": "Users", "QuantityAsDecimal": "9.750001"},
+        ]}),
+    )
+    .await;
+    assert_eq!(
+        conflicting["Results"][0].get("Status").and_then(Value::as_str),
+        Some("DuplicateRecord"),
+        "a different quantity in a metered hour is a DuplicateRecord, got {conflicting}"
+    );
+    let state = engine.state::<MeteringState>();
+    let state = state.lock();
+    assert_eq!(
+        state.metering_records[0].quantity,
+        decimal("9.75"),
+        "a DuplicateRecord must not overwrite the stored quantity, got {:?}",
+        state.metering_records[0]
     );
 }

@@ -18,6 +18,10 @@
 //! * `metering_records` is the ledger `MeterUsage` and `BatchMeterUsage` both append
 //!   to, with `dedup_index` and `idempotency` as the two indexes over it that decide
 //!   a replay from a conflict.
+//!
+//! Every quantity in the ledger and its indexes is a [`Quantity`] — the value, not the
+//! member or the text it arrived in — so the child `quantity` module is the one place
+//! a request's quantity pair becomes something this store can compare.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -25,6 +29,12 @@ use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::{Metadata, UsageAllocation};
+
+/// One quantity, in either of the two members that spell it, and the allocations that
+/// split it — the one place a quantity pair becomes a value.
+mod quantity;
+
+pub use quantity::*;
 
 /// How far in the past a `MeterUsage` timestamp may be.
 ///
@@ -117,7 +127,10 @@ pub struct MeteringRecord {
     pub customer_identifier: String,
     pub customer_aws_account_id: Option<String>,
     pub dimension: String,
-    pub quantity: i32,
+    /// The quantity metered, by value: a record reported in the whole-number member
+    /// and one reported in the decimal member are the same record when they report
+    /// the same quantity.
+    pub quantity: Quantity,
     /// The usage instant the caller reported, in epoch seconds.
     pub timestamp_secs: i64,
     pub usage_allocations: Vec<UsageAllocation>,
@@ -133,7 +146,7 @@ pub type DedupKey = (String, String, String, i64);
 #[derive(Debug, Clone)]
 pub struct DedupEntry {
     pub metering_record_id: String,
-    pub quantity: i32,
+    pub quantity: Quantity,
 }
 
 /// What a `ClientToken` replay is checked against.
@@ -437,7 +450,7 @@ pub fn meter_usage_fingerprint(
     product_code: &str,
     dimension: &str,
     timestamp_secs: i64,
-    quantity: i32,
+    quantity: Quantity,
     allocations: &[UsageAllocation],
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -447,7 +460,12 @@ pub fn meter_usage_fingerprint(
     quantity.hash(&mut hasher);
     allocations.len().hash(&mut hasher);
     for allocation in allocations {
-        allocation.allocated_usage_quantity.hash(&mut hasher);
+        // By VALUE, like the quantity itself: a retry that spells one allocated share
+        // in the other member carries the same request.
+        allocation_quantity(allocation)
+            .map(|reported| reported.value)
+            .ok()
+            .hash(&mut hasher);
         let mut tags: Vec<(&str, &str)> = allocation
             .tags
             .iter()
@@ -458,55 +476,6 @@ pub fn meter_usage_fingerprint(
         tags.hash(&mut hasher);
     }
     hasher.finish()
-}
-
-/// The tag set of an allocation, normalized so two allocations carrying the same tags
-/// in a different order compare equal.
-fn allocation_tag_set(allocation: &UsageAllocation) -> Vec<(String, String)> {
-    let mut tags: Vec<(String, String)> = allocation
-        .tags
-        .iter()
-        .flatten()
-        .map(|tag| (tag.key.clone(), tag.value.clone()))
-        .collect();
-    tags.sort();
-    tags
-}
-
-/// Why a set of usage allocations cannot be accepted for `quantity`, or `None` when
-/// it can.
-///
-/// Both rules come from `MeterUsageRequest$UsageAllocations` /
-/// `UsageRecord$UsageAllocations`: "The sum of all UsageAllocation quantities must
-/// equal the UsageQuantity of the MeterUsage request, and each UsageAllocation must
-/// have a unique set of tags (include no tags)". A request that carries no
-/// allocations at all allocated nothing, which is not an allocation problem. The
-/// returned text is what the caller needs to fix the request; the error CODE it is
-/// reported under is the modelled `InvalidUsageAllocationsException`.
-pub fn allocations_problem(allocations: &[UsageAllocation], quantity: i32) -> Option<String> {
-    if allocations.is_empty() {
-        return None;
-    }
-    let allocated: i64 = allocations
-        .iter()
-        .map(|allocation| i64::from(allocation.allocated_usage_quantity))
-        .sum();
-    if allocated != i64::from(quantity) {
-        return Some(format!(
-            "Sum of allocated usage quantities ({allocated}) is not equal to the usage quantity ({quantity})"
-        ));
-    }
-    let mut tag_sets: Vec<Vec<(String, String)>> =
-        allocations.iter().map(allocation_tag_set).collect();
-    tag_sets.sort();
-    let supplied = tag_sets.len();
-    tag_sets.dedup();
-    if tag_sets.len() != supplied {
-        return Some(
-            "Each UsageAllocation must have a unique set of tags (include no tags)".to_string(),
-        );
-    }
-    None
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

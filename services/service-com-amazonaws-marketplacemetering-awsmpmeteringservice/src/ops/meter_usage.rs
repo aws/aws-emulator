@@ -12,6 +12,12 @@
 //!   quantity replays the stored id — "The Timestamp request parameter is rounded
 //!   down to the hour and used to enforce this once-per-hour rule for idempotency" —
 //!   and with a DIFFERENT quantity is a `DuplicateRequestException`.
+//! * `UsageQuantity` and `UsageQuantityAsDecimal` are two spellings of ONE quantity:
+//!   at most one of them may be present, and it is the VALUE that is compared, never
+//!   the text — "Quantities are compared by value when checking for duplicate or
+//!   retried requests, so `17`, `17.0`, and `17.00` are the same quantity." Usage
+//!   allocations split that quantity, so they must spell their shares in the matching
+//!   member and add up to it.
 //! * A `ClientToken` seen before replays its stored id when every other member
 //!   matches, and is an `IdempotencyConflictException` (HTTP 409) when one does not.
 //! * `DryRun` validates and returns without writing anything, so no later dedup or
@@ -258,7 +264,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The buyer's credentials sign this call, so the usage is metered against the
         // caller's own account: the one canonical account this emulator vends.
         let customer = ::engine::emulator_account_id().to_string();
-        let quantity = input.usage_quantity.unwrap_or(0);
+        // One quantity, in whichever of the two members spelled it. A request that
+        // names both members cannot be read as one quantity at all, and the model
+        // declares no error of this operation for a member combination that cannot
+        // hold together, so it is refused as invalid input.
+        let reported = crate::state::reported_quantity_or_zero(
+            input.usage_quantity,
+            input.usage_quantity_as_decimal.as_deref(),
+            crate::state::METER_USAGE_QUANTITY_MEMBERS,
+        )
+        .map_err(MeterUsageError::validation)?;
+        let quantity = reported.value;
         let timestamp_secs = input.timestamp.secs();
         let allocations = input.usage_allocations.clone().unwrap_or_default();
 
@@ -309,7 +325,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        if let Some(message) = crate::state::allocations_problem(&allocations, quantity) {
+        if let Some(message) = crate::state::allocations_problem(
+            &allocations,
+            reported,
+            crate::state::METER_USAGE_QUANTITY_MEMBERS,
+        ) {
             return Err(MeterUsageErrorModeled::InvalidUsageAllocationsException(
                 InvalidUsageAllocationsException {
                     message: Some(message),

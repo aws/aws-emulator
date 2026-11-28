@@ -14,7 +14,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplacemetering-aws
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacemetering#UsageAllocation")]
 #[derive(Debug, Clone, Default)]
 pub struct UsageAllocation {
-    pub allocated_usage_quantity: i32,
+    pub allocated_usage_quantity: Option<i32>,
+    pub allocated_usage_quantity_as_decimal: Option<String>,
     pub tags: Option<Vec<Tag>>,
 }
 

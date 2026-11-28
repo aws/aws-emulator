@@ -32,7 +32,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## MeterUsage
 
-- **Input:** `ProductCode` (string, len 0..255, pattern ^[-a-zA-Z0-9/=:_.@]*$, required), `Timestamp` (timestamp, required), `UsageDimension` (string, len 1..255, pattern ^[\s\S]+$, required), `UsageQuantity` (integer, range 0..2147483647), `DryRun` (boolean), `UsageAllocations` (list<UsageAllocation>, len 1..2500), `ClientToken` (string, len 1..64, @idempotencyToken)
+- **Input:** `ProductCode` (string, len 0..255, pattern ^[-a-zA-Z0-9/=:_.@]*$, required), `Timestamp` (timestamp, required), `UsageDimension` (string, len 1..255, pattern ^[\s\S]+$, required), `UsageQuantity` (integer, range 0..2147483647), `UsageQuantityAsDecimal` (string, len 1..17, pattern ^(0|[1-9][0-9]{0,9})(\.[0-9]{1,6})?$), `DryRun` (boolean), `UsageAllocations` (list<UsageAllocation>, len 1..2500), `ClientToken` (string, len 1..64, @idempotencyToken)
 - **Output:** `MeteringRecordId` (string)
 - **Errors:** `CustomerNotEntitledException (HTTP 400)`, `DuplicateRequestException (HTTP 400)`, `IdempotencyConflictException (HTTP 409)`, `InternalServiceErrorException (HTTP 500)`, `InvalidEndpointRegionException (HTTP 400)`, `InvalidProductCodeException (HTTP 400)`, `InvalidTagException (HTTP 400)`, `InvalidUsageAllocationsException (HTTP 400)`, `InvalidUsageDimensionException (HTTP 400)`, `ThrottlingException (HTTP 400)`, `TimestampOutOfBoundsException (HTTP 400)`
 
