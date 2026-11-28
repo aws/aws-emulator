@@ -1973,7 +1973,8 @@ use crate::ops::types::{
     ConnectionTrackingSpecificationResponse, InstanceIpv4Prefix, InstanceIpv6Address,
     InstanceIpv6Prefix, InstanceNetworkInterface, InstanceNetworkInterfaceAttachment,
     InstancePrivateIpAddress,
-    Ipam, IpamInternetRegistryAssociation, IpamOperatingRegion, IpamPolicy, IpamPool,
+    Ipam, IpamExternalResourceVerificationToken, IpamInternetRegistryAssociation,
+    IpamOperatingRegion, IpamPolicy, IpamPool,
     IpamPoolAllocation, IpamPoolCidr, IpamPoolCidrFailureReason,
     IpamPrefixListResolver, IpamPrefixListResolverRule, IpamPrefixListResolverTarget,
     IpamResourceCidr, IpamResourceDiscovery, IpamResourceDiscoveryAssociation, IpamResourceTag,
@@ -3179,6 +3180,11 @@ mod ipam;
 mod regional_internet_registries;
 pub use regional_internet_registries::*;
 mod ipam_deletion;
+/// The IPAM external resource verification TOKEN store — the random value a mint draws, how
+/// long it stays usable, the states a token takes and the removal a delete owes it — in a file
+/// of its own rather than as more lines here. Everything it declares is re-exported below, so a
+/// handler reaches these as `crate::state::<item>` like any primitive of this module.
+mod ipam_verification_tokens;
 /// What a `ModifyIpamScope` does to a stored IPAM scope — the one reading of the external
 /// authority configuration a request names, what applying a modification leaves behind, and the
 /// one writer that applies it — in a file of its own rather than as more lines here. Everything
@@ -3433,6 +3439,7 @@ pub use host_reservations::*;
 pub use vpc_endpoints_and_transit_gateway_attachments::*;
 pub use ipam::*;
 pub use ipam_deletion::*;
+pub use ipam_verification_tokens::*;
 pub use ipam_policy_enablement::*;
 pub use ipam_prefix_list_resolver_deletion::*;
 pub use ipam_prefix_list_resolver_rules::*;

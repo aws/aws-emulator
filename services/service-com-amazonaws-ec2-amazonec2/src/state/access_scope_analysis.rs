@@ -46,12 +46,16 @@ use crate::ops::types::{
 /// `WarningMessage` rather than reporting a complete report it did not produce.
 pub const MAX_ACCESS_SCOPE_FINDINGS: usize = 100;
 
-/// The most Network Access Scope analyses ONE clock pass runs.
+/// The most Network Insights analyses ONE clock pass runs.
 ///
 /// Every handler of this service materialises the moves the clock owes while holding the
 /// store, so the work one pass does has to be bounded by something other than how many
 /// analyses the account has started: past this many, the rest stay DUE and are run by the
 /// next pass, which reports exactly what a caller that had called then would have seen.
+///
+/// The one bound for BOTH kinds of analysis this service runs on that clock — a Network
+/// Access Scope analysis and a Reachability Analyzer path analysis — since each traces the
+/// stored network while the store is borrowed, so neither can be the unbounded one.
 pub const MAX_SCOPE_ANALYSES_PER_CLOCK_PASS: usize = 8;
 
 /// The digits a finding's position in its analysis's report is written to.

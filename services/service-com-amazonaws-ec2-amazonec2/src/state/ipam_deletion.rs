@@ -183,7 +183,8 @@ impl ComAmazonawsEc2Amazonec2State {
     ///
     /// "Deleting an IPAM removes all monitored data associated with the IPAM" (`DeleteIpam`),
     /// and what the store holds inside one is its scopes, the pools created in them, the
-    /// CIDRs provisioned to those pools ([`Self::remove_ipam_pool_cidrs`]) and the default
+    /// CIDRs provisioned to those pools ([`Self::remove_ipam_pool_cidrs`]), the verification
+    /// tokens it minted ([`Self::remove_ipam_verification_tokens_of`]) and the default
     /// resource discovery and association that came up with it — so all of it goes here,
     /// rather than leaving rows naming an IPAM, a scope or a pool nothing resolves. The
     /// `ClientToken`s that minted the records go with them, for the same reason: a replay of
@@ -232,6 +233,9 @@ impl ComAmazonawsEc2Amazonec2State {
         self.ipam_delete_at.remove(ipam_id);
         self.ipam_create_complete_at.remove(ipam_id);
         self.ipam_modify_complete_at.remove(ipam_id);
+        // A verification token names "the ID of the IPAM that created the token", so it cannot
+        // outlive that IPAM either ([`Self::remove_ipam_verification_tokens_of`]).
+        self.remove_ipam_verification_tokens_of(ipam_id);
         self.release_client_tokens_naming(TokenHolder::Ipam, ipam_id);
     }
 

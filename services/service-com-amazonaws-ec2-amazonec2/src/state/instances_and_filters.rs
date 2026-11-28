@@ -1641,7 +1641,11 @@ impl ComAmazonawsEc2Amazonec2State {
         // on the same contract as the access scope analysis above: at its due instant the
         // analysis reaches its terminal `AnalysisStatus`, whether or not anybody called
         // again. The analyses due are collected first because reading the VERDICT of one
-        // borrows the networks it traces.
+        // borrows the networks it traces — and, exactly as for the access scope analyses
+        // above, at most [`MAX_SCOPE_ANALYSES_PER_CLOCK_PASS`] of them are traced in ONE
+        // pass, so the work this call does is bounded whatever the store holds: an analysis
+        // left over is still due and is run by the next pass, which is the same answer a
+        // caller would have got had it called then.
         let due_analyses: Vec<(String, &'static str, String)> = self
             .network_insights_analyses
             .iter()
@@ -1657,6 +1661,7 @@ impl ComAmazonawsEc2Amazonec2State {
                         .unwrap_or_default(),
                 ))
             })
+            .take(MAX_SCOPE_ANALYSES_PER_CLOCK_PASS)
             .collect();
         for (analysis_id, owed, path_id) in due_analyses {
             // The verdict is read off the network as it stands at the due instant — the
@@ -1736,6 +1741,14 @@ impl ComAmazonawsEc2Amazonec2State {
         // [`Self::begin_ipam_scope_deletion`] gives: a deleted scope is one
         // `DescribeIpamScopes` reports as not existing.
         self.materialize_due_ipam_scope_deletions(now);
+        // A verification token a `DeleteIpamExternalResourceVerificationToken` answered as
+        // `delete-in-progress` was GONE at the instant that call recorded for it, whether or not
+        // anybody called again — removed rather than parked in a terminal state for the reason
+        // [`Self::begin_ipam_verification_token_deletion`] gives. And a token whose `NotAfter`
+        // has passed was `expired` at that instant, on the WALL clock the member names, whether
+        // or not anybody called.
+        self.materialize_due_ipam_verification_token_deletions(now);
+        self.expire_due_ipam_verification_tokens(SystemTime::now());
         // The resources whose own record carries the move the clock owes it
         // ([`PendingStateMove`]): a transit gateway attachment an acceptance or a rejection
         // left transient, a multicast domain a create left `pending` and one subnet

@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateIpamExternalResourceVerificationToken
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateIpamExternalResourceVerificationToken`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateIpamExternalResourceVerificationToken::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -141,18 +132,197 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateIpamExternalResourceVerificationToken` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateIpamExternalResourceVerificationTokenErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateIpamExternalResourceVerificationToken"))
+        use crate::scaffolded::Scaffolded;
+        use crate::state;
+
+        // `ctx` carries request metadata only; this operation reads none of it — a token
+        // reports "Region of the IPAM that created the token"
+        // (`IpamExternalResourceVerificationToken$IpamRegion`), which comes from the stored
+        // IPAM rather than from the Region this call was signed for. The store is reached
+        // through the engine held on `self`.
+        let _ = ctx;
+
+        // The request's own FORM first, before anything is resolved and before the DryRun arm
+        // below: "not an IPAM id at all" is a malformed request rather than an IPAM that does
+        // not exist, which is the order every resource of this crate asks the two questions in
+        // (`crate::state::require_well_formed_id`).
+        let ipam_id = input.ipam_id.as_str();
+        state::require_well_formed_id(
+            state::IPAM_ID_PREFIX,
+            ipam_id,
+            state::INVALID_IPAM_ID_MALFORMED,
+        )?;
+
+        // "A unique, case-sensitive identifier that you provide to ensure the idempotency of
+        // the request" (`$ClientToken`): the token map keeps whatever it is given for the
+        // process's lifetime, so its length is bounded the way every other create in this
+        // crate bounds it.
+        if input
+            .client_token
+            .as_ref()
+            .is_some_and(|token| token.chars().count() > state::MAX_CLIENT_TOKEN_CHARS)
+        {
+            return Err(state::invalid_parameter_value(format!(
+                "clientToken accepts at most {max} characters",
+                max = state::MAX_CLIENT_TOKEN_CHARS,
+            )));
+        }
+
+        // "Token tags" (`$TagSpecifications`): the verification token is the only resource this
+        // call creates, so a specification naming any other resource type is refused rather
+        // than accepted and discarded — by the one helper every create in this crate bounds its
+        // tag payload with.
+        let tags: Vec<Tag> = state::tags_from_specifications(
+            input.tag_specifications.as_deref(),
+            state::RESOURCE_TYPE_IPAM_EXTERNAL_RESOURCE_VERIFICATION_TOKEN,
+            Self::NAME,
+        )?;
+
+        // The caller-chosen bytes this create would retain for the process's lifetime, asked of
+        // the store below: a COUNT ceiling admits megabytes on its own, because each record
+        // holds strings the caller chose the length of.
+        let payload_bytes = state::STORED_RECORD_OVERHEAD_BYTES
+            + state::tag_list_bytes(&tags)
+            + input.client_token.as_deref().unwrap_or_default().len();
+
+        // "A check for whether you have the required permissions for the action WITHOUT
+        // ACTUALLY MAKING THE REQUEST and provides an error response. If you have the required
+        // permissions, the error response is DryRunOperation" (`$DryRun`): the flag asks about
+        // PERMISSION, not about the resources the request names, so it is answered once the
+        // request's own form has been checked and before anything is resolved — the same place
+        // the IPAM creates beside this one answer it. Every caller of this emulator is
+        // permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // The clock first, the way every other state-touching handler in this crate starts: an
+        // IPAM whose `create-complete` move has fallen due is already in that state, a token
+        // whose own deletion has settled is GONE and one past its expiration is already
+        // `expired`, so every question below is asked of the state the store is ACTUALLY in.
+        store.materialize_due_transitions();
+
+        // "The ID of the IPAM that will create the token" (`$IpamId`): an IPAM this account
+        // holds none of is refused with the IPAM's own `NotFound` code, and the token's IPAM
+        // ARN and Region are then taken from that IPAM rather than from the request — a token
+        // cannot report an IPAM the store does not hold.
+        let ipam = store
+            .ipams
+            .get(ipam_id)
+            .cloned()
+            .ok_or_else(|| state::invalid_ipam_id_not_found(ipam_id))?;
+
+        // Idempotency: one client token names the one verification token it minted, so a replay
+        // reports that token and mints nothing. Resolved BEFORE the ceilings below, because a
+        // replay stores nothing and so is charged nothing.
+        if let Some(token_id) = input.client_token.as_deref().and_then(|client_token| {
+            store
+                .ipam_verification_token_client_tokens
+                .get(client_token)
+                .cloned()
+        }) {
+            let minted = store
+                .ipam_verification_tokens
+                .get(&token_id)
+                .ok_or_else(|| {
+                    Scaffolded::internal_error(format!(
+                        "a client token names verification token '{token_id}', which is not \
+                         stored"
+                    ))
+                })?;
+            // A token is only idempotent for the REQUEST it was first given with: replayed with
+            // a different parameter it names a verification token the caller did not ask for,
+            // which EC2 refuses rather than answers — the way every other create in this crate
+            // that reads a client token does.
+            if !same_request(minted, &ipam, &tags) {
+                return Err(state::idempotent_parameter_mismatch());
+            }
+            return Ok(CreateIpamExternalResourceVerificationTokenOutput {
+                ipam_external_resource_verification_token: Some(minted.clone()),
+            });
+        }
+
+        // The store's ceilings, asked before the first write: a COUNT ceiling first, then the
+        // byte budget, because a record count on its own admits megabytes of caller-chosen
+        // strings.
+        if !store.has_ipam_verification_token_capacity() {
+            return Err(state::resource_limit_exceeded(format!(
+                "This emulator holds {max} IPAM external resource verification tokens, which is \
+                 as many as it stores",
+                max = state::MAX_STORED_RECORDS_PER_STORE,
+            )));
+        }
+        if store.would_exceed_stored_bytes(payload_bytes) {
+            return Err(state::resource_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} bytes of caller-supplied data, so \
+                 it cannot store {payload_bytes} more",
+                held = store.stored_bytes(),
+                max = state::MAX_STORED_BYTES,
+            )));
+        }
+
+        let token_id = store
+            .insert_ipam_verification_token(state::IpamVerificationTokenSpec {
+                ipam_id: ipam_id.to_string(),
+                // Taken from the IPAM that creates the token: "ARN of the IPAM that created the
+                // token" (`$IpamArn`) and "Region of the IPAM that created the token"
+                // (`$IpamRegion`), which is that IPAM's home Region.
+                ipam_arn: ipam.ipam_arn.clone(),
+                ipam_region: ipam.ipam_region.clone(),
+                tags,
+                client_token: input.client_token.clone(),
+            })
+            .ok_or_else(|| {
+                state::resource_limit_exceeded(format!(
+                    "This emulator holds {max} IPAM external resource verification tokens, \
+                     which is as many as it stores",
+                    max = state::MAX_STORED_RECORDS_PER_STORE,
+                ))
+            })?;
+
+        // "The verification token" (`$IpamExternalResourceVerificationToken`), read back OUT of
+        // the store: the caller sees the token a later
+        // `DescribeIpamExternalResourceVerificationTokens` will report rather than a value
+        // built here.
+        store
+            .ipam_verification_tokens
+            .get(&token_id)
+            .cloned()
+            .map(|token| CreateIpamExternalResourceVerificationTokenOutput {
+                ipam_external_resource_verification_token: Some(token),
+            })
+            .ok_or_else(|| {
+                Scaffolded::internal_error(format!(
+                    "the newly minted verification token '{token_id}' could not be read back"
+                ))
+            })
     }
+}
+
+/// Does `token` — the verification token a replayed `ClientToken` names — hold what THIS
+/// request asks for?
+///
+/// Every member the request decides is compared, so a token replayed with any different
+/// parameter is refused with `IdempotentParameterMismatch` rather than answered with a token the
+/// caller did not ask for; the same contract `create_ipam_scope`'s `same_request` has for a
+/// scope. The request decides only which IPAM mints the token and what tags it carries —
+/// everything else the record holds is the service's own (the id, the ARN, the random value, the
+/// name, the expiration, the status and the state), so none of it is compared.
+fn same_request(
+    token: &IpamExternalResourceVerificationToken,
+    ipam: &Ipam,
+    tags: &[Tag],
+) -> bool {
+    let tag_pairs = |tags: &[Tag]| {
+        let mut pairs: Vec<(Option<String>, Option<String>)> = tags
+            .iter()
+            .map(|tag| (tag.key.clone(), tag.value.clone()))
+            .collect();
+        pairs.sort();
+        pairs
+    };
+    token.ipam_id.as_deref() == ipam.ipam_id.as_deref()
+        && tag_pairs(token.tags.as_deref().unwrap_or_default()) == tag_pairs(tags)
 }

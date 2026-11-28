@@ -3460,6 +3460,28 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// unique, case-sensitive identifier that you provide to ensure the idempotency of the
     /// request" (`CreateIpamScopeRequest$ClientToken`).
     pub ipam_scope_client_tokens: HashMap<String, String>,
+    /// Every IPAM external resource verification token the account holds, by
+    /// `IpamExternalResourceVerificationTokenId`, as the modelled
+    /// [`IpamExternalResourceVerificationToken`] shape itself — see
+    /// [`crate::state::ipam_verification_tokens`]. Ordered by id, which is the order
+    /// `DescribeIpamExternalResourceVerificationTokens` reports and pages over.
+    ///
+    /// A fresh account holds none: a token belongs to the IPAM that created it, so
+    /// `CreateIpamExternalResourceVerificationToken` is the only writer
+    /// ([`Self::insert_ipam_verification_token`]) and until then every token id a request names
+    /// answers [`INVALID_IPAM_VERIFICATION_TOKEN_ID_NOT_FOUND`].
+    pub ipam_verification_tokens: BTreeMap<String, IpamExternalResourceVerificationToken>,
+    /// When a `delete-in-progress` verification token's REMOVAL falls due, by
+    /// `IpamExternalResourceVerificationTokenId` — the arrangement
+    /// [`Self::ipam_scope_delete_at`] holds for a scope, on the same monotonic clock and the
+    /// same [`TRANSITION_DELAY`], applied by the same [`Self::materialize_due_transitions`].
+    pub ipam_verification_token_delete_at: BTreeMap<String, Instant>,
+    /// A `CreateIpamExternalResourceVerificationToken` `ClientToken` and the token id that call
+    /// minted, so a replay of the same request answers with that token instead of minting a
+    /// second one: "a unique, case-sensitive identifier that you provide to ensure the
+    /// idempotency of the request"
+    /// (`CreateIpamExternalResourceVerificationTokenRequest$ClientToken`).
+    pub ipam_verification_token_client_tokens: HashMap<String, String>,
     /// When a `create-in-progress` IPAM pool's move to `create-complete` falls due, by
     /// `IpamPoolId` — the fact the modelled [`IpamPool`] shape carries no member for, stored
     /// beside the pool under the same id the way [`Self::vpc_available_at`] holds a
@@ -4398,6 +4420,11 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             ipam_scope_create_complete_at: BTreeMap::new(),
             ipam_scope_delete_at: BTreeMap::new(),
             ipam_scope_client_tokens: HashMap::new(),
+            // A fresh account has asked no IPAM for a verification token, so none is minted,
+            // none is on its way out and no `ClientToken` has minted one.
+            ipam_verification_tokens: BTreeMap::new(),
+            ipam_verification_token_delete_at: BTreeMap::new(),
+            ipam_verification_token_client_tokens: HashMap::new(),
             ipam_pool_create_complete_at: BTreeMap::new(),
             ipam_pool_delete_complete_at: BTreeMap::new(),
             ipam_pool_client_tokens: HashMap::new(),
