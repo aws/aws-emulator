@@ -50,30 +50,37 @@ const SUBNETS: [(&str, &str); 2] = [
 /// A value of the long form EC2 mints ids in (`sg-` and 17 hexadecimal digits) that this
 /// account holds no group under: EC2 refuses a read naming it, which is what the rule is
 /// read through.
-const UNHELD_LONG_ID: &str = "sg-0123456789abcdef0";
+///
+/// `pub(crate)` because the suite that asserts the WORDING of these refusals
+/// (`all/security_group_refusal_wording.rs`) reads the same classes through the same values.
+pub(crate) const UNHELD_LONG_ID: &str = "sg-0123456789abcdef0";
 
 /// The same for the SHORT form EC2 also mints (`sg-` and 8 hexadecimal digits), because the
 /// two forms are refused by EC2 under different faults and the class the load balancer
 /// answers is the same for both.
-const UNHELD_SHORT_ID: &str = "sg-12345678";
+pub(crate) const UNHELD_SHORT_ID: &str = "sg-12345678";
 
 /// A value that is no security group id at all: it names no group in any account, so no
 /// account could ever hold one under it.
-const NOT_AN_ID: &str = "not-a-group";
+pub(crate) const NOT_AN_ID: &str = "not-a-group";
 
 /// The account's network for this suite, created through EC2's own API.
-struct Network {
-    subnets: Vec<String>,
+///
+/// `pub(crate)` with [`seed_network`] because the suite that asserts the WORDING of these
+/// refusals (`all/security_group_refusal_wording.rs`) needs the same network: one seeding
+/// for the crate, so neither suite can drift on what EC2 holds.
+pub(crate) struct Network {
+    pub(crate) subnets: Vec<String>,
     /// A group of the VPC the load balancer is placed in.
-    own_group: String,
+    pub(crate) own_group: String,
     /// A group of ANOTHER VPC, which governs traffic the load balancer's interfaces never
     /// carry.
-    other_vpc_group: String,
+    pub(crate) other_vpc_group: String,
 }
 
 /// Create that network through EC2's own API, so every group the rows name is a record EC2's
 /// own readers answer with.
-async fn seed_network(router: &MultiServiceRouter) -> Network {
+pub(crate) async fn seed_network(router: &MultiServiceRouter) -> Network {
     let created = ec2_ok(router, "setup", "CreateVpc", &[p("CidrBlock", VPC_CIDR)]).await;
     let vpc = reported("setup", &created, "vpcId");
     let mut subnets: Vec<String> = Vec::new();
