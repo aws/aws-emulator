@@ -2585,17 +2585,16 @@ pub(super) fn glacier_quotas() -> Vec<QuotaRow> {
 /// an account (`L-83192DBF`, which that listing publishes as adjustable), the last two with
 /// the sentences that listing carries for them.
 ///
-/// The same listing states the quota published under four codes this catalog had bound to
-/// per-API request RATES, and each is published below under the code it names: the
-/// concurrent data quality ruleset evaluation runs of an account (`L-C3952F6C`), its
-/// FUNCTIONS (`L-D987EC31`), its DATABASES (`L-F953935E`) and its NAMED TAG EXPRESSIONS
-/// (`L-EAC30D24`, whose limit that listing does not state, so the row keeps the one its
-/// code has carried). A capacity limit and a throttle rate are different quotas, so the
-/// `GetJob`, `GetPartition` and `GetTableVersions` rates those bindings displaced name no
-/// code that listing states and are left to the default-quota-set gap; the `UpdateTable`
-/// rate the database binding displaced is carried by `L-5E4153CA`, the code that plane
-/// left, the way the module header says a code whose own quota no source states keeps a
-/// row.
+/// The same listing states the quota published under six codes this catalog had bound to
+/// per-API request RATES or to a plane another code publishes, and each is published below
+/// under the code it names: the concurrent data quality ruleset evaluation runs of an
+/// account (`L-C3952F6C`), its FUNCTIONS (`L-D987EC31`), its DATABASES (`L-F953935E`), its
+/// NAMED TAG EXPRESSIONS (`L-EAC30D24`, whose limit that listing does not state, so the row
+/// keeps the one its code has carried), the table versions of the whole ACCOUNT
+/// (`L-337244C9`) and the job runs an account may have RUNNING AT ONCE (`L-5E4153CA`). A
+/// capacity limit and a throttle rate are different quotas, so the `GetJob`, `GetPartition`,
+/// `GetTableVersions` and `UpdateTable` rates those bindings displaced name no code that
+/// listing states and are left to the default-quota-set gap.
 ///
 /// The quotas this catalog had served under those codes — the workflow and account-wide
 /// machine-learning-transform planes, the per-job job-concurrency plane, the
@@ -2605,17 +2604,17 @@ pub(super) fn glacier_quotas() -> Vec<QuotaRow> {
 /// states, so they are published under no code at all rather than served under another
 /// quota's.
 ///
-/// The codes those sourced bindings VACATED keep answering a row, as the module header
-/// states: `L-5E4153CA`, which the account's DATABASE plane left for `L-F953935E`, carries
-/// the `UpdateTable` rate that binding displaced; `L-337244C9`, which the account-wide
-/// crawler plane left for `L-11FA2C1A`, carries the account's concurrent job runs that
-/// binding displaced; and `L-2E9FB93F` carries the per-table table-version plane the
-/// `L-096DBB95` binding displaced. None of the three is a claim that AWS publishes that
-/// plane under that code, and each is replaced the moment the quota its code publishes can
-/// be sourced. `L-4071B0E3` is the same case one member at a time: its own quota no source
-/// states, and the sentence the row it has carried was published with belongs to the
-/// account's security configurations, which `L-83192DBF` publishes — so that row keeps the
-/// name and limit it has carried and publishes NO sentence rather than a second row's.
+/// The one code a sourced binding VACATED keeps answering a row, as the module header
+/// states: `L-2E9FB93F` carries the per-table table-version plane the `L-096DBB95` binding
+/// displaced. That is not a claim that AWS publishes that plane under that code, and it is
+/// replaced the moment the quota the code publishes can be sourced: the recorded listing
+/// states the LIMIT that code publishes (10) but neither its name nor its sentence, and a
+/// limit published under a plane named for another quota would state a false limit for that
+/// plane, so the row keeps the plane and the limit it has carried whole. `L-4071B0E3` is the
+/// same case one member at a time: its own quota no source states, and the sentence the row
+/// it has carried was published with belongs to the account's security configurations, which
+/// `L-83192DBF` publishes — so that row keeps the name and limit it has carried and
+/// publishes NO sentence rather than a second row's.
 pub(super) fn glue_quotas() -> Vec<QuotaRow> {
     let rate = |code: &str, api: &str, per_second: f64| request_rate(code, "Glue", api, per_second);
     vec![
@@ -2679,13 +2678,14 @@ pub(super) fn glue_quotas() -> Vec<QuotaRow> {
         quota("Table versions per table", 100_000.0)
             .code("L-2E9FB93F")
             .describe("The maximum number of table versions per table."),
-        // The code the account-wide CRAWLER plane vacated when the sourced `L-11FA2C1A`
-        // binding took that plane: it carries the plane that binding displaced, the
-        // concurrent job runs of an account, at the limit it carried it at. The sentence
-        // this code's quota is published with is one nothing available here states, so the
-        // row carries none rather than one worded here, and the binding is no claim about
-        // AWS (see the module header).
-        quota("Concurrent job runs per account", 200.0).code("L-337244C9"),
+        // The table versions of the whole ACCOUNT, under the code the recorded listing
+        // binds that plane to, with the name, limit and sentence it carries for it —
+        // beside the per-table table-version plane above. The account-wide concurrent job
+        // runs this catalog had served under the code are published under `L-5E4153CA`
+        // below, the code that listing binds them to.
+        quota("Max table versions per account", 1_000_000.0)
+            .code("L-337244C9")
+            .describe("The maximum number of table versions in your account."),
         // The COLUMN STATISTICS tasks an account may run at once, under the code the
         // recorded listing binds that plane to, with the name, value and sentence it
         // carries for it. The connection plane this catalog had served under the code is
@@ -2717,12 +2717,14 @@ pub(super) fn glue_quotas() -> Vec<QuotaRow> {
         quota("Global s3 path max length", 2000.0)
             .code("L-4F4B522D")
             .describe("Catalog: global s3 path max length"),
-        // The code the account's DATABASE plane vacated when the sourced `L-F953935E`
-        // binding took that plane: it carries the plane that binding displaced, the
-        // `UpdateTable` call rate, at the rate it was published at. Not a claim that AWS
-        // publishes that rate under this code (see the module header), and replaced the
-        // moment the quota this code publishes can be sourced.
-        rate("L-5E4153CA", "UpdateTable", 10.0),
+        // The job runs an account may have RUNNING AT ONCE, under the code the recorded
+        // listing binds that plane to, with the name, limit and sentence it carries for it:
+        // a counted concurrency plane rather than the `UpdateTable` call rate this catalog
+        // had served under the code, whose own code that listing does not state, so that
+        // rate is left to the default-quota-set gap.
+        quota("Max concurrent job runs per account", 2000.0)
+            .code("L-5E4153CA")
+            .describe("The maximum number of concurrent job runs in your account."),
         quota("Max jobs per account", 2000.0)
             .code("L-611FDDE4")
             .describe("The maximum number of jobs in your account."),
@@ -2921,9 +2923,8 @@ pub(super) fn glue_quotas() -> Vec<QuotaRow> {
         // The DATABASE plane of an ACCOUNT, under the code the recorded listing binds it
         // to, with the name, value and sentence it carries for it — beside the per-catalog
         // database plane published under `L-A57B5BCE` above. The `UpdateTable` call rate
-        // this catalog had served under the code is carried by `L-5E4153CA`, the code this
-        // plane left, as the module header says a code whose own quota no source states
-        // keeps a row.
+        // this catalog had served under the code names no code that listing states, so it
+        // is left to the default-quota-set gap.
         quota("Max databases per account", 10_000.0)
             .code("L-F953935E")
             .describe("The maximum number of databases in your account."),

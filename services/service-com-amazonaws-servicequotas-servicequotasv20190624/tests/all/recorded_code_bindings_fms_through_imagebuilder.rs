@@ -281,9 +281,9 @@ const ROWS: &[Row] = &[
 /// catalogs used to publish under a code the recorded listing binds to another quota, and no
 /// source available here states the code its own service publishes it under — so it is
 /// published under NO code at all rather than under a neighbour's. The `UpdateTable` rate
-/// the `glue` database binding displaced is not among them: it is carried by `L-5E4153CA`,
-/// the code that plane vacated, the way the row tables' module header says a code whose own
-/// quota no source states keeps a row — which `glue_vacated_codes_keep_their_rows.rs` owns.
+/// the `glue` database binding displaced is among them: the code that plane vacated
+/// publishes the account's concurrent job runs, which the recorded listing states for it, so
+/// that rate names no code at all.
 const DISPLACED: &[(&str, &[&str])] = &[
     ("events", &["Rules per event bus", "Archives"]),
     (
@@ -314,6 +314,7 @@ const DISPLACED: &[(&str, &[&str])] = &[
         &[
             "Rate of GetJob requests",
             "Rate of GetTableVersions requests",
+            "Rate of UpdateTable requests",
             "Databases per account",
         ],
     ),

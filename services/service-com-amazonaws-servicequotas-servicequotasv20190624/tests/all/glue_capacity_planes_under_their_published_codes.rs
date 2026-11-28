@@ -152,8 +152,9 @@ async fn an_increase_requested_by_a_glue_code_with_no_published_quota_is_refused
     let caller = client(&engine, "eu-west-3");
 
     // A well-formed code in AWS's minted namespace that this catalog publishes no `glue`
-    // quota under. The codes the sourced bindings VACATED are not of this kind: each keeps
-    // a row (see `glue_vacated_codes_keep_their_rows.rs`), so each resolves.
+    // quota under. The codes whose own published quota no source states are not of this
+    // kind: each keeps a row (see `glue_vacated_codes_keep_their_rows.rs`), so each
+    // resolves.
     let (status, error) = caller
         .refused(
             "RequestServiceQuotaIncrease",

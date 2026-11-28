@@ -57,12 +57,10 @@ const SERVICE_CODES: &[&str] = &[
 /// sentence, so each of those rows carries none rather than a sentence this catalog would be
 /// wording itself, which is what the rule forbids.
 ///
-/// Two `glue` codes are the same case reached from the other side: no source states the
-/// quota either of them publishes, so each keeps the row it has carried — the account's
-/// concurrent job runs under `L-337244C9`, whose limit is the one that row carried and whose
-/// sentence no source states, and the account's security configurations under `L-4071B0E3`,
-/// whose sentence belongs to the quota `L-83192DBF` publishes and is therefore published
-/// there rather than twice.
+/// One `glue` code is the same case reached from the other side: no source states the quota
+/// it publishes, so it keeps the row it has carried — the account's security configurations
+/// under `L-4071B0E3`, whose sentence belongs to the quota `L-83192DBF` publishes and is
+/// therefore published there rather than twice.
 ///
 /// `pub(crate)` so the suites that assert "every row carries its published sentence"
 /// read the one list rather than each keeping a copy of it.
@@ -70,7 +68,6 @@ pub(crate) const PUBLISHED_WITHOUT_A_DESCRIPTION: &[(&str, &str)] = &[
     ("events", "L-D082A4F6"),
     ("fms", "L-BCA8AD34"),
     ("gamelift", "L-55650DB7"),
-    ("glue", "L-337244C9"),
     ("glue", "L-4071B0E3"),
 ];
 

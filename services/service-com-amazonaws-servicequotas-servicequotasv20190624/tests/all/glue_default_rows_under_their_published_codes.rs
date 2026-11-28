@@ -223,8 +223,8 @@ const ROWS: &[Row] = &[
 /// under one of those codes, and no source available here states the code `glue` publishes
 /// it under — so it is published under no code of the service at all, by the `QuotaName` it
 /// was served as. The `UpdateTable` call rate the account DATABASE plane's binding displaced
-/// is NOT among them: it is carried by `L-5E4153CA`, the code that plane vacated, the way the
-/// row tables' module header says a code whose own quota no source states keeps a row.
+/// is among them: the code that plane vacated publishes the account's concurrent job runs,
+/// which the recorded listing states for it, so that rate names no code at all.
 const DISPLACED_QUOTA_NAMES: &[&str] = &[
     "Workflows per account",
     "Development endpoints per account",
@@ -234,6 +234,7 @@ const DISPLACED_QUOTA_NAMES: &[&str] = &[
     "Connections per account",
     "Schema versions per account",
     "Data quality rulesets per account",
+    "Rate of UpdateTable requests",
     "Rate of GetTable requests",
     "Rate of StartCrawler requests",
     "Rate of GetPartitions requests",
