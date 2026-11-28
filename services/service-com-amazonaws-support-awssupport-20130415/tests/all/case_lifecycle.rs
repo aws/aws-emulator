@@ -1137,3 +1137,333 @@ async fn cc_addresses_past_the_modelled_maximum_are_refused() {
         "expected only the create body and the two accepted communications, got {communications}"
     );
 }
+
+/// RULE: a value a member of this service's model constrains is served only inside
+/// that constraint — a request carrying one outside it is refused as a bad request,
+/// and a refused request neither creates a case nor appends a communication.
+///
+/// Rows span the constraint kinds the model declares on the case-lifecycle inputs,
+/// each at the bound and one step outside it, plus an absent `@required` member:
+/// `CommunicationBody` (`@length` 1..8000, carried by `CreateCase$communicationBody`
+/// and `AddCommunicationToCase$communicationBody`), `ServiceCode2` (`@pattern`
+/// `^[0-9a-z\-_]+$`, carried by `CreateCase$serviceCode`), `MaxResults` (`@range`
+/// 10..100, carried by `DescribeCases$maxResults` and
+/// `DescribeCommunications$maxResults`), `CaseIdList` (`@length` 0..100),
+/// `CcEmailAddressList` (`@length` 0..10) and `UploadIds` (`@length` 0..10 over
+/// `UploadId`, itself `@length` 1..2048). An id a client may legally send but no
+/// operation has minted is NOT a constraint violation: an unknown `caseId` is the
+/// operation's own `CaseIdNotFound`.
+#[tokio::test]
+async fn a_value_outside_a_modelled_constraint_is_refused_and_stores_nothing() {
+    let support = Support::new();
+    let case_id = support
+        .create_case(json!({ "subject": "bounds", "communicationBody": "bounds body" }))
+        .await;
+    // A `caseIdList` of exactly the modelled maximum of 100 ids, none of them minted.
+    let hundred_unknown: Vec<String> = (0..100)
+        .map(|index| format!("case-000000000000-muen-2024-{index:016x}"))
+        .collect();
+    let hundred_and_one_unknown: Vec<String> = (0..101)
+        .map(|index| format!("case-000000000000-muen-2024-{index:016x}"))
+        .collect();
+    let eleven_addresses: Vec<String> = (0..11).map(|i| format!("cc{i}@example.com")).collect();
+    let eleven_uploads: Vec<String> = (0..11).map(|i| format!("upload-{i:04}")).collect();
+
+    // `None` expects HTTP 200; `Some(code)` expects HTTP 400 carrying that code.
+    let rows: [(&str, &str, Value, Option<&str>); 22] = [
+        (
+            "communicationBody at the modelled minimum of 1",
+            "CreateCase",
+            json!({ "subject": "at the minimum", "communicationBody": "x" }),
+            None,
+        ),
+        (
+            "communicationBody below the modelled minimum of 1",
+            "CreateCase",
+            json!({ "subject": "below the minimum", "communicationBody": "" }),
+            Some("ValidationException"),
+        ),
+        (
+            "communicationBody at the modelled maximum of 8000",
+            "AddCommunicationToCase",
+            json!({ "caseId": &case_id, "communicationBody": "y".repeat(8000) }),
+            None,
+        ),
+        (
+            "communicationBody past the modelled maximum of 8000",
+            "AddCommunicationToCase",
+            json!({ "caseId": &case_id, "communicationBody": "y".repeat(8001) }),
+            Some("ValidationException"),
+        ),
+        (
+            "the required subject absent",
+            "CreateCase",
+            json!({ "communicationBody": "no subject" }),
+            Some("ValidationException"),
+        ),
+        (
+            "the required communicationBody absent",
+            "CreateCase",
+            json!({ "subject": "no body" }),
+            Some("ValidationException"),
+        ),
+        (
+            "the required caseId absent",
+            "DescribeCommunications",
+            json!({}),
+            Some("ValidationException"),
+        ),
+        (
+            "a serviceCode of lowercase letters, digits, dashes and underscores",
+            "CreateCase",
+            json!({
+                "subject": "a legal serviceCode",
+                "communicationBody": "a legal serviceCode",
+                "serviceCode": "a-0_z",
+            }),
+            None,
+        ),
+        (
+            "a serviceCode carrying an uppercase letter",
+            "CreateCase",
+            json!({
+                "subject": "an illegal serviceCode",
+                "communicationBody": "an illegal serviceCode",
+                "serviceCode": "Amazon-EC2",
+            }),
+            Some("ValidationException"),
+        ),
+        (
+            "a serviceCode carrying a space",
+            "CreateCase",
+            json!({
+                "subject": "an illegal serviceCode",
+                "communicationBody": "an illegal serviceCode",
+                "serviceCode": "amazon ec2",
+            }),
+            Some("ValidationException"),
+        ),
+        (
+            "a serviceCode carrying a dot",
+            "CreateCase",
+            json!({
+                "subject": "an illegal serviceCode",
+                "communicationBody": "an illegal serviceCode",
+                "serviceCode": "amazon.ec2",
+            }),
+            Some("ValidationException"),
+        ),
+        (
+            "an empty serviceCode, which the pattern's + cannot match",
+            "CreateCase",
+            json!({
+                "subject": "an illegal serviceCode",
+                "communicationBody": "an illegal serviceCode",
+                "serviceCode": "",
+            }),
+            Some("ValidationException"),
+        ),
+        (
+            "maxResults at the bottom of the modelled range of 10..100",
+            "DescribeCases",
+            json!({ "maxResults": 10 }),
+            None,
+        ),
+        (
+            "maxResults at the top of the modelled range of 10..100",
+            "DescribeCases",
+            json!({ "maxResults": 100 }),
+            None,
+        ),
+        (
+            "maxResults below the modelled range of 10..100",
+            "DescribeCases",
+            json!({ "maxResults": 9 }),
+            Some("ValidationException"),
+        ),
+        (
+            "maxResults above the modelled range of 10..100",
+            "DescribeCases",
+            json!({ "maxResults": 101 }),
+            Some("ValidationException"),
+        ),
+        (
+            "maxResults below the modelled range on the other paged reader",
+            "DescribeCommunications",
+            json!({ "caseId": &case_id, "maxResults": 9 }),
+            Some("ValidationException"),
+        ),
+        (
+            "maxResults at the bottom of the range on the other paged reader",
+            "DescribeCommunications",
+            json!({ "caseId": &case_id, "maxResults": 10 }),
+            None,
+        ),
+        (
+            "a caseIdList of the modelled maximum of 100 ids, none of them minted",
+            "DescribeCases",
+            json!({ "caseIdList": hundred_unknown }),
+            Some("CaseIdNotFound"),
+        ),
+        (
+            "a caseIdList past the modelled maximum of 100",
+            "DescribeCases",
+            json!({ "caseIdList": hundred_and_one_unknown }),
+            Some("ValidationException"),
+        ),
+        (
+            "ccEmailAddresses past the modelled maximum of 10",
+            "CreateCase",
+            json!({
+                "subject": "too many watchers",
+                "communicationBody": "too many watchers",
+                "ccEmailAddresses": eleven_addresses,
+            }),
+            Some("ValidationException"),
+        ),
+        (
+            "uploadIds past the modelled maximum of 10",
+            "CreateCase",
+            json!({
+                "subject": "too many uploads",
+                "communicationBody": "too many uploads",
+                "uploadIds": eleven_uploads,
+            }),
+            Some("ValidationException"),
+        ),
+    ];
+
+    // What the accepted rows add, so the store can be checked against them.
+    let mut created = 1_usize;
+    let mut communications = 1_usize;
+    for (label, operation, input, expected) in rows {
+        let (status, body) = support.call(operation, &input).await;
+        match expected {
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "{operation} with {label}: expected HTTP 200, got {status} {body}"
+                );
+                match operation {
+                    "CreateCase" => created += 1,
+                    "AddCommunicationToCase" => communications += 1,
+                    _ => {}
+                }
+            }
+            Some(code) => {
+                assert_eq!(
+                    status, 400,
+                    "{operation} with {label}: expected HTTP 400, got {status} {body}"
+                );
+                assert_eq!(
+                    error_code(&body),
+                    code,
+                    "{operation} with {label}: expected {code}, got {body}"
+                );
+            }
+        }
+    }
+
+    // Every refusal left the store as it was: only the accepted rows wrote.
+    let all = support
+        .ok("DescribeCases", json!({ "maxResults": 100 }))
+        .await;
+    assert_eq!(
+        all["cases"].as_array().map(Vec::len),
+        Some(created),
+        "expected only the accepted creates to be stored, got {all}"
+    );
+    let log = support
+        .ok("DescribeCommunications", json!({ "caseId": &case_id }))
+        .await;
+    assert_eq!(
+        communication_bodies(&log).len(),
+        communications,
+        "expected only the accepted communications on the case, got {log}"
+    );
+}
+
+/// RULE: a reported `Communication` carries both attachment views the model
+/// declares — `attachments`, every attachment on the communication, and
+/// `attachmentSet`, those 5 MB or smaller — so `attachmentSet` is always a subset
+/// of `attachments`, wherever a communication is reported.
+///
+/// No attachment can be on a communication yet: the operations that mint one
+/// (`AddAttachmentsToSet`, `GetAttachmentUploadLinks`) are scaffolded, and a case
+/// submission naming an attachment set or an upload id is refused — so both views
+/// are present and empty here, and neither may be omitted.
+#[tokio::test]
+async fn a_reported_communication_carries_both_modelled_attachment_views() {
+    let support = Support::new();
+    // Rows differ along how many communications the case carries.
+    for extra in 0..3_usize {
+        let label = format!("{} communication(s)", extra + 1);
+        let case_id = support
+            .create_case(json!({
+                "subject": format!("attachment views, {label}"),
+                "communicationBody": "create body",
+            }))
+            .await;
+        for index in 0..extra {
+            support
+                .ok(
+                    "AddCommunicationToCase",
+                    json!({ "caseId": &case_id, "communicationBody": format!("body {index}") }),
+                )
+                .await;
+        }
+
+        // Both readers that report a communication: the correspondence log and the
+        // `recentCommunications` a case carries.
+        let log = support
+            .ok("DescribeCommunications", json!({ "caseId": &case_id }))
+            .await;
+        let case = support
+            .ok("DescribeCases", json!({ "caseIdList": [&case_id] }))
+            .await;
+        let readers = [
+            ("DescribeCommunications", log["communications"].clone()),
+            (
+                "DescribeCases.recentCommunications",
+                case["cases"][0]["recentCommunications"]["communications"].clone(),
+            ),
+        ];
+        for (reader, reported) in readers {
+            let reported = reported.as_array().cloned().unwrap_or_else(|| {
+                panic!("{reader} with {label}: expected a list of communications, got {reported}")
+            });
+            assert_eq!(
+                reported.len(),
+                extra + 1,
+                "{reader} with {label}: expected {} communications, got {reported:?}",
+                extra + 1
+            );
+            for communication in &reported {
+                let attachments = communication["attachments"].as_array().unwrap_or_else(|| {
+                    panic!(
+                        "{reader} with {label}: expected an attachments list, got {communication}"
+                    )
+                });
+                let attachment_set =
+                    communication["attachmentSet"].as_array().unwrap_or_else(|| {
+                        panic!(
+                            "{reader} with {label}: expected an attachmentSet list, got \
+                             {communication}"
+                        )
+                    });
+                assert!(
+                    attachment_set
+                        .iter()
+                        .all(|entry| attachments.contains(entry)),
+                    "{reader} with {label}: attachmentSet must be a subset of attachments, got \
+                     {communication}"
+                );
+                assert!(
+                    attachments.is_empty(),
+                    "{reader} with {label}: no operation can attach a file to a communication \
+                     yet, got {communication}"
+                );
+            }
+        }
+    }
+}
