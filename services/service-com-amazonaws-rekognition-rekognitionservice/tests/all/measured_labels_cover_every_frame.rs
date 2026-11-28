@@ -54,8 +54,8 @@ const TAXONOMY: [(&str, &[&str], &str); 6] = [
 /// The two category rows the names above belong to, from the label-category list the Amazon
 /// Rekognition Developer Guide publishes, linked from the filters' own documentation ("To see a
 /// list of label categories, see …", `smithy_query(query="shape",shape="GeneralLabelsSettings")`).
-const PERSON_DESCRIPTION_CATEGORY: &str = "Person Description";
-const COLORS_CATEGORY: &str = "Colors and Visual Composition";
+pub(crate) const PERSON_DESCRIPTION_CATEGORY: &str = "Person Description";
+pub(crate) const COLORS_CATEGORY: &str = "Colors and Visual Composition";
 
 /// The concepts a frame's own composition establishes, which are measured off every frame no
 /// object was located in.
@@ -66,7 +66,7 @@ const MONOCHROME: &str = "Monochrome";
 /// The confidence floor a request naming no `MinConfidence` is narrowed to: "if MinConfidence
 /// is not specified, the operation returns labels with a confidence values greater than or
 /// equal to 55 percent" (the member's own documentation).
-const DEFAULT_MIN_CONFIDENCE: f64 = 55.0;
+pub(crate) const DEFAULT_MIN_CONFIDENCE: f64 = 55.0;
 
 /// How steep a step from one pixel to its neighbour has to be, on the 0..255 scale, before it
 /// is a boundary between two things rather than the drift within one surface: the same step the
@@ -126,7 +126,7 @@ fn split(width: u32, height: u32, left_columns: u32, left: [u8; 3], right: [u8; 
 
 /// A frame of fine detail: a different colour at every pixel, which is what the detail of a
 /// photograph looks like to a gradient.
-fn detailed(width: u32, height: u32, seed: u64) -> RgbImage {
+pub(crate) fn detailed(width: u32, height: u32, seed: u64) -> RgbImage {
     let mut draw = Draw::from(seed);
     RgbImage::from_fn(width, height, |_, _| {
         Rgb([draw.next_byte(), draw.next_byte(), draw.next_byte()])

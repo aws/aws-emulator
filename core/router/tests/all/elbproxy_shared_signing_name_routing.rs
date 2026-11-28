@@ -30,10 +30,11 @@
 //! the shared name, or the endpoint host of an unsigned request), which API version an
 //! envelope names, and an RPC-addressed request naming a service that is NOT ELB Proxy —
 //! which ELB Proxy must decline even though it arrives on the path space its own protocol
-//! uses, and which the query front doors do not serve either, since their model binds no URI
-//! and their envelope posts to `/`: nothing publishes that path, so the honest answer is the
-//! router's own `404 UnknownService` rather than a front door answering for an endpoint it
-//! does not serve (the principle `service_common::claims_modeled_route` states).
+//! uses. Such a request is then answered by the API published at the ENDPOINT it was addressed
+//! to — the query front door of the shared name, in its own `awsQuery` envelope, as the
+//! unresolvable action it is — while the same form on an endpoint no model here is published at
+//! reaches nobody and is answered the router's own `404 UnknownService`, which the family
+//! suites `elasticloadbalancing_signing_name_claims` and `elb_signing_name_family_claims` pin.
 //!
 //! Every row is driven through the assembled router, so what claims a request here is what
 //! claims it in the emulator a client talks to.
@@ -176,21 +177,26 @@ const ROWS: &[Row] = &[
     Row {
         // An RPC-addressed request naming a service ELB Proxy is NOT: it arrives on the path
         // space this protocol uses, so a claim that read the path alone would take it. The
-        // service the form NAMES is what decides, so ELB Proxy declines it — and so do the
-        // query front doors, whose models bind no URI at all and whose envelopes post to `/`.
-        // No emulated model publishes that path, so the router answers it itself
-        // (`404 UnknownService`), which is the honest answer rather than a front door
-        // answering for an endpoint it does not serve.
+        // service the form NAMES is what decides, so ELB Proxy declines it. This row is
+        // ADDRESSED TO the Elastic Load Balancing endpoint host, and the API published at an
+        // endpoint is what answers a request that reached it naming no form of it: the query
+        // front door that owns the shared name answers it in its own `awsQuery` envelope, as
+        // the unresolvable action it is, rather than the request reaching no service at all
+        // (`…-elasticloadbalancing-v7/src/service.rs`, `can_handle`). The same form on an
+        // endpoint this API is NOT published at — a bare emulator socket, where only the
+        // credential scope names the key — is claimed by nobody and answered the router's own
+        // `404 UnknownService`, which the family suites
+        // `elasticloadbalancing_signing_name_claims` and `elb_signing_name_family_claims` pin.
         case: "an RPC form naming another service on the shared signing name",
         wire: Wire::RpcV2Cbor {
             service: "NotELBProxy",
             operation: "ListProxies",
         },
         addressed: Addressed::SharedName,
-        status: 404,
-        carries: &["UnknownService"],
-        withholds: &[PROXY_ANSWER, CLASSIC_ANSWER, V2_ANSWER],
-        unclaimed: true,
+        status: 400,
+        carries: &["<ErrorResponse"],
+        withholds: &[PROXY_ANSWER],
+        unclaimed: false,
     },
 ];
 
