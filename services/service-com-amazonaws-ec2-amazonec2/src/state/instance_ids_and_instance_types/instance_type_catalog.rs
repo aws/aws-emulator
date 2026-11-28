@@ -1145,6 +1145,27 @@ const GRAVITON2_SUSTAINED_GHZ: f64 = 2.5;
 /// built on it, which is why it is here rather than in one of their tables.
 const XEON6_SUSTAINED_GHZ: f64 = 3.9;
 
+/// The network bandwidth, in Gbps, of the whole host the fifth generation network optimized
+/// compute family is built on: the figure its two full-size rows publish as both the bandwidth
+/// they sustain and the bandwidth they reach.
+const C5N_HOST_GBPS: f64 = 100.0;
+
+/// The bandwidth, in Gbps, the sizes of that family below a dedicated share burst to: the
+/// ceiling their published "Network performance" column reads as `Up to`, which every one of
+/// them reaches whatever the share it sustains.
+const C5N_BURST_GBPS: f64 = 25.0;
+
+/// The ENA queues each interface of a NARROW size of that family is given by default
+/// (`NetworkCardInfo$DefaultEnaQueueCountPerInterface`): the queue count of the adapter the
+/// family's network card carries, eight being the fewest queues any size of it publishes — the
+/// three narrowest sizes publish that count whatever their vCPUs.
+const C5N_ENA_QUEUES_PER_INTERFACE: i32 = 8;
+
+/// And the adapter's FULL count, published by every size from the `4xlarge` up — the sizes that
+/// hold a dedicated share of the host, and the bare metal size whose guest drives that adapter
+/// directly, included.
+const C5N_FULL_ENA_QUEUES_PER_INTERFACE: i32 = 32;
+
 /// The published hardware facts of the instance types recorded so far, one row per type.
 ///
 /// Read through [`published_instance_type_facts`]. The rows are grouped by family, and each
@@ -1768,11 +1789,20 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
     // publishes for a bare metal instance, it is offered the legacy BIOS boot mode alone, it
     // supports CloudWatch action based recovery — which the sizes with no instance store
     // already do — and it supports reboot migration, the move to another host being the
-    // HOST's to make and not the hypervisor's that a bare metal instance has none of.
+    // HOST's to make and not the hypervisor's that a bare metal instance has none of. The
+    // network figures are the family's own published pair per size — the Gbps each size
+    // sustains and the Gbps it reaches, the four narrowest sizes sustaining 3, 5, 10 and 15
+    // of the 25 Gigabit they burst to, the `9xlarge` holding half the host and the two
+    // full-size rows the whole of it — which is neither the size's share of the host nor a
+    // multiple of the size below it; and each interface is given the queues the family's
+    // adapter publishes for the size, eight on the three narrowest sizes and the adapter's
+    // full thirty-two from the `4xlarge` up ([`C5N_ENA_QUEUES_PER_INTERFACE`]).
     PublishedInstanceTypeFacts::of("c5n.large")
         .memory_mib(5_376)
         .ebs(650, 4_000, 4_750, 20_000)
         .network("Up to 25 Gigabit")
+        .network_bandwidth(3.0, C5N_BURST_GBPS)
+        .ena_queues(C5N_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 3.4)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5n.xlarge")
@@ -1780,6 +1810,8 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .cores_in_steps_of(2)
         .ebs(1_150, 6_000, 4_750, 20_000)
         .network("Up to 25 Gigabit")
+        .network_bandwidth(5.0, C5N_BURST_GBPS)
+        .ena_queues(C5N_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 3.4)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5n.2xlarge")
@@ -1787,6 +1819,8 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .cores_in_steps_of(2)
         .ebs(2_300, 10_000, 4_750, 20_000)
         .network("Up to 25 Gigabit")
+        .network_bandwidth(10.0, C5N_BURST_GBPS)
+        .ena_queues(C5N_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 3.4)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5n.4xlarge")
@@ -1794,6 +1828,8 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .cores_in_steps_of(2)
         .ebs(4_750, 20_000, 4_750, 20_000)
         .network("Up to 25 Gigabit")
+        .network_bandwidth(15.0, C5N_BURST_GBPS)
+        .ena_queues(C5N_FULL_ENA_QUEUES_PER_INTERFACE)
         .processor("Intel", 3.4)
         .hibernation(false),
     PublishedInstanceTypeFacts::of("c5n.9xlarge")
@@ -1801,6 +1837,10 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .cores_in_steps_of(2)
         .ebs(9_500, 40_000, 9_500, 40_000)
         .network("50 Gigabit")
+        // Half of the family's 100 Gigabit host, held dedicated: the figure the size
+        // sustains IS the figure it reaches.
+        .network_bandwidth(50.0, 50.0)
+        .ena_queues(C5N_FULL_ENA_QUEUES_PER_INTERFACE)
         .efa(1)
         .processor("Intel", 3.4)
         .hibernation(false),
@@ -1810,6 +1850,8 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .cores_from(4)
         .ebs(19_000, 80_000, 19_000, 80_000)
         .network("100 Gigabit")
+        .network_bandwidth(C5N_HOST_GBPS, C5N_HOST_GBPS)
+        .ena_queues(C5N_FULL_ENA_QUEUES_PER_INTERFACE)
         .efa(1)
         .processor("Intel", 3.4)
         .hibernation(false),
@@ -1818,6 +1860,8 @@ static PUBLISHED_INSTANCE_TYPE_FACTS: &[PublishedInstanceTypeFacts] = &[
         .ebs(19_000, 80_000, 19_000, 80_000)
         .ebs_attachments(31)
         .network("100 Gigabit")
+        .network_bandwidth(C5N_HOST_GBPS, C5N_HOST_GBPS)
+        .ena_queues(C5N_FULL_ENA_QUEUES_PER_INTERFACE)
         .efa(1)
         .processor("Intel", 3.4)
         .auto_recovery(true)

@@ -1563,23 +1563,55 @@ pub const LOCATION_TYPE_AVAILABILITY_ZONE_ID: &str = "availability-zone-id";
 ///
 /// Which types a Region offers is published per Region (the EC2 User Guide's instance-type
 /// availability tables, and `DescribeInstanceTypeOfferings` itself in each Region): a family's
-/// newest hardware reaches the Regions AWS has installed it in and no others, so a Region that
-/// has not been given a type offers it in none of its locations even though the modelled
+/// newest hardware reaches the Regions AWS has installed it in and no others, and a family's
+/// oldest hardware stops being offered in a Region once it is retired there, so a Region that
+/// does not have a type offers it in none of its locations even though the modelled
 /// `InstanceType` enum names it. A type with an entry here is offered in the Regions the entry
 /// lists and nowhere else; one with no entry is offered wherever its locations are, which is
 /// what the published tables say for the rest of the catalog. The entries recorded so far are
-/// the whole-host sizes of the block storage optimized and the network optimized AWS Graviton
-/// compute families, for which no Region's published offering set names them — while the
-/// VIRTUALIZED sizes of those same families are offered, so the restriction is per TYPE rather
-/// than per family. Each of those rows therefore names NO Region; the second column is what a
-/// type AWS offers in SOME Regions is recorded with when one is — no row recorded so far
-/// carries a Region, so that half of [`region_offers_instance_type`] has no case of its own to
-/// read yet.
+/// the whole-host (`metal-NNxl`) sizes of the newest block storage optimized, network optimized
+/// and bandwidth optimized families, for which no Region's published offering set names them —
+/// while the VIRTUALIZED sizes of those same families are offered, so the restriction is per
+/// TYPE rather than per family, as are the WIDER whole-host sizes of two of the newest general
+/// purpose families, whose narrower one is named by no Region — and the bare metal size of a
+/// previous generation storage optimized family, which no offering set this emulator is
+/// published with names either. Each of those rows therefore names NO Region; the second
+/// column is what a type AWS offers in SOME Regions is recorded with when one is — no row
+/// recorded so far carries a Region, so that half of [`region_offers_instance_type`] has no
+/// case of its own to read yet, and a row whose published offering set DOES name Regions
+/// carries them there rather than staying empty.
 static REGION_RESTRICTED_INSTANCE_TYPES: &[(&str, &[&str])] = &[
     ("c8gb.metal-24xl", &[]),
     ("c8gb.metal-48xl", &[]),
     ("c8gn.metal-24xl", &[]),
     ("c8gn.metal-48xl", &[]),
+    ("c8ib.metal-48xl", &[]),
+    ("c8ib.metal-96xl", &[]),
+    ("i3.metal", &[]),
+    ("m8gb.metal-24xl", &[]),
+    ("m8gb.metal-48xl", &[]),
+    ("m8gn.metal-24xl", &[]),
+    ("m8gn.metal-48xl", &[]),
+    ("m8ib.metal-48xl", &[]),
+    ("m8ib.metal-96xl", &[]),
+    ("m8idb.metal-48xl", &[]),
+    ("m8idb.metal-96xl", &[]),
+    ("m8in.metal-48xl", &[]),
+    ("m8in.metal-96xl", &[]),
+    ("m9g.metal-24xl", &[]),
+    ("m9gd.metal-24xl", &[]),
+    ("r8gb.metal-24xl", &[]),
+    ("r8gb.metal-48xl", &[]),
+    ("r8gn.metal-24xl", &[]),
+    ("r8gn.metal-48xl", &[]),
+    ("r8ib.metal-48xl", &[]),
+    ("r8ib.metal-96xl", &[]),
+    ("r8idb.metal-48xl", &[]),
+    ("r8idb.metal-96xl", &[]),
+    ("r8idn.metal-48xl", &[]),
+    ("r8idn.metal-96xl", &[]),
+    ("r8in.metal-48xl", &[]),
+    ("r8in.metal-96xl", &[]),
 ];
 
 /// Whether Region `region` offers `instance_type` at all.

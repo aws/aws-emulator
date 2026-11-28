@@ -275,14 +275,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// `Cisco Systems, Inc.`), so each of those is a row of its own rather than one row per
 /// vendor or per platform. The vendor and platform are spelled the way the guide spells
 /// them — the vendor of the `ASA`, `CSR` and `ISR` entries is published as `Cisco
-/// Systems, Inc.`, which is a different vendor from `Cisco Meraki`.
+/// Systems, Inc.`, which is a different vendor from `Cisco Meraki`, the Check Point entries
+/// are published under the vendor `Checkpoint` on the platform `Gaia`, and a platform's name
+/// and software carry the whole published text of the entry (`MX Series` on
+/// `15.12+ (WebUI)`, not an abbreviation of either).
 const VPN_CONNECTION_DEVICE_CATALOG: &[(&str, &str, &str)] = &[
     ("AXGate", "NF", "aos 3.2+"),
+    ("AXGate", "UTM", "aos 2.1+"),
     ("Barracuda", "CloudGen Firewall", "8.0+"),
     ("Barracuda", "NextGen Firewall F-Series", "6.2+"),
-    ("Check Point", "Security Gateway", "R77.10+"),
-    ("Check Point", "Security Gateway", "R80.10+"),
-    ("Cisco Meraki", "MX", "15.12+"),
+    ("Checkpoint", "Gaia", "R77.10+"),
+    ("Checkpoint", "Gaia", "R80.10+"),
+    ("Cisco Meraki", "MX Series", "15.12+ (WebUI)"),
     ("Cisco Systems, Inc.", "ASA", "ASA 8.2+"),
     ("Cisco Systems, Inc.", "ASA", "ASA 9.7+"),
     ("Cisco Systems, Inc.", "CSR", "IOS-XE 16.9+"),

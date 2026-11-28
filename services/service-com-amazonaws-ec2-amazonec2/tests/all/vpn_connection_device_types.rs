@@ -168,7 +168,7 @@ async fn the_published_devices_are_reported() {
         ("a software floor", "Juniper", "SRX"),
         ("a second platform of one vendor", "Juniper", "J-Series"),
         ("a multi-word vendor", "Palo Alto Networks", "PAN-OS"),
-        ("a firewall appliance", "Check Point", "Security Gateway"),
+        ("a firewall appliance", "Checkpoint", "Gaia"),
     ];
     for (case, vendor, platform) in cases {
         let found = reported
@@ -238,15 +238,26 @@ async fn the_whole_published_device_list_is_reported_in_cursor_order() {
     let reported = all_devices(&router, "us-west-2", "the published list").await;
 
     // (case, vendor, platform, software)
-    let cases: [(&str, &str, &str, &str); 13] = [
+    let cases: [(&str, &str, &str, &str); 14] = [
         ("the vendor that opens the list", "AXGate", "NF", "aos 3.2+"),
         (
+            "a second platform of the vendor that opens it",
+            "AXGate",
+            "UTM",
+            "aos 2.1+",
+        ),
+        (
             "a second software release of one platform",
-            "Check Point",
-            "Security Gateway",
+            "Checkpoint",
+            "Gaia",
             "R80.10+",
         ),
-        ("a vendor sharing a prefix with another", "Cisco Meraki", "MX", "15.12+"),
+        (
+            "a vendor sharing a prefix with another",
+            "Cisco Meraki",
+            "MX Series",
+            "15.12+ (WebUI)",
+        ),
         (
             "the qualified vendor name of that prefix",
             "Cisco Systems, Inc.",
@@ -294,7 +305,7 @@ async fn the_whole_published_device_list_is_reported_in_cursor_order() {
     // Two releases of one platform are two devices, each with its own id: the id is a
     // function of all three published members, not of the vendor and platform alone.
     for (case, vendor, platform) in [
-        ("two releases of one firewall", "Check Point", "Security Gateway"),
+        ("two releases of one firewall", "Checkpoint", "Gaia"),
         ("two releases of one appliance", "Fortinet", "Fortigate 40+ Series"),
         ("two releases of one platform", "WatchGuard", "Fireware"),
     ] {

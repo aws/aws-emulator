@@ -294,9 +294,10 @@ async fn each_location_type_reports_the_locations_of_its_own_kind() {
 /// The catalog is read from the value list the model generated, so the assertion is over
 /// the whole class rather than over a sample: a type the model declares and the Region is
 /// offered but the emulator withheld, or a type it offered that the model does not declare,
-/// both fail here. The whole-host sizes of the block storage optimized Graviton family are
-/// taken out by NAME, those being the types no Region's published offering set names — the
-/// rule `region_restricted_instance_type_offerings` covers.
+/// both fail here. The whole-host sizes of the newest families, and the bare metal size of a
+/// previous generation storage optimized one, are taken out by NAME, those being the types no
+/// Region's published offering set names — the rule
+/// `region_restricted_instance_type_offerings` covers.
 /// `u-6tb1.metal` and `x2gd.medium` are checked by name as entries the issue did not
 /// cite. The catalog is larger than one page, so the offerings are collected over a
 /// `NextToken` walk.
@@ -305,11 +306,38 @@ async fn every_catalogued_instance_type_is_offered_in_the_region() {
     let (router, _engine) = super::ec2_query::emulator();
     const REGION: &str = "eu-west-1";
     /// The types AWS publishes no Region for, so no Region offers them in any location.
-    const UNOFFERED_ANYWHERE: [&str; 4] = [
+    const UNOFFERED_ANYWHERE: [&str; 31] = [
         "c8gb.metal-24xl",
         "c8gb.metal-48xl",
         "c8gn.metal-24xl",
         "c8gn.metal-48xl",
+        "c8ib.metal-48xl",
+        "c8ib.metal-96xl",
+        "i3.metal",
+        "m8gb.metal-24xl",
+        "m8gb.metal-48xl",
+        "m8gn.metal-24xl",
+        "m8gn.metal-48xl",
+        "m8ib.metal-48xl",
+        "m8ib.metal-96xl",
+        "m8idb.metal-48xl",
+        "m8idb.metal-96xl",
+        "m8in.metal-48xl",
+        "m8in.metal-96xl",
+        "m9g.metal-24xl",
+        "m9gd.metal-24xl",
+        "r8gb.metal-24xl",
+        "r8gb.metal-48xl",
+        "r8gn.metal-24xl",
+        "r8gn.metal-48xl",
+        "r8ib.metal-48xl",
+        "r8ib.metal-96xl",
+        "r8idb.metal-48xl",
+        "r8idb.metal-96xl",
+        "r8idn.metal-48xl",
+        "r8idn.metal-96xl",
+        "r8in.metal-48xl",
+        "r8in.metal-96xl",
     ];
     let catalog: BTreeSet<String> = ec2::ops::types::INSTANCE_TYPE_VALUES
         .iter()
