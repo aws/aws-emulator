@@ -6,9 +6,11 @@
 //! Two rules, each asserted over a table that spans the class rather than one
 //! recorded shape:
 //!
-//! 1. a not-found refusal carries `message` ALONE, and that message is this
-//!    service's own bracketed error code followed by the kind the id was looked up
-//!    as and the id the request named;
+//! 1. a not-found refusal states this service's own bracketed error code followed by the
+//!    kind the id was looked up as and the id the request named, and carries the two
+//!    members that state those same two values on their own — `resourceType`, which the
+//!    shape makes `@required`, and `resourceId`
+//!    (`smithy_query(query="shape",shape="ResourceNotFoundException")`) — and nothing else;
 //! 2. a `@pattern` requirement in a validation message quotes the expression
 //!    WITHOUT the whole-value anchors the model writes around it, while the check
 //!    itself still runs the model's anchored pattern.
@@ -41,6 +43,15 @@ fn modelled_members(answer: &Answer) -> Vec<String> {
 /// id the REQUEST named.
 fn not_found_by_id(kind: &str, id: &str) -> String {
     format!("[GR-ERR00309] No {kind} found with the ID: {id}")
+}
+
+/// The members a not-found body carries: the sentence, and the kind and the id it states.
+fn not_found_members() -> Vec<String> {
+    vec![
+        "message".to_string(),
+        "resourceId".to_string(),
+        "resourceType".to_string(),
+    ]
 }
 
 /// One row of the not-found table: an operation, the request it makes against an
@@ -122,7 +133,7 @@ fn not_found_routes() -> Vec<NotFoundRoute> {
 }
 
 #[tokio::test]
-async fn a_not_found_body_is_this_services_own_wording_and_carries_message_alone() {
+async fn a_not_found_body_is_this_services_own_wording_and_states_the_kind_and_the_id() {
     let emulator = Emulator::new();
 
     // Rows: ids of several forms — one shaped like an id this service mints, one
@@ -161,9 +172,21 @@ async fn a_not_found_body_is_this_services_own_wording_and_carries_message_alone
             );
             assert_eq!(
                 modelled_members(&answer),
-                vec!["message".to_string()],
-                "case {case:?}: the body carries `message` alone, got {}",
+                not_found_members(),
+                "case {case:?}: the body carries the sentence and the two members that \
+                 state the kind and the id, got {}",
                 answer.body
+            );
+            assert_eq!(
+                answer.text("resourceId"),
+                id,
+                "case {case:?}: expected the id the request named, got {:?}",
+                answer.text("resourceId")
+            );
+            assert!(
+                (route.message)(id).contains(&format!("No {} found", answer.text("resourceType"))),
+                "case {case:?}: expected the kind the message states, got {:?}",
+                answer.text("resourceType")
             );
         }
     }

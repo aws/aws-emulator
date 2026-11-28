@@ -34,5 +34,6 @@ pub struct GetGlobalResolverOutput {
     pub ipv4_addresses: Vec<String>,
     pub ipv6_addresses: Option<Vec<String>>,
     pub ip_address_type: Option<String>,
+    pub public_ip_status: Option<String>,
 }
 

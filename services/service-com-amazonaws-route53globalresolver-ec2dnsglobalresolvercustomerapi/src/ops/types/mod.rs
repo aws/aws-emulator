@@ -20,12 +20,14 @@ pub mod batch_delete_firewall_rule_types;
 pub mod batch_update_firewall_rule_types;
 pub mod create_access_source_types;
 pub mod create_access_token_types;
+pub mod create_core_network_endpoint_types;
 pub mod create_dns_view_types;
 pub mod create_firewall_domain_list_types;
 pub mod create_firewall_rule_types;
 pub mod create_global_resolver_types;
 pub mod delete_access_source_types;
 pub mod delete_access_token_types;
+pub mod delete_core_network_endpoint_types;
 pub mod delete_dns_view_types;
 pub mod delete_firewall_domain_list_types;
 pub mod delete_firewall_rule_types;
@@ -35,6 +37,7 @@ pub mod disassociate_hosted_zone_types;
 pub mod enable_dns_view_types;
 pub mod get_access_source_types;
 pub mod get_access_token_types;
+pub mod get_core_network_endpoint_types;
 pub mod get_dns_view_types;
 pub mod get_firewall_domain_list_types;
 pub mod get_firewall_rule_types;
@@ -44,6 +47,7 @@ pub mod get_managed_firewall_domain_list_types;
 pub mod import_firewall_domains_types;
 pub mod list_access_sources_types;
 pub mod list_access_tokens_types;
+pub mod list_core_network_endpoints_types;
 pub mod list_dns_views_types;
 pub mod list_firewall_domain_lists_types;
 pub mod list_firewall_domains_types;
@@ -58,6 +62,7 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_access_source_types;
 pub mod update_access_token_types;
+pub mod update_core_network_endpoint_types;
 pub mod update_dns_view_types;
 pub mod update_firewall_domains_types;
 pub mod update_firewall_rule_types;
@@ -77,6 +82,8 @@ pub use create_access_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_access_token_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_core_network_endpoint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_dns_view_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_firewall_domain_list_types::*;
@@ -88,6 +95,8 @@ pub use create_global_resolver_types::*;
 pub use delete_access_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_access_token_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_core_network_endpoint_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_dns_view_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -107,6 +116,8 @@ pub use get_access_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_access_token_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_core_network_endpoint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_dns_view_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_firewall_domain_list_types::*;
@@ -124,6 +135,8 @@ pub use import_firewall_domains_types::*;
 pub use list_access_sources_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_access_tokens_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_core_network_endpoints_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_dns_views_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -152,6 +165,8 @@ pub use untag_resource_types::*;
 pub use update_access_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_access_token_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_core_network_endpoint_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_dns_view_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

@@ -14,10 +14,12 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53globalresolver-e
 #[smithy_macros::smithy(shape = "com.amazonaws.route53globalresolver#CreateAccessSourceInput")]
 #[derive(Debug, Clone, Default)]
 pub struct CreateAccessSourceInput {
-    pub cidr: String,
+    pub cidr: Option<String>,
     pub client_token: Option<String>,
     pub ip_address_type: String,
     pub name: Option<String>,
+    pub core_network_endpoint_id: Option<String>,
+    pub segment: Option<String>,
     pub dns_view_id: String,
     pub protocol: String,
     pub tags: Option<std::collections::HashMap<String, String>>,
@@ -27,10 +29,12 @@ pub struct CreateAccessSourceInput {
 #[derive(Debug, Clone)]
 pub struct CreateAccessSourceOutput {
     pub arn: String,
-    pub cidr: String,
+    pub cidr: Option<String>,
     pub created_at: ::aws_smithy_types::DateTime,
     pub id: String,
-    pub ip_address_type: String,
+    pub ip_address_type: Option<String>,
+    pub core_network_endpoint_id: Option<String>,
+    pub segment: Option<String>,
     pub name: Option<String>,
     pub dns_view_id: String,
     pub protocol: String,

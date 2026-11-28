@@ -20,6 +20,11 @@
 mod tagging;
 pub use tagging::*;
 
+/// The core network endpoint resource: the record, and the reading of a request's DNS IP
+/// address entries.
+mod core_network_endpoints;
+pub use core_network_endpoints::*;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, SystemTime};
@@ -247,6 +252,50 @@ impl GlobalResolverIpAddressType {
     }
 }
 
+/// `PublicIpStatus` — the public IP connectivity of a resolver: whether DNS clients
+/// can reach it over the internet, and whether its global anycast public addresses
+/// stay reserved for it (`smithy_query(query="shape",shape="PublicIpStatus")`:
+/// ENABLED_RESERVED | DISABLED_RESERVED | DISABLED_RELEASED).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicIpStatus {
+    /// `ENABLED_RESERVED` — reachable over the internet, addresses reserved.
+    EnabledReserved,
+    /// `DISABLED_RESERVED` — not reachable over the internet, addresses still reserved.
+    DisabledReserved,
+    /// `DISABLED_RELEASED` — not reachable over the internet, addresses released.
+    DisabledReleased,
+}
+
+impl PublicIpStatus {
+    /// The value this status serializes as.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::EnabledReserved => "ENABLED_RESERVED",
+            Self::DisabledReserved => "DISABLED_RESERVED",
+            Self::DisabledReleased => "DISABLED_RELEASED",
+        }
+    }
+
+    /// Parse a wire value, or `None` when it is not one the model declares.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "ENABLED_RESERVED" => Some(Self::EnabledReserved),
+            "DISABLED_RESERVED" => Some(Self::DisabledReserved),
+            "DISABLED_RELEASED" => Some(Self::DisabledReleased),
+            _ => None,
+        }
+    }
+}
+
+/// The public IP connectivity a resolver carries when the create request names none.
+///
+/// The model declares no `@default` for the member, so this is the service's own
+/// reading of what a resolver created without one has: every create answers with the
+/// global anycast IPv4 addresses the resolver advertises, which `ipv4Addresses`
+/// documents as addresses "DNS clients can send queries to ... from anywhere on the
+/// internet" — public connectivity enabled, with those addresses reserved for it.
+pub const DEFAULT_PUBLIC_IP_STATUS: PublicIpStatus = PublicIpStatus::EnabledReserved;
+
 /// A `DISABLED`/`ENABLED` toggle. `DnsSecValidationType`, `EdnsClientSubnetType`
 /// and `FirewallRulesFailOpenType` all declare exactly these two values and all
 /// default to `DISABLED`, so one type serves the three of them.
@@ -301,6 +350,8 @@ pub struct GlobalResolver {
     pub observability_region: Option<String>,
     /// `ipAddressType`.
     pub ip_address_type: GlobalResolverIpAddressType,
+    /// `publicIpStatus`.
+    pub public_ip_status: PublicIpStatus,
     /// `ipv4Addresses`.
     pub ipv4_addresses: Vec<String>,
     /// `ipv6Addresses` — empty unless `ipAddressType` is `DUAL_STACK`.
@@ -349,12 +400,14 @@ impl GlobalResolver {
         &self,
         input: &CreateGlobalResolverInput,
         ip_address_type: GlobalResolverIpAddressType,
+        public_ip_status: PublicIpStatus,
     ) -> bool {
         self.name == input.name
             && self.description == input.description
             && self.regions == input.regions
             && self.observability_region == input.observability_region
             && self.ip_address_type == ip_address_type
+            && self.public_ip_status == public_ip_status
             && self.tags == tags_of(input.tags.as_ref())
     }
 }
@@ -540,6 +593,8 @@ pub struct ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState
     pub dns_views: BTreeMap<String, DnsView>,
     /// Every firewall domain list, keyed by id, for the same reason.
     pub firewall_domain_lists: BTreeMap<String, FirewallDomainList>,
+    /// Every core network endpoint, keyed by id, for the same reason.
+    pub core_network_endpoints: BTreeMap<String, CoreNetworkEndpoint>,
     /// `clientToken` -> resolver id, so an `@idempotent` create replayed with the
     /// same token answers with the resolver it already minted.
     pub resolver_idempotency: HashMap<String, String>,
@@ -551,6 +606,9 @@ pub struct ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState
     /// `clientToken` -> firewall domain list id, for the same reason and kept
     /// separate for the same one.
     pub firewall_domain_list_idempotency: HashMap<String, String>,
+    /// `clientToken` -> core network endpoint id, for the same reason and kept separate
+    /// for the same one.
+    pub core_network_endpoint_idempotency: HashMap<String, String>,
     /// Source of the per-resource sequence number behind every minted id, client
     /// token and anycast address. Monotonic, so no two resources in one store ever
     /// share an id or a client token. The anycast addresses are drawn from a fixed
@@ -570,6 +628,9 @@ impl ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState {
         }
         for list in self.firewall_domain_lists.values_mut() {
             list.settle(now);
+        }
+        for endpoint in self.core_network_endpoints.values_mut() {
+            endpoint.settle(now);
         }
     }
 
@@ -747,12 +808,16 @@ pub fn state_unavailable() -> InternalServerException {
 /// (`kind`, one of [`GLOBAL_RESOLVER_KIND`] and its siblings) and the id the
 /// REQUEST named, verbatim.
 ///
-/// `message` is the whole body. The shape models `resourceId` and `resourceType`
-/// as well, but this service sends neither, so the struct carries no field for
-/// them (see `ops/types/shared_types.rs`).
+/// The shape also models the two members that state the same two values on their
+/// own, `resourceType` (`@required`) and `resourceId`
+/// (`smithy_query(query="shape",shape="ResourceNotFoundException")`), so a client
+/// branching on them does not have to read the sentence: both carry what the
+/// message states.
 pub fn not_found(kind: &str, id: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: format!("[{NOT_FOUND_BY_ID_CODE}] No {kind} found with the ID: {id}"),
+        resource_id: Some(id.to_string()),
+        resource_type: kind.to_string(),
     }
 }
 
@@ -774,6 +839,8 @@ pub fn listed_global_resolver_not_found(id: &str) -> ResourceNotFoundException {
         message: format!(
             "[{LISTED_PARENT_NOT_FOUND_CODE}] No {GLOBAL_RESOLVER_KIND} found with ID {id}"
         ),
+        resource_id: Some(id.to_string()),
+        resource_type: GLOBAL_RESOLVER_KIND.to_string(),
     }
 }
 

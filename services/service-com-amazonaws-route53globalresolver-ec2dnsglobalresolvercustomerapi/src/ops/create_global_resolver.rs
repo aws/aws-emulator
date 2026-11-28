@@ -70,6 +70,10 @@
 //! * `observabilityRegion` (Region, len 0..32) — The Amazon Web Services Region where query
 //!   resolution logs and metrics will be aggregated and delivered. If not specified, logging
 //!   is not enabled.
+//! * `publicIpStatus` (PublicIpStatus, one of: DISABLED_RELEASED | DISABLED_RESERVED |
+//!   ENABLED_RESERVED) — Specifies the public IP connectivity to configure for the Route 53
+//!   Global Resolver. Public IP addresses let DNS clients send queries to the resolver over
+//!   the internet.
 //! * `regions` (Regions) **required** — List of Amazon Web Services Regions where the Route
 //!   53 Global Resolver will operate. The resolver will be distributed across these Regions
 //!   to provide global availability and low-latency DNS resolution.
@@ -104,6 +108,9 @@
 //!   **required** — The name of the Route 53 Global Resolver.
 //! * `observabilityRegion` (Region, len 0..32) — The Amazon Web Services Region where
 //!   observability data for the Route 53 Global Resolver is stored.
+//! * `publicIpStatus` (PublicIpStatus, one of: DISABLED_RELEASED | DISABLED_RESERVED |
+//!   ENABLED_RESERVED) — The public IP connectivity configured for the Route 53 Global
+//!   Resolver.
 //! * `regions` (Regions) **required** — The Amazon Web Services Regions where the Route 53
 //!   Global Resolver is deployed and operational.
 //! * `status` (CRResourceStatus, one of: CREATING | DELETING | OPERATIONAL | UPDATING)
@@ -287,6 +294,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         };
 
+        // `PublicIpStatus` is an enum SHAPE too, and the model declares no
+        // `@default` for it: a request that names none takes the connectivity a
+        // resolver created without one has ([`crate::state::DEFAULT_PUBLIC_IP_STATUS`]).
+        let public_ip_status = match input
+            .public_ip_status
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            None => crate::state::DEFAULT_PUBLIC_IP_STATUS,
+            Some(value) => match crate::state::PublicIpStatus::from_wire(value) {
+                Some(parsed) => parsed,
+                None => {
+                    return Err(CreateGlobalResolverErrorModeled::ValidationException(
+                        crate::state::field_validation(
+                            "publicIpStatus",
+                            format!("must be one of {}", PUBLIC_IP_STATUS_VALUES.join(", ")),
+                        ),
+                    )
+                    .into())
+                }
+            },
+        };
+
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
         let mut state = state.lock();
@@ -298,7 +328,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(token) = input.client_token.as_deref() {
             let minted = state.resolver_idempotency.get(token).cloned();
             if let Some(resolver) = minted.and_then(|id| state.global_resolvers.get(&id)) {
-                if resolver.matches_create(&input, ip_address_type) {
+                if resolver.matches_create(&input, ip_address_type, public_ip_status) {
                     return Ok(output(resolver));
                 }
                 return Err(CreateGlobalResolverErrorModeled::ConflictException(
@@ -341,6 +371,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             regions: input.regions,
             observability_region: input.observability_region,
             ip_address_type,
+            public_ip_status,
             ipv4_addresses: crate::state::anycast_ipv4_addresses(sequence),
             ipv6_addresses: match ip_address_type {
                 crate::state::GlobalResolverIpAddressType::DualStack => {
@@ -384,6 +415,7 @@ fn output(resolver: &crate::state::GlobalResolver) -> CreateGlobalResolverOutput
         description: resolver.description.clone(),
         dns_name: resolver.dns_name.clone(),
         ip_address_type: Some(resolver.ip_address_type.as_wire().to_string()),
+        public_ip_status: Some(resolver.public_ip_status.as_wire().to_string()),
         ipv4_addresses: resolver.ipv4_addresses.clone(),
         ipv6_addresses: resolver.ipv6_addresses_for_output(),
         name: resolver.name.clone(),

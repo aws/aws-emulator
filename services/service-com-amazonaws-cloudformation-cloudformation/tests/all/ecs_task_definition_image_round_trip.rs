@@ -17,8 +17,11 @@
 //! points at this account's registry, which account and Region the reference names, whether the
 //! deployed revision still matches the template that produced it — and re-registers a revision
 //! from what a describe answered. An authority nothing in the template asked for makes every one
-//! of those readings wrong, and an authority taken from the socket this process happens to be
-//! served on is not even reproducible between runs.
+//! of those readings wrong. Where the declaration DOES ask for the repository's own address, the
+//! authority is Amazon ECR's to publish — the endpoint this emulator answers that caller's
+//! registry requests at, because `Repository$repositoryUri` is an address a container client
+//! dials — so what this test holds that row to is equality with the address Amazon ECR
+//! announced, not a registry-host shape of its own.
 //!
 //! The rows differ along what the rule generalises over: WHAT the declared string is (this
 //! account's ECR registry host, another account's, a public registry), which part of it an

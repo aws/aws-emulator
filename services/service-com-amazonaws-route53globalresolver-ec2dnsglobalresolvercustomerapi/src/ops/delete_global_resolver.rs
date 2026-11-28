@@ -227,6 +227,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         for list_id in &orphaned_lists {
             state.firewall_domain_lists.remove(list_id);
         }
+        // A core network endpoint attaches a core network to THIS resolver, so it cannot
+        // outlive it either: it carries its parentage on the record, so the sweep is a
+        // filter over the endpoints, as it is for the firewall domain lists above.
+        let orphaned_endpoints: ::std::collections::BTreeSet<String> = state
+            .core_network_endpoints
+            .iter()
+            .filter(|(_, endpoint)| endpoint.global_resolver_id == resolver.id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for endpoint_id in &orphaned_endpoints {
+            state.core_network_endpoints.remove(endpoint_id);
+        }
         // The idempotency records of the resources that are gone go too, so a
         // replayed create mints a new resource rather than naming a dead one, and
         // the store's size stays bounded by the resources that are still live.
@@ -236,6 +248,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         state
             .firewall_domain_list_idempotency
             .retain(|_, list_id| !orphaned_lists.contains(list_id));
+        state
+            .core_network_endpoint_idempotency
+            .retain(|_, endpoint_id| !orphaned_endpoints.contains(endpoint_id));
         state
             .resolver_idempotency
             .retain(|_, id| id != &resolver.id);

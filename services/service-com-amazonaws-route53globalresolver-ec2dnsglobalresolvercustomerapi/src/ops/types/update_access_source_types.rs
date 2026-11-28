@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53globalresolver-e
 pub struct UpdateAccessSourceInput {
     pub access_source_id: String,
     pub cidr: Option<String>,
+    pub dns_view_id: Option<String>,
     pub ip_address_type: Option<String>,
     pub name: Option<String>,
     pub protocol: Option<String>,
@@ -25,13 +26,15 @@ pub struct UpdateAccessSourceInput {
 #[derive(Debug, Clone)]
 pub struct UpdateAccessSourceOutput {
     pub arn: String,
-    pub cidr: String,
+    pub cidr: Option<String>,
+    pub core_network_endpoint_id: Option<String>,
     pub created_at: ::aws_smithy_types::DateTime,
     pub id: String,
-    pub ip_address_type: String,
+    pub ip_address_type: Option<String>,
     pub name: Option<String>,
     pub dns_view_id: String,
     pub protocol: String,
+    pub segment: Option<String>,
     pub status: String,
     pub updated_at: ::aws_smithy_types::DateTime,
 }

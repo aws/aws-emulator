@@ -72,8 +72,14 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — You don't have permission to perform this
+//!   operation. Check your IAM permissions and try again.
+//! * `InternalServerException` (HTTP 500) — An internal server error occurred. Try again
+//!   later.
 //! * `ResourceNotFoundException` (HTTP 404) — The specified resource was not found. Verify
 //!   the resource ID and try again.
+//! * `ThrottlingException` (HTTP 429) — The request was throttled due to too many requests.
+//!   Wait a moment and try again.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -86,19 +92,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53globalresolver-e
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, plus any widened in with `extra_errors`. This
-// operation's `errors` list carries the 404 alone, so the two refusals every member of
-// the tag family shares are widened in from the shapes the SERVICE models: the
-// `ValidationException` (400) a `resourceArn` that addresses no resource of this service
-// is refused with, and the `InternalServerException` (500) that is the only answer a
-// request which cannot reach the store can be given.
+// operation's own `errors` list carries the 404 alone — the service's common errors
+// (`AccessDeniedException`, `InternalServerException`, `ThrottlingException`) apply to it
+// as well — so the one refusal left that every member of the tag family shares is widened
+// in from the shape the SERVICE models: the `ValidationException` (400) a `resourceArn`
+// that addresses no resource of this service is refused with.
 #[smithy_macros::operation_error(
     "com.amazonaws.route53globalresolver#ListTagsForResource",
-    extra_errors = ["InternalServerException", "ValidationException"]
+    extra_errors = ["ValidationException"]
 )]
 #[derive(Debug)]
 pub enum ListTagsForResourceErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
 

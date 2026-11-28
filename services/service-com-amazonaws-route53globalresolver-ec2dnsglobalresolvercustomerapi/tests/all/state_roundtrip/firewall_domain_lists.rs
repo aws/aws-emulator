@@ -785,9 +785,26 @@ async fn a_global_resolver_id_that_names_nothing_is_worded_one_way_everywhere() 
             );
             assert_eq!(
                 answer.modelled_members(),
-                vec!["message".to_string()],
-                "case {case:?}: the refusal body carries `message` alone, got {:?}",
+                vec![
+                    "message".to_string(),
+                    "resourceId".to_string(),
+                    "resourceType".to_string()
+                ],
+                "case {case:?}: the refusal body states the kind and the id beside the \
+                 sentence, got {:?}",
                 answer.modelled_members()
+            );
+            assert_eq!(
+                answer.text("resourceId"),
+                missing,
+                "case {case:?}: expected the id the request named, got {:?}",
+                answer.text("resourceId")
+            );
+            assert_eq!(
+                answer.text("resourceType"),
+                "GlobalResolver",
+                "case {case:?}: expected the kind the id was looked up as, got {:?}",
+                answer.text("resourceType")
             );
         }
     }
@@ -825,9 +842,20 @@ async fn a_domain_list_id_that_names_nothing_is_the_modelled_404() {
         );
         assert_eq!(
             answer.modelled_members(),
-            vec!["message".to_string()],
-            "case {missing:?}: the refusal body carries `message` alone, got {:?}",
+            vec![
+                "message".to_string(),
+                "resourceId".to_string(),
+                "resourceType".to_string()
+            ],
+            "case {missing:?}: the refusal body states the kind and the id beside the \
+             sentence, got {:?}",
             answer.modelled_members()
+        );
+        assert_eq!(
+            answer.text("resourceType"),
+            "FirewallDomainList",
+            "case {missing:?}: expected the kind the id was looked up as, got {:?}",
+            answer.text("resourceType")
         );
     }
 

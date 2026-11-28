@@ -82,6 +82,9 @@
 //!   **required** — The name of the Global Resolver.
 //! * `observabilityRegion` (Region, len 0..32) — The Amazon Web Services Regions in which the
 //!   users' Global Resolver query resolution logs will be propagated.
+//! * `publicIpStatus` (PublicIpStatus, one of: DISABLED_RELEASED | DISABLED_RESERVED |
+//!   ENABLED_RESERVED) — The public IP connectivity configured for the Route 53 Global
+//!   Resolver.
 //! * `regions` (Regions) **required** — The Amazon Web Services Regions in which the Global
 //!   Resolver operate.
 //! * `status` (CRResourceStatus, one of: CREATING | DELETING | OPERATIONAL | UPDATING)
@@ -210,6 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ipv4_addresses: resolver.ipv4_addresses.clone(),
             ipv6_addresses: resolver.ipv6_addresses_for_output(),
             ip_address_type: Some(resolver.ip_address_type.as_wire().to_string()),
+            public_ip_status: Some(resolver.public_ip_status.as_wire().to_string()),
         })
     }
 }

@@ -214,6 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ipv4_addresses: resolver.ipv4_addresses.clone(),
                     ipv6_addresses: resolver.ipv6_addresses_for_output(),
                     ip_address_type: Some(resolver.ip_address_type.as_wire().to_string()),
+                    public_ip_status: Some(resolver.public_ip_status.as_wire().to_string()),
                 })
                 .collect(),
         })

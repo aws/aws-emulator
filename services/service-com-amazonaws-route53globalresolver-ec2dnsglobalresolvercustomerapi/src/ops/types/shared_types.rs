@@ -32,22 +32,12 @@ pub struct InternalServerException {
     pub retry_after_seconds: Option<i32>,
 }
 
-// `ResourceNotFoundException` models `resourceId` and a @required `resourceType`, but this
-// service puts neither on the wire for THIS error: every recorded 404 of it — the Global
-// Resolver reads and the delete, the DNS View read and the create and list addressed by a
-// resolver id — carries `message` alone, and that message already names the kind the id was
-// looked up as and the id itself. Both members are therefore declared unsupported, which keeps
-// them out of the shape's schema and so out of the body the framework writes, rather than
-// filling them with an id and an internal resource-type token a client reading them would take
-// for the service's own. The sibling `ConflictException` and `ServiceQuotaExceededException`
-// keep both: nothing recorded shows this service dropping them there.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.route53globalresolver#ResourceNotFoundException",
-    unsupported = ["resourceId", "resourceType"]
-)]
+#[smithy_macros::smithy(shape = "com.amazonaws.route53globalresolver#ResourceNotFoundException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceNotFoundException {
     pub message: String,
+    pub resource_id: Option<String>,
+    pub resource_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.route53globalresolver#ThrottlingException")]
@@ -82,6 +72,17 @@ pub struct ServiceQuotaExceededException {
     pub resource_type: String,
     pub service_code: Option<String>,
     pub quota_code: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.route53globalresolver#CoreNetworkEndpointDnsIpItem")]
+#[derive(Debug, Clone, Default)]
+pub struct CoreNetworkEndpointDnsIpItem {
+    pub ipv4_address: Option<String>,
+    pub ipv6_address: Option<String>,
+    pub dns_label: String,
+    pub dns_name: Option<String>,
+    pub region_scope: String,
+    pub regions: Option<Vec<String>>,
 }
 
 /// The values `BlockOverrideDnsQueryType` accepts on the wire.
@@ -133,15 +134,27 @@ pub const HOSTED_ZONE_ASSOCIATION_STATUS_VALUES: &[&str] = &["CREATING", "DELETI
 
 
 /// The values `IpAddressType` accepts on the wire.
-pub const IP_ADDRESS_TYPE_VALUES: &[&str] = &["IPV4", "IPV6"];
+pub const IP_ADDRESS_TYPE_VALUES: &[&str] = &["IPV4", "IPV6", "NONE"];
 
 
 /// The values `ProfileResourceStatus` accepts on the wire.
 pub const PROFILE_RESOURCE_STATUS_VALUES: &[&str] = &["CREATING", "DELETING", "DISABLED", "DISABLING", "ENABLING", "OPERATIONAL", "UPDATING"];
 
 
+/// The values `PublicIpStatus` accepts on the wire.
+pub const PUBLIC_IP_STATUS_VALUES: &[&str] = &["DISABLED_RELEASED", "DISABLED_RESERVED", "ENABLED_RESERVED"];
+
+
+/// The values `RegionScopeType` accepts on the wire.
+pub const REGION_SCOPE_TYPE_VALUES: &[&str] = &["ALL", "REGIONAL"];
+
+
 /// The values `TokenStatus` accepts on the wire.
 pub const TOKEN_STATUS_VALUES: &[&str] = &["CREATING", "DELETING", "OPERATIONAL"];
+
+
+/// The values `UpdateIpAddressOperation` accepts on the wire.
+pub const UPDATE_IP_ADDRESS_OPERATION_VALUES: &[&str] = &["ADD", "REMOVE", "UPDATE"];
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.

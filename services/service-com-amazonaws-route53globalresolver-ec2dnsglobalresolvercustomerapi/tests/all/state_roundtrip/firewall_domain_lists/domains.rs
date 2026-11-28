@@ -187,9 +187,20 @@ async fn every_route_that_resolves_a_domain_list_id_refuses_an_unknown_one_the_s
             );
             assert_eq!(
                 answer.modelled_members(),
-                vec!["message".to_string()],
-                "case {case:?}: the refusal body carries `message` alone, got {}",
+                vec![
+                    "message".to_string(),
+                    "resourceId".to_string(),
+                    "resourceType".to_string()
+                ],
+                "case {case:?}: the refusal body states the kind and the id beside the \
+                 sentence, got {}",
                 answer.body
+            );
+            assert_eq!(
+                answer.text("resourceId"),
+                id,
+                "case {case:?}: expected the id the request named, got {:?}",
+                answer.text("resourceId")
             );
         }
     }

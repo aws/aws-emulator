@@ -69,8 +69,14 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — You don't have permission to perform this
+//!   operation. Check your IAM permissions and try again.
+//! * `InternalServerException` (HTTP 500) — An internal server error occurred. Try again
+//!   later.
 //! * `ResourceNotFoundException` (HTTP 404) — The specified resource was not found. Verify
 //!   the resource ID and try again.
+//! * `ThrottlingException` (HTTP 429) — The request was throttled due to too many requests.
+//!   Wait a moment and try again.
 //! * `ValidationException` (HTTP 400) — The input parameters are invalid. Check the parameter
 //!   values and try again.
 
@@ -84,17 +90,17 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53globalresolver-ec2dnsglobalresolvercustomerapi.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, plus any widened in with `extra_errors` — here
-// `InternalServerException`, a shape the SERVICE models that this operation does not
-// list, which is the only answer a request that cannot reach the store can be given.
-#[smithy_macros::operation_error(
-    "com.amazonaws.route53globalresolver#UntagResource",
-    extra_errors = ["InternalServerException"]
-)]
+// model declares for this operation — the service's common errors
+// (`AccessDeniedException`, `InternalServerException`, `ThrottlingException`) included,
+// so `InternalServerException`, the only answer a request that cannot reach the store
+// can be given, is already one of them.
+#[smithy_macros::operation_error("com.amazonaws.route53globalresolver#UntagResource")]
 #[derive(Debug)]
 pub enum UntagResourceErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
 

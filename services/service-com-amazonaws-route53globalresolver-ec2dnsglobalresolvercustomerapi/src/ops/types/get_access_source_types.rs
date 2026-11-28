@@ -21,13 +21,15 @@ pub struct GetAccessSourceInput {
 #[derive(Debug, Clone)]
 pub struct GetAccessSourceOutput {
     pub arn: String,
-    pub cidr: String,
+    pub cidr: Option<String>,
+    pub core_network_endpoint_id: Option<String>,
     pub created_at: ::aws_smithy_types::DateTime,
     pub id: String,
-    pub ip_address_type: String,
+    pub ip_address_type: Option<String>,
     pub name: Option<String>,
     pub dns_view_id: String,
     pub protocol: String,
+    pub segment: Option<String>,
     pub status: String,
     pub updated_at: ::aws_smithy_types::DateTime,
 }

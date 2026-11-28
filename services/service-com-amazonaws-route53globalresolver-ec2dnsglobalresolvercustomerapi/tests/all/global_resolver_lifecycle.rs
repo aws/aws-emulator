@@ -31,6 +31,18 @@ mod refusal_bodies;
 #[path = "global_resolver_lifecycle/resource_tagging.rs"]
 mod resource_tagging;
 
+// The CORE NETWORK ENDPOINT resource — the five operations that attach a Cloud WAN core
+// network to a Global Resolver — as a third child module of this suite, in the same
+// directory and reusing this file's emulator for the same reason.
+#[path = "global_resolver_lifecycle/core_network_endpoints.rs"]
+mod core_network_endpoints;
+
+// The `publicIpStatus` of a Global Resolver — the public IP connectivity a create resolves
+// and every read reports — as a fourth child module of this suite, in the same directory
+// and reusing this file's emulator for the same reason.
+#[path = "global_resolver_lifecycle/public_ip_status.rs"]
+mod public_ip_status;
+
 /// The Region the request's SigV4 credential scope names. Route 53 Global
 /// Resolver's own docs tell callers to use US East (Ohio).
 const REGION: &str = "us-east-2";

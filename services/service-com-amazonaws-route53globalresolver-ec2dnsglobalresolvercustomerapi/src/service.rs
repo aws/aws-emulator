@@ -23,8 +23,9 @@
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly, or answer one before the modelled walk runs. This service uses it for
 //!   the authorization it takes on a caller-supplied resource ARN ahead of that walk
-//!   (`resource_arn_authorization`); every other request resolves through the generated
-//!   routing table.
+//!   (`resource_arn_authorization`), and for the one listing whose input the framework's
+//!   HTTP binding cannot read (`core_network_endpoint_listing`); every other request
+//!   resolves through the generated routing table.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -51,6 +52,10 @@ use std::sync::Arc;
 /// modelled constraints on the member that carried it: a value that names no resource is an
 /// authorization failure, not a validation one.
 mod resource_arn_authorization;
+
+/// `ListCoreNetworkEndpoints`'s own query-string binding, which the framework's
+/// `@httpQueryParams` binding cannot do — see that module.
+mod core_network_endpoint_listing;
 
 /// The error code this service answers a request refused for a modelled input
 /// constraint with: the `ValidationException` (`@httpError 400`) every operation of
@@ -106,6 +111,11 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// here so [`Service::override_operation`] can hand out a reference to it; it carries no
     /// state, because the denial is built from the request alone.
     deny_unnamed_resource: resource_arn_authorization::DenyUnnamedResource,
+    /// `ListCoreNetworkEndpoints` served off its own query-string binding, for the reason
+    /// [`core_network_endpoint_listing`] states. Held here for the same reason as above:
+    /// [`Service::override_operation`] hands back a borrow.
+    list_core_network_endpoints:
+        core_network_endpoint_listing::ListCoreNetworkEndpointsFromQuery<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -114,8 +124,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             deny_unnamed_resource: resource_arn_authorization::DenyUnnamedResource,
+            list_core_network_endpoints:
+                core_network_endpoint_listing::ListCoreNetworkEndpointsFromQuery::new(engine),
         }
     }
 
@@ -159,9 +171,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // have granted and is refused `AccessDeniedException` (403) here rather than falling
         // to the modelled `@pattern` rejection (400) the framework's pre-handler walk would
         // answer with. See [`resource_arn_authorization`]. Every other request resolves
-        // through the generated routing table.
-        self.names_no_resource_to_authorize(req)
-            .then_some(&self.deny_unnamed_resource as _)
+        // through the generated routing table — bar the one listing whose input the
+        // framework cannot bind at all, which is served off its own binding
+        // ([`core_network_endpoint_listing`]).
+        if self.names_no_resource_to_authorize(req) {
+            return Some(&self.deny_unnamed_resource);
+        }
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        (key
+            == core_network_endpoint_listing::ListCoreNetworkEndpointsFromQuery::<Eng>::routing_key())
+            .then_some(&self.list_core_network_endpoints as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
