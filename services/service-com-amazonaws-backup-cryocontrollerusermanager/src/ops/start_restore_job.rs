@@ -268,7 +268,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 Ok(Started::Replayed(existing.restore_job_id.clone()))
             } else {
-                Self::stored_restore(&mut store, &input, now)
+                Self::stored_restore(&mut store, &input, &region, now)
             }
         };
 
@@ -357,11 +357,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartRestoreJob<E
     fn stored_restore(
         store: &mut crate::state::ComAmazonawsBackupCryocontrollerusermanagerState,
         input: &StartRestoreJobInput,
+        region: &str,
         now: ::std::time::SystemTime,
     ) -> Result<Started, StartRestoreJobError> {
-        // The recovery point is an INPUT to the restore, so one that
-        // resolves to nothing stored is refused as that member's value and
-        // no job is persisted. Resolved before anything is written.
+        // The recovery point is an INPUT to the restore, and a value that COULD name
+        // one is resolved before the restore's own members are judged: a value that
+        // resolves to no stored point is refused as that member's value, with no job
+        // persisted (`crate::state::names_a_recovery_point`).
+        if crate::state::names_a_recovery_point(&input.recovery_point_arn, region)
+            && !store
+                .recovery_points
+                .contains_key(&input.recovery_point_arn)
+        {
+            return Err(StartRestoreJobErrorModeled::InvalidParameterValueException(
+                crate::state::recovery_point_not_found_value(),
+            )
+            .into());
+        }
+        // The restore is PERFORMED under the role the request names, so a start that
+        // names none has nothing to perform it as. A value that names NO recovery
+        // point at all — another partition's, another Region's, another service's
+        // resource — is not resolved above, so such a request is judged on its own
+        // members first and this is the refusal it earns
+        // (`crate::state::rejected_null_restore_role`).
+        if let Some(refusal) =
+            crate::state::rejected_null_restore_role(input.iam_role_arn.as_deref())
+        {
+            return Err(
+                StartRestoreJobErrorModeled::MissingParameterValueException(refusal).into(),
+            );
+        }
+        // And the point the restore reads has to be one there is something to
+        // restore FROM: a value naming none, and a point whose backup is still
+        // running, are the same refusal of that member.
         let Some(point) = store.restorable_recovery_point(&input.recovery_point_arn) else {
             return Err(StartRestoreJobErrorModeled::InvalidParameterValueException(
                 crate::state::recovery_point_not_found_value(),

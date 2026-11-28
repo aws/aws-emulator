@@ -30,7 +30,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use super::{ComAmazonawsBackupCryocontrollerusermanagerState, RecoveryPoint};
+use super::{ComAmazonawsBackupCryocontrollerusermanagerState, MissingParameterValueException, RecoveryPoint};
 
 /// `RestoreJobStatus` of a restore job that has just been started (model enum
 /// `RestoreJobStatus`: `PENDING | RUNNING | COMPLETED | ABORTED | FAILED`).
@@ -68,6 +68,75 @@ pub const RESTORE_JOB_SETTLE_AFTER: Duration = Duration::from_secs(3);
 
 /// `PercentDone` of a restore job that has not ended yet.
 pub const RESTORE_JOB_PERCENT_DONE_NONE: &str = "0.0";
+
+/// Whether `value` could name a recovery point THIS endpoint resolves at all: an ARN of the
+/// partition, Region, service and resource type the ARNs this service mints for a recovery
+/// point in `region` carry ([`super::recovery_point_arn`]).
+///
+/// It is the question a call that takes a `RecoveryPointArn` as INPUT asks before it looks
+/// one up: a value that could name a recovery point is RESOLVED, and one that resolves to
+/// nothing is refused as that member's value ([`super::recovery_point_not_found_value`]),
+/// while a value that names no recovery point at all — another partition's, another
+/// Region's, another service's resource — is not looked up, so the request's own members are
+/// what such a call is judged on first.
+///
+/// WHY the lookup's REACH decides the order, rather than the role check simply preceding it:
+/// the two recorded restore refusals this reading answers BOTH name no role, and AWS answers
+/// them differently — one with the null-role refusal
+/// ([`rejected_null_restore_role`]) and the other with the point's not-found refusal. A
+/// role-first ordering states the null-role refusal for both and a lookup-first ordering
+/// states the not-found refusal for both, so neither reproduces the pair; what separates the
+/// two requests is that one carries a value this endpoint resolves a recovery point from and
+/// the other does not.
+///
+/// Read through the crate's one ARN parse ([`::service_common::arn`]) rather than by
+/// splitting the value again, and against an ARN this service MINTS rather than against a
+/// literal, so the reading and the minting cannot drift apart.
+#[must_use]
+pub fn names_a_recovery_point(value: &str, region: &str) -> bool {
+    let minted = super::recovery_point_arn(region, "id");
+    let Some(served) = ::service_common::arn::parse(&minted) else {
+        return true;
+    };
+    ::service_common::arn::parse(value).is_some_and(|named| {
+        named.partition == served.partition
+            && named.region == served.region
+            && named.vendor == served.vendor
+            && named.resource_type() == served.resource_type()
+    })
+}
+
+/// `Code` for "the restore names no IAM role to perform it under" — the token of that
+/// condition, constant for it and taken from no part of the request, as every other token
+/// this service states is ([`super::ERROR_CODE_RESTORE_JOB_NOT_FOUND`]).
+pub const ERROR_CODE_RESTORE_ROLE_IS_NULL: &str = "ERROR_4003";
+
+/// The sentence AWS states for that condition — FIXED text: it names the member's ROLE and
+/// nothing from the request, the way the other role conditions of this service word theirs
+/// ([`super::MESSAGE_ROLE_NOT_ASSUMABLE`]).
+pub const MESSAGE_RESTORE_ROLE_IS_NULL: &str = "IAM Role is null";
+
+/// The modelled refusal for a `StartRestoreJob` that names no role to perform the restore
+/// under, or `None` when it names one.
+///
+/// The restore "recovers the saved resource" under the `IamRoleArn` it names, so a start
+/// that names none has nothing to perform the restore as. It is settled once the
+/// `RecoveryPointArn` has been RESOLVED where it could be resolved at all
+/// ([`names_a_recovery_point`]): a value that names no recovery point is not looked up, so
+/// such a request is judged on its own members first and this is the refusal it earns. The
+/// model types the member as optional, so this is the service's OWN requirement of it; an
+/// absent required value is the MISSING-value class rather than the invalid-value one
+/// ("Indicates that a required parameter is missing", the model's own doc for that shape).
+#[must_use]
+pub fn rejected_null_restore_role(
+    role_arn: Option<&str>,
+) -> Option<MissingParameterValueException> {
+    role_arn.is_none().then(|| MissingParameterValueException {
+        code: Some(ERROR_CODE_RESTORE_ROLE_IS_NULL.to_string()),
+        message: Some(MESSAGE_RESTORE_ROLE_IS_NULL.to_string()),
+        ..Default::default()
+    })
+}
 
 /// `PercentDone` of a restore job the clock has ended.
 pub const RESTORE_JOB_PERCENT_DONE_COMPLETE: &str = "100.0";

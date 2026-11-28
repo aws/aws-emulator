@@ -161,6 +161,33 @@ impl<Eng> StartScanJob<Eng> {
     }
 }
 
+/// What `StartScanJob` answers the violations that refuse a request before its handler runs,
+/// asked BEFORE the framework's boundary answers them (`crate::service::pre_handler`).
+///
+/// This operation is fronted by AWS's own REQUEST VALIDATOR, so a request that omits a
+/// required member or carries a value outside what the model admits is refused by that
+/// validator: in its envelope (`N validation errors detected: <clause>; …`, one clause per
+/// violation) and under its error type, rather than with one of this service's own
+/// parameter-value errors. Every violation is answered that way, which is the whole of what
+/// the boundary can refuse here — every member of this input targets a plain string or one
+/// of the two enumerated types, so there is no other constraint to break.
+///
+/// Every absent required member is stated, not just the first the read stopped at: the
+/// violations are the shared walk's, which re-reads the request for the rest
+/// (`crate::service::pre_handler`).
+pub fn refused_at_the_boundary(
+    violations: &[::aws_smithy_schema_server::constraints::Violation],
+) -> Option<crate::service::pre_handler::Answer> {
+    Some(crate::service::pre_handler::Answer {
+        body: Box::new(crate::scaffolded::ValidationException::new(
+            crate::service::pre_handler::validation_envelope(violations),
+        )),
+        schema: &crate::scaffolded::VALIDATION_EXCEPTION_SCHEMA,
+        code: crate::service::pre_handler::VALIDATION_EXCEPTION,
+        status: crate::service::pre_handler::REFUSAL_STATUS,
+    })
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for StartScanJob<Eng>
 {

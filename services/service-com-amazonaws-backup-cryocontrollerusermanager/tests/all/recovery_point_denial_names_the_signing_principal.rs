@@ -109,6 +109,16 @@ fn user_arn() -> String {
 /// whose long-term key they sign with and the ARN of the point that account holds.
 async fn given_emulator() -> (MultiServiceRouter, String, String) {
     let (router, _engine) = emulator();
+    // AWS Backup assumes the role a start names before it mints a job, so the role the
+    // shared setup's backup is performed under is provisioned in the IAM mounted here,
+    // carrying the action that creates a table's recovery point so the point is written.
+    crate::plan_and_selection_refusals::given_backup_job_role(
+        &router,
+        "/service-role/",
+        "AWSBackupDefaultServiceRole",
+        "dynamodb:CreateBackup",
+    )
+    .await;
     let stored = stored_point(&router).await;
     let key_id = given_iam_user(&router).await;
     (router, key_id, stored)

@@ -1016,12 +1016,18 @@ async fn an_unrecognised_cursor_is_refused() {
 /// `ResourceNotFoundException`; an absent required member is
 /// `MissingParameterValueException`.
 ///
-/// The calls that address a VAULT by the name in their URI are deliberately
+/// The calls that name a VAULT by the name in their URI are deliberately
 /// absent from this table: they decide access before existence and so answer 403
 /// `AccessDeniedException` instead — `vault_read_visibility.rs` covers the reads
 /// and `vault_label_identifier_forms.rs` the delete. A call that names a vault in
 /// its BODY names the resource it could not act on, which is what the rows below
 /// assert.
+///
+/// A `StartBackupJob` naming no `IamRoleArn` is absent from the table for the same
+/// reason: the backup has no role to be performed under, which AWS Backup decides at
+/// the authorization layer ahead of the request's own input, so it too is answered 403
+/// — `job_start_refusals_before_the_boundary.rs` covers it beside the other refusals
+/// decided there.
 #[tokio::test]
 async fn unknown_resources_and_absent_members_are_refused_by_their_own_code() {
     let router = router();
@@ -1057,10 +1063,6 @@ async fn unknown_resources_and_absent_members_are_refused_by_their_own_code() {
     let (status, _) = create_vault(&router, "missing-vault", "{}").await;
     assert_eq!(status, 200, "setup: CreateBackupVault should succeed");
     let absent: Vec<(&str, String)> = vec![
-        (
-            "no IamRoleArn",
-            format!(r#"{{"BackupVaultName":"missing-vault","ResourceArn":"{resource}"}}"#),
-        ),
         (
             "no ResourceArn",
             format!(r#"{{"BackupVaultName":"missing-vault","IamRoleArn":"{role}"}}"#),

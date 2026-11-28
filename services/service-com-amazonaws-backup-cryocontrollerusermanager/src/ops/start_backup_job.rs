@@ -192,6 +192,50 @@ impl<Eng> StartBackupJob<Eng> {
     }
 }
 
+/// The validation path the framework and the shared walk both name
+/// `StartBackupJobInput$IamRoleArn` by.
+const IAM_ROLE_ARN_PATH: &str = "iamRoleArn";
+
+/// What `StartBackupJob` answers the violations that refuse a request before its handler
+/// runs, asked BEFORE the framework's boundary answers them (`crate::service::pre_handler`).
+///
+/// A backup is performed under the role the request names "to create the target recovery
+/// point", so a request that names NO role asks for a backup there is nothing to perform it
+/// under: AWS Backup decides that at the authorization layer, ahead of the request's own
+/// input, and refuses it in the access-denied class with the fixed sentence that class
+/// carries ([`crate::scaffolded::AccessDeniedException::insufficient_privileges`]) — the
+/// same refusal, on the same status, as every other call of this service the caller may not
+/// make. This operation models no authorization error of its own, so the class is this
+/// service's own channel for it (`crate::scaffolded`).
+///
+/// The decision is taken on whether the ROLE is among the members the request left unstated,
+/// not on which absence the framework's read happened to report first: a request that omits
+/// the role AND another required member is still a request with no role to perform the
+/// backup under, and the shared walk reports every absence rather than the first.
+///
+/// Every other refusal is left to the boundary: an absent `BackupVaultName` or `ResourceArn`
+/// is a parameter the request is missing, which this service words as
+/// `MissingParameterValueException` (`crate::service`), and a value outside a modelled
+/// constraint is that member's value.
+pub fn refused_at_the_boundary(
+    violations: &[::aws_smithy_schema_server::constraints::Violation],
+) -> Option<crate::service::pre_handler::Answer> {
+    let names_no_role = violations.iter().any(|violation| {
+        violation.path == IAM_ROLE_ARN_PATH
+            && violation.kind
+                == ::aws_smithy_schema_server::constraints::ViolationKind::MissingRequiredMember
+    });
+    if !names_no_role {
+        return None;
+    }
+    Some(crate::service::pre_handler::Answer {
+        body: Box::new(crate::scaffolded::AccessDeniedException::insufficient_privileges()),
+        schema: &crate::scaffolded::ACCESS_DENIED_EXCEPTION_SCHEMA,
+        code: crate::service::pre_handler::ACCESS_DENIED_EXCEPTION,
+        status: crate::service::pre_handler::ACCESS_DENIED_STATUS,
+    })
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for StartBackupJob<Eng>
 {
@@ -210,8 +254,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // `BackupVaultName`, `ResourceArn` and `IamRoleArn` are `@required`, so an
-        // absent one is refused before this handler runs; `crate::service` words
-        // that refusal as `MissingParameterValueException`.
+        // absent one is refused before this handler runs: `crate::service` words
+        // the vault's and the resource's as `MissingParameterValueException`, and
+        // an absent ROLE is answered ahead of that boundary altogether
+        // ([`refused_at_the_boundary`]).
         let region = crate::state::request_region(ctx);
         // WHETHER THE CALLER MAY ASK FOR THIS JOB AT ALL, decided at the IAM layer
         // ahead of the request's own input: the policies in force on the principal
@@ -225,6 +271,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Self::NAME,
             &crate::state::backup_vault_arn(&region, &input.backup_vault_name),
         )?;
+        // WHETHER THERE IS A ROLE TO PERFORM THE BACKUP UNDER AT ALL, settled
+        // before anything is minted: the backup is performed by ASSUMING the role
+        // the request named, so a value naming no role this account holds leaves
+        // nothing to assume and the call is refused with nothing stored
+        // (`crate::state::rejected_backup_role`). Distinct from the OUTCOME
+        // question below, which is what IAM answers about the PERMISSIONS of a
+        // role that is there. Awaited with no store guard held.
+        if let Some(refusal) =
+            crate::state::rejected_backup_role(ctx, &region, &input.iam_role_arn).await
+        {
+            return Err(StartBackupJobErrorModeled::InvalidParameterValueException(refusal).into());
+        }
         // WHAT THE JOB WILL COME TO, decided BEFORE it is stored: the backup is
         // performed under the role the request named and against the resource it
         // named, so a backup that role may not perform, or that has no such

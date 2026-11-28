@@ -152,6 +152,35 @@ pub fn report_plan_already_exists_message(name: &str) -> String {
     )
 }
 
+/// The sentence AWS states for "the report plan name the request carried is not a name a
+/// report plan can have": fixed text that states the GRAMMAR the member is held to, with
+/// the name the request carried as its one variable part.
+///
+/// The grammar it states is the member's own, as the model declares it — `ReportPlanName`
+/// is `@length(min: 1, max: 256)` over `@pattern("^[a-zA-Z][_a-zA-Z0-9]*$")`
+/// (`smithy_query(query="shape", shape="ReportPlanName")`) — so the sentence and the rule a
+/// value is held to cannot drift apart. No `Code`: this condition has no observed token.
+pub fn invalid_report_plan_name_message(name: &str) -> String {
+    format!(
+        "Invalid report plan name {name}. Report plan names must be between 1 and 256 \
+         characters, start with a letter (A-Z and a-z), and consist only of letters, numbers \
+         (0-9), and underscores (_). Type a valid report plan name."
+    )
+}
+
+/// The modelled refusal for a report plan name outside that grammar, worded by
+/// [`invalid_report_plan_name_message`] from the name the request carried.
+///
+/// The name is a VALUE of the request, so the refusal is the parameter-value class — the
+/// same class every other value this service refuses takes.
+#[must_use]
+pub fn invalid_report_plan_name(name: &str) -> InvalidParameterValueException {
+    InvalidParameterValueException {
+        message: Some(invalid_report_plan_name_message(name)),
+        ..Default::default()
+    }
+}
+
 /// The modelled refusal for a report plan name this account does not hold,
 /// worded by [`report_plan_not_found_message`] from the name the call addressed.
 pub fn report_plan_not_found(name: &str) -> ResourceNotFoundException {

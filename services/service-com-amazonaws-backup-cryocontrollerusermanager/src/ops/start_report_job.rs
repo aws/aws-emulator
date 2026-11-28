@@ -138,6 +138,48 @@ impl<Eng> StartReportJob<Eng> {
     }
 }
 
+/// The validation path the framework names `StartReportJobInput$ReportPlanName` by, which is
+/// how a violation reports which member a value was refused for.
+const REPORT_PLAN_NAME_PATH: &str = "reportPlanName";
+
+/// The schema of the error shape this operation's parameter-value refusal serializes as, so
+/// the gated refusal below renders exactly as the same shape returned from the handler does:
+/// the generated static the operation's own error channel names that variant by.
+static INVALID_PARAMETER_VALUE_EXCEPTION_SCHEMA: &::aws_smithy_schema::Schema =
+    &SCHEMA_INVALID_PARAMETER_VALUE_EXCEPTION;
+
+/// What `StartReportJob` answers the violations that refuse a request before its handler
+/// runs, asked BEFORE the framework's boundary answers them
+/// (`crate::service::pre_handler`).
+///
+/// `ReportPlanName` is the plan the report is run FOR, and AWS Backup refuses a value
+/// outside the grammar a report plan name has with its own sentence, which states that
+/// grammar and the name the request carried
+/// (`crate::state::invalid_report_plan_name`) — not with the constraint report the
+/// framework's boundary builds, which names the member and the model's own regex instead.
+/// The name is the violation's own value echo, which the shared collecting walk restores to
+/// the bytes the caller sent, so the sentence quotes the value that was submitted.
+///
+/// Every other refusal is left to the boundary.
+pub fn refused_at_the_boundary(
+    violations: &[::aws_smithy_schema_server::constraints::Violation],
+) -> Option<crate::service::pre_handler::Answer> {
+    let refused = violations
+        .iter()
+        .find(|violation| violation.path == REPORT_PLAN_NAME_PATH)?;
+    let name = refused.value.as_deref()?;
+    Some(crate::service::pre_handler::Answer {
+        body: Box::new(crate::state::invalid_report_plan_name(name)),
+        schema: INVALID_PARAMETER_VALUE_EXCEPTION_SCHEMA,
+        code: INVALID_PARAMETER_VALUE_EXCEPTION,
+        status: crate::service::pre_handler::REFUSAL_STATUS,
+    })
+}
+
+/// The wire error code that shape carries (`__type` / `x-amzn-errortype`): its own Smithy
+/// shape name, which is what the framework names a modelled error by.
+const INVALID_PARAMETER_VALUE_EXCEPTION: &str = "InvalidParameterValueException";
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for StartReportJob<Eng>
 {
@@ -157,9 +199,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
         // `ReportPlanName` is `@required` and targets a patterned, length-bound
-        // shape, so an absent or malformed one is refused before this handler
-        // runs, and `crate::service` words that refusal as this service's own
-        // `MissingParameterValueException` / `InvalidParameterValueException`.
+        // shape. A value outside that grammar is refused ahead of the framework's
+        // boundary, with the sentence AWS states the grammar in
+        // ([`refused_at_the_boundary`]); an absent one cannot reach here at all,
+        // since the member is the URI label this operation is routed by.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             StartReportJobErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
                 message: Some("the backup vault store is unavailable".to_string()),

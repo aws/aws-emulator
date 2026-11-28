@@ -40,10 +40,12 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
-use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
-};
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use smithy_server_runtime::{http, ErasedOperation, Operation, Refusal, Refused, Service};
+
+pub mod pre_handler;
 
 /// The `com-amazonaws-backup-cryocontrollerusermanager` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -52,6 +54,12 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// One [`pre_handler::PreHandlerGate`] per operation whose refusal of a bad request AWS
+    /// Backup decides AHEAD of the framework's deserialize-and-validate boundary, keyed by
+    /// the routing key the model names that operation by ([`Operation::NAME`], the same key
+    /// the generated routing table uses). Built once here, never per request; each entry
+    /// holds a routing key and a decision rather than an operation or a store of its own.
+    gates: HashMap<&'static str, Box<dyn ErasedOperation>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -60,9 +68,53 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            gates: pre_handler_gates::<Eng>(),
             entry: crate::ServiceDefinition::new(engine),
         }
     }
+}
+
+/// The pre-boundary gate of each operation that has one, keyed by the routing key the model
+/// names that operation by.
+///
+/// ONE list, read from the operations' own [`Operation::NAME`] and [`Operation::INPUT_SCHEMA`]
+/// so neither can drift from the model, and each entry pairs an operation with the decision
+/// that operation's own file states ([`pre_handler`] for why a gate rather than a reworded
+/// refusal):
+///
+/// * `StartBackupJob`, whose request naming no role to perform the backup under is an
+///   AUTHORIZATION refusal and not a parameter one;
+/// * `StartReportJob`, whose malformed `ReportPlanName` is refused with the service's own
+///   sentence stating the grammar a plan name has;
+/// * `StartScanJob`, which is fronted by AWS's request validator, so its boundary refusals
+///   carry that validator's envelope and error type.
+///
+/// Every other operation resolves through the generated routing table, and so does a gated
+/// one whose request the decision passes on — the gate delegates to it rather than serving
+/// the request itself.
+fn pre_handler_gates<Eng: Send + Sync + 'static>() -> HashMap<&'static str, Box<dyn ErasedOperation>>
+{
+    let mut gates: HashMap<&'static str, Box<dyn ErasedOperation>> = HashMap::new();
+    macro_rules! gate {
+        ($($module:ident :: $operation:ident),+ $(,)?) => {
+            $({
+                gates.insert(
+                    <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                    Box::new(pre_handler::PreHandlerGate::<
+                        crate::ops::$module::$operation<Eng>,
+                    >::new(
+                        crate::ops::$module::refused_at_the_boundary,
+                    )) as Box<dyn ErasedOperation>,
+                );
+            })+
+        };
+    }
+    gate!(
+        start_backup_job::StartBackupJob,
+        start_report_job::StartReportJob,
+        start_scan_job::StartScanJob,
+    );
+    gates
 }
 
 impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
@@ -87,12 +139,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // Serve an operation whose refusal of a bad request AWS Backup decides AHEAD
+        // of the framework's deserialize-and-validate boundary through that
+        // operation's gate, so the decision is made where the real service makes it
+        // (see [`pre_handler`]). Every other operation resolves through the generated
+        // routing table, and so does a gated one whose request its decision passes
+        // on — the gate delegates to it rather than serving the request itself.
+        //
+        // A request that names no modelled operation has nothing to decide: the
+        // routing failure is the answer it gets.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.gates.get(key).map(|gate| &**gate)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -104,6 +161,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // pattern, a `MaxResults` outside 1..1000, an enum value the model does
         // not list). Both the code and the message are replaced, so a client
         // branching on the code sees the code this service's own errors carry.
+        //
+        // The operations this seam cannot answer for do not reach it: their
+        // refusal is decided ahead of the boundary instead (see [`pre_handler`]),
+        // because this seam is handed the violations ALONE — no caller and no
+        // operation — and cannot move the status off the 400 a constraint refusal
+        // carries or name the `Message` member this service's own shapes use.
         match refusal {
             Refusal::Invalid(violations) if !violations.is_empty() => {
                 let absent = violations.iter().all(|violation| {

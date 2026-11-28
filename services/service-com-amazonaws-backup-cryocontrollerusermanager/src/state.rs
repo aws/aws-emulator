@@ -107,6 +107,12 @@ pub use plan_events::*;
 mod job_outcome;
 pub use job_outcome::*;
 
+/// Whether the role a backup would be PERFORMED under is one the backup's permissions can
+/// be established from at all, which a start settles before it mints anything. Re-exported
+/// for the reason given on `events`.
+mod backup_role;
+pub use backup_role::*;
+
 /// Cancelling a started backup job: the states a stop can cancel, what it writes, and the
 /// conditions it refuses. Re-exported for the reason given on `events`.
 mod job_cancellation;
@@ -1215,8 +1221,16 @@ pub const MESSAGE_SELECTION_ROLE_CANNOT_READ_TAGS: &str =
 /// condition for a backup job ([`MESSAGE_BACKUP_JOB_NOT_FOUND`]): it names no
 /// part of the request, so neither the vault nor the ARN asked about appears in
 /// it. It answers every way a (vault, ARN) pair can fail to name a stored
-/// recovery point. No `Code`: this condition has no observed token.
+/// recovery point. The token it is stated with belongs to the CALL rather than to the
+/// sentence ([`ERROR_CODE_RESTORE_RECOVERY_POINT_NOT_FOUND`]), as every token of this
+/// service does.
 pub const MESSAGE_RECOVERY_POINT_NOT_FOUND: &str = "Cannot find recovery point";
+
+/// `Code` for the same condition met on the call that carries the recovery point as a
+/// member of its OWN request — the restore start, whose refusal AWS Backup numbers like
+/// every other token it states ([`ERROR_CODE_BACKUP_JOB_NOT_FOUND`]). The calls that
+/// ADDRESS a stored recovery point report the condition absent and carry no token for it.
+pub const ERROR_CODE_RESTORE_RECOVERY_POINT_NOT_FOUND: &str = "ERROR_3806";
 
 /// The sentence AWS states for "the vault holding this recovery point is
 /// configured with a Backup Vault Lock, which still retains it" — fixed: it
@@ -2125,9 +2139,11 @@ pub fn recovery_point_locked() -> InvalidRequestException {
 /// ([`rejected_restore_access_vault_arn`]) — while the calls that ADDRESS a
 /// stored recovery point report it absent. The sentence is the condition's, so
 /// it is the same one either way: a client reads which INPUT to fix from the
-/// class, and what went wrong from the sentence.
+/// class, and what went wrong from the sentence; the `Code` is this CALL's
+/// ([`ERROR_CODE_RESTORE_RECOVERY_POINT_NOT_FOUND`]).
 pub fn recovery_point_not_found_value() -> InvalidParameterValueException {
     InvalidParameterValueException {
+        code: Some(ERROR_CODE_RESTORE_RECOVERY_POINT_NOT_FOUND.to_string()),
         message: Some(MESSAGE_RECOVERY_POINT_NOT_FOUND.to_string()),
         ..Default::default()
     }

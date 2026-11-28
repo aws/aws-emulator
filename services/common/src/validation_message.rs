@@ -940,6 +940,38 @@ pub fn in_member_path_order(violations: &[Violation]) -> Vec<&Violation> {
     ordered
 }
 
+/// The violations of ONE refusal in the order a front door that holds its findings in a HASH
+/// TABLE keyed on the MEMBER PATH states them: by ascending bucket, and within one bucket in
+/// the order they were added.
+///
+/// The third order a refusal's clauses are seen in, beside the walk's own (the input shape's
+/// member order, which [`in_member_path_order`] and this one both replace) and
+/// lexicographic: a layer that collects what it found per member, rather than in a list,
+/// enumerates that table instead. The recorded listing of the six members AWS Backup's
+/// scan-job start requires opens `Value at 'malwareScanner' …; Value at 'recoveryPointArn' …`,
+/// which is neither the model's order (`BackupVaultName` first) nor lexicographic.
+///
+/// The table is the one a map's entries are stated from
+/// ([`crate::submitted_collections::map_entry_table_buckets`],
+/// [`crate::submitted_collections::map_entry_bucket`]): 16 buckets doubling past three
+/// quarters full, and the bucket taken from the shared [`string_hash`] folded by its own high
+/// half. A value SET of an enumerated type sits in a different collection and is ordered by
+/// [`in_hashed_enum_order`] instead, whose recordings show a 32-bucket unfolded table read
+/// backwards; neither order is derived from the other.
+///
+/// STABLE, and over the path alone, so two requirements of ONE member keep the order the walk
+/// collected them in and only the members move. Only the ORDER changes: each clause, its
+/// member path and its requirement stay the framework's.
+#[must_use]
+pub fn in_hashed_member_path_order(violations: &[Violation]) -> Vec<&Violation> {
+    let buckets = crate::submitted_collections::map_entry_table_buckets(violations.len());
+    let mut ordered: Vec<&Violation> = violations.iter().collect();
+    ordered.sort_by_key(|violation| {
+        crate::submitted_collections::map_entry_bucket(&violation.path, buckets)
+    });
+    ordered
+}
+
 /// A service's own statement of the value sets it lists in an order of its own: one row
 /// per enumerated type, holding the values as the MODEL declares them and the values as
 /// the SERVICE states them, in the order it states them.

@@ -236,6 +236,18 @@ fn any_resource() -> Value {
 /// Create the vault and one completed recovery point in it, as the ACCOUNT's own
 /// credential — the setup every case shares, which is not what any case is about.
 async fn given_vault_with_point(router: &MultiServiceRouter) -> String {
+    // AWS Backup ASSUMES the role a start names before it mints a job, so the role every
+    // start of this suite names is provisioned in the IAM mounted beside this service,
+    // carrying the action that creates a table's recovery point so the point is written.
+    // SOURCE: the per-resource-type grants AWS publishes for the backup role (AWS Backup,
+    // *Managed policies*).
+    crate::plan_and_selection_refusals::given_backup_job_role(
+        router,
+        "/service-role/",
+        "AWSBackupDefaultServiceRole",
+        "dynamodb:CreateBackup",
+    )
+    .await;
     let (status, created) = call_as(
         router,
         ACCOUNT_KEY_ID,

@@ -742,6 +742,39 @@ fn trust(effect: &str, principal: &str, action: &str) -> String {
     .to_string()
 }
 
+/// The role a backup JOB is performed under, provisioned where IAM is mounted beside this
+/// service: AWS Backup ASSUMES that role before it mints a job, so this account's IAM has
+/// to hold the record, and the policy it carries has to allow the action that creates the
+/// recovery point of the resource the suite backs up — a role carrying none would settle
+/// the job `FAILED` and write no point, which is what `backup_job_role_outcome.rs` covers
+/// rather than what a suite needing a stored point is about.
+///
+/// Answers the ARN IAM minted for it, which is the value a start then names.
+///
+/// `pub(crate)` for the reason [`create_role`] is: every suite that starts a backup job
+/// beside a mounted IAM needs exactly this one way of provisioning that role.
+pub(crate) async fn given_backup_job_role(
+    router: &MultiServiceRouter,
+    path: &str,
+    name: &str,
+    allows: &str,
+) -> String {
+    let arn = create_role(
+        router,
+        path,
+        name,
+        &trust("Allow", SERVICE_PRINCIPAL, "sts:AssumeRole"),
+    )
+    .await;
+    let document = json!({
+        "Version": "2012-10-17",
+        "Statement": [{ "Effect": "Allow", "Action": allows, "Resource": "*" }],
+    })
+    .to_string();
+    put_role_policy(router, name, &document).await;
+    arn
+}
+
 /// Store `document` on the role `role_name` as an inline identity policy, through
 /// IAM's OWN awsQuery wire, so the permissions a backup decision reads are the
 /// ones IAM holds.

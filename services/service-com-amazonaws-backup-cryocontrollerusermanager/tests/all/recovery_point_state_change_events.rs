@@ -179,10 +179,19 @@ fn table_arn(name: &str) -> String {
     format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/{name}")
 }
 
-/// A role ARN for a job whose outcome nothing decides — IAM holds no such role, which is
-/// evidence of nothing about its permissions, so the job completes and writes its point.
-fn unresolved_role() -> String {
-    format!("arn:aws:iam::{ACCOUNT}:role/service-role/AWSBackupDefaultServiceRole")
+/// The role the backups of this suite are performed under, as this account's IAM holds it:
+/// AWS Backup assumes that role before it mints a job, and the policy it carries allows the
+/// action that creates a table's recovery point, so the job completes and writes its point.
+/// SOURCE: the per-resource-type grants AWS publishes for the backup role (AWS Backup,
+/// *Managed policies*) — the one action that creates a DynamoDB table's recovery point.
+async fn completing_role(router: &MultiServiceRouter, name: &str) -> String {
+    crate::plan_and_selection_refusals::given_backup_job_role(
+        router,
+        "/service-role/",
+        name,
+        "dynamodb:CreateBackup",
+    )
+    .await
 }
 
 /// Start a backup of `resource` under `role` into [`VAULT`], and answer the
@@ -323,7 +332,8 @@ async fn a_settled_recovery_point_reaches_the_targets_of_the_rules_that_match_it
         // envelope is owed by the CLOCK rather than by this call, so the rules below are
         // installed and then waited on.
         let resource = table_arn("orders");
-        let point = started_point(&router, case, &resource, &unresolved_role()).await;
+        let role = completing_role(&router, "state-change-row-role").await;
+        let point = started_point(&router, case, &resource, &role).await;
 
         let (row_url, row_arn) = given_queue(&router, case, "row-target").await;
         given_rule(
@@ -541,7 +551,8 @@ async fn a_recovery_point_envelope_reaches_a_queue_subscribed_to_a_topic_target(
     )
     .await;
 
-    let point = started_point(&router, case, &table_arn("fanned-out"), &unresolved_role()).await;
+    let role = completing_role(&router, "state-change-fan-out-role").await;
+    let point = started_point(&router, case, &table_arn("fanned-out"), &role).await;
     // What the subscriber receives is the NOTIFICATION the topic delivers, whose `Message`
     // is the envelope as it was published.
     let (_notification, envelope) =

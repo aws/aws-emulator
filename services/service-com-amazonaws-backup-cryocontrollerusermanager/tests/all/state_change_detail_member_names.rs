@@ -76,10 +76,19 @@ const EVERY_EVENT_RULE: &str = "every-backup-event";
 const STATUS_FILTERED_RULE: &str = "point-filtered-on-status";
 const STATE_FILTERED_RULE: &str = "point-filtered-on-state";
 
-/// The role every job here runs as. IAM holds no such role, which is evidence of nothing
-/// about its permissions, so the job completes and writes its recovery point.
-fn role() -> String {
-    format!("arn:aws:iam::{ACCOUNT}:role/service-role/AWSBackupDefaultServiceRole")
+/// The role every job here runs as, as this account's IAM holds it: AWS Backup assumes that
+/// role before it mints a job, and the policy it carries allows the action that creates a
+/// table's recovery point, so the job completes and writes that point. SOURCE: the
+/// per-resource-type grants AWS publishes for the backup role (AWS Backup, *Managed
+/// policies*) — the one action that creates a DynamoDB table's recovery point.
+async fn given_role(router: &MultiServiceRouter, name: &str) -> String {
+    crate::plan_and_selection_refusals::given_backup_job_role(
+        router,
+        "/service-role/",
+        name,
+        "dynamodb:CreateBackup",
+    )
+    .await
 }
 
 /// The protected resource a case backs up: a table of this account in this Region.
@@ -152,12 +161,13 @@ async fn each_detail_names_the_state_member_the_moved_records_own_api_reports() 
     )
     .await;
 
+    let role = given_role(&router, "detail-member-role").await;
     let (status, started) = start_job(
         &router,
         &json!({
             "BackupVaultName": SOURCE_VAULT,
             "ResourceArn": table_arn("orders"),
-            "IamRoleArn": role(),
+            "IamRoleArn": &role,
         })
         .to_string(),
     )
@@ -192,7 +202,7 @@ async fn each_detail_names_the_state_member_the_moved_records_own_api_reports() 
                 "RecoveryPointArn": recovery_point_arn,
                 "SourceBackupVaultName": SOURCE_VAULT,
                 "DestinationBackupVaultArn": vault_arn(REGION, DESTINATION_VAULT),
-                "IamRoleArn": role(),
+                "IamRoleArn": &role,
             })
             .to_string(),
         ),
@@ -333,12 +343,13 @@ async fn a_status_filtered_rules_topic_subscriber_holds_the_points_envelope() {
     .await;
 
     let resource = table_arn("continuously-backed-up");
+    let role = given_role(&router, "detail-member-status-role").await;
     let (status, started) = start_job(
         &router,
         &json!({
             "BackupVaultName": SOURCE_VAULT,
             "ResourceArn": &resource,
-            "IamRoleArn": role(),
+            "IamRoleArn": &role,
         })
         .to_string(),
     )
