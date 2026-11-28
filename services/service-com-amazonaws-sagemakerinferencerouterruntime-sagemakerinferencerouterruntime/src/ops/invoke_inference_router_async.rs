@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op InvokeInferenceRouterAsync
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `InvokeInferenceRouterAsync`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`InvokeInferenceRouterAsync::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The router's ASYNCHRONOUS route: it accepts a submission, records which destination of the
+//! named routing target it sent the request to, and answers the caller the Amazon S3
+//! locations the result will be reported at.
+//!
+//! "The router returns as soon as it accepts the request" (this operation's model doc), so
+//! what HTTP 202 reports is the ACCEPTANCE, which this service really performs: the record is
+//! inserted under the `InferenceId` the response reports before it answers. The destination
+//! is chosen by the ONE selection this service's two routes share
+//! (`crate::state::select_destination`), and the two locations are derived from the routing
+//! target's own configured paths.
 //!
 //! ## Shape of an operation
 //!
@@ -201,18 +203,289 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `InvokeInferenceRouterAsync` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(InvokeInferenceRouterAsyncErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(internal_failure(crate::state::NO_STATE));
+        };
+
+        let now = ::std::time::SystemTime::now();
+        // Everything the clock already owes this service's own store is materialised before
+        // this request extends it: an accepted submission whose outcome was due has it
+        // whether or not anybody submitted another one.
+        state.lock().settle_async_submissions(now);
+
+        // This call, as this service's own log replays it; `CustomAttributes` is `@sensitive`
+        // and is not recorded.
+        let record = |outcome: crate::state::InvocationOutcome,
+                      chosen: Option<&crate::state::Selection>,
+                      inference_id: Option<String>| {
+            let invocation = crate::state::RouterInvocation {
+                operation: Self::NAME,
+                inference_router_name: input.inference_router_name.clone(),
+                routing_target_name: input.routing_target_name.clone(),
+                routed_resource_arn: chosen
+                    .map(|selection| selection.destination.routed_resource_arn.clone()),
+                routing_reason: chosen.map(|selection| selection.reason),
+                production_variant: chosen
+                    .and_then(|selection| selection.destination.production_variant.clone()),
+                // This operation carries no inline payload: its input is the object
+                // `InputLocation` names.
+                request_bytes: 0,
+                content_type: input.content_type.clone(),
+                accept: input.accept.clone(),
+                inference_id,
+                outcome,
+                at: now,
+            };
+            tracing::info!(
+                operation = Self::NAME,
+                inference_router = %invocation.inference_router_name,
+                routing_target = %invocation.routing_target_name,
+                routed_resource = invocation.routed_resource_arn.as_deref().unwrap_or_default(),
+                routing_reason = invocation.routing_reason.unwrap_or_default(),
+                inference_id = invocation.inference_id.as_deref().unwrap_or_default(),
+                outcome = outcome.label(),
+                access_key_id = %::emulator_server::extract_akid(&ctx.parts().headers),
+                "sagemaker inference router asynchronous submission"
+            );
+            state.lock().record_invocation(invocation);
+        };
+
+        // The router and its routing target are this service's own configuration; an
+        // invocation naming either one the registry does not hold addresses nothing, which is
+        // the modelled client-input refusal (HTTP 400 `ValidationException`).
+        // The lookup is taken out OWNED and the guard released before anything else runs:
+        // the recording below takes the same lock, and this service's store is behind one
+        // non-reentrant mutex.
+        let lookup = state
+            .lock()
+            .resolve_target(&input.inference_router_name, &input.routing_target_name);
+        let facts = match lookup {
+            crate::state::TargetLookup::RouterNotFound => {
+                record(
+                    crate::state::InvocationOutcome::RouterNotFound,
+                    None,
+                    input.inference_id.clone(),
+                );
+                return Err(validation(crate::state::could_not_find(
+                    crate::state::ROUTER_KIND_LABEL,
+                    &input.inference_router_name,
+                )));
+            }
+            crate::state::TargetLookup::RoutingTargetNotFound => {
+                record(
+                    crate::state::InvocationOutcome::RoutingTargetNotFound,
+                    None,
+                    input.inference_id.clone(),
+                );
+                return Err(validation(crate::state::no_such_routing_target(
+                    &input.routing_target_name,
+                    &input.inference_router_name,
+                )));
+            }
+            crate::state::TargetLookup::Found(facts) => facts,
+        };
+
+        // An `InferenceId` this service has already accepted for THIS routing target names
+        // the same submission: the record is keyed by the router, the target and that id, and
+        // the locations the first acceptance reported are the ones its result will appear at,
+        // so the resubmission is answered from the record rather than accepted again — and no
+        // selection is spent on it.
+        let accepted = input.inference_id.as_deref().and_then(|id| {
+            state
+                .lock()
+                .accepted_submission(
+                    &input.inference_router_name,
+                    &input.routing_target_name,
+                    id,
+                )
+                .cloned()
+        });
+        if let Some(accepted) = accepted {
+            record(
+                crate::state::InvocationOutcome::AlreadyAccepted,
+                None,
+                Some(accepted.inference_id.clone()),
+            );
+            return Ok(InvokeInferenceRouterAsyncOutput {
+                inference_id: Some(accepted.inference_id),
+                output_location: Some(accepted.output_location),
+                failure_location: accepted.failure_location,
+            });
+        }
+
+        // A submission can only be accepted where the routing target specifies somewhere to
+        // put its result: the response's `OutputLocation` is "the Amazon S3 output path that
+        // the routing target specifies" (this operation's model doc), so a target specifying
+        // none has nothing to answer with.
+        let Some(s3_output_path) = facts.s3_output_path.clone() else {
+            record(
+                crate::state::InvocationOutcome::NoOutputPath,
+                None,
+                input.inference_id.clone(),
+            );
+            return Err(validation(crate::state::no_output_path(
+                &input.routing_target_name,
+                &input.inference_router_name,
+            )));
+        };
+
+        // THE SELECTION: the same rule the real-time route applies, on the same stored
+        // cursor, so a target's submissions are distributed over its destinations too. Taken
+        // out owned, for the same reason the lookup above is.
+        let selected = state
+            .lock()
+            .select(&input.inference_router_name, &input.routing_target_name);
+        let Some(selection) = selected else {
+            record(
+                crate::state::InvocationOutcome::NoDestination,
+                None,
+                input.inference_id.clone(),
+            );
+            return Err(service_unavailable(crate::state::no_destination(
+                &input.routing_target_name,
+                &input.inference_router_name,
+            )));
+        };
+        // A destination that cannot take the request YET does not refuse the submission: "If a
+        // destination doesn't start the request within the routing target's
+        // MaxTimeInBacklogSeconds, the router moves the request to another destination" (this
+        // operation's model doc), so an accepted submission waits in the backlog rather than
+        // being refused — and this operation models no not-ready error at all.
+
+        // "An identifier for the inference request. If you don't provide one, SageMaker AI
+        // generates one and returns it in the response"
+        // (`InvokeInferenceRouterAsyncInput$InferenceId`). A generated one is minted by the
+        // workspace's shared mixer over this submission's router, instant and the store's
+        // monotonic submission sequence — taken and advanced in one locked call — so two
+        // submissions never share an id.
+        let inference_id = match input.inference_id.clone() {
+            Some(id) => id,
+            None => {
+                let sequence = state.lock().next_submission_sequence();
+                let since_epoch = now
+                    .duration_since(::std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                ::service_common::stable_hex_id(&[
+                    "sagemaker-inference-router-async",
+                    &input.inference_router_name,
+                    &input.routing_target_name,
+                    &since_epoch.to_string(),
+                    &sequence.to_string(),
+                ])
+            }
+        };
+
+        // Where the result will be reported: the routing target's configured paths, the
+        // request's own path extension and object name, and this submission's id — the one
+        // derivation every SageMaker plane that accepts an asynchronous submission reports a
+        // location from (`service_common::sagemaker_async_inference_output`).
+        let output_location = ::service_common::sagemaker_async_inference_output::output_location(
+            &s3_output_path,
+            input.s3_output_path_extension.as_deref(),
+            input.filename.as_deref(),
+            &inference_id,
+        );
+        // `FailureLocation` is reported only where the routing target specifies a failure
+        // path: the member is optional, and inventing a location nothing is configured to
+        // write to would send the caller looking for an object that cannot appear.
+        let failure_location = facts.s3_failure_path.as_deref().map(|path| {
+            ::service_common::sagemaker_async_inference_output::failure_location(
+                path,
+                &inference_id,
+            )
+        });
+
+        // The record keeps WHERE the result will be, not a result: the destination serves an
+        // asynchronous request from its own model container, which this emulator does not
+        // run, so the submission's outcome is the modelled failure state once it falls due
+        // (see `crate::state::AsyncSubmission::settle`) and nothing is written to the reported
+        // output location.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("InvokeInferenceRouterAsync"))
+        // Checked and inserted in ONE locked call, so a submission that raced another under
+        // the same id past the read above is answered from whichever record was accepted
+        // rather than recorded twice.
+        let already_accepted = state
+            .lock()
+            .accept_async_submission(crate::state::AsyncSubmission {
+                inference_id: inference_id.clone(),
+                inference_router_name: input.inference_router_name.clone(),
+                routing_target_name: input.routing_target_name.clone(),
+                routed_resource_arn: selection.destination.routed_resource_arn.clone(),
+                routing_reason: selection.reason,
+                input_location: input.input_location.clone(),
+                output_location: output_location.clone(),
+                failure_location: failure_location.clone(),
+                // "The default is 21,600 seconds (6 hours)" and "The default is 900 seconds
+                // (15 minutes)" — the two members' own model docs.
+                request_ttl_seconds: input
+                    .request_ttl_seconds
+                    .unwrap_or(crate::state::DEFAULT_REQUEST_TTL_SECONDS),
+                invocation_timeout_seconds: input
+                    .invocation_timeout_seconds
+                    .unwrap_or(crate::state::DEFAULT_INVOCATION_TIMEOUT_SECONDS),
+                status: crate::state::AsyncSubmissionStatus::InProgress,
+                failure_reason: None,
+                submitted_at: now,
+                // `checked_add`, so no stored duration can panic inside a handler.
+                outcome_due_at: now
+                    .checked_add(crate::state::ASYNC_OUTCOME_DUE_AFTER)
+                    .unwrap_or(now),
+            });
+        // The record one of the two calls really accepted: this one's, or the one that got
+        // there first, whose locations are where its result will appear.
+        if let Some(accepted) = already_accepted {
+            record(
+                crate::state::InvocationOutcome::AlreadyAccepted,
+                Some(&selection),
+                Some(accepted.inference_id.clone()),
+            );
+            return Ok(InvokeInferenceRouterAsyncOutput {
+                inference_id: Some(accepted.inference_id),
+                output_location: Some(accepted.output_location),
+                failure_location: accepted.failure_location,
+            });
+        }
+        record(
+            crate::state::InvocationOutcome::Queued,
+            Some(&selection),
+            Some(inference_id.clone()),
+        );
+
+        Ok(InvokeInferenceRouterAsyncOutput {
+            inference_id: Some(inference_id),
+            output_location: Some(output_location),
+            failure_location,
+        })
     }
+}
+
+/// This operation's modelled client-input error (HTTP 400): "The request isn't valid. Check
+/// the inference router name, the routing target name, and the request parameters, and then
+/// try again."
+fn validation(message: impl Into<String>) -> InvokeInferenceRouterAsyncError {
+    InvokeInferenceRouterAsyncErrorModeled::ValidationException(ValidationException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// This operation's modelled 503: "no destination of the routing target could serve the
+/// request" (`ServiceUnavailableException`'s own model doc).
+fn service_unavailable(message: impl Into<String>) -> InvokeInferenceRouterAsyncError {
+    InvokeInferenceRouterAsyncErrorModeled::ServiceUnavailableException(
+        ServiceUnavailableException {
+            message: Some(message.into()),
+        },
+    )
+    .into()
+}
+
+/// This operation's modelled 500 `InternalFailure`, for a fault of this process rather than
+/// of the request.
+fn internal_failure(message: impl Into<String>) -> InvokeInferenceRouterAsyncError {
+    InvokeInferenceRouterAsyncErrorModeled::InternalFailure(InternalFailure {
+        message: Some(message.into()),
+    })
+    .into()
 }

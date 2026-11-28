@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op InvokeInferenceRouter
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `InvokeInferenceRouter`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`InvokeInferenceRouter::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The router's REAL-TIME route: it chooses one destination of the routing target the
+//! request names and answers with what that destination served, beside the destination's own
+//! ARN and the reason the router chose it.
+//!
+//! Everything it answers comes from this service's registry — which destinations the named
+//! target lists, which of them takes this request (`crate::state::select_destination`), and
+//! what that destination answers — so nothing here is a constant and two successive calls on
+//! a multi-destination target are answered by different destinations.
 //!
 //! ## Shape of an operation
 //!
@@ -219,18 +219,188 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `InvokeInferenceRouter` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(InvokeInferenceRouterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("InvokeInferenceRouter"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(internal_failure(crate::state::NO_STATE));
+        };
+
+        let now = ::std::time::SystemTime::now();
+        // Everything the clock already owes this service's own store is materialised before
+        // this request extends it: an accepted asynchronous submission whose outcome was due
+        // has it whether or not anybody called again.
+        state.lock().settle_async_submissions(now);
+
+        // This call, as this service's own log replays it. The `@sensitive` members (the
+        // body, `CustomAttributes`) are deliberately absent: only the body's SIZE is
+        // recorded.
+        let record = |outcome: crate::state::InvocationOutcome,
+                      chosen: Option<&crate::state::Selection>| {
+            let invocation = crate::state::RouterInvocation {
+                operation: Self::NAME,
+                inference_router_name: input.inference_router_name.clone(),
+                routing_target_name: input.routing_target_name.clone(),
+                routed_resource_arn: chosen.map(|selection| {
+                    selection.destination.routed_resource_arn.clone()
+                }),
+                routing_reason: chosen.map(|selection| selection.reason),
+                production_variant: chosen
+                    .and_then(|selection| selection.destination.production_variant.clone()),
+                request_bytes: input.body.len(),
+                content_type: input.content_type.clone(),
+                accept: input.accept.clone(),
+                inference_id: input.inference_id.clone(),
+                outcome,
+                at: now,
+            };
+            tracing::info!(
+                operation = Self::NAME,
+                inference_router = %invocation.inference_router_name,
+                routing_target = %invocation.routing_target_name,
+                routed_resource = invocation.routed_resource_arn.as_deref().unwrap_or_default(),
+                routing_reason = invocation.routing_reason.unwrap_or_default(),
+                request_bytes = invocation.request_bytes,
+                outcome = outcome.label(),
+                access_key_id = %::emulator_server::extract_akid(&ctx.parts().headers),
+                "sagemaker inference router invocation"
+            );
+            state.lock().record_invocation(invocation);
+        };
+
+        // The router and its routing target are this service's own configuration, so they are
+        // resolved in its registry: an invocation naming either one the registry does not hold
+        // addresses nothing, which is the modelled client-input refusal (HTTP 400
+        // `ValidationException`, "Check the inference router name, the routing target name,
+        // and the request parameters"), stated in the sentence the SageMaker family words a
+        // resource the account does not hold in (`crate::state::could_not_find`).
+        // The lookup is taken out OWNED and the guard released before anything else runs:
+        // the recording below takes the same lock, and this service's store is behind one
+        // non-reentrant mutex.
+        let lookup = state
+            .lock()
+            .resolve_target(&input.inference_router_name, &input.routing_target_name);
+        match lookup {
+            crate::state::TargetLookup::RouterNotFound => {
+                record(crate::state::InvocationOutcome::RouterNotFound, None);
+                return Err(validation(crate::state::could_not_find(
+                    crate::state::ROUTER_KIND_LABEL,
+                    &input.inference_router_name,
+                )));
+            }
+            crate::state::TargetLookup::RoutingTargetNotFound => {
+                record(crate::state::InvocationOutcome::RoutingTargetNotFound, None);
+                return Err(validation(crate::state::no_such_routing_target(
+                    &input.routing_target_name,
+                    &input.inference_router_name,
+                )));
+            }
+            crate::state::TargetLookup::Found(_) => {}
+        }
+
+        // The payload is examined HERE, after the request's addressing resolved: the router
+        // and the routing target a request names are read off the URI and the headers before
+        // its body is looked at, so a request naming neither is refused for that whatever it
+        // carries. "The body can't be empty" (`InvokeInferenceRouterInput$Body`) is a rule the
+        // model declares no `@length` minimum for, so the request boundary admits an empty
+        // payload and it is refused here, as the modelled `ValidationException`.
+        if input.body.is_empty() {
+            record(crate::state::InvocationOutcome::EmptyPayload, None);
+            return Err(validation(crate::state::EMPTY_BODY));
+        }
+
+        // THE SELECTION: which destination takes this request, and why — the one rule both
+        // routes of this service share, applied to the STORED routing target, so its cursor
+        // advances and the next request is distributed to the next destination. Taken out
+        // owned, for the same reason the lookup above is.
+        let selected = state
+            .lock()
+            .select(&input.inference_router_name, &input.routing_target_name);
+        let Some(selection) = selected else {
+            record(crate::state::InvocationOutcome::NoDestination, None);
+            return Err(service_unavailable(crate::state::no_destination(
+                &input.routing_target_name,
+                &input.inference_router_name,
+            )));
+        };
+        let destination = &selection.destination;
+
+        // A destination the router chose anyway because none of the target's destinations
+        // could take the request is not ready to serve the model, which is what
+        // `ModelNotReadyException` (HTTP 429) reports.
+        if !destination.ready {
+            record(
+                crate::state::InvocationOutcome::DestinationNotReady,
+                Some(&selection),
+            );
+            return Err(InvokeInferenceRouterErrorModeled::ModelNotReadyException(
+                ModelNotReadyException {
+                    message: Some(format!(
+                        "{} Retry the request later.",
+                        crate::state::not_ready(&destination.routed_resource_arn)
+                    )),
+                },
+            )
+            .into());
+        }
+
+        // What the destination ANSWERS is the destination's own, read from the registry entry
+        // the selection chose — never built here. A destination that answers nothing is one
+        // that did not respond, which the modelled `ServiceUnavailableException` (HTTP 503)
+        // reports ("no destination of the routing target could serve the request, or a
+        // destination didn't respond"), rather than a body this route invented for it.
+        let Some(answer) = destination.response.clone() else {
+            record(
+                crate::state::InvocationOutcome::DestinationDidNotRespond,
+                Some(&selection),
+            );
+            return Err(service_unavailable(crate::state::no_response(
+                &destination.routed_resource_arn,
+            )));
+        };
+        record(crate::state::InvocationOutcome::Served, Some(&selection));
+        Ok(InvokeInferenceRouterOutput {
+            body: Some(answer.body),
+            content_type: answer.content_type,
+            // "The response includes the destination that served the request and the reason
+            // that the router chose it" (this operation's model doc): the ARN is the chosen
+            // destination's own, and the reason is the one the selection above decided.
+            invoked_routed_resource_arn: Some(destination.routed_resource_arn.clone()),
+            routing_reason: Some(selection.reason.to_string()),
+            // "The production variant of the destination endpoint that served the request"
+            // (`InvokedProductionVariant`): the variant the chosen destination is deployed on,
+            // when it is deployed on one.
+            invoked_production_variant: destination.production_variant.clone(),
+            // "This is the value that the model container of the destination returned,
+            // unchanged" (`CustomAttributes`): the DESTINATION's value, so it is reported only
+            // where the destination answers one. The request's own is never echoed back — that
+            // would report as the destination's answer something the destination never said.
+            custom_attributes: answer.custom_attributes,
+        })
     }
+}
+
+/// This operation's modelled client-input error (HTTP 400): "The request isn't valid. Check
+/// the inference router name, the routing target name, and the request parameters, and then
+/// try again."
+fn validation(message: impl Into<String>) -> InvokeInferenceRouterError {
+    InvokeInferenceRouterErrorModeled::ValidationException(ValidationException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// This operation's modelled 503: "no destination of the routing target could serve the
+/// request" (`ServiceUnavailableException`'s own model doc).
+fn service_unavailable(message: impl Into<String>) -> InvokeInferenceRouterError {
+    InvokeInferenceRouterErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// This operation's modelled 500 `InternalFailure`, for a fault of this process rather than
+/// of the request.
+fn internal_failure(message: impl Into<String>) -> InvokeInferenceRouterError {
+    InvokeInferenceRouterErrorModeled::InternalFailure(InternalFailure {
+        message: Some(message.into()),
+    })
+    .into()
 }

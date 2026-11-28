@@ -496,48 +496,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// request's `Filename` cannot be used — naming the member and the constraint it broke,
 /// since that is what the caller can correct.
 ///
-/// The endpoint's configured `S3OutputPath` is the base; `S3OutputPathExtension` is "the
-/// path extension that is appended to the Amazon S3 output path", so it becomes an extra
-/// path segment; and the object is named by `Filename` when the caller supplies one, else
-/// by the inference id ("If not specified, Amazon SageMaker AI generates a filename based
-/// on the inference ID").
+/// The composition itself — the endpoint's configured `S3OutputPath`, the request's
+/// `S3OutputPathExtension` as a further path segment, and the object named by `Filename` or
+/// by the inference id — is the ONE derivation both SageMaker planes that accept an
+/// asynchronous submission report a location from
+/// (`service_common::sagemaker_async_inference_output`), so this route and the inference
+/// router's cannot answer different URIs for the same submission.
 ///
-/// The extension's segments are spliced in as the member wrote them — `.` and `..`
-/// included, since `S3OutputPathExtension`'s pattern
-/// (`^(?!s3:|https:)[a-zA-Z0-9!_.*'()/-]+$`) admits them, an S3 key is the string it was
-/// given and nothing here ever resolves the reported key. The one normalisation is
-/// DELIBERATE and structural: a leading or trailing `/` and an empty segment are dropped,
-/// so the extension joins the configured path with exactly one separator and the reported
-/// key carries no `//`. A `Filename` the member's own modelled pattern does not admit is
-/// refused by the caller BEFORE this is reached (see [`filename_is_modelled`] and
-/// [`filename_refusal`]), so every value that gets here can be spliced.
+/// A `Filename` the member's own modelled pattern does not admit is refused by the caller
+/// BEFORE this is reached (see [`filename_is_modelled`] and [`filename_refusal`]), so every
+/// value that gets here can be spliced.
 fn output_location(
     s3_output_path: &str,
     extension: Option<&str>,
     filename: Option<&str>,
     inference_id: &str,
 ) -> String {
-    let mut location = s3_output_path.trim_end_matches('/').to_string();
-    if let Some(extension) = extension {
-        let extension = extension.trim_matches('/');
-        let segments: Vec<&str> = extension
-            .split('/')
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        if !segments.is_empty() {
-            location.push('/');
-            location.push_str(&segments.join("/"));
-        }
-    }
-    location.push('/');
-    match filename {
-        Some(filename) => location.push_str(filename),
-        None => {
-            location.push_str(inference_id);
-            location.push_str(".out");
-        }
-    }
-    location
+    ::service_common::sagemaker_async_inference_output::output_location(
+        s3_output_path,
+        extension,
+        filename,
+        inference_id,
+    )
 }
 
 /// The refusal sentence for a `Filename` [`filename_is_modelled`] rejects: it names the
@@ -581,11 +561,13 @@ fn filename_is_modelled(filename: &str) -> bool {
 }
 
 /// Where the failure payload of one async invocation is stored: the endpoint's configured
-/// `S3FailurePath` plus the inference id's error object.
+/// `S3FailurePath` plus the inference id's error object — the same derivation every
+/// SageMaker plane that accepts an asynchronous submission reports one from
+/// (`service_common::sagemaker_async_inference_output`).
 fn failure_location(s3_failure_path: &str, inference_id: &str) -> String {
-    format!(
-        "{}/{inference_id}-error.out",
-        s3_failure_path.trim_end_matches('/')
+    ::service_common::sagemaker_async_inference_output::failure_location(
+        s3_failure_path,
+        inference_id,
     )
 }
 

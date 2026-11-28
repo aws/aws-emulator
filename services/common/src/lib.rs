@@ -901,6 +901,14 @@ pub mod s3_bucket_name;
 /// emulator's own Amazon S3 holds that object or bucket, for every service that is pointed
 /// at an S3 location and has to resolve it before it can accept the work.
 pub mod s3_uri;
+/// The ONE derivation of WHERE an asynchronous SageMaker inference reports — the response
+/// object's Amazon S3 URI and the failure object's beside it — for every SageMaker plane
+/// that accepts a submission and has to answer the caller the locations it will be able to
+/// read.
+pub mod sagemaker_async_inference_output;
+/// The ONE sentence the SageMaker family states a resource the account does not hold in, for
+/// every service that resolves a reference to one.
+pub mod sagemaker_resource_refusal;
 /// The account's EMAIL IDENTITY registry, shared by the two SES surfaces: the set of
 /// identities one account holds and the verification state of each, written by
 /// whichever surface records or deletes one and read by both.

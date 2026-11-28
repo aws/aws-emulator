@@ -7,8 +7,10 @@ publish = false
 build = "build.rs"
 
 [dependencies]
-# The shared request-claim rule for the SigV4 signing name every SageMaker-family
-# service shares.
+# The shared request-claim rule for the SigV4 signing name every SageMaker-family service
+# shares, the one ARN parse this workspace has (a destination is named by ARN), the shared
+# mixer a generated `InferenceId` is minted by, and the Amazon S3 output location an
+# asynchronous inference response is reported at.
 service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
