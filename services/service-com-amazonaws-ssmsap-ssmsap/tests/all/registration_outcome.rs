@@ -423,10 +423,12 @@ async fn a_start_answers_the_registration_outcome_of_the_application_it_names() 
 
 /// The `OperationId`s of the records of type `op_type` filed against `application_id`.
 ///
-/// `pub(crate)` so the suite about what the whole CLASS of calls that move an
-/// application's own `Status` answers for a settled-failed registration
-/// (`tests/all/application_status_move_refusal.rs`) reads the work a refused call did NOT
-/// file through THIS one helper, rather than spelling a second variant of it.
+/// `pub(crate)` so every suite about what a call answers for a registration that did not
+/// complete successfully reads the work a refused call did NOT file through THIS one helper,
+/// rather than spelling a second variant of it: the one about the whole CLASS of calls that
+/// move an application's own `Status` (`tests/all/application_status_move_refusal.rs`) and the
+/// one about the precondition a settings update has
+/// (`tests/all/settings_update_precondition.rs`).
 pub(crate) async fn records_of_type(
     emulator: &WithEc2,
     application_id: &str,

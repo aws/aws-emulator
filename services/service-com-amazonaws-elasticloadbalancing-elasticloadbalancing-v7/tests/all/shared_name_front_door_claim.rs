@@ -8,13 +8,16 @@
 //! door's claim is bounded by its OWN modelled wire surface — an `awsQuery` endpoint posts
 //! every action to the root path and names the API in the envelope
 //! (`smithy_query(query="service_info")`: this model publishes `aws.auth#sigv4` name
-//! `elasticloadbalancing` with protocol `awsQuery`) — and a request addressed anywhere
-//! else on that key is left to the service that names itself there, which for the
-//! `rpcv2Cbor` peer of this name is its own `/service/<Service>/operation/<Operation>`
-//! path. Nothing on the key may be claimed twice (`500 AmbiguousService`), and a path no
-//! mounted model publishes is honestly the router's `404 UnknownService` rather than an
-//! answer from an endpoint that does not serve it (the rule
-//! `src/service.rs::can_handle` and `service_common::claims_modeled_path` implement).
+//! `elasticloadbalancing` with protocol `awsQuery`) — plus a request ADDRESSED TO the
+//! endpoint that name is the prefix of, which names no form of its `rpcv2Cbor` peer: the API
+//! published there answers that one in its own envelope, as the unresolvable request it is
+//! (the claim `src/service.rs::can_handle` states). A request addressed anywhere else on that
+//! key is left to the service that names itself there, which for the `rpcv2Cbor` peer of this
+//! name is its own `/service/<Service>/operation/<Operation>` path. Nothing on the key may be
+//! claimed twice (`500 AmbiguousService`), and a request this front door declines reaches
+//! nobody here, which is honestly the router's `404 UnknownService` rather than an answer from
+//! an endpoint that does not serve it (the rule `src/service.rs::can_handle` and
+//! `service_common::claims_modeled_path` implement).
 //!
 //! What this suite owns, and what it does NOT: the ROUTER-level tables with every service
 //! of the shared name mounted together live in `core/router/tests/all/` — the two query
@@ -72,10 +75,14 @@ const ROWS: &[Row] = &[
         claim: Claim::Elsewhere,
     },
     Row {
+        // Addressed AT this endpoint — the host's first label is this signing name — on a
+        // path no model of this API binds and no form of its `rpcv2Cbor` peer: the API
+        // published at the endpoint the request reached is what answers it, in its own
+        // envelope, as the unresolvable request it is.
         case: "a REST path no Elastic Load Balancing model binds",
         signing_name: "elasticloadbalancing",
         path: "/2012-06-01/load-balancers",
-        claim: Claim::Elsewhere,
+        claim: Claim::FrontDoor,
     },
     Row {
         case: "the root path signed for another service's key",

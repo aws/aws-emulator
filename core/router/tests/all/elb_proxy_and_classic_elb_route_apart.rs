@@ -74,9 +74,14 @@ const ROWS: &[Row] = &[
     },
     Row {
         // The same wire on ELB Proxy's own endpoint host, whose first label is its
-        // `endpointPrefix` rather than the shared signing name: no service of this family
-        // publishes that key, so the request reaches nobody — the router's
-        // `404 UnknownService`, not an ambiguity.
+        // `endpointPrefix` rather than the shared signing name: an unsigned request
+        // resolves its key from that label, and the service PUBLISHED at that endpoint is
+        // what answers its own wire form there — otherwise a request would reach nobody at
+        // the very endpoint this service serves (the claim
+        // `services/service-com-amazonaws-elbproxy-elbproxy/src/service.rs` states for its
+        // signing name AND its endpoint prefix). The query front door declines it: that
+        // host's label is not its signing name and the path is not the root its envelope
+        // posts to, so one request still keeps one claimant.
         case: "an unsigned cbor request on the ELB Proxy endpoint host",
         host: PROXY_HOST,
         uri: PROXY_PATH,
@@ -85,7 +90,7 @@ const ROWS: &[Row] = &[
             ("smithy-protocol", CBOR_PROTOCOL),
         ],
         body: CBOR_EMPTY_MAP,
-        claimed_by: &[],
+        claimed_by: &["elbproxy"],
     },
     Row {
         // The other wire, unsigned on the same host: the query front door that owns the

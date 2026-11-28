@@ -6944,38 +6944,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "malachite-base"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1670019dae28ce187d8063adaa119a255dd4ebccd65687d8a331293190e3969f"
-dependencies = [
- "hashbrown 0.16.1",
- "itertools 0.14.0",
- "libm",
- "ryu",
-]
-
-[[package]]
 name = "malachite-bigint"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d673b71d4521ba5ca045cd23d62eda6b321474ff231d6a1698cc9b892851f2"
 dependencies = [
- "malachite-base 0.12.0",
- "malachite-nz 0.12.0",
- "num-integer",
- "num-traits",
- "paste",
-]
-
-[[package]]
-name = "malachite-bigint"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb1088b157465cf5c93ee088c60c72825307d62a60e78b2263aa45d84f5cbe5e"
-dependencies = [
- "malachite-base 0.15.0",
- "malachite-nz 0.15.0",
+ "malachite-base",
+ "malachite-nz",
  "num-integer",
  "num-traits",
  "paste",
@@ -6989,20 +6964,7 @@ checksum = "ec0b3ad1a8d2a722fbfad2e1fc7c5044f7ab38e027240cfbcb086a62ca95c9c2"
 dependencies = [
  "itertools 0.14.0",
  "libm",
- "malachite-base 0.12.0",
- "wide",
-]
-
-[[package]]
-name = "malachite-nz"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b9522dacf7850e1cf1ca325ee57fe5e29d35f4929365acf233af363f65cf8c5"
-dependencies = [
- "bytemuck",
- "itertools 0.14.0",
- "libm",
- "malachite-base 0.15.0",
+ "malachite-base",
  "wide",
 ]
 
@@ -7014,8 +6976,8 @@ checksum = "7841d36b3f5d39f1c65d4bcc45cb104fde66cf7eafc10da3922483fa2847cb94"
 dependencies = [
  "itertools 0.14.0",
  "libm",
- "malachite-base 0.12.0",
- "malachite-nz 0.12.0",
+ "malachite-base",
+ "malachite-nz",
 ]
 
 [[package]]
@@ -8459,7 +8421,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8538,7 +8500,7 @@ checksum = "bc10e50b7a1f2cc3887e983721cb51fc7574be0066c84bff3ef9e5c096e8d6d5"
 dependencies = [
  "libc",
  "libm",
- "malachite-bigint 0.15.0",
+ "malachite-bigint",
  "num-complex",
  "num-integer",
  "num-traits",
@@ -8548,7 +8510,7 @@ dependencies = [
 name = "python-guest-substrate"
 version = "0.1.0"
 dependencies = [
- "malachite-bigint 0.12.0",
+ "malachite-bigint",
  "nix 0.31.4",
  "rustpython-pylib",
  "rustpython-ruff_python_ast",
@@ -9331,7 +9293,7 @@ dependencies = [
  "indexmap 2.14.2",
  "itertools 0.15.0",
  "log",
- "malachite-bigint 0.12.0",
+ "malachite-bigint",
  "memchr",
  "num-complex",
  "num-traits",
@@ -9363,8 +9325,8 @@ dependencies = [
  "libc",
  "libz-rs-sys",
  "lock_api",
- "malachite-base 0.12.0",
- "malachite-bigint 0.12.0",
+ "malachite-base",
+ "malachite-bigint",
  "malachite-q",
  "md-5 0.11.0",
  "memchr",
@@ -9411,7 +9373,7 @@ dependencies = [
  "bitflagset",
  "itertools 0.15.0",
  "lz4_flex",
- "malachite-bigint 0.12.0",
+ "malachite-bigint",
  "num-complex",
  "num-traits",
  "rustpython-ruff_source_file",
@@ -9618,7 +9580,7 @@ dependencies = [
  "indexmap 2.14.2",
  "itertools 0.15.0",
  "libc",
- "malachite-bigint 0.12.0",
+ "malachite-bigint",
  "memchr",
  "mt19937",
  "num-complex",
@@ -9683,7 +9645,7 @@ dependencies = [
  "jiff 0.2.46",
  "libc",
  "log",
- "malachite-bigint 0.12.0",
+ "malachite-bigint",
  "memchr",
  "num-complex",
  "num-integer",

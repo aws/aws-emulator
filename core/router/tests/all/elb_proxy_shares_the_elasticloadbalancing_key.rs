@@ -144,13 +144,29 @@ fn rows() -> Vec<Row> {
             claimants: vec![PROXY],
         },
         Row {
-            // An RPC path naming a service NEITHER model declares: claimed by nobody,
-            // which is the router's honest `404 UnknownService` rather than an ambiguity —
-            // the rule `service_common::claims_modeled_route` states for a path no
-            // emulated model publishes.
+            // An RPC path naming a service NEITHER model declares, ADDRESSED TO the Elastic
+            // Load Balancing endpoint: the proxy declines it (the path names another
+            // service), and the query API published at that endpoint answers it in its own
+            // envelope as the unresolvable request it is — the claim
+            // `services/service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7/src/service.rs`
+            // states for a request that addresses this endpoint and names no form of its RPC
+            // peer. One claimant, which is what this table is about; the row below, addressed
+            // at a bare emulator endpoint instead, is the side that reaches nobody.
             case: "an rpcv2Cbor path naming another service".to_string(),
             addressed: Addressed::Signed(SHARED_SIGNING_NAME),
             host: "elasticloadbalancing.us-east-1.amazonaws.com",
+            path: rpc_path("SomeOtherService", "ListProxies"),
+            claimants: vec![CLASSIC],
+        },
+        Row {
+            // The same RPC path on a bare emulator endpoint: nothing about the request
+            // addresses either endpoint of this family and no emulated model publishes that
+            // path, so it is claimed by nobody — the router's honest `404 UnknownService`
+            // rather than an ambiguity.
+            case: "an rpcv2Cbor path naming another service on a bare emulator endpoint"
+                .to_string(),
+            addressed: Addressed::Signed(SHARED_SIGNING_NAME),
+            host: "localhost:9297",
             path: rpc_path("SomeOtherService", "ListProxies"),
             claimants: vec![],
         },

@@ -213,6 +213,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .map_err(UpdateApplicationSettingsErrorModeled::ConflictException)?;
 
+        // The settings of an application are the settings of the SAP system its
+        // registration established, so an application whose registration has not
+        // completed successfully has no such system for an update to apply to: the
+        // credentials an update declares reach a SAP HANA database the service never
+        // discovered, a `Backint` configuration installs the agent on nothing, and a
+        // `DatabaseArn` replaces a SAP HANA connection that was never established. It is
+        // refused with the modelled `ConflictException`, in the one wording this service
+        // states that precondition with — the same refusal every other call that acts on
+        // the managed system gives (`crate::state::not_registered_successfully`) — and
+        // BEFORE anything is written, so neither an operation record nor a database
+        // derived from the credentials is left behind for an application the service
+        // manages nothing behind.
+        //
+        // Asked AFTER the in-flight gate above, because a registration still UNDER WAY is
+        // itself the change the clock owes this application: that gate decides and words
+        // what is in flight on it for every control call of this service, so what this
+        // call reports in that window is the operation it has to wait for. Past the gate
+        // the registration has settled, and this is the answer for one that settled
+        // without completing.
+        if !application.registered_successfully() {
+            return Err(UpdateApplicationSettingsErrorModeled::ConflictException(
+                crate::state::not_registered_successfully(),
+            )
+            .into());
+        }
+
         // What the credentials of this application become. Computed — and refused —
         // BEFORE anything is written, so an update the application cannot take leaves
         // the credentials it holds untouched.
