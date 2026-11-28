@@ -4,9 +4,11 @@
 //! association is refused with, end to end over the awsQuery wire.
 //!
 //! The rule this suite pins: the create that collides with an existing association
-//! is refused 400 under the `Error.Code` Amazon SES puts on the query wire —
-//! `TrackingOptionsAlreadyExists`, the error shape's name with the trailing
-//! `Exception` dropped, as every other code of this surface carries it — and with
+//! is refused 400 under the `Error.Code` Amazon SES puts on the query wire — the
+//! `awsQueryError` code the error shape's model annotation carries
+//! (`smithy_query(query="shape", shape="TrackingOptionsAlreadyExistsException")`),
+//! which for the tracking-options pair keeps the trailing `Exception` most codes
+//! of this surface drop — and with
 //! the sentence that NAMES the configuration set it rejected, so a client that
 //! configured several sets in one run can tell which one is already configured.
 //! The existing association is left exactly as it was.
@@ -91,7 +93,7 @@ async fn described_tracking_domain(router: &MultiServiceRouter, name: &str) -> O
 /// and the sentence naming the set that is already configured.
 fn already_an_association(name: &str) -> (Option<String>, Option<String>) {
     (
-        Some("TrackingOptionsAlreadyExists".to_string()),
+        Some("TrackingOptionsAlreadyExistsException".to_string()),
         Some(format!(
             "There is already a tracking options for configuration set <{name}>"
         )),

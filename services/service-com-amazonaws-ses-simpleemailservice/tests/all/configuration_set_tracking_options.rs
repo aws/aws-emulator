@@ -161,12 +161,15 @@ type Sentence = fn(&str) -> String;
 
 /// The refusal a tracking-options operation that needs an existing association
 /// answers for a set carrying none: the modelled
-/// `TrackingOptionsDoesNotExistException`, which SES renders on the query wire
-/// as `<Code>TrackingOptionsDoesNotExist</Code>`, and the one sentence it
-/// reports that absence with, naming the set the request supplied.
+/// `TrackingOptionsDoesNotExistException`, rendered on the query wire under the
+/// `awsQueryError` code its model annotation carries
+/// (`smithy_query(query="shape", shape="TrackingOptionsDoesNotExistException")`),
+/// which keeps the trailing `Exception` most codes of this surface drop, and the
+/// one sentence it reports that absence with, naming the set the request
+/// supplied.
 fn no_such_association(name: &str) -> (Option<String>, Option<String>) {
     (
-        Some("TrackingOptionsDoesNotExist".to_string()),
+        Some("TrackingOptionsDoesNotExistException".to_string()),
         Some(format!(
             "There are no tracking options for configuration set <{name}>"
         )),
@@ -174,12 +177,14 @@ fn no_such_association(name: &str) -> (Option<String>, Option<String>) {
 }
 
 /// The refusal a create answers for a set that ALREADY carries an association:
-/// the modelled `TrackingOptionsAlreadyExistsException`, which SES renders on the
-/// query wire as `<Code>TrackingOptionsAlreadyExists</Code>`, and the one sentence
-/// it reports the conflict with, naming the set the request supplied.
+/// the modelled `TrackingOptionsAlreadyExistsException`, rendered on the query
+/// wire under the `awsQueryError` code its model annotation carries
+/// (`smithy_query(query="shape", shape="TrackingOptionsAlreadyExistsException")`),
+/// the suffix kept, and the one sentence it reports the conflict with, naming the
+/// set the request supplied.
 fn already_an_association(name: &str) -> (Option<String>, Option<String>) {
     (
-        Some("TrackingOptionsAlreadyExists".to_string()),
+        Some("TrackingOptionsAlreadyExistsException".to_string()),
         Some(format!(
             "There is already a tracking options for configuration set <{name}>"
         )),

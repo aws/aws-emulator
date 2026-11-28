@@ -120,16 +120,6 @@ pub fn already_tracking_options_message(configuration_set_name: &str) -> String 
     format!("There is already a tracking options for configuration set <{configuration_set_name}>")
 }
 
-/// The `Error.Code` Amazon SES puts on the query wire for that refusal.
-///
-/// Every other refusal of this surface is coded by its error shape's name with the
-/// trailing `Exception` dropped — `ConfigurationSetDoesNotExist`,
-/// `InvalidTrackingOptions`, `TrackingOptionsDoesNotExist` — and this one is no
-/// exception on the wire, even though the shape is annotated with the undropped
-/// spelling. The code is the only thing a client branches on, so it is stated here
-/// rather than taken from the annotation.
-const TRACKING_OPTIONS_ALREADY_EXISTS_CODE: &str = "TrackingOptionsAlreadyExists";
-
 /// Refuse the request as `InvalidTrackingOptions` (HTTP 400), the error a
 /// tracking-options write reports for a custom redirect domain Amazon SES would
 /// not redirect through — the same refusal, in the same wording, as
@@ -224,8 +214,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Indicates that the configuration set you specified already contains a
         // TrackingOptions object": the existing association is kept, and
         // `UpdateConfigurationSetTrackingOptions` is what replaces it.
+        //
+        // The `Error.Code` a query client branches on is the one the error
+        // shape's `awsQueryError` annotation carries
+        // (`smithy_query(query="shape", shape="TrackingOptionsAlreadyExistsException")`):
+        // most codes of this surface are the shape name with the trailing
+        // `Exception` dropped, and the tracking-options pair is annotated with the
+        // suffix kept, so the annotation — not the general habit — is what the
+        // refusal is coded by.
         if configuration_set.custom_redirect_domain.is_some() {
-            return Err(crate::scaffolded::Scaffolded::modeled_with_query_code(
+            return Err(
                 CreateConfigurationSetTrackingOptionsErrorModeled::TrackingOptionsAlreadyExistsException(
                     TrackingOptionsAlreadyExistsException {
                         configuration_set_name: Some(name.clone()),
@@ -235,9 +233,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         // restating the error shape's documentation.
                         message: Some(already_tracking_options_message(&name)),
                     },
-                ),
-                TRACKING_OPTIONS_ALREADY_EXISTS_CODE,
-            ));
+                )
+                .into(),
+            );
         }
         configuration_set.custom_redirect_domain = Some(domain);
         // The set's tracking options belong to the ACCOUNT's set, so the change is published

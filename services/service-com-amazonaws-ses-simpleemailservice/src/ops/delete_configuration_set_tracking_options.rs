@@ -190,11 +190,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // domain is the delete itself: the sub-resource exists exactly while the
         // set holds one, and nothing else on the set changes.
         //
-        // On the query wire this shape is the error code
-        // `TrackingOptionsDoesNotExist`, which the shape's `awsQueryError` code
-        // in `smithy-model/` now carries (it had been the shape name, suffix and
-        // all, which is not the code SES answers with); the same code therefore
-        // reaches a client from `UpdateConfigurationSetTrackingOptions` too.
+        // On the query wire this shape is coded by the `awsQueryError` code its
+        // model annotation carries
+        // (`smithy_query(query="shape", shape="TrackingOptionsDoesNotExistException")`),
+        // which keeps the trailing `Exception` most codes of this surface drop;
+        // the same code therefore reaches a client from
+        // `UpdateConfigurationSetTrackingOptions` too.
         if configuration_set.custom_redirect_domain.take().is_none() {
             return Err(
                 DeleteConfigurationSetTrackingOptionsErrorModeled::TrackingOptionsDoesNotExistException(

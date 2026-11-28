@@ -236,7 +236,7 @@ async fn every_refused_operation_names_the_request_in_the_query_error_envelope()
             action: "DeleteConfigurationSetTrackingOptions",
             params: vec![field("ConfigurationSetName", live_set)],
             status: 400,
-            code: Some("TrackingOptionsDoesNotExist"),
+            code: Some("TrackingOptionsDoesNotExistException"),
         },
         Row {
             // A framework refusal inside a matched operation: `TlsPolicy` is an enum over

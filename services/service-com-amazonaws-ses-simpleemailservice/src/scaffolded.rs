@@ -281,7 +281,7 @@ pub enum Scaffolded<E> {
     /// The status and the body are the model's own; only the code a query client
     /// branches on is the handler's. Every other refusal of this surface carries its
     /// shape name with the trailing `Exception` dropped (`ConfigurationSetDoesNotExist`,
-    /// `InvalidTrackingOptions`, `TrackingOptionsDoesNotExist`), and a few shapes are
+    /// `InvalidTrackingOptions`, `TemplateDoesNotExist`), and a few shapes are
     /// annotated with the undropped spelling, which is not what a client sees. Reach
     /// for this ONLY with recorded evidence of the code the service answers with, and
     /// cite it where you construct it: a code chosen without evidence silently
