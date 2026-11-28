@@ -66,9 +66,15 @@ fn patch(path: &str, value: &str) -> Value {
     json!({ "patchOperations": [{ "op": "replace", "path": path, "value": value }] })
 }
 
-/// Every request of this slice that resolves a `restApiId` from the URI, with `api` the
-/// identifier under test. `deployment` names a record of a DIFFERENT, stored API, so the
-/// only thing wrong with the request is the API identifier.
+/// Every request of this slice whose own TARGET is the API and that resolves a `restApiId`
+/// from the URI, with `api` the identifier under test: the record itself, a collection of it,
+/// and the creates that snapshot it. `deployment` names a record of a DIFFERENT, stored API, so
+/// the only thing wrong with the request is the API identifier.
+///
+/// A call addressed BY a record inside the api is not among them: such a call resolves the pair
+/// as one lookup for that record and reports the RECORD rather than the api identifier, which
+/// is the rule `crate::deployment_addressed_refusals` owns for a deployment-addressed call and
+/// `crate::nested_record_refusals` for the records under a resource.
 fn requests(
     api: &str,
     deployment: &str,
@@ -105,12 +111,6 @@ fn requests(
             "POST",
             format!("/restapis/{api}/deployments"),
             Some(json!({})),
-        ),
-        (
-            "GetDeployment",
-            "GET",
-            format!("/restapis/{api}/deployments/{deployment}"),
-            None,
         ),
         (
             "CreateStage",

@@ -518,13 +518,28 @@ async fn a_stack_s_access_control_resources_are_created_in_api_gateway() {
         for (what, id) in [
             ("the api key", &key_id),
             ("the usage plan", &plan_id),
-            ("the usage plan key", &plan_key_id),
             ("the authorizer", &authorizer_id),
         ] {
             assert!(
                 is_minted_id(id),
                 "case {case:?}: expected {what}'s published id to be an identifier API Gateway \
                  minted ({MINTED_ID_LEN} lowercase alphanumerics), got {id:?}"
+            );
+        }
+        // An ASSOCIATION is addressed by a PAIR — `GetUsagePlanKey` takes the plan and the key
+        // — so no single minted id names one: what the stack publishes for it is both halves,
+        // each of them an identifier API Gateway minted.
+        let (published_key, published_plan) = plan_key_id
+            .split_once(':')
+            .unwrap_or((plan_key_id.as_str(), ""));
+        for (what, id) in [
+            ("the usage plan key's key half", published_key),
+            ("the usage plan key's plan half", published_plan),
+        ] {
+            assert!(
+                is_minted_id(id),
+                "case {case:?}: expected {what} to be an identifier API Gateway minted \
+                 ({MINTED_ID_LEN} lowercase alphanumerics), got {id:?} out of {plan_key_id:?}"
             );
         }
 
@@ -650,15 +665,17 @@ async fn a_stack_s_access_control_resources_are_created_in_api_gateway() {
              declaration names an api stage ({declares_a_stage}), got {staged:?}"
         );
 
-        // And the association: its own id is the id of the key it put in the plan, and its
-        // read lives under the plan that holds it.
+        // And the association: it is addressed by the key it put in the plan AND the plan that
+        // holds it, so the identifier the stack publishes for it carries both halves — and its
+        // read lives under that plan.
         assert_eq!(
-            plan_key_id, key_id,
+            plan_key_id,
+            format!("{key_id}:{plan_id}"),
             "case {case:?}: expected the association's published id to be the id of the key it \
-             put in the plan ({key_id}), got {plan_key_id:?}"
+             put in the plan beside that plan ({key_id}:{plan_id}), got {plan_key_id:?}"
         );
         let (status, association) =
-            apigateway(&router, &format!("/usageplans/{plan_id}/keys/{plan_key_id}")).await;
+            apigateway(&router, &format!("/usageplans/{plan_id}/keys/{key_id}")).await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected HTTP 200 from GetUsagePlanKey for the association the \

@@ -740,14 +740,70 @@ pub(crate) fn return_values(
             attributes.insert("Id".to_string(), id.clone());
             (id, attributes)
         }
-        // "Ref returns the usage plan key ID"; Fn::GetAtt: Id. An association's id is the id
-        // of the API KEY it put in the plan, which only API Gateway produces either, so the
-        // stand-in takes the same shape and is replaced by what `CreateUsagePlanKey`
-        // answered.
+        // "Ref returns the usage plan key ID"; Fn::GetAtt: Id. An association's own id is the
+        // id of the API KEY it put in the plan, which only API Gateway produces, so the
+        // stand-in takes the same shape and is replaced by what `CreateUsagePlanKey` answered.
+        //
+        // The identifier the RESOURCE is published under carries both halves of the pair every
+        // call on an association takes — the key's id and the plan that holds it
+        // ([`apigateway_usage_plan_key_identity`]) — so what `Ref` resolves to is a value a
+        // client can address the association by, and the `Id` attribute the type publishes is
+        // that same identifier rather than one half of it.
         APIGATEWAY_USAGE_PLAN_KEY => {
-            let id = api_gateway_assigned_id(APIGATEWAY_USAGE_PLAN_KEY_ID_SALT, name);
-            attributes.insert("Id".to_string(), id.clone());
-            (id, attributes)
+            let key_id = api_gateway_assigned_id(APIGATEWAY_USAGE_PLAN_KEY_ID_SALT, name);
+            let usage_plan_id = properties
+                .get(APIGATEWAY_USAGE_PLAN_ID_PROPERTY)
+                .and_then(|value| text(value, scope, 0, budget))
+                .filter(|declared| !declared.is_empty())
+                .unwrap_or_default();
+            let identity = apigateway_usage_plan_key_identity(&key_id, &usage_plan_id);
+            attributes.insert("Id".to_string(), identity.clone());
+            (identity, attributes)
+        }
+        // A documentation SNAPSHOT publishes no `Fn::GetAtt` attribute either, and `Ref`
+        // returns the identifier API Gateway addresses one by: the version it was created
+        // under, inside the api that holds it
+        // ([`apigateway_documentation_version_identity`]). The version is this resource's own
+        // name, which the naming rules read off its declaration
+        // ([`declared_name_property`]), and the api is a property the declaration states.
+        APIGATEWAY_DOCUMENTATION_VERSION => {
+            let api_id = properties
+                .get(APIGATEWAY_REST_API_ID_PROPERTY)
+                .and_then(|value| text(value, scope, 0, budget))
+                .unwrap_or_default();
+            if api_id.is_empty() {
+                (name.to_string(), attributes)
+            } else {
+                (
+                    apigateway_documentation_version_identity(name, &api_id),
+                    attributes,
+                )
+            }
+        }
+        // A GatewayResponse publishes no `Fn::GetAtt` attribute, and `Ref` returns the
+        // identifier API Gateway addresses one by: a customization of ONE response type of ONE
+        // api, which `PutGatewayResponse`, `GetGatewayResponse` and `DeleteGatewayResponse`
+        // each take as the `restApiId` and the `responseType` pair
+        // ([`apigateway_gateway_response_identity`]). Both halves are properties the
+        // declaration states, so the identifier is computed here and the create answers the
+        // same value.
+        APIGATEWAY_GATEWAY_RESPONSE => {
+            let api_id = properties
+                .get(APIGATEWAY_REST_API_ID_PROPERTY)
+                .and_then(|value| text(value, scope, 0, budget))
+                .unwrap_or_default();
+            let response_type = properties
+                .get(APIGATEWAY_RESPONSE_TYPE_PROPERTY)
+                .and_then(|value| text(value, scope, 0, budget))
+                .unwrap_or_default();
+            if api_id.is_empty() || response_type.is_empty() {
+                (name.to_string(), attributes)
+            } else {
+                (
+                    apigateway_gateway_response_identity(&api_id, &response_type),
+                    attributes,
+                )
+            }
         }
         // "Ref returns the VPC link ID"; Fn::GetAtt: VpcLinkId. API Gateway ASSIGNS the id —
         // a template names the link but not its identifier — so the stand-in takes the same

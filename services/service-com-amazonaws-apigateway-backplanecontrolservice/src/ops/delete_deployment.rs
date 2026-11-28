@@ -180,14 +180,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(crate::state::state_unavailable)?;
         let mut store = state.lock();
 
-        // Both identifiers are resolved against stored state before anything is removed,
-        // each naming its own record so the refusal says which one was not found — the
-        // same order `GetDeployment` and `UpdateDeployment` resolve them in.
-        let api = store.rest_apis.get_mut(&input.rest_api_id).ok_or_else(|| {
-            DeleteDeploymentErrorModeled::NotFoundException(NotFoundException {
-                message: Some(crate::state::no_such_rest_api(&input.rest_api_id)),
-            })
-        })?;
+        // Both identifiers are resolved against stored state before anything is removed, as
+        // ONE lookup for the deployment the URI addresses: either half resolving to nothing
+        // leaves that deployment unresolvable, so the refusal reports it — the same reading
+        // `GetDeployment` and `UpdateDeployment` resolve the pair with.
+        let api = store
+            .deployment_api_mut(&input.rest_api_id)
+            .map_err(|message| {
+                DeleteDeploymentErrorModeled::NotFoundException(NotFoundException {
+                    message: Some(message),
+                })
+            })?;
         if !api.deployments.contains_key(&input.deployment_id) {
             return Err(DeleteDeploymentErrorModeled::NotFoundException(NotFoundException {
                 message: Some(crate::state::NO_SUCH_DEPLOYMENT.to_string()),

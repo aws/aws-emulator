@@ -15,8 +15,9 @@
 //! The rows differ along what the rule generalises over rather than repeating one recorded
 //! call: how many parameters the operation binds (none, one path label, two), whether the
 //! call is served or refused, which refusal class it is (a 404 `NotFoundException` on the
-//! API the request addresses, the same class on a record inside it, a 400
-//! `BadRequestException` on a request the service will not act on) and whether the refusal's
+//! collection the request addresses, the same class on a record inside the API — whether it is
+//! the API or the record that names nothing — and a 400 `BadRequestException` on a request the
+//! service will not act on) and whether the refusal's
 //! sentence names something the request carried. Each row's expected status and code are the
 //! ones this service's model declares for that operation
 //! (`smithy_query(query="operation", operation="GetRestApis,GetDeployment,GetDeployments,\
@@ -363,6 +364,13 @@ async fn a_handlers_rest_api_calls_are_answered_by_the_service_that_models_them(
         &json!({ "description": "nothing to snapshot" }),
     )
     .await;
+    let wrong_api_collection = gateway(
+        &router,
+        "GET",
+        &format!("/restapis/{UNKNOWN_API}/deployments"),
+        &Value::Null,
+    )
+    .await;
 
     let rows = vec![
         Row {
@@ -391,8 +399,23 @@ async fn a_handlers_rest_api_calls_are_answered_by_the_service_that_models_them(
                 status: 404,
                 code: "NotFoundException",
                 client: wrong_api,
-                // This service names the identifier it could not resolve, so the sentence
-                // carries what the request sent.
+                // A read addressed BY a deployment resolves the api and the deployment as one
+                // lookup for that deployment, so either half naming nothing earns this
+                // service's FIXED deployment sentence rather than a sentence built from the
+                // api identifier the request sent.
+                quotes: None,
+            },
+        },
+        Row {
+            name: "a list whose API does not exist",
+            op: "get_deployments",
+            params: json!({ "restApiId": UNKNOWN_API }),
+            expect: Expect::Refused {
+                status: 404,
+                code: "NotFoundException",
+                client: wrong_api_collection,
+                // A collection's own target IS the api, so this service names the identifier
+                // it could not resolve and the sentence carries what the request sent.
                 quotes: Some(UNKNOWN_API.to_string()),
             },
         },

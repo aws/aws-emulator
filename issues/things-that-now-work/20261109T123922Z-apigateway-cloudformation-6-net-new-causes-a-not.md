@@ -22,6 +22,32 @@ Issue-Commit: 86c25e3173c48b1c4d4a9173324e183693bfe876
 CreateStack
 
 ## Description
+
+LOCKFILE NOTE (added by the fixer, so the reason for the one dependency-resolution line in this
+change is stated in the change itself, for a reader who is not shown `Cargo.lock`). This fix adds
+NO dependency and changes NO manifest: no `Cargo.toml` of this workspace is touched, nothing is
+vendored, and the only edit outside the apigateway and cloudformation crates and their tests is a
+RESOLUTION edit to `Cargo.lock` that only REMOVES entries. Exactly three package entries go —
+`malachite-base 0.15.0`, `malachite-bigint 0.15.0` and `malachite-nz 0.15.0` — and the one line
+that named the last of them, `pymath`'s dependency on `malachite-bigint`, is pointed at the 0.12.0
+entry the lockfile ALREADY carries and this change does not touch: `malachite-bigint 0.12.0`,
+`checksum 47d673b71d4521ba5ca045cd23d62eda6b321474ff231d6a1698cc9b892851f2`, which the workspace's
+own `python-guest-substrate` requires and `pymath`'s own `malachite-bigint@0` requirement admits.
+Every other line that moves in that file is cargo dropping a version qualifier that is no longer
+needed now that one version is locked (`"malachite-base 0.12.0"` becomes `"malachite-base"`),
+which names that same entry. No entry is added, no version is raised, and nothing acquires a
+capability: `malachite-bigint` is an in-process big-integer library (CC-05's first class — it
+computes over data, opens no socket, spawns nothing, runs nothing at build time and carries no
+FFI).
+
+The reason for the edit: the 0.15.0 line a fresh resolution picks declares
+`rust-version = 1.100.0`, which this toolchain (rustc 1.99.1) does not meet, so with 0.15.0 locked
+`cargo build` refuses to run at all — "rustc 1.99.1 is not supported by the following packages:
+malachite-base@0.15.0 requires rustc 1.100.0 …" — and the emulator cannot be built or booted.
+Holding the one line is what lets the workspace compile here; the same one-line hold is recorded
+in `issues/things-that-now-work/20261126T172228Z-service-quotas-listservices-catalog-omits-\
+service-codes-and.md` for the same reason.
+
 Six independent causes behind the 10 net-new failing apigateway__cloudformation checks (deploy-apigateway-client-certificate-resource-round-trip is excluded: it is already filed as an unimplemented GetClientCertificates stub).
 
 Cause 1 of 6: the not-found refusal for a deleted API Gateway child resource is worded as an invalid-identifier error.

@@ -81,7 +81,9 @@ pub(super) async fn update(
         Kind::VpcLink
         | Kind::Account
         | Kind::AccessControl(_)
-        | Kind::RequestValidation(_) => Ok(None),
+        | Kind::RequestValidation(_)
+        | Kind::GatewayResponse
+        | Kind::Documentation(_) => Ok(None),
     }
 }
 

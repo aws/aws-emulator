@@ -202,11 +202,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .map_err(patch_failure)?;
 
         let mut store = state.lock();
-        let api = store.rest_apis.get_mut(&input.rest_api_id).ok_or_else(|| {
-            UpdateDeploymentErrorModeled::NotFoundException(NotFoundException {
-                message: Some(crate::state::no_such_rest_api(&input.rest_api_id)),
-            })
-        })?;
+        // The `(restApiId, deploymentId)` pair is resolved as ONE lookup for the deployment
+        // the URI addresses, so an api that resolves to nothing is reported as the deployment
+        // that cannot be resolved rather than as the api above it.
+        let api = store
+            .deployment_api_mut(&input.rest_api_id)
+            .map_err(|message| {
+                UpdateDeploymentErrorModeled::NotFoundException(NotFoundException {
+                    message: Some(message),
+                })
+            })?;
 
         // Patched on a COPY of the record: a list whose later op is refused leaves the
         // stored deployment untouched, rather than keeping the ops before it.

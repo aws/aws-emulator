@@ -85,8 +85,8 @@ use crate::state::provisioner::{
     tags_of, API_GATEWAY_NOT_FOUND, API_GATEWAY_SIGNING_NAME,
 };
 use crate::state::template::{
-    APIGATEWAY_ACCOUNT, APIGATEWAY_CLIENT_CERTIFICATE, APIGATEWAY_DEPLOYMENT, APIGATEWAY_RESOURCE,
-    APIGATEWAY_REST_API, APIGATEWAY_VPC_LINK,
+    APIGATEWAY_ACCOUNT, APIGATEWAY_CLIENT_CERTIFICATE, APIGATEWAY_DEPLOYMENT,
+    APIGATEWAY_GATEWAY_RESPONSE, APIGATEWAY_RESOURCE, APIGATEWAY_REST_API, APIGATEWAY_VPC_LINK,
 };
 use crate::state::StoredResource;
 
@@ -123,6 +123,18 @@ mod in_place;
 /// names, so its arms are the only ones whose calls carry no identifier at all. Reached
 /// through the same [`Kind`].
 mod account;
+
+/// The customization of a response API GATEWAY ITSELF returns for an api, in a module of its
+/// own for the same reason: it is the one record here whose create is a PUT of the whole
+/// configuration rather than a create that mints a resource, so its arms are the only ones
+/// whose update is that same call. Reached through the same [`Kind`].
+mod gateway_response;
+
+/// The two types that carry an api's DOCUMENTATION — the part that documents one entity of it
+/// and the version that snapshots every part — in a module of their own so that neither file
+/// grows past the length a change to this repository may touch. They are reached through the
+/// same [`Kind`] every arm here is.
+mod documentation;
 
 /// The two resource types this module provisions that the template module does not name: it
 /// names the three whose `Ref` and `Fn::GetAtt` return an identifier API Gateway assigns
@@ -186,6 +198,13 @@ pub(in crate::state) enum Kind {
     /// arms are [`request_validation`]'s. Which of them it is travels with the kind, in the
     /// same position as the kind above.
     RequestValidation(request_validation::Kind),
+    /// `AWS::ApiGateway::GatewayResponse`, whose arms are [`gateway_response`]'s: the
+    /// customization of a response the api itself returns, rather than a resource of it.
+    GatewayResponse,
+    /// One of the two types that carry an api's DOCUMENTATION, whose arms are
+    /// [`documentation`]'s. Which of them it is travels with the kind, in the same position as
+    /// the kinds above.
+    Documentation(documentation::Kind),
 }
 
 /// The kind `resource_type` names, or `None` for a type this module does not own.
@@ -199,9 +218,13 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
         APIGATEWAY_VPC_LINK => Kind::VpcLink,
         APIGATEWAY_ACCOUNT => Kind::Account,
         APIGATEWAY_CLIENT_CERTIFICATE => Kind::ClientCertificate,
+        APIGATEWAY_GATEWAY_RESPONSE => Kind::GatewayResponse,
         _ => {
             if let Some(kind) = access_control::kind_of(resource_type) {
                 return Some(Kind::AccessControl(kind));
+            }
+            if let Some(kind) = documentation::kind_of(resource_type) {
+                return Some(Kind::Documentation(kind));
             }
             return request_validation::kind_of(resource_type).map(Kind::RequestValidation);
         }
@@ -211,7 +234,11 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
 
 /// The property naming the api a resource, a method, a deployment or a stage belongs to,
 /// which addresses the call rather than travelling in its body.
-const REST_API_ID: &str = "RestApiId";
+///
+/// The one spelling of it this crate has: the naming rules read the same property off a
+/// declaration to compute the identifier of a record inside an api
+/// ([`crate::state::template::APIGATEWAY_REST_API_ID_PROPERTY`]).
+const REST_API_ID: &str = crate::state::template::APIGATEWAY_REST_API_ID_PROPERTY;
 
 /// Create one of these resources in API Gateway, so a client that deployed the stack reads
 /// it back through that service's own read — and so the stage the stack published really
@@ -247,6 +274,11 @@ pub(super) async fn create(
         Kind::RequestValidation(kind) => {
             request_validation::create(ctx, region, kind, resource).await
         }
+        // A gateway response and the two documentation types publish no `Tags` property
+        // either: none of them is a resource API Gateway's tagging calls address, so there is
+        // no call that could carry a tag to one.
+        Kind::GatewayResponse => gateway_response::create(ctx, region, resource).await,
+        Kind::Documentation(kind) => documentation::create(ctx, region, kind, resource).await,
     }
 }
 
@@ -274,7 +306,9 @@ pub(super) async fn readiness(
         | Kind::Account
         | Kind::ClientCertificate
         | Kind::AccessControl(_)
-        | Kind::RequestValidation(_) => Ok(Readiness::Ready),
+        | Kind::RequestValidation(_)
+        | Kind::GatewayResponse
+        | Kind::Documentation(_) => Ok(Readiness::Ready),
     }
 }
 
@@ -308,7 +342,13 @@ pub(super) async fn update(
         | Kind::Deployment
         | Kind::Stage
         | Kind::ClientCertificate => in_place::update(ctx, region, kind, resource, declared).await,
-        Kind::VpcLink | Kind::AccessControl(_) | Kind::RequestValidation(_) => Ok(None),
+        // The put that creates a gateway response IS the call that changes one, so a changed
+        // declaration of it is applied rather than reported as a change nothing made.
+        Kind::GatewayResponse => gateway_response::update(ctx, region, resource).await,
+        Kind::VpcLink
+        | Kind::AccessControl(_)
+        | Kind::RequestValidation(_)
+        | Kind::Documentation(_) => Ok(None),
     }
 }
 
@@ -373,6 +413,10 @@ pub(super) async fn delete(
         }
         Kind::RequestValidation(kind) => {
             return request_validation::delete(ctx, region, kind, resource).await
+        }
+        Kind::GatewayResponse => return gateway_response::delete(ctx, region, resource).await,
+        Kind::Documentation(kind) => {
+            return documentation::delete(ctx, region, kind, resource).await
         }
     };
     api_gateway_deleted(ctx, region, &uri).await
@@ -486,6 +530,12 @@ pub(super) async fn actual_configuration(
         }
         Kind::RequestValidation(kind) => {
             return request_validation::actual_configuration(ctx, region, kind, resource).await
+        }
+        Kind::GatewayResponse => {
+            return gateway_response::actual_configuration(ctx, region, resource).await
+        }
+        Kind::Documentation(kind) => {
+            return documentation::actual_configuration(ctx, region, kind, resource).await
         }
     };
     match call_rest_json(ctx, API_GATEWAY_SIGNING_NAME, region, "GET", &uri, None).await {

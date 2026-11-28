@@ -3233,6 +3233,41 @@ impl ComAmazonawsApigatewayBackplanecontrolserviceState {
             .ok_or_else(|| NO_SUCH_RESOURCE.to_string())
     }
 
+    /// The API a call addressed by a DEPLOYMENT of it names, or the message that address is
+    /// refused with.
+    ///
+    /// The same rule as [`Self::resource_api`]: a deployment cannot exist without its API, so
+    /// a `restApiId` that resolves to nothing leaves the deployment the call addresses
+    /// unresolvable too and the refusal reports the DEPLOYMENT
+    /// ([`NO_SUCH_DEPLOYMENT`]) rather than the API identifier.
+    pub fn deployment_api(&self, rest_api_id: &str) -> Result<&RestApiEntry, String> {
+        self.rest_apis
+            .get(rest_api_id)
+            .ok_or_else(|| NO_SUCH_DEPLOYMENT.to_string())
+    }
+
+    /// The same lookup as [`Self::deployment_api`], for a call that WRITES on the deployment
+    /// it addresses — a patch of it, its removal.
+    pub fn deployment_api_mut(&mut self, rest_api_id: &str) -> Result<&mut RestApiEntry, String> {
+        self.rest_apis
+            .get_mut(rest_api_id)
+            .ok_or_else(|| NO_SUCH_DEPLOYMENT.to_string())
+    }
+
+    /// The deployment a `(restApiId, deploymentId)` pair addresses, or the message that pair
+    /// is refused with — resolved as ONE lookup, so the refusal reports the DEPLOYMENT
+    /// whichever half of the pair resolves to nothing.
+    pub fn deployment(
+        &self,
+        rest_api_id: &str,
+        deployment_id: &str,
+    ) -> Result<&DeploymentEntry, String> {
+        self.deployment_api(rest_api_id)?
+            .deployments
+            .get(deployment_id)
+            .ok_or_else(|| NO_SUCH_DEPLOYMENT.to_string())
+    }
+
     /// The `UsagePlanKey` a `(usagePlanId, keyId)` pair addresses: the association held
     /// on the plan, paired with the API key record whose name and value the
     /// `UsagePlanKey` body reports.

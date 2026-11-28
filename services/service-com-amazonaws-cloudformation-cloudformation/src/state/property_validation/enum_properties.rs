@@ -152,9 +152,13 @@ pub const SOURCE_FORMAT_VALUES: &[&str] = &["CCDA", "CSV"];
 /// The fourth is the `MergeType` of an `AWS::AppSync::SourceApiAssociation`'s merge
 /// configuration ([`APPSYNC_MERGE_TYPE_VALUES`]), a member nested one level down in that
 /// property's structure. The fifth is the `AuthMode` an `AWS::SageMaker::Domain`'s members
-/// authenticate with ([`SAGEMAKER_AUTH_MODE_VALUES`]). The last two are the AWS HealthLake
+/// authenticate with ([`SAGEMAKER_AUTH_MODE_VALUES`]). The next two are the AWS HealthLake
 /// pair: the `DatastoreTypeVersion` of a FHIR data store ([`FHIR_VERSION_VALUES`]) and the
-/// `SourceFormat` of a data transformation profile ([`SOURCE_FORMAT_VALUES`]).
+/// `SourceFormat` of a data transformation profile ([`SOURCE_FORMAT_VALUES`]). The last two are
+/// the Amazon API Gateway pair: the `KeyType` of an association
+/// ([`APIGATEWAY_USAGE_PLAN_KEY_TYPE_VALUES`]) and the `Period` of a usage plan's quota
+/// ([`APIGATEWAY_QUOTA_PERIOD_VALUES`]), the second of them a member nested one level down in
+/// that structured property.
 pub const ENUM_PROPERTIES: &[EnumProperty] = &[
     EnumProperty {
         resource_type:
@@ -208,7 +212,40 @@ pub const ENUM_PROPERTIES: &[EnumProperty] = &[
         property: &["SourceFormat"],
         values: SOURCE_FORMAT_VALUES,
     },
+    // The kind of key an `AWS::ApiGateway::UsagePlanKey` puts in the plan, and the time period
+    // an `AWS::ApiGateway::UsagePlan`'s quota applies over: each is a value no handler of its
+    // type could be given outside the set its schema states, so the schema validation refuses
+    // it before anything is asked of API Gateway — which is what rolls the stack back rather
+    // than leaving an association or a plan that service would have refused.
+    EnumProperty {
+        resource_type: crate::state::template::APIGATEWAY_USAGE_PLAN_KEY,
+        property: &["KeyType"],
+        values: APIGATEWAY_USAGE_PLAN_KEY_TYPE_VALUES,
+    },
+    EnumProperty {
+        resource_type: crate::state::template::APIGATEWAY_USAGE_PLAN,
+        property: &["Quota", "Period"],
+        values: APIGATEWAY_QUOTA_PERIOD_VALUES,
+    },
 ];
+
+/// The `enum` the registry schema of `AWS::ApiGateway::UsagePlanKey` states for the kind of key
+/// an association puts in a plan.
+///
+/// An API key is the only kind of key a usage plan meters: `CreateUsagePlanKey$keyType` is "the
+/// type of a UsagePlanKey resource for a plan customer", and that type's entry in the "AWS
+/// resource and property types reference" publishes `API_KEY` as the one allowed value of
+/// `KeyType`, which is the `enum` its schema states.
+pub const APIGATEWAY_USAGE_PLAN_KEY_TYPE_VALUES: &[&str] = &["API_KEY"];
+
+/// The `enum` the registry schema of `AWS::ApiGateway::UsagePlan` states for the time period its
+/// quota applies over, in the order that schema states them.
+///
+/// These are the values of API Gateway's own `QuotaPeriodType`
+/// (`smithy_query(query="shape", shape="QuotaPeriodType")`), which is what
+/// `QuotaSettings$period` documents: "the time period in which the limit applies. Valid values
+/// are "DAY", "WEEK" or "MONTH"" — the order a refusal lists the set back in.
+pub const APIGATEWAY_QUOTA_PERIOD_VALUES: &[&str] = &["DAY", "WEEK", "MONTH"];
 
 /// The `enum` the registry schema of `AWS::AppSync::SourceApiAssociation` states for the
 /// `MergeType` of its merge configuration, in the order that schema states them.

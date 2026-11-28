@@ -112,6 +112,20 @@ pub const BATCH_MIN_SHARE_DECAY_SECONDS: i64 = 0;
 /// See [`BATCH_MIN_SHARE_DECAY_SECONDS`].
 pub const BATCH_MAX_SHARE_DECAY_SECONDS: i64 = 604_800;
 
+/// The floor the `AWS::ApiGateway::UsagePlan` schema admits a `QuotaSettings`' `Limit` and
+/// `Offset` in.
+///
+/// Source: the bound API Gateway publishes for the members the properties are passed to —
+/// `QuotaSettings$limit`, "the target maximum number of requests that can be made in a given
+/// time period", and `QuotaSettings$offset`, "the number of requests subtracted from the given
+/// limit in the initial time period" — which that type's entry in the "AWS resource and property
+/// types reference" publishes as the `Minimum` of each, and which the type's registry schema
+/// carries as their `minimum`. Neither member carries a ceiling: the apigateway model types both
+/// as a plain `Integer` with no range
+/// (`smithy_query(query="shape", shape="QuotaSettings")`), and the reference publishes no
+/// `Maximum` for either.
+pub const APIGATEWAY_MIN_QUOTA_REQUESTS: i64 = 0;
+
 /// The properties this stage knows a schema-stated numeric bound of.
 ///
 /// Source for each row: the bound the resource type's REGISTRY SCHEMA states for the property,
@@ -143,6 +157,23 @@ pub const RANGED_PROPERTIES: &[RangedProperty] = &[
         property: &["FairsharePolicy", "ShareDecaySeconds"],
         minimum: Some(BATCH_MIN_SHARE_DECAY_SECONDS),
         maximum: Some(BATCH_MAX_SHARE_DECAY_SECONDS),
+    },
+    // The two bounded members of an `AWS::ApiGateway::UsagePlan`'s `Quota`, each nested one
+    // level down inside that structured property: a request count is a count, so neither the
+    // limit a quota allows nor the offset subtracted from it can be negative
+    // ([`APIGATEWAY_MIN_QUOTA_REQUESTS`]), and a declaration past that floor names no quota API
+    // Gateway could meter a plan with.
+    RangedProperty {
+        resource_type: crate::state::template::APIGATEWAY_USAGE_PLAN,
+        property: &["Quota", "Limit"],
+        minimum: Some(APIGATEWAY_MIN_QUOTA_REQUESTS),
+        maximum: None,
+    },
+    RangedProperty {
+        resource_type: crate::state::template::APIGATEWAY_USAGE_PLAN,
+        property: &["Quota", "Offset"],
+        minimum: Some(APIGATEWAY_MIN_QUOTA_REQUESTS),
+        maximum: None,
     },
 ];
 

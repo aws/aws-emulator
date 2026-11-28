@@ -867,6 +867,14 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // every call on one — and the stage that presents it to a backend — takes that id, and
         // a template declares the certificate's description rather than its identifier.
         || resource_type == APIGATEWAY_CLIENT_CERTIFICATE
+        // A DOCUMENTATION PART is one more, for the reason its own constant records
+        // ([`APIGATEWAY_DOCUMENTATION_PART`]): `CreateDocumentationPart` takes no identifier
+        // and answers the `id` API Gateway assigned, every call on one takes that id, and a
+        // template declares the entity the part documents and its content rather than its
+        // identifier. (An `AWS::ApiGateway::DocumentationVersion` is NOT one of them: "Ref
+        // returns the documentation version", which its own declaration states, and that
+        // version is what every call on a snapshot takes.)
+        || resource_type == APIGATEWAY_DOCUMENTATION_PART
         // Every AWS AppSync type is one more, for the reason [`appsync`] records:
         // `CreateGraphqlApi` takes the API's name and no identifier and answers the `apiId`
         // it minted beside the ARN built on it, each child's create is addressed by that id

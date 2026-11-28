@@ -158,16 +158,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = crate::state::service_state(&*self.engine)
             .ok_or_else(crate::state::state_unavailable)?;
         let store = state.lock();
-        let api = store.rest_apis.get(&input.rest_api_id).ok_or_else(|| {
-            GetDeploymentErrorModeled::NotFoundException(NotFoundException {
-                message: Some(crate::state::no_such_rest_api(&input.rest_api_id)),
-            })
-        })?;
-        let deployment = api.deployments.get(&input.deployment_id).ok_or_else(|| {
-            GetDeploymentErrorModeled::NotFoundException(NotFoundException {
-                message: Some(crate::state::NO_SUCH_DEPLOYMENT.to_string()),
-            })
-        })?;
+        // A deployment is addressed THROUGH its api, so the `(restApiId, deploymentId)` pair
+        // is resolved as one lookup for that deployment and either half resolving to nothing
+        // reports the deployment — see [`crate::state::…::deployment`].
+        let deployment = store
+            .deployment(&input.rest_api_id, &input.deployment_id)
+            .map_err(|message| {
+                GetDeploymentErrorModeled::NotFoundException(NotFoundException {
+                    message: Some(message),
+                })
+            })?;
         // From the `embed` member's own documentation: "this request supports only
         // retrieval of the embedded API summary this way ... the parameter value must be
         // a single-valued list and contain the string "apisummary"".

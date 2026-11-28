@@ -1073,6 +1073,14 @@ pub(super) fn declared_name_property(resource_type: &str) -> Option<&'static str
         // type's last segment is `DomainName`, so neither `DomainNameName` nor `Name` finds
         // it.
         APIGATEWAY_DOMAIN_NAME | APIGATEWAYV2_DOMAIN_NAME => Some("DomainName"),
+        // The same service keys a DOCUMENTATION SNAPSHOT by the version itself: "Ref returns
+        // the documentation version", `CreateDocumentationVersion$documentationVersion` is the
+        // version the snapshot is created under, and every call on one takes that version
+        // (`GetDocumentationVersion$documentationVersion`, `Stage$documentationVersion`). The
+        // type's last segment is `DocumentationVersion`, so neither `DocumentationVersionName`
+        // nor `Name` finds it, and a generated `<stack>-<logical id>-<unique id>` would name
+        // no snapshot that service holds.
+        APIGATEWAY_DOCUMENTATION_VERSION => Some("DocumentationVersion"),
         // AppSync addresses a custom domain, and the mapping of an API onto it, by the
         // `DomainName` the resource IS: every operation on either binds that name as its
         // `@httpLabel` and the service mints no identifier of its own, so it is the

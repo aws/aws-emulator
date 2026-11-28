@@ -44,7 +44,8 @@
 use super::*;
 
 use crate::state::template::{
-    APIGATEWAY_API_KEY, APIGATEWAY_AUTHORIZER, APIGATEWAY_USAGE_PLAN, APIGATEWAY_USAGE_PLAN_KEY,
+    apigateway_usage_plan_key_identity, APIGATEWAY_API_KEY, APIGATEWAY_AUTHORIZER,
+    APIGATEWAY_USAGE_PLAN, APIGATEWAY_USAGE_PLAN_KEY,
 };
 
 /// Which of these four types one resource is.
@@ -77,7 +78,11 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
 
 /// The property naming the usage plan a `UsagePlanKey` belongs to, which addresses the call
 /// rather than travelling in its body.
-const USAGE_PLAN_ID: &str = "UsagePlanId";
+///
+/// The one spelling of it this crate has: the naming rules read the same property off a
+/// declaration to compute the identifier the association is published under
+/// ([`apigateway_usage_plan_key_identity`]).
+const USAGE_PLAN_ID: &str = crate::state::template::APIGATEWAY_USAGE_PLAN_ID_PROPERTY;
 
 /// The property an api key states its own name in, which is `CreateApiKey`'s `name` member.
 /// The type publishes it as OPTIONAL — "if you don't specify a name, CloudFormation generates
@@ -511,8 +516,11 @@ const USAGE_PLAN_KEY_REPORTED: &[(&str, &str)] =
 /// presenting it and refuse one presenting a key no plan holds.
 ///
 /// "Ref returns the usage plan key ID": `CreateUsagePlanKey` answers the `id` of the
-/// association, which is the id of the key it put in the plan, so that answer is this
-/// resource's physical id and the `Id` attribute the type publishes.
+/// association, which is the id of the key it put in the plan. The IDENTIFIER the resource is
+/// published under — what `Ref` resolves to, and the `Id` attribute the type publishes — carries
+/// the whole pair every call on an association takes, that key id and the plan that holds it
+/// ([`apigateway_usage_plan_key_identity`]), because neither half alone names one association:
+/// `GetUsagePlanKey` and `DeleteUsagePlanKey` each take both.
 async fn create_usage_plan_key(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -537,11 +545,12 @@ async fn create_usage_plan_key(
         Some(&Value::Object(request)),
     )
     .await?;
-    let id = api_gateway_answered(&answered, "id", "CreateUsagePlanKey")?;
+    let key_id = api_gateway_answered(&answered, "id", "CreateUsagePlanKey")?;
+    let identity = apigateway_usage_plan_key_identity(&key_id, &required(resource, USAGE_PLAN_ID)?);
     let mut attributes = BTreeMap::new();
-    attributes.insert("Id".to_string(), id.clone());
+    attributes.insert("Id".to_string(), identity.clone());
     Ok(Created {
-        physical_resource_id: Some(id),
+        physical_resource_id: Some(identity),
         attributes,
     })
 }
@@ -586,14 +595,34 @@ pub(super) async fn create(
 /// The URI that addresses one of these resources, which is the one its own read and its own
 /// delete share — built from this resource's physical id and the properties that name the
 /// resource holding it.
+///
+/// An ASSOCIATION is addressed by the pair its identifier carries ([`usage_plan_key_id`]
+/// reads the key's own id out of it), since the plan half of that identifier is what the URI
+/// the association hangs off is built from.
 fn addressed(kind: Kind, resource: &StoredResource) -> Result<String, Refusal> {
     let id = own_id(resource)?;
     Ok(match kind {
         Kind::ApiKey => api_key_uri(id),
         Kind::Authorizer => authorizer_uri(&required(resource, REST_API_ID)?, id),
         Kind::UsagePlan => usage_plan_uri(id),
-        Kind::UsagePlanKey => usage_plan_key_uri(&required(resource, USAGE_PLAN_ID)?, id),
+        Kind::UsagePlanKey => usage_plan_key_uri(
+            &required(resource, USAGE_PLAN_ID)?,
+            usage_plan_key_id(id),
+        ),
     })
+}
+
+/// The KEY half of an association's identifier: the `keyId` every call on one takes.
+///
+/// The identifier is the pair the resource is published under
+/// ([`apigateway_usage_plan_key_identity`]), and an api key's own id carries no separator, so
+/// the half before the first one is that id — read through the one reading of such an
+/// identifier this crate has ([`crate::state::template::apigateway_identity_part`]).
+fn usage_plan_key_id(identifier: &str) -> &str {
+    crate::state::template::apigateway_identity_part(
+        identifier,
+        crate::state::template::APIGATEWAY_USAGE_PLAN_KEY_SEPARATOR,
+    )
 }
 
 /// Delete one of these resources from API Gateway; see [`super::delete`].

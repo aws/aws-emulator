@@ -114,6 +114,117 @@ pub const APIGATEWAY_AUTHORIZER: &str = "AWS::ApiGateway::Authorizer";
 pub const APIGATEWAY_USAGE_PLAN: &str = "AWS::ApiGateway::UsagePlan";
 pub const APIGATEWAY_USAGE_PLAN_KEY: &str = "AWS::ApiGateway::UsagePlanKey";
 
+/// The property an `AWS::ApiGateway::UsagePlanKey` names the plan it puts a key in with,
+/// which is the `usagePlanId` every call on the association is addressed by.
+pub(crate) const APIGATEWAY_USAGE_PLAN_ID_PROPERTY: &str = "UsagePlanId";
+
+/// The identifier a resource addressed by MORE THAN ONE value is published under: the values
+/// that address it, joined by the separator its own type publishes.
+///
+/// A resource no single value names has no one identifier to return, so CloudFormation gives it
+/// the whole address as its physical id and `Ref` resolves to that — the SEPARATOR being the
+/// type's own artifact rather than a rule over types: an association's halves are joined by a
+/// colon and a documentation snapshot's by a pipe (recorded behaviour, behavioral corpus
+/// `simparity-behavioral-aws-v1`, checks
+/// `apigateway__cloudformation.deploy-apigateway-usageplankey-resource-round-trip` and
+/// `apigateway__cloudformation.deploy-apigateway-documentation-and-gateway-response-\
+/// round-trip`).
+///
+/// Stated once here, so the naming rules and the arms that really create such a resource
+/// ([`crate::state::provisioning::apigateway_rest_api`]) publish ONE identifier for it, and
+/// read back with [`apigateway_identity_part`].
+pub(crate) fn apigateway_composite_identity(parts: &[&str], separator: &str) -> String {
+    parts.join(separator)
+}
+
+/// The FIRST half of such an identifier: the value the resource's own calls take, with the
+/// value naming what holds it behind the separator.
+///
+/// An identifier carrying no separator at all is read as that half itself, which is what a
+/// record created before the identifier carried both halves holds.
+pub(crate) fn apigateway_identity_part(identifier: &str, separator: char) -> &str {
+    identifier
+        .split_once(separator)
+        .map_or(identifier, |(first, _)| first)
+}
+
+/// The separator an association's identifier joins its halves with.
+pub(crate) const APIGATEWAY_USAGE_PLAN_KEY_SEPARATOR: char = ':';
+
+/// The identifier an association is published under: the key's own id and the plan that holds
+/// it ([`apigateway_composite_identity`]) — which is also the `Id` attribute the type
+/// publishes, since that attribute is the resource's own identifier rather than one half of it.
+pub(crate) fn apigateway_usage_plan_key_identity(key_id: &str, usage_plan_id: &str) -> String {
+    apigateway_composite_identity(
+        &[key_id, usage_plan_id],
+        &APIGATEWAY_USAGE_PLAN_KEY_SEPARATOR.to_string(),
+    )
+}
+
+/// `AWS::ApiGateway::GatewayResponse`: the customization of ONE of the responses API Gateway
+/// itself returns for an api — the status code, the parameters and the templates a refusal of
+/// that class answers with — which a stack really puts on the api in that service
+/// ([`crate::state::provisioning::apigateway_rest_api`]).
+///
+/// The type publishes no `Fn::GetAtt` attribute, and the resource is addressed by the api and
+/// the response TYPE it customizes: `PutGatewayResponse`, `GetGatewayResponse` and
+/// `DeleteGatewayResponse` each take `restApiId` and `responseType` as `@httpLabel`s, and
+/// nothing of a gateway response is an identifier API Gateway assigns — so `Ref` resolves to
+/// the pair ([`apigateway_gateway_response_identity`]) and
+/// [`identity_is_service_assigned`] does not name the type.
+pub const APIGATEWAY_GATEWAY_RESPONSE: &str = "AWS::ApiGateway::GatewayResponse";
+
+/// The two properties a gateway response is addressed by, which are the `@httpLabel`s of
+/// every call on one. `RestApiId` is the api the customization sits on; `ResponseType` is
+/// which of the responses it customizes.
+pub(crate) const APIGATEWAY_REST_API_ID_PROPERTY: &str = "RestApiId";
+pub(crate) const APIGATEWAY_RESPONSE_TYPE_PROPERTY: &str = "ResponseType";
+
+/// The identifier a gateway response is published under: the api and the response type it
+/// customizes ([`apigateway_composite_identity`]).
+pub(crate) fn apigateway_gateway_response_identity(api_id: &str, response_type: &str) -> String {
+    apigateway_composite_identity(&[api_id, response_type], ":")
+}
+
+/// The separator a documentation snapshot's identifier joins its halves with, which is the
+/// one that type publishes rather than the colon the two types above join theirs with.
+pub(crate) const APIGATEWAY_DOCUMENTATION_VERSION_SEPARATOR: char = '|';
+
+/// The identifier a documentation snapshot is published under: the version it was created
+/// under and the api that holds it ([`apigateway_composite_identity`]).
+pub(crate) fn apigateway_documentation_version_identity(version: &str, api_id: &str) -> String {
+    apigateway_composite_identity(
+        &[version, api_id],
+        &APIGATEWAY_DOCUMENTATION_VERSION_SEPARATOR.to_string(),
+    )
+}
+
+/// The two Amazon API Gateway resource types that carry an api's DOCUMENTATION — the part that
+/// documents one entity of the api, and the version that snapshots every part of it — which a
+/// stack really creates in that service
+/// ([`crate::state::provisioning::apigateway_rest_api`]).
+///
+/// "Ref returns the documentation part ID" for a PART, which API Gateway assigns:
+/// `CreateDocumentationPart` (`POST /restapis/{restApiId}/documentation/parts`) takes no
+/// identifier and answers the `id` it chose, and every call on one takes that id
+/// (`GetDocumentationPart$documentationPartId`) — which is why
+/// [`identity_is_service_assigned`] names the type.
+///
+/// A VERSION is keyed by the version itself inside the api that holds it: the declaration
+/// states the `DocumentationVersion` the snapshot is created under, which is the identifier
+/// every call on one takes (`GetDocumentationVersion$documentationVersion`,
+/// `Stage$documentationVersion`), and no value of a snapshot is one API Gateway assigns — so
+/// that type is not one [`identity_is_service_assigned`] names, and the identifier it is
+/// published under is the version beside that api
+/// ([`apigateway_documentation_version_identity`]). Neither type publishes a `Fn::GetAtt`
+/// attribute.
+pub const APIGATEWAY_DOCUMENTATION_PART: &str = "AWS::ApiGateway::DocumentationPart";
+pub const APIGATEWAY_DOCUMENTATION_VERSION: &str = "AWS::ApiGateway::DocumentationVersion";
+
+/// The property a documentation snapshot states the version it is created under in, which is
+/// the `documentationVersion` every call on one is addressed by.
+pub(crate) const APIGATEWAY_DOCUMENTATION_VERSION_PROPERTY: &str = "DocumentationVersion";
+
 /// `AWS::ApiGateway::VpcLink`: the VPC link a PRIVATE integration reaches a VPC through,
 /// whose published `Ref` is a SERVICE-ASSIGNED id in the same position as the types above.
 ///
