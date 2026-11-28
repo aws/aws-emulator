@@ -58,6 +58,13 @@ nix = { version = "0.31", default-features = false, features = ["resource"] }
 # also settles `prost-derive` 0.13.5's iterator-adaptor dependency on the `itertools` 0.10.5
 # already in the tree instead of the 0.14.0 also in it; both are inside the range that crate
 # declares (`>=0.10.1, <=0.14`), and nothing new is pulled in by the move.
+#
+# A manifest requirement only binds THIS crate's own edge, and `pymath`'s edge is its own: a
+# release of that arithmetic one major-zero line ahead is semver-incompatible with the pin
+# here, so cargo is free to resolve a SECOND copy for `pymath` and did — which is how the
+# `rust-version` ahead of this toolchain re-entered the build. The lockfile holds `pymath`'s
+# edge at this same release, which is the only place that edge can be stated, and
+# `cargo update` must not be allowed to move it back.
 malachite-bigint = "=0.12.0"
 
 [lints]

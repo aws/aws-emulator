@@ -62,6 +62,18 @@
 //! authenticated one, and the pool's `authenticated` role is the one assumed where no
 //! mapping of the pool's decides the login it presents.
 //!
+//! ## What the session is scoped to
+//!
+//! This flow makes the assume itself, so it is this flow that passes the SESSION POLICIES the
+//! session it hands back carries: the credentials a GUEST exchange — one presenting no login
+//! at all — vends an anonymous caller reach only the services an identity pool limits a guest
+//! to, so an action outside that scope is refused by the service that receives the call even
+//! where the unauthenticated role's own documents allow it
+//! ([`crate::state::vended_session_scope`]). The basic flow passes none of this service's
+//! session policies, the assume being its caller's own
+//! (`sts:AssumeRoleWithWebIdentity`), so a session minted that way is capped by the role's
+//! documents alone.
+//!
 //! The authentication methods the trust-policy decision is made with — the
 //! `cognito-identity.amazonaws.com:amr` condition values — come from the LOGIN rather than
 //! from the name it is presented under: a token this service minted names the providers
@@ -640,6 +652,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
                 methods,
                 role_arn,
                 requested_tags,
+                unauthenticated: logins.is_empty(),
             }
         };
 
@@ -696,14 +709,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
         // The session itself: minted HERE, for THIS call, so the triple the caller is
         // handed is one no earlier vend was given. Nothing of an earlier session is read or
         // given back — it stays valid in the token service's registry for its own window.
+        //
+        // It is minted SCOPED: this flow performs the assume, so it is this flow that passes
+        // the session policies the session carries, and the credentials a GUEST exchange
+        // hands an anonymous caller reach only what an identity pool limits a guest to
+        // ([`crate::state::vended_session_scope`]). The basic flow
+        // (`GetOpenIdToken` and then `sts:AssumeRoleWithWebIdentity`) passes none of this
+        // service's, so a session minted that way stays capped by the role's own documents
+        // alone.
         let vended = crate::state::mint_vended_role_session(
             &*self.engine,
             ctx.credential_store(),
             &role,
             now,
             CREDENTIAL_VALIDITY,
-            &web_identity,
-            &resolved.requested_tags,
+            &crate::state::VendedSessionRequest {
+                web_identity: &web_identity,
+                tags: &resolved.requested_tags,
+                policies: crate::state::vended_session_scope::vended_session_policies(
+                    resolved.unauthenticated,
+                ),
+            },
         );
         // A vend that could not be recorded is refused rather than answered with a
         // credential no later call can resolve.
@@ -761,4 +787,8 @@ struct ResolvedVend {
     /// The session tags the assume asks to attach, in tag-key order: the principal tags the
     /// pool maps for the providers the presented logins were made under.
     requested_tags: Vec<(String, String)>,
+    /// Whether the exchange presented NO login at all, which is what makes it the
+    /// unauthenticated — guest — flow: the one this service scopes the session it vends
+    /// down ([`crate::state::vended_session_scope`]).
+    unauthenticated: bool,
 }

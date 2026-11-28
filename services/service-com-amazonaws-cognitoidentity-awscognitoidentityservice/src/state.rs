@@ -38,6 +38,10 @@ pub mod session_tags;
 /// publishes for them.
 pub mod token_signing;
 
+/// What the credentials a vend hands back are SCOPED to: the session policies the exchange
+/// attaches to the session it mints.
+pub mod vended_session_scope;
+
 use crate::ops::types::{CognitoIdentityProvider, MappingRule, RoleMapping};
 use emulator_server::CredentialStore;
 /// What an integrated Amazon Cognito user pool says about a token presented as the login of
@@ -3896,16 +3900,7 @@ pub struct VendedSession {
 /// The session lasts `validity`, capped by the role's own `MaxSessionDuration` — a session
 /// is never minted for longer than the role admits.
 ///
-/// `web_identity` is the identity this vend exchanges ([`vended_web_identity`]): its
-/// condition keys travel with the session, so a request the vended credential signs is
-/// decided against the same keys the assume was, and its federation travels with the
-/// session too, so a record of a call made with the credential names the web identity the
-/// session was federated from.
-///
-/// `tags` are the session tags the assume ASKED to attach
-/// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::requested_session_tags`]):
-/// they travel with the session as the tags it carries, which is what
-/// `aws:PrincipalTag/<key>` holds for a request the vended credential signs.
+/// `vend` is what this exchange asks the mint for ([`VendedSessionRequest`]).
 ///
 /// `Err` says why no session could be minted — this engine carries no STS registry, or the
 /// registry is full of sessions that have not expired — so the caller refuses the request
@@ -3916,8 +3911,7 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
     role: &ResolvedRole,
     now: SystemTime,
     validity: Duration,
-    web_identity: &VendedWebIdentity,
-    tags: &[(String, String)],
+    vend: &VendedSessionRequest<'_>,
 ) -> Result<VendedSession, String> {
     use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts;
 
@@ -3954,16 +3948,20 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
             // The identity the exchanged token stands for travels with the session, so a
             // policy in force on the role can scope what the session may do to its own
             // federated subject.
-            federated_claims: web_identity.claims.clone(),
+            federated_claims: vend.web_identity.claims.clone(),
             // The web identity the exchange federated travels with the session as the audit
             // view of it: a record of any call the credential signs names the provider that
             // issued the token and the claims it carried, whatever that call was answered
             // with.
-            web_identity_federation: Some(web_identity.federation.clone()),
+            web_identity_federation: Some(vend.web_identity.federation.clone()),
             // The tags the assume asked for are the tags the session carries: the pool
             // performs its exchange WITH them, so a policy conditioned on
             // `aws:PrincipalTag/<key>` reads them for every request this credential signs.
-            tags: tags.to_vec(),
+            tags: vend.tags.to_vec(),
+            // What the exchange SCOPES the session down to
+            // ([`vended_session_scope`]): the mint records them beside the session, which is
+            // where the gate of every service handed the vended credential reads the scope.
+            policies: vend.policies.clone(),
             ..sts::NewSession::new(identity, sts::SessionKind::AssumedRole, duration_seconds)
         },
     )
@@ -3976,6 +3974,29 @@ pub fn mint_vended_role_session<Eng: Send + Sync + 'static>(
         assumed_role_arn,
         assumed_role_id,
     })
+}
+
+/// What one exchange asks the mint of its session for, beside the role it is a session of
+/// and the clock it is measured from.
+///
+/// One value rather than a parameter each, because they are the three things ABOUT the
+/// exchange that travel with the session it mints.
+pub struct VendedSessionRequest<'a> {
+    /// The identity this vend exchanges ([`vended_web_identity`]): its condition keys travel
+    /// with the session, so a request the vended credential signs is decided against the
+    /// same keys the assume was, and its federation travels with the session too, so a
+    /// record of a call made with the credential names the web identity the session was
+    /// federated from.
+    pub web_identity: &'a VendedWebIdentity,
+    /// The session tags the assume ASKED to attach
+    /// ([`ComAmazonawsCognitoidentityAwscognitoidentityserviceState::requested_session_tags`]):
+    /// they travel with the session as the tags it carries, which is what
+    /// `aws:PrincipalTag/<key>` holds for a request the vended credential signs.
+    pub tags: &'a [(String, String)],
+    /// The session policies this exchange attaches to the session, which SCOPE what a
+    /// request signed with the vended credential may do
+    /// ([`vended_session_scope::vended_session_policies`]).
+    pub policies: vended_session_scope::SessionPolicies,
 }
 
 /// What the audit record of one vended assume reports.
