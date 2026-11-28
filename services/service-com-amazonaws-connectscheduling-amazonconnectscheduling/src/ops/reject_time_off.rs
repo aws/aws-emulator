@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op RejectTimeOff
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `RejectTimeOff`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented here — this is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`RejectTimeOff::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! It sets the stored request to `REJECTED` and records this call in `UpdatedAt` /
+//! `UpdatedBy`. A rejection evaluates no rules, so the request carries no validation results
+//! afterwards. Rejecting a `REJECTED` request succeeds without a change; a `PENDING` or
+//! `CANCELLED` one is the modelled 409.
 //!
 //! ## Shape of an operation
 //!
@@ -158,18 +155,75 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `RejectTimeOff` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(RejectTimeOffErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("RejectTimeOff"))
+        // The identity of this call, read before the store is locked: a rejection is one of
+        // the actions the request records in `UpdatedBy`.
+        let rejected_by = crate::state::caller_identity_arn(&*self.engine, ctx);
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            RejectTimeOffErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        let now_millis = crate::state::now_millis();
+        let audited = |outcome| crate::state::audit(Self::NAME, ctx, &input.time_off_id, outcome);
+        let mut store = state.lock();
+        let held = store
+            .instances
+            .get_mut(crate::state::resource_id(&input.instance_id))
+            .and_then(|instance| {
+                instance
+                    .time_offs
+                    .get_mut(&input.time_off_id)
+                    .filter(|record| {
+                        record.user_id == crate::state::resource_id(&input.user_id)
+                    })
+            });
+        let record = match held {
+            Some(record) => record,
+            None => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(RejectTimeOffErrorModeled::ResourceNotFoundException(
+                    crate::state::time_off_not_found(&input.time_off_id),
+                )
+                .into());
+            }
+        };
+
+        match record.status {
+            // "Rejecting a REJECTED request succeeds without a change."
+            crate::state::TimeOffStatus::Rejected => {
+                audited(crate::state::AuditOutcome::Unchanged);
+                return Ok(RejectTimeOffOutput {});
+            }
+            // "Returns ConflictException if the request is PENDING or CANCELLED."
+            crate::state::TimeOffStatus::Pending | crate::state::TimeOffStatus::Cancelled => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(RejectTimeOffErrorModeled::ConflictException(
+                    crate::state::status_conflict(&input.time_off_id),
+                )
+                .into());
+            }
+            crate::state::TimeOffStatus::Approved
+            | crate::state::TimeOffStatus::AwaitingApproval => {}
+        }
+
+        // The caller rejected the request, so no rule was evaluated and no rule failed: the
+        // results of the evaluation that produced the previous status no longer describe it.
+        // A description sent with the rejection is not recorded: "GetTimeOff doesn't return"
+        // it.
+        record.settle(
+            crate::state::Decision {
+                status: crate::state::TimeOffStatus::Rejected,
+                validation_results: Vec::new(),
+            },
+            now_millis,
+            Some(rejected_by),
+        );
+        drop(store);
+
+        audited(crate::state::AuditOutcome::TimeOffRejected);
+        Ok(RejectTimeOffOutput {})
     }
 }

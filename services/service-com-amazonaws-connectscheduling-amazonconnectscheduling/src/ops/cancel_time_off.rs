@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CancelTimeOff
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CancelTimeOff`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented here — this is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CancelTimeOff::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! It sets the stored request to `CANCELLED`, which releases the window it reserved — only an
+//! `APPROVED` request holds one, so the next request for that window can be approved — and
+//! records this call in `UpdatedAt` / `UpdatedBy`. The cancellation's `Description` replaces
+//! the request's description, and removes it when the call omits it. Cancelling a `CANCELLED`
+//! request succeeds without a change; a `PENDING` one is the modelled 409.
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +157,78 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CancelTimeOff` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CancelTimeOffErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CancelTimeOff"))
+        // The identity of this call, read before the store is locked: a cancellation is one
+        // of the actions the request records in `UpdatedBy`.
+        let cancelled_by = crate::state::caller_identity_arn(&*self.engine, ctx);
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CancelTimeOffErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        let now_millis = crate::state::now_millis();
+        let audited = |outcome| crate::state::audit(Self::NAME, ctx, &input.time_off_id, outcome);
+        let mut store = state.lock();
+        let held = store
+            .instances
+            .get_mut(crate::state::resource_id(&input.instance_id))
+            .and_then(|instance| {
+                instance
+                    .time_offs
+                    .get_mut(&input.time_off_id)
+                    .filter(|record| {
+                        record.user_id == crate::state::resource_id(&input.user_id)
+                    })
+            });
+        let record = match held {
+            Some(record) => record,
+            None => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(CancelTimeOffErrorModeled::ResourceNotFoundException(
+                    crate::state::time_off_not_found(&input.time_off_id),
+                )
+                .into());
+            }
+        };
+
+        match record.status {
+            // "Cancelling a CANCELLED request succeeds without a change" — including the
+            // description, which this call would otherwise replace.
+            crate::state::TimeOffStatus::Cancelled => {
+                audited(crate::state::AuditOutcome::Unchanged);
+                return Ok(CancelTimeOffOutput {});
+            }
+            // "Returns ConflictException if the request is PENDING."
+            crate::state::TimeOffStatus::Pending => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(CancelTimeOffErrorModeled::ConflictException(
+                    crate::state::status_conflict(&input.time_off_id),
+                )
+                .into());
+            }
+            crate::state::TimeOffStatus::Approved
+            | crate::state::TimeOffStatus::Rejected
+            | crate::state::TimeOffStatus::AwaitingApproval => {}
+        }
+
+        // "A description recorded with the cancellation. It replaces the description of the
+        // time off request. If you omit it, the request's description is removed."
+        record.description = input.description;
+        // A cancellation evaluates no rules, so the results of the evaluation that produced
+        // the previous status no longer describe the request.
+        record.settle(
+            crate::state::Decision {
+                status: crate::state::TimeOffStatus::Cancelled,
+                validation_results: Vec::new(),
+            },
+            now_millis,
+            Some(cancelled_by),
+        );
+        drop(store);
+
+        audited(crate::state::AuditOutcome::TimeOffCancelled);
+        Ok(CancelTimeOffOutput {})
     }
 }

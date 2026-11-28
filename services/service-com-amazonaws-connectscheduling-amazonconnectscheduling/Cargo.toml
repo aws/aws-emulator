@@ -21,6 +21,14 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# The `TimeOffId` a create mints: a v4 UUID, which satisfies the modelled
+# `^[a-z0-9-]+$` within 1..64 characters.
+uuid = { version = "1", features = ["v4"] }
+service-common = { path = "../common" }
+# WHO a time off request records as `CreatedBy` / `UpdatedBy`: the principal
+# `sts:GetCallerIdentity` answers for the request's credential, read from the session
+# registry in the same shared engine.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

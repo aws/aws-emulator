@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutTimeOffBalance
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutTimeOffBalance`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented here — this is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutTimeOffBalance::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! It stores `Balance` under the (user, shift activity) pair the request addresses, in the
+//! instance's own state, REPLACING whatever was there: the balance is the value as sent, so
+//! repeating the call leaves the same balance rather than adding to it. The stored balance is
+//! the allowance the time off rules are evaluated against
+//! ([`crate::state::Instance::decide`]).
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +157,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutTimeOffBalance` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutTimeOffBalanceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutTimeOffBalance"))
+        let resource = crate::state::audit_pair_resource(&input.user_id, &input.shift_activity_id);
+        // The unit is a modelled enum, so the boundary refused every other value before this
+        // handler ran; a value the model does not declare cannot be stored as a balance.
+        let Some(unit) = crate::state::DurationUnit::from_wire(&input.balance.unit) else {
+            crate::state::audit(
+                Self::NAME,
+                ctx,
+                &resource,
+                crate::state::AuditOutcome::Refused,
+            );
+            return Err(PutTimeOffBalanceErrorModeled::ValidationException(
+                crate::state::invalid_member(
+                    "Balance",
+                    "Unit must be one of MINUTES, HOURS or DAYS.",
+                ),
+            )
+            .into());
+        };
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            PutTimeOffBalanceErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        // "The value replaces the existing balance": the entry for this (user, activity) is
+        // overwritten with the value as sent, never added to what was there, which is what
+        // makes a retry of the call safe.
+        state.lock().instance_mut(&input.instance_id).put_balance(
+            &input.user_id,
+            &input.shift_activity_id,
+            crate::state::Balance {
+                value: input.balance.value,
+                unit,
+            },
+        );
+
+        crate::state::audit(
+            Self::NAME,
+            ctx,
+            &resource,
+            crate::state::AuditOutcome::BalanceStored,
+        );
+        Ok(PutTimeOffBalanceOutput {})
     }
 }

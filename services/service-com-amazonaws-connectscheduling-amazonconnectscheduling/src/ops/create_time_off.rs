@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateTimeOff
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateTimeOff`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented here — this is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateTimeOff::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! It mints the `TimeOffId`, persists the whole request under it, and answers the id of the
+//! record it stored. The status is never taken from the input: `AWAIT_APPROVAL` leaves the
+//! request `AWAITING_APPROVAL` for an approve or reject call, while `AUTOMATIC` has the
+//! service decide it at once from stored state through the one rule evaluation
+//! ([`crate::state::Instance::decide`]) — the overlap check against the user's approved time
+//! off and the balance the request draws on — so the request ends `APPROVED` or `REJECTED`.
+//! A repeat of the create carrying the same `ClientToken` answers the first create's id and
+//! writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -214,18 +215,190 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateTimeOff` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateTimeOffErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateTimeOff"))
+        // The identity the request speaks for, read before the store is locked: it is what
+        // the stored record names as `CreatedBy`.
+        let created_by = crate::state::caller_identity_arn(&*self.engine, ctx);
+        // What an audit record of this call names before an id exists to name.
+        let requested =
+            crate::state::audit_pair_resource(&input.user_id, &input.shift_activity_id);
+        let refused = || {
+            crate::state::audit(
+                Self::NAME,
+                ctx,
+                &requested,
+                crate::state::AuditOutcome::Refused,
+            );
+        };
+
+        // `ApprovalType` is a modelled enum, so the boundary refused every other value
+        // before this handler ran.
+        let Some(approval_type) = crate::state::ApprovalType::from_wire(&input.approval_type)
+        else {
+            refused();
+            return Err(CreateTimeOffErrorModeled::ValidationException(
+                crate::state::invalid_member(
+                    "ApprovalType",
+                    "ApprovalType must be one of AUTOMATIC or AWAIT_APPROVAL.",
+                ),
+            )
+            .into());
+        };
+        let rule_failure_action =
+            crate::state::RuleFailureAction::from_wire(input.rule_failure_action.as_deref());
+
+        // "OVERRIDE requires AUTOMATIC. With AWAIT_APPROVAL, OVERRIDE fails with
+        // ValidationException": a request that waits for a decision cannot carry the
+        // override of the rules that decision would apply.
+        if rule_failure_action == crate::state::RuleFailureAction::Override
+            && approval_type == crate::state::ApprovalType::AwaitApproval
+        {
+            refused();
+            return Err(CreateTimeOffErrorModeled::ValidationException(
+                crate::state::invalid_member(
+                    "RuleFailureAction",
+                    "RuleFailureAction OVERRIDE requires ApprovalType AUTOMATIC.",
+                ),
+            )
+            .into());
+        }
+
+        let start_at_millis = millis(&input.start_at);
+        let end_at_millis = millis(&input.end_at);
+        // "EndAt: the end of the time off window, exclusive. It must be after StartAt": a
+        // window that ends where or before it starts is no window at all.
+        if end_at_millis <= start_at_millis {
+            refused();
+            return Err(CreateTimeOffErrorModeled::ValidationException(
+                crate::state::invalid_member("EndAt", "EndAt must be after StartAt."),
+            )
+            .into());
+        }
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateTimeOffErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        // What a `ClientToken` has to match for a repeat to be the SAME create: the members
+        // the stored record is built from. "If you reuse a client token with a different
+        // request body, the request fails with ValidationException."
+        let fingerprint = format!(
+            "{}|{}|{start_at_millis}|{end_at_millis}|{}|{}|{}",
+            crate::state::resource_id(&input.user_id),
+            crate::state::resource_id(&input.shift_activity_id),
+            input.approval_type,
+            input.rule_failure_action.as_deref().unwrap_or_default(),
+            input.description.as_deref().unwrap_or_default(),
+        );
+
+        let now_millis = crate::state::now_millis();
+        let mut store = state.lock();
+
+        // Every branch that REFUSES this create, or answers an earlier one, decided from a
+        // read-only look at the instance: taking the entry would file state under the
+        // instance — and, at the store's bound, drop another instance's state — for a call
+        // that stores nothing.
+        if let Some(instance) = store.instance(&input.instance_id) {
+            if let Some(recorded) = input
+                .client_token
+                .as_deref()
+                .and_then(|token| instance.client_tokens.get(token))
+            {
+                if recorded.fingerprint != fingerprint {
+                    refused();
+                    return Err(CreateTimeOffErrorModeled::ValidationException(
+                        crate::state::invalid_member(
+                            "ClientToken",
+                            "ClientToken was already used for a different request body.",
+                        ),
+                    )
+                    .into());
+                }
+                // The retry of a create this instance already performed: the id of the
+                // record that create stored, and no second record.
+                let time_off_id = recorded.time_off_id.clone();
+                crate::state::audit(
+                    Self::NAME,
+                    ctx,
+                    &time_off_id,
+                    crate::state::AuditOutcome::TimeOffReplayed,
+                );
+                return Ok(CreateTimeOffOutput { time_off_id });
+            }
+
+            if instance.time_offs.len() >= crate::state::MAX_TIME_OFF_REQUESTS_PER_INSTANCE {
+                refused();
+                return Err(CreateTimeOffErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(&input.instance_id),
+                )
+                .into());
+            }
+        }
+
+        // This create stores a record, so now the instance's state is taken (or created).
+        let instance = store.instance_mut(&input.instance_id);
+
+        let time_off_id = ::uuid::Uuid::new_v4().hyphenated().to_string();
+        let mut record = crate::state::TimeOffRequest {
+            time_off_id: time_off_id.clone(),
+            user_id: crate::state::resource_id(&input.user_id).to_string(),
+            shift_activity_id: crate::state::resource_id(&input.shift_activity_id).to_string(),
+            start_at_millis,
+            end_at_millis,
+            // Replaced below for an `AUTOMATIC` request, which the service decides itself.
+            status: crate::state::TimeOffStatus::AwaitingApproval,
+            approval_type,
+            rule_failure_action,
+            description: input.description,
+            validation_results: Vec::new(),
+            created_by,
+            created_at_millis: now_millis,
+            // "Absent until" an approve, reject or cancel call is taken, "including after
+            // Connect Customer decides an AUTOMATIC request".
+            updated_by: None,
+            updated_at_millis: now_millis,
+        };
+
+        if approval_type == crate::state::ApprovalType::Automatic {
+            let decision = instance.decide(&record, rule_failure_action, now_millis);
+            record.settle(decision, now_millis, None);
+        }
+        let stored_status = record.status;
+
+        instance.time_offs.insert(time_off_id.clone(), record);
+        if let Some(token) = input.client_token {
+            instance.client_tokens.insert(
+                token,
+                crate::state::ClientTokenRecord {
+                    time_off_id: time_off_id.clone(),
+                    fingerprint,
+                },
+            );
+        }
+        drop(store);
+
+        crate::state::audit(
+            Self::NAME,
+            ctx,
+            &time_off_id,
+            match approval_type {
+                // The service decided the request, so the record says which way.
+                crate::state::ApprovalType::Automatic => {
+                    crate::state::audit_outcome_of(stored_status)
+                }
+                crate::state::ApprovalType::AwaitApproval => {
+                    crate::state::AuditOutcome::TimeOffCreated
+                }
+            },
+        );
+        Ok(CreateTimeOffOutput { time_off_id })
     }
+}
+
+/// A modelled `Timestamp` as the epoch milliseconds this service stores: the window is kept
+/// "as sent, to the millisecond".
+fn millis(at: &::aws_smithy_types::DateTime) -> i64 {
+    at.to_millis().unwrap_or(i64::MAX)
 }

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ApproveTimeOff
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ApproveTimeOff`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented here — this is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ApproveTimeOff::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! It evaluates the rules for the stored request through the one rule evaluation
+//! ([`crate::state::Instance::decide`]) and records what that decided: the request ends
+//! `APPROVED`, or `REJECTED` with the failure that rejected it in `ValidationResults`, and
+//! `UpdatedAt` / `UpdatedBy` name this call. A request that is already `APPROVED` succeeds
+//! without a change; a `PENDING` or `CANCELLED` one is the modelled 409.
 //!
 //! ## Shape of an operation
 //!
@@ -178,18 +176,92 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ApproveTimeOff` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ApproveTimeOffErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ApproveTimeOff"))
+        // The identity of this call, read before the store is locked: an approval is one of
+        // the actions the request records in `UpdatedBy`.
+        let approved_by = crate::state::caller_identity_arn(&*self.engine, ctx);
+        let rule_failure_action =
+            crate::state::RuleFailureAction::from_wire(input.rule_failure_action.as_deref());
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ApproveTimeOffErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        let now_millis = crate::state::now_millis();
+        let audited = |outcome| crate::state::audit(Self::NAME, ctx, &input.time_off_id, outcome);
+        let mut store = state.lock();
+        let instance = match store
+            .instances
+            .get_mut(crate::state::resource_id(&input.instance_id))
+        {
+            Some(instance) => instance,
+            None => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(ApproveTimeOffErrorModeled::ResourceNotFoundException(
+                    crate::state::time_off_not_found(&input.time_off_id),
+                )
+                .into());
+            }
+        };
+
+        // Decide with the store borrowed for reading — the evaluation reads the user's other
+        // requests and the balance — and only then write what it decided.
+        let decision = match instance.time_off(&input.user_id, &input.time_off_id) {
+            None => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(ApproveTimeOffErrorModeled::ResourceNotFoundException(
+                    crate::state::time_off_not_found(&input.time_off_id),
+                )
+                .into());
+            }
+            Some(record) => match record.status {
+                // "Approving an APPROVED request succeeds without a change."
+                crate::state::TimeOffStatus::Approved => {
+                    audited(crate::state::AuditOutcome::Unchanged);
+                    return Ok(ApproveTimeOffOutput {});
+                }
+                // "Returns ConflictException if the request is PENDING or CANCELLED."
+                crate::state::TimeOffStatus::Pending
+                | crate::state::TimeOffStatus::Cancelled => {
+                    audited(crate::state::AuditOutcome::Refused);
+                    return Err(ApproveTimeOffErrorModeled::ConflictException(
+                        crate::state::status_conflict(&input.time_off_id),
+                    )
+                    .into());
+                }
+                // A waiting request is decided now, and "approving a REJECTED request
+                // evaluates the rules again, so it can end APPROVED or REJECTED".
+                crate::state::TimeOffStatus::AwaitingApproval
+                | crate::state::TimeOffStatus::Rejected => {
+                    instance.decide(record, rule_failure_action, now_millis)
+                }
+            },
+        };
+
+        let settled = decision.status;
+        match instance.time_offs.get_mut(&input.time_off_id) {
+            // A description sent with the approval is not recorded: "GetTimeOff doesn't
+            // return" it, so this service holds nothing that reports it.
+            Some(record) => record.settle(decision, now_millis, Some(approved_by)),
+            // The record was read moments ago under this same guard, so nothing can have
+            // removed it; answering a decision nothing stored would be worse than saying the
+            // store could not serve the call.
+            None => {
+                audited(crate::state::AuditOutcome::Refused);
+                return Err(ApproveTimeOffErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: crate::state::STORE_UNAVAILABLE_MESSAGE.to_string(),
+                        retry_after_seconds: None,
+                    },
+                )
+                .into());
+            }
+        }
+        drop(store);
+
+        audited(crate::state::audit_outcome_of(settled));
+        Ok(ApproveTimeOffOutput {})
     }
 }
