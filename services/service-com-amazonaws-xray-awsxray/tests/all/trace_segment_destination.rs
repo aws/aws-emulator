@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use service_com_amazonaws_cloudwatchlogs_logs_20140328::state as logs;
-use service_com_amazonaws_xray_awsxray::ops::types::TRACE_SEGMENT_DESTINATION_VALUES;
+use service_com_amazonaws_xray_awsxray::ops::types::ADMITTED_TRACE_SEGMENT_DESTINATIONS;
 use service_com_amazonaws_xray_awsxray::state::destination_switch::{
     destination_already_set_message, spans_delivery_ungranted_message, SPANS_DELIVERY_ACTION,
     XRAY_SERVICE_PRINCIPAL,
@@ -207,9 +207,9 @@ async fn the_account_default_destination_is_reported_and_reading_it_changes_noth
 
     // The default is one of the modelled values, not an invention.
     assert!(
-        TRACE_SEGMENT_DESTINATION_VALUES.contains(&DEFAULT_TRACE_SEGMENT_DESTINATION),
+        ADMITTED_TRACE_SEGMENT_DESTINATIONS.contains(&DEFAULT_TRACE_SEGMENT_DESTINATION),
         "case default value: {DEFAULT_TRACE_SEGMENT_DESTINATION:?} must be one of \
-         {TRACE_SEGMENT_DESTINATION_VALUES:?}"
+         {ADMITTED_TRACE_SEGMENT_DESTINATIONS:?}"
     );
 }
 
@@ -218,14 +218,13 @@ async fn the_account_default_destination_is_reported_and_reading_it_changes_noth
 // =============================================================================
 
 /// One destination switch: from the destination in effect, to the one asked
-/// for. The rows span every ordered pair of distinct values the model's
-/// `TraceSegmentDestination` enum publishes
-/// (`smithy_query(query="shape",shape="TraceSegmentDestination")`), so each
-/// value is exercised as both the source and the target of a switch.
+/// for. The rows span every ordered pair of distinct values the destination type
+/// admits ([`ADMITTED_TRACE_SEGMENT_DESTINATIONS`]), so each value is exercised
+/// as both the source and the target of a switch.
 fn switch_rows() -> Vec<(String, String)> {
     let mut rows = Vec::new();
-    for from in TRACE_SEGMENT_DESTINATION_VALUES {
-        for to in TRACE_SEGMENT_DESTINATION_VALUES {
+    for from in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
+        for to in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
             if from != to {
                 rows.push(((*from).to_string(), (*to).to_string()));
             }
@@ -290,10 +289,10 @@ async fn a_destination_switch_is_pending_then_the_clock_makes_it_active() {
 #[tokio::test]
 async fn a_request_naming_the_destination_already_in_effect_is_refused() {
     // Rows span what the rule generalises over: WHICH destination the account is
-    // already on (every value the model's enum publishes), whether the switch to
+    // already on (every value the destination type admits), whether the switch to
     // it has taken effect or is still being applied, and whether the no-op
     // request carries a configuration beside the destination.
-    for destination in TRACE_SEGMENT_DESTINATION_VALUES {
+    for destination in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
         for settled_first in [true, false] {
             if !settled_first && *destination == DEFAULT_TRACE_SEGMENT_DESTINATION {
                 // The default is in effect from the start: there is no switch to

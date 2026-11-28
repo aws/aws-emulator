@@ -65,12 +65,13 @@
 //! * `CloudWatchLogsConfiguration` (CloudWatchLogsConfiguration) — Specifies settings for the
 //!   CloudWatch Logs log groups that X-Ray creates for Transaction Search. Specify this only
 //!   when Destination is CloudWatchLogs.
-//! * `Destination` (TraceSegmentDestination, one of: CloudWatchLogs | Composite | XRay) — The
-//!   configured destination of trace segments.
+//! * `Destination` (TraceSegmentDestination, one of: CloudWatchLogs | XRay in the snapshot,
+//!   and `Composite` beside them in the overlay this operation's input is declared from —
+//!   see `smithy-model/LOCAL-ADDITIONS.md`) — The configured destination of trace segments.
 //!
 //! ## Output
 //!
-//! * `Destination` (TraceSegmentDestination, one of: CloudWatchLogs | Composite | XRay) — The
+//! * `Destination` (TraceSegmentDestination, the same admitted set as the input's) — The
 //!   destination of the trace segments.
 //! * `Status` (TraceSegmentDestinationStatus, one of: ACTIVE | PENDING) — The status of the
 //!   update.
@@ -189,13 +190,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(destination) = input.destination.as_deref() else {
             return Err(invalid(format!(
                 "Destination is required and must be one of {}",
-                TRACE_SEGMENT_DESTINATION_VALUES.join(", ")
+                ADMITTED_TRACE_SEGMENT_DESTINATIONS.join(", ")
             )));
         };
-        if !TRACE_SEGMENT_DESTINATION_VALUES.contains(&destination) {
+        if !ADMITTED_TRACE_SEGMENT_DESTINATIONS.contains(&destination) {
             return Err(invalid(format!(
                 "Destination must be one of {}, not {destination:?}",
-                TRACE_SEGMENT_DESTINATION_VALUES.join(", ")
+                ADMITTED_TRACE_SEGMENT_DESTINATIONS.join(", ")
             )));
         }
 

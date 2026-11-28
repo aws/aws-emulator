@@ -98,7 +98,8 @@ use std::sync::Arc;
 /// does not carry — the encryption type as `[KMS, NONE]` where the model declares
 /// `NONE, KMS`, the time-range type as `[TraceId, Service, Event]` where the model
 /// declares `TraceId, Event, Service`, and the trace segment destination with the
-/// composite destination first. No one order over the declared values produces
+/// composite destination first (that type is declared from this crate's overlay model,
+/// `smithy-model/local-additions.json`). No one order over the declared values produces
 /// all of those, so the sets this service is known to state in an order the sort does not
 /// give are listed in [`STATED_VALUE_SET_ORDERS`], and every other set of this model takes
 /// the sorted order — `service_common`'s one statement of that rule, applied to the
@@ -128,7 +129,8 @@ const STATED_VALUE_SET_ORDERS: &[&[&str]] = &[
     &["TraceId", "Service", "Event"],
     // `com.amazonaws.xray#TraceSegmentDestination`, which this service states
     // with the composite destination FIRST — neither the sorted order nor the
-    // order the model declares the type in.
+    // order the type is declared in (`smithy-model/local-additions.json`, see
+    // `smithy-model/LOCAL-ADDITIONS.md`).
     &["Composite", "CloudWatchLogs", "XRay"],
 ];
 

@@ -857,7 +857,7 @@ impl TelemetrySource {
 #[derive(Debug, Clone)]
 pub struct TraceSegmentDestinationRecord {
     /// The configured destination: one of
-    /// [`TRACE_SEGMENT_DESTINATION_VALUES`](crate::ops::types::TRACE_SEGMENT_DESTINATION_VALUES).
+    /// [`ADMITTED_TRACE_SEGMENT_DESTINATIONS`](crate::ops::types::ADMITTED_TRACE_SEGMENT_DESTINATIONS).
     pub destination: String,
     /// When the accepted change becomes effective, i.e. when the clock owes the
     /// `PENDING` -> `ACTIVE` move. `None` once the destination is in effect.

@@ -51,9 +51,10 @@ fn said(answer: &Answer) -> &str {
 const ENCRYPTION_TYPE_SET: &str = "[KMS, NONE]";
 
 /// `com.amazonaws.xray#TraceSegmentDestination`, whose admitted values are
-/// `XRay`, `CloudWatchLogs` and `Composite`, and which this service states with
-/// the composite destination first — neither the sorted order nor the order the
-/// model declares the type in.
+/// `XRay`, `CloudWatchLogs` and `Composite` (the third declared in this crate's
+/// overlay model, see `smithy-model/LOCAL-ADDITIONS.md`), and which this service
+/// states with the composite destination first — neither the sorted order nor
+/// the order the type is declared in.
 const TRACE_SEGMENT_DESTINATION_SET: &str = "[Composite, CloudWatchLogs, XRay]";
 
 /// `com.amazonaws.xray#TimeRangeType`, declared `TraceId, Event, Service`

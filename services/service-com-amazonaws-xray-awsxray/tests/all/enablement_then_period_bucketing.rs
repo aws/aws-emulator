@@ -35,7 +35,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use service_com_amazonaws_xray_awsxray::ops::get_time_series_service_statistics::TIME_SERIES_PAGE_SIZE;
-use service_com_amazonaws_xray_awsxray::ops::types::TRACE_SEGMENT_DESTINATION_VALUES;
+use service_com_amazonaws_xray_awsxray::ops::types::ADMITTED_TRACE_SEGMENT_DESTINATIONS;
 use service_com_amazonaws_xray_awsxray::state::{
     CLOUD_WATCH_LOGS_DESTINATION, DEFAULT_TRACE_SEGMENT_DESTINATION, DESTINATION_STATUS_ACTIVE,
 };
@@ -236,9 +236,9 @@ fn assert_datapoint(case: &str, datapoint: &Value, timestamp: f64, requests: i64
 #[tokio::test]
 async fn polling_for_the_settled_destination_terminates() {
     // Rows: the account nothing configured, and a switch to each value the
-    // model's `TraceSegmentDestination` enum publishes that is not the one
-    // already in effect — naming that one applies no switch at all and is
-    // refused, which `trace_segment_destination.rs` owns.
+    // destination type admits that is not the one already in effect — naming
+    // that one applies no switch at all and is refused, which
+    // `trace_segment_destination.rs` owns.
     let xray = Xray::new();
     let reads = poll_settled(
         "a never-configured account",
@@ -252,7 +252,7 @@ async fn polling_for_the_settled_destination_terminates() {
          the first read must report it, took {reads} reads"
     );
 
-    for destination in TRACE_SEGMENT_DESTINATION_VALUES {
+    for destination in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
         if *destination == DEFAULT_TRACE_SEGMENT_DESTINATION {
             continue;
         }

@@ -21,17 +21,17 @@
 //! text).
 //!
 //! The admitted set is read from this service's own statement of the type
-//! ([`TRACE_SEGMENT_DESTINATION_VALUES`], the values of
-//! `com.amazonaws.xray#TraceSegmentDestination`), so a value added to or removed
-//! from the type is covered here without editing a row; only the ORDER the
-//! refusal states the set in is written out, because an order cannot be derived
-//! from the set.
+//! ([`ADMITTED_TRACE_SEGMENT_DESTINATIONS`], the values of
+//! `com.amazonaws.xray#TraceSegmentDestination` as this crate declares it — see
+//! `smithy-model/LOCAL-ADDITIONS.md`), so a value added to or removed from the
+//! type is covered here without editing a row; only the ORDER the refusal states
+//! the set in is written out, because an order cannot be derived from the set.
 
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use service_com_amazonaws_xray_awsxray::ops::types::TRACE_SEGMENT_DESTINATION_VALUES;
+use service_com_amazonaws_xray_awsxray::ops::types::ADMITTED_TRACE_SEGMENT_DESTINATIONS;
 use service_com_amazonaws_xray_awsxray::state::destination_switch::destination_already_set_message;
 use service_com_amazonaws_xray_awsxray::state::{
     CLOUD_WATCH_LOGS_DESTINATION, DEFAULT_TRACE_SEGMENT_DESTINATION, DESTINATION_STATUS_ACTIVE,
@@ -50,12 +50,12 @@ const LOOK_AGAIN: Duration = Duration::from_millis(25);
 /// The dual destination `TraceSegmentDestination` admits beside `XRay` and
 /// `CloudWatchLogs`, named here because it is the member the emulator did not
 /// admit; the cases below take the whole set from
-/// [`TRACE_SEGMENT_DESTINATION_VALUES`] rather than from this constant.
+/// [`ADMITTED_TRACE_SEGMENT_DESTINATIONS`] rather than from this constant.
 const COMPOSITE_DESTINATION: &str = "Composite";
 
 /// The order this service states the admitted set in when it refuses a value
 /// outside the type: the composite destination first, which is neither the
-/// sorted order nor the order the model declares the type in.
+/// sorted order nor the order the type is declared in.
 const STATED_VALUE_SET: &str = "[Composite, CloudWatchLogs, XRay]";
 
 /// `(Destination, Status)`: the pair both operations here answer with.
@@ -119,7 +119,7 @@ async fn settled(xray: &Xray, case: &str, destination: &str) -> Answer {
 
 #[tokio::test]
 async fn every_admitted_destination_is_configured_and_reported_back() {
-    for destination in TRACE_SEGMENT_DESTINATION_VALUES {
+    for destination in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
         let case = format!("switch to {destination}");
         let xray = emulator(&case).await;
 
@@ -159,8 +159,8 @@ async fn every_admitted_destination_is_switched_away_from_and_back_to() {
     // Each admitted value as the SOURCE of a switch as well as its target: the
     // value configured is what the next read reports, whichever value the account
     // was on, so no admitted value is a dead end.
-    for from in TRACE_SEGMENT_DESTINATION_VALUES {
-        for to in TRACE_SEGMENT_DESTINATION_VALUES {
+    for from in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
+        for to in ADMITTED_TRACE_SEGMENT_DESTINATIONS {
             if from == to {
                 continue;
             }
@@ -243,7 +243,7 @@ async fn a_destination_outside_the_type_is_refused_stating_every_admitted_value(
         // read off its own message, so a member missing from the clause fails the
         // case whatever the literal above happens to say.
         let mut listed = stated_values(refused.message().unwrap_or_default());
-        let mut admitted: Vec<String> = TRACE_SEGMENT_DESTINATION_VALUES
+        let mut admitted: Vec<String> = ADMITTED_TRACE_SEGMENT_DESTINATIONS
             .iter()
             .map(|value| (*value).to_string())
             .collect();
@@ -263,9 +263,9 @@ async fn the_composite_destination_is_admitted_rather_than_refused() {
     // served rather than refused as a value outside the type.
     let case = "the composite destination";
     assert!(
-        TRACE_SEGMENT_DESTINATION_VALUES.contains(&COMPOSITE_DESTINATION),
+        ADMITTED_TRACE_SEGMENT_DESTINATIONS.contains(&COMPOSITE_DESTINATION),
         "case {case:?}: {COMPOSITE_DESTINATION:?} must be one of \
-         {TRACE_SEGMENT_DESTINATION_VALUES:?}"
+         {ADMITTED_TRACE_SEGMENT_DESTINATIONS:?}"
     );
 
     let xray = emulator(case).await;

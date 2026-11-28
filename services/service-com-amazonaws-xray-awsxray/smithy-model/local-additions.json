@@ -1,0 +1,71 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.xray#TraceSegmentDestination": {
+      "type": "enum",
+      "members": {
+        "XRay": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "XRay" }
+        },
+        "CloudWatchLogs": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "CloudWatchLogs" }
+        },
+        "Composite": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "Composite" }
+        }
+      }
+    },
+    "com.amazonaws.xray#TraceSegmentDestinationStatus": {
+      "type": "enum",
+      "members": {
+        "PENDING": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "PENDING" }
+        },
+        "ACTIVE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ACTIVE" }
+        }
+      }
+    },
+    "com.amazonaws.xray#UpdateTraceSegmentDestinationRequest": {
+      "type": "structure",
+      "members": {
+        "Destination": { "target": "com.amazonaws.xray#TraceSegmentDestination" },
+        "CloudWatchLogsConfiguration": {
+          "target": "com.amazonaws.xray#CloudWatchLogsConfiguration"
+        }
+      },
+      "traits": { "smithy.api#input": {} }
+    },
+    "com.amazonaws.xray#UpdateTraceSegmentDestinationResult": {
+      "type": "structure",
+      "members": {
+        "Destination": { "target": "com.amazonaws.xray#TraceSegmentDestination" },
+        "Status": { "target": "com.amazonaws.xray#TraceSegmentDestinationStatus" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.xray#GetTraceSegmentDestinationResult": {
+      "type": "structure",
+      "members": {
+        "Destination": { "target": "com.amazonaws.xray#TraceSegmentDestination" },
+        "Status": { "target": "com.amazonaws.xray#TraceSegmentDestinationStatus" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.xray#CloudWatchLogsConfiguration": {
+      "type": "structure",
+      "members": {
+        "SpansLogGroupKmsKeyId": { "target": "com.amazonaws.xray#KmsKeyId" }
+      }
+    },
+    "com.amazonaws.xray#KmsKeyId": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 256 } }
+    }
+  }
+}

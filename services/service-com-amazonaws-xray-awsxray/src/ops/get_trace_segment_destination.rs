@@ -58,8 +58,9 @@
 //!
 //! ## Output
 //!
-//! * `Destination` (TraceSegmentDestination, one of: CloudWatchLogs | Composite | XRay) —
-//!   Retrieves the current destination.
+//! * `Destination` (TraceSegmentDestination, one of: CloudWatchLogs | XRay in the snapshot,
+//!   and `Composite` beside them in the overlay this operation's output is declared from —
+//!   see `smithy-model/LOCAL-ADDITIONS.md`) — Retrieves the current destination.
 //! * `Status` (TraceSegmentDestinationStatus, one of: ACTIVE | PENDING) — Status of the
 //!   retrieval.
 //!
