@@ -215,30 +215,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // Rules the model documents in prose but cannot express as constraint traits, so
-        // the boundary validator let them through.
-        let references = input
-            .associated_template_and_rule_list
-            .as_deref()
-            .unwrap_or_default();
-        if let Some(message) =
-            crate::state::association_list_violation(&input.firewall_type, references)
-        {
+        // the boundary validator let them through. The `policyConfiguration` the request
+        // submits is completed first and the association list second, the order the
+        // recordings report a request violating both in.
+        if let Some((message, field_list)) = crate::state::policy_configuration_violation(
+            &input.firewall_type,
+            &input.policy_configuration,
+        ) {
             return Err(
                 CreatePolicyErrorModeled::ValidationException(ValidationException {
                     reason: Some(crate::state::VALIDATION_REASON_FIELD.to_string()),
-                    field_list: Some(vec![ValidationExceptionField {
-                        name: "associatedTemplateAndRuleList".to_string(),
-                        message: message.clone(),
-                    }]),
+                    field_list: Some(field_list),
                     message,
                 })
                 .into(),
             );
         }
-        if let Some((message, field_list)) = crate::state::policy_configuration_violation(
-            &input.firewall_type,
-            &input.policy_configuration,
-        ) {
+        let references = input
+            .associated_template_and_rule_list
+            .as_deref()
+            .unwrap_or_default();
+        if let Some((message, field_list)) =
+            crate::state::association_list_violation(&input.firewall_type, references)
+        {
             return Err(
                 CreatePolicyErrorModeled::ValidationException(ValidationException {
                     reason: Some(crate::state::VALIDATION_REASON_FIELD.to_string()),

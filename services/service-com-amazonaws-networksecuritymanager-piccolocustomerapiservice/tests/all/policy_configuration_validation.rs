@@ -93,17 +93,31 @@ impl Emulator {
 }
 
 /// A `CreatePolicy` body carrying `configuration` as its `policyConfiguration`.
+///
+/// A WAF policy also carries one association, which the model requires of it ("For AWS
+/// WAF policies, specify 1 to 100 templates or rules. For AWS Shield Advanced policies,
+/// this list must be empty"), so the refusal a row is about is the configuration's.
 fn create_body(
     name: &str,
     firewall_type: &str,
     configuration: serde_json::Value,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "policyName": name,
         "priority": 1,
         "firewallType": firewall_type,
         "policyConfiguration": configuration,
-    })
+    });
+    if firewall_type == "WAF" {
+        body["associatedTemplateAndRuleList"] = serde_json::json!([{
+            "ruleIdentifier": engine::emulator_arn(
+                "network-security-manager",
+                "us-east-1",
+                "rule/r0",
+            ),
+        }]);
+    }
+    body
 }
 
 /// A `policyConfiguration` whose `wafConfig` carries exactly `waf_config`.
@@ -375,7 +389,7 @@ async fn a_configuration_that_disables_resource_cleanup_is_refused() {
             reply.json["fieldList"],
             serde_json::json!([{
                 "name": "policyConfiguration.resourcesCleanUp",
-                "message": "resourcesCleanUp must be true",
+                "message": "resourcesCleanUp must be true.",
             }]),
             "case {label}: unexpected fieldList, got {:?}",
             reply.json["fieldList"]

@@ -223,13 +223,25 @@ fn policy_body(
             "conflictResolution": "MERGE_WHERE_APPLICABLE",
         });
     }
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "policyName": name,
         "priority": priority,
         "firewallType": firewall_type,
         "isPublished": published,
         "policyConfiguration": configuration,
-    })
+    });
+    // "For AWS WAF policies, specify 1 to 100 templates or rules. For AWS Shield Advanced
+    // policies, this list must be empty."
+    if firewall_type == "WAF" {
+        body["associatedTemplateAndRuleList"] = serde_json::json!([{
+            "ruleIdentifier": engine::emulator_arn(
+                "network-security-manager",
+                "us-east-1",
+                "rule/coveragerule",
+            ),
+        }]);
+    }
+    body
 }
 
 /// A `CreateScope` body selecting exactly `resource_scopes`.

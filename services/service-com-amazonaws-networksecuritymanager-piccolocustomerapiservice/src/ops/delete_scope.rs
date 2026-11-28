@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteScope
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteScope`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteScope::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! REMOVES one scope from [`crate::state`]: after this call no read resolves the
+//! identifier it named, so `GetScope` answers the modelled `ResourceNotFoundException`
+//! and `ListScopes` no longer reports the record.
 //!
 //! ## Shape of an operation
 //!
@@ -167,20 +161,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteScope` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteScopeErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteScope"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteScopeErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the scope store is unavailable".to_string(),
+                },
+            )
+            .into());
+        };
+
+        let mut store = state.lock();
+        // `@idempotent`, and this operation declares no `ResourceNotFoundException`: an
+        // identifier that names no scope is already in the state the caller asked for, so
+        // it is a success with nothing to remove.
+        let Some(scope_id) = store.resolve_scope_id(&input.scope_identifier) else {
+            return Ok(DeleteScopeOutput);
+        };
+
+        // A scope another resource is built on cannot be removed from under it: while a
+        // stored deployment still associates this scope, the delete is REFUSED with the
+        // modelled `ConflictException` stating `RESOURCE_IN_USE_MESSAGE`, and the scope
+        // stays readable. The reference graph itself is `crate::state`'s, so every caller
+        // of it agrees on one copy.
+        let referenced = store
+            .scopes
+            .get(&scope_id)
+            .is_some_and(|scope| store.is_referenced(&scope.scope_arn, &scope.scope_id));
+        if referenced {
+            return Err(
+                DeleteScopeErrorModeled::ConflictException(ConflictException {
+                    message: crate::state::RESOURCE_IN_USE_MESSAGE.to_string(),
+                    resource_id: Some(scope_id),
+                    resource_type: Some(crate::state::RESOURCE_TYPE_SCOPE.to_string()),
+                })
+                .into(),
+            );
+        }
+
+        store.scopes.remove(&scope_id);
+        // The idempotency records too: a token that produced this scope can no longer
+        // replay it, so keeping the row would only hold memory for an id no call can read
+        // again.
+        store.forget_idempotent_calls_for(&scope_id);
+        Ok(DeleteScopeOutput)
     }
 }

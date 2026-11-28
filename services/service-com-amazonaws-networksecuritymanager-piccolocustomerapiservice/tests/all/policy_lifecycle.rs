@@ -260,6 +260,13 @@ fn waf_configuration(resolution: &str) -> serde_json::Value {
     waf_configuration_with(true, true, resolution)
 }
 
+/// The association list every WAF create owes: the model says of
+/// `associatedTemplateAndRuleList` "For AWS WAF policies, specify 1 to 100 templates or
+/// rules", so a WAF policy that associates nothing is refused rather than created.
+fn waf_associations(id: &str) -> serde_json::Value {
+    serde_json::json!([{ "ruleIdentifier": reference_arn("rule", id) }])
+}
+
 /// An ARN of one of this service's other resource types, for an association reference.
 fn reference_arn(resource_type: &str, id: &str) -> String {
     engine::emulator_arn(
@@ -323,12 +330,14 @@ impl CreateCase {
 fn create_cases() -> Vec<CreateCase> {
     vec![
         CreateCase {
-            policy_name: "waf-published-no-associations",
+            policy_name: "waf-published-one-template",
             firewall_type: "WAF",
             priority: 1,
             description: None,
             is_published: None,
-            associations: Vec::new(),
+            associations: vec![serde_json::json!({
+                "templateIdentifier": reference_arn("template", "t0"),
+            })],
             configuration: waf_configuration_with(false, true, "RETROFIT"),
             tags: None,
         },
@@ -338,7 +347,9 @@ fn create_cases() -> Vec<CreateCase> {
             priority: 5,
             description: Some("a draft policy"),
             is_published: Some(false),
-            associations: Vec::new(),
+            associations: vec![serde_json::json!({
+                "ruleIdentifier": reference_arn("rule", "r0"),
+            })],
             configuration: waf_configuration_with(true, true, "NO_REMEDIATION"),
             tags: None,
         },
@@ -609,11 +620,16 @@ async fn update_applies_only_the_members_it_carries() {
             configuration: None,
         },
         UpdateCase {
-            label: "clear the associations",
+            // An update REPLACES the list, so a one-entry list is a different list than
+            // the seed's. Clearing it is refused on a WAF policy, which the association
+            // rules suite covers.
+            label: "replace the associations with a single template",
             description: None,
             priority: None,
             is_published: true,
-            associations: Some(Vec::new()),
+            associations: Some(vec![
+                serde_json::json!({ "templateIdentifier": reference_arn("template", "t8") }),
+            ]),
             configuration: None,
         },
         UpdateCase {
@@ -847,6 +863,7 @@ async fn paging_returns_every_policy_exactly_once_for_any_page_size() {
                     "priority": index + 1,
                     "firewallType": "WAF",
                     "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+                    "associatedTemplateAndRuleList": waf_associations("r1"),
                 }))
                 .await;
             assert_eq!(
@@ -890,6 +907,7 @@ async fn listing_filters_by_status() {
                 "firewallType": "WAF",
                 "isPublished": published,
                 "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+                "associatedTemplateAndRuleList": waf_associations("r1"),
             }))
             .await;
         assert_eq!(reply.status, 201, "setup create failed: {:?}", reply.json);
@@ -955,6 +973,7 @@ async fn delete_removes_the_record_and_is_idempotent() {
                 "priority": index + 1,
                 "firewallType": "WAF",
                 "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+                "associatedTemplateAndRuleList": waf_associations("r1"),
             }))
             .await;
         assert_eq!(reply.status, 201, "setup create failed: {:?}", reply.json);
@@ -1016,6 +1035,7 @@ async fn a_replayed_client_token_returns_the_same_policy() {
             "priority": 1,
             "firewallType": "WAF",
             "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+            "associatedTemplateAndRuleList": waf_associations("r1"),
         })
     };
 
@@ -1061,6 +1081,7 @@ async fn a_duplicate_policy_name_is_a_conflict() {
         "priority": 1,
         "firewallType": "WAF",
         "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+        "associatedTemplateAndRuleList": waf_associations("r1"),
     });
     let first = emulator.create(body.clone()).await;
     assert_eq!(first.status, 201, "setup create failed: {:?}", first.json);
@@ -1141,12 +1162,19 @@ async fn documented_association_rules_are_refused_as_validation_errors() {
     ];
 
     for (label, firewall_type, associations) in cases {
+        // The configuration is COMPLETE for the row's firewall type, so what the refusal
+        // reports is the association list rather than a member of the configuration.
+        let configuration = if firewall_type == "WAF" {
+            waf_configuration("RETROFIT")
+        } else {
+            plain_configuration(false, true)
+        };
         let reply = emulator
             .create(serde_json::json!({
                 "policyName": format!("refused-{}", label.replace(' ', "-")),
                 "priority": 1,
                 "firewallType": firewall_type,
-                "policyConfiguration": plain_configuration(false, false),
+                "policyConfiguration": configuration,
                 "associatedTemplateAndRuleList": associations,
             }))
             .await;
@@ -1195,6 +1223,7 @@ async fn creating_past_the_store_bound_is_refused() {
             "priority": 1,
             "firewallType": "WAF",
             "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+            "associatedTemplateAndRuleList": waf_associations("r1"),
         })
     };
 
@@ -1221,6 +1250,7 @@ async fn creating_past_the_store_bound_is_refused() {
                 "priority": 7,
                 "firewallType": "WAF",
                 "policyConfiguration": waf_configuration_with(true, true, "RETROFIT"),
+                "associatedTemplateAndRuleList": waf_associations("r1"),
             }),
         ),
         (
@@ -1393,6 +1423,7 @@ async fn deleting_a_policy_releases_its_idempotency_records() {
         "priority": 3,
         "firewallType": "WAF",
         "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+        "associatedTemplateAndRuleList": waf_associations("r1"),
     });
     let created = emulator.create(body.clone()).await;
     assert_eq!(
@@ -1466,6 +1497,7 @@ async fn a_replayed_update_token_returns_the_update_it_applied() {
             "priority": 1,
             "firewallType": "WAF",
             "policyConfiguration": waf_configuration_with(false, true, "RETROFIT"),
+            "associatedTemplateAndRuleList": waf_associations("r1"),
         }))
         .await;
     assert_eq!(

@@ -130,6 +130,14 @@ async fn every_timestamp_member_is_carried_as_a_date_time_string() {
                 "policyName": "timestamp-policy",
                 "priority": 1,
                 "firewallType": "WAF",
+                // "For AWS WAF policies, specify 1 to 100 templates or rules."
+                "associatedTemplateAndRuleList": [{
+                    "ruleIdentifier": engine::emulator_arn(
+                        "network-security-manager",
+                        "us-east-1",
+                        "rule/timestamprule",
+                    ),
+                }],
                 "policyConfiguration": {
                     "remediationEnabled": true,
                     "resourcesCleanUp": true,

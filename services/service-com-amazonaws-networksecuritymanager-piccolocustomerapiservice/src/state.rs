@@ -372,28 +372,70 @@ pub fn decode_next_token(token: &str) -> Option<String> {
     (!decoded.is_empty()).then_some(decoded)
 }
 
-/// Refuse an association list the model's documented rules forbid, returning the message
-/// naming what is wrong — `None` when the list is allowed.
+/// The `associatedTemplateAndRuleList` member of a policy create/update, as the model
+/// names it: the `name` every refusal of that list reports.
+pub const ASSOCIATION_LIST_MEMBER: &str = "associatedTemplateAndRuleList";
+
+/// Refuse an association list the model's documented rules forbid, returning the
+/// `message` and the `fieldList` the refusal states — `None` when the list is allowed.
 ///
-/// The model states three rules its traits cannot express. From `CreatePolicy`'s
+/// The model states four rules its traits cannot express. From `CreatePolicy`'s
 /// `associatedTemplateAndRuleList`: "For AWS WAF policies, specify 1 to 100 templates or
 /// rules, of which at most 2 can be templates. For AWS Shield Advanced policies, this
 /// list must be empty." And from `TemplateOrRuleReference`: "The identifier of the
 /// template. This is the template's Amazon Resource Name (ARN)."
 ///
-/// The documented WAF *minimum* of one association is deliberately not enforced: a WAF
-/// policy with no associations is the shape this emulator's own lifecycle creates first,
-/// and no modelled trait or error distinguishes it.
+/// The WAF *minimum* of one association is one of them: "specify 1 to 100" is a floor as
+/// much as a ceiling, so a WAF policy associating nothing is a policy this service does
+/// not create, refused like any other member the firewall type requires
+/// ([`waf_config_violation`]) rather than minted and left for a later read to report.
+///
+/// Every clause states the per-field `message` as its own complete sentence, separate
+/// from the top-level one: the `fieldList` entry is documented "A message describing the
+/// validation error for the field", which is a sentence about that member, and reusing
+/// the top-level string would make the two unable to differ.
+///
+/// One home for the four, so `CreatePolicy` and `UpdatePolicy` refuse alike.
 pub fn association_list_violation(
     firewall_type: &str,
     references: &[TemplateOrRuleReference],
-) -> Option<String> {
+) -> Option<(String, Vec<ValidationExceptionField>)> {
+    /// The refusal of the whole list: the top-level sentence and the one `fieldList`
+    /// entry, which names the list member and states its own sentence.
+    fn refusal(
+        message: String,
+        field_message: String,
+    ) -> Option<(String, Vec<ValidationExceptionField>)> {
+        Some((
+            message,
+            vec![ValidationExceptionField {
+                name: ASSOCIATION_LIST_MEMBER.to_string(),
+                message: field_message,
+            }],
+        ))
+    }
+
+    if firewall_type == FIREWALL_TYPE_WAF && references.is_empty() {
+        return refusal(
+            format!("{ASSOCIATION_LIST_MEMBER} is required for {firewall_type} policies"),
+            format!(
+                "{ASSOCIATION_LIST_MEMBER} must contain at least one template or rule when \
+                 firewallType is {firewall_type}."
+            ),
+        );
+    }
     if firewall_type == FIREWALL_TYPE_SHIELD_ADVANCED && !references.is_empty() {
-        return Some(format!(
-            "associatedTemplateAndRuleList must be empty for a {FIREWALL_TYPE_SHIELD_ADVANCED} \
-             policy, but {} entries were given",
-            references.len()
-        ));
+        return refusal(
+            format!(
+                "{ASSOCIATION_LIST_MEMBER} must be empty for a {FIREWALL_TYPE_SHIELD_ADVANCED} \
+                 policy, but {} entries were given",
+                references.len()
+            ),
+            format!(
+                "{ASSOCIATION_LIST_MEMBER} must be empty when firewallType is \
+                 {FIREWALL_TYPE_SHIELD_ADVANCED}."
+            ),
+        );
     }
     let templates = references
         .iter()
@@ -402,10 +444,16 @@ pub fn association_list_violation(
         })
         .count();
     if templates > MAX_ASSOCIATED_TEMPLATES {
-        return Some(format!(
-            "associatedTemplateAndRuleList accepts at most {MAX_ASSOCIATED_TEMPLATES} \
-             templates, but {templates} were given"
-        ));
+        return refusal(
+            format!(
+                "{ASSOCIATION_LIST_MEMBER} accepts at most {MAX_ASSOCIATED_TEMPLATES} \
+                 templates, but {templates} were given"
+            ),
+            format!(
+                "{ASSOCIATION_LIST_MEMBER} must contain at most {MAX_ASSOCIATED_TEMPLATES} \
+                 templates."
+            ),
+        );
     }
     references.iter().find_map(|reference| {
         let (member, identifier) = match reference {
@@ -419,12 +467,19 @@ pub fn association_list_violation(
         // `AssociatedTemplateOrRule`, whose members ARE `@length(20..1010)` and carry the
         // ARN pattern. An identifier outside that is one this service could not answer
         // with, hence a `ValidationException` rather than a record nothing can read.
-        (!is_modelled_arn(identifier)).then(|| {
+        if is_modelled_arn(identifier) {
+            return None;
+        }
+        refusal(
             format!(
-                "associatedTemplateAndRuleList {member} must be an Amazon Resource Name of \
+                "{ASSOCIATION_LIST_MEMBER} {member} must be an Amazon Resource Name of \
                  {MIN_ARN_LENGTH} to {MAX_ARN_LENGTH} characters, but {identifier:?} is not one"
-            )
-        })
+            ),
+            format!(
+                "{member} must be the resource's Amazon Resource Name of {MIN_ARN_LENGTH} to \
+                 {MAX_ARN_LENGTH} characters."
+            ),
+        )
     })
 }
 
@@ -475,21 +530,21 @@ pub fn policy_configuration_violation(
 /// condition because the recorded one states none — it holds for every firewall type and
 /// whether or not remediation is enabled, the modelled `@default` of `false` included.
 ///
-/// The `fieldList` entry carries the member's dotted path and the sentence the service
-/// states for the violation; nothing is invented for it, because the one thing recorded
-/// about this refusal is that sentence.
+/// The `fieldList` entry carries the member's dotted path and its own complete sentence:
+/// the entry's `message` is documented "A message describing the validation error for the
+/// field", which is a sentence about that member and so is terminated like one, stated
+/// separately from the top-level `message` rather than cloned from it.
 fn resources_clean_up_violation(
     configuration: &PolicyConfiguration,
 ) -> Option<(String, Vec<ValidationExceptionField>)> {
     if configuration.resources_clean_up {
         return None;
     }
-    let message = format!("{RESOURCES_CLEAN_UP_MEMBER} must be true");
     Some((
-        message.clone(),
+        format!("{RESOURCES_CLEAN_UP_MEMBER} must be true"),
         vec![ValidationExceptionField {
             name: format!("{POLICY_CONFIGURATION_MEMBER}.{RESOURCES_CLEAN_UP_MEMBER}"),
-            message,
+            message: format!("{RESOURCES_CLEAN_UP_MEMBER} must be true."),
         }],
     ))
 }

@@ -255,29 +255,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // Documented prose rules the constraint traits cannot express. The firewall type
-        // comes from the stored record: no modelled operation changes it.
+        // comes from the stored record: no modelled operation changes it. The
+        // `policyConfiguration` an update submits is completed first and the association
+        // list second, exactly as a create orders the two.
         let stored_firewall_type = store
             .policies
             .get(&policy_id)
             .map(|policy| policy.firewall_type.clone())
             .unwrap_or_default();
-        if let Some(references) = input.associated_template_and_rule_list.as_deref() {
-            if let Some(message) =
-                crate::state::association_list_violation(&stored_firewall_type, references)
-            {
-                return Err(
-                    UpdatePolicyErrorModeled::ValidationException(ValidationException {
-                        reason: Some(crate::state::VALIDATION_REASON_FIELD.to_string()),
-                        field_list: Some(vec![ValidationExceptionField {
-                            name: "associatedTemplateAndRuleList".to_string(),
-                            message: message.clone(),
-                        }]),
-                        message,
-                    })
-                    .into(),
-                );
-            }
-        }
         // An update REPLACES the whole configuration, so one that supplies a
         // `policyConfiguration` has to carry everything the policy's firewall type
         // requires; an update that supplies none leaves the stored configuration alone and
@@ -285,6 +270,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(configuration) = input.policy_configuration.as_ref() {
             if let Some((message, field_list)) =
                 crate::state::policy_configuration_violation(&stored_firewall_type, configuration)
+            {
+                return Err(
+                    UpdatePolicyErrorModeled::ValidationException(ValidationException {
+                        reason: Some(crate::state::VALIDATION_REASON_FIELD.to_string()),
+                        field_list: Some(field_list),
+                        message,
+                    })
+                    .into(),
+                );
+            }
+        }
+        if let Some(references) = input.associated_template_and_rule_list.as_deref() {
+            if let Some((message, field_list)) =
+                crate::state::association_list_violation(&stored_firewall_type, references)
             {
                 return Err(
                     UpdatePolicyErrorModeled::ValidationException(ValidationException {

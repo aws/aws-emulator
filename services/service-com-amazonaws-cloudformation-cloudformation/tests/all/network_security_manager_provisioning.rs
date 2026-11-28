@@ -733,12 +733,27 @@ async fn deleting_the_stack_deletes_the_policy_it_created() {
     let stack_name = "nsm-policy-deleted";
     let template = json!({
         "Resources": {
+            // The rule the policy associates: the model says of
+            // `associatedTemplateAndRuleList` "For AWS WAF policies, specify 1 to 100 templates
+            // or rules", so a WAF policy declares at least one.
+            "Rule": {
+                "Type": RULE,
+                "Properties": {
+                    "RuleName": "nsm-deleted-policy-rule",
+                    "FirewallType": WAF,
+                    "RuleType": CONFIGURATION,
+                    "Configuration": waf_configuration(),
+                }
+            },
             "Policy": {
                 "Type": POLICY,
                 "Properties": {
                     "PolicyName": "nsm-deleted-policy",
                     "FirewallType": WAF,
                     "Priority": 10,
+                    "AssociatedTemplateAndRuleList": [
+                        {"RuleArn": {"Fn::GetAtt": ["Rule", "RuleArn"]}}
+                    ],
                     "PolicyConfiguration": policy_configuration(),
                 }
             }
@@ -812,6 +827,18 @@ async fn a_changed_declaration_is_applied_to_the_policy_the_stack_has() {
     let template_of = |description: &str, priority: i64| {
         json!({
             "Resources": {
+                // The rule the policy associates, which both declarations state alike: a WAF
+                // policy specifies "1 to 100 templates or rules", so neither the create nor
+                // the update may leave the list empty.
+                "Rule": {
+                    "Type": RULE,
+                    "Properties": {
+                        "RuleName": "nsm-updated-policy-rule",
+                        "FirewallType": WAF,
+                        "RuleType": CONFIGURATION,
+                        "Configuration": waf_configuration(),
+                    }
+                },
                 "Policy": {
                     "Type": POLICY,
                     "Properties": {
@@ -819,6 +846,9 @@ async fn a_changed_declaration_is_applied_to_the_policy_the_stack_has() {
                         "PolicyDescription": description,
                         "FirewallType": WAF,
                         "Priority": priority,
+                        "AssociatedTemplateAndRuleList": [
+                            {"RuleArn": {"Fn::GetAtt": ["Rule", "RuleArn"]}}
+                        ],
                         "PolicyConfiguration": policy_configuration(),
                     }
                 }

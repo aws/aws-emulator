@@ -188,6 +188,10 @@ impl Emulator {
                     "policyName": name,
                     "priority": 1,
                     "firewallType": "WAF",
+                    // "For AWS WAF policies, specify 1 to 100 templates or rules."
+                    "associatedTemplateAndRuleList": [{
+                        "ruleIdentifier": resource_arn("rule", "deploymentrule"),
+                    }],
                     "policyConfiguration": {
                         "remediationEnabled": false,
                         "resourcesCleanUp": true,

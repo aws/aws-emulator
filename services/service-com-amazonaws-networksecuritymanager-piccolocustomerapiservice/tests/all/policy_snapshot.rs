@@ -274,7 +274,11 @@ fn snapshot_cases() -> Vec<SnapshotCase> {
             tags: Some(serde_json::json!({ "team": "network" })),
             next_priority: 1,
             next_configuration: waf_configuration(true, "NO_REMEDIATION"),
-            next_associations: vec![],
+            // An update REPLACES the list; a WAF policy keeps at least one association,
+            // so the live policy moves to a single rule.
+            next_associations: vec![serde_json::json!({
+                "ruleIdentifier": resource_arn("rule", "snapshotrule4"),
+            })],
         },
         SnapshotCase {
             label: "shield-advanced-no-associations",
@@ -599,15 +603,20 @@ async fn a_policy_with_no_published_version_cannot_be_snapshotted() {
     ];
 
     for (name, firewall_type, configuration) in rows {
-        let created = emulator
-            .create_policy(serde_json::json!({
-                "policyName": name,
-                "priority": 10,
-                "firewallType": firewall_type,
-                "policyConfiguration": configuration,
-                "isPublished": false,
-            }))
-            .await;
+        let mut body = serde_json::json!({
+            "policyName": name,
+            "priority": 10,
+            "firewallType": firewall_type,
+            "policyConfiguration": configuration,
+            "isPublished": false,
+        });
+        // "For AWS WAF policies, specify 1 to 100 templates or rules."
+        if firewall_type == "WAF" {
+            body["associatedTemplateAndRuleList"] = serde_json::json!([{
+                "ruleIdentifier": resource_arn("rule", "draftrule"),
+            }]);
+        }
+        let created = emulator.create_policy(body).await;
         assert_eq!(
             created.status, 201,
             "case {name}: CreatePolicy expected 201, got {} {:?}",
@@ -747,6 +756,9 @@ async fn an_unknown_identifier_is_refused_and_snapshots_go_with_their_policy() {
             "firewallType": "WAF",
             "policyConfiguration": waf_configuration(true, "NO_REMEDIATION"),
             "isPublished": true,
+            "associatedTemplateAndRuleList": [{
+                "ruleIdentifier": resource_arn("rule", "deletedrule"),
+            }],
         }))
         .await;
     assert_eq!(
@@ -791,6 +803,9 @@ async fn a_retried_client_token_answers_with_the_first_snapshot() {
             "firewallType": "WAF",
             "policyConfiguration": waf_configuration(true, "NO_REMEDIATION"),
             "isPublished": true,
+            "associatedTemplateAndRuleList": [{
+                "ruleIdentifier": resource_arn("rule", "idempotentrule"),
+            }],
         }))
         .await;
     assert_eq!(
