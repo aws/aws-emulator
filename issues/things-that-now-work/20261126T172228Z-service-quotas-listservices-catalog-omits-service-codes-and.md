@@ -9,7 +9,7 @@ Issue-Shape-Id: com.amazonaws.servicequotas#ServiceQuotasV20190624
 Issue-Key: service-quotas|ListServices|2xx->2xx|$.Services[*]
 Issue-Commit: bf5aedd86bc1c51d8b010649bf7e2337ac48d430
 
-# service-quotas ListServices catalog omits service codes and shifts the Services list
+# service-quotas ListServices catalog omits service codes and shifts the Services list (PARTIAL CLOSE: every code this report names is registered and resolves, and every registered `(ServiceCode, ServiceName)` pair it QUOTES is now served; the positions that still diverge are inventory entries whose registered display name no source in this checkout states)
 
 > _Note: this issue was identified against the code base at commit `bf5aedd86bc1c51d8b010649bf7e2337ac48d430`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
@@ -17,6 +17,36 @@ Issue-Commit: bf5aedd86bc1c51d8b010649bf7e2337ac48d430
 ListServices
 
 ## Description
+PARTIAL CLOSE (added by the fixer). All ten service codes this report names as absent
+(`migrationhubstrategy`, `networkinsights`, `observabilityadmin`, `opensearch`,
+`pca-connector-ad`, `pca-connector-scep`, `qbusiness`, `rolesanywhere`,
+`route53-recovery-control-config`, `route53-recovery-readiness`) are registered in the
+inventory, are listed in `ServiceCode` order and resolve their quota listings, so no code
+this report names is undiscoverable any more. The six registered display names it QUOTES
+were served as a "tidied" product name or as the code echoed back, and are corrected to
+the registered string: `migrationhubstrategy` -> 'Migration Hub Strategy Recommendations',
+`networkinsights` -> 'Network Insights', `observabilityadmin` -> 'Amazon CloudWatch
+Observability Admin', `opensearch` -> 'OpenSearch Application' (the `es` code keeps
+'Amazon OpenSearch Service'), `qbusiness` -> 'Amazon Q', `rolesanywhere` -> 'IAM Roles
+Anywhere'. Replay confirms those positions no longer diverge. What still diverges are
+inventory entries whose registered `ServiceName` neither this report, nor the checkout's
+other service-quotas reports, nor the Smithy model states — the model enumerates no
+catalog, so the registered string is the only authority and the corpus withholds it; no
+rule derives it either (the registrations drop a prefix, keep a prefix, drop a suffix or
+name a plane, with no pattern over the catalog). Read the `Issue-Key` above as the key of
+the ORIGINAL sweep, not as a key that now matches in full.
+
+LOCKFILE NOTE (added by the fixer, so the reason for the one dependency-resolution line in
+this change is stated in the change itself). This fix needs no dependency: its only edits
+outside the service-quotas crate are to `Cargo.lock`, where the third-party `pymath` crate's
+`malachite-bigint` is held at the 0.12.0 line the rest of the tree already locks (the
+workspace's own `python-guest-substrate` requires exactly that version). The 0.15.0 line a
+fresh resolution picks declares `rust-version = 1.100.0`, which this toolchain (rustc 1.99.1)
+does not meet, so with 0.15.0 locked `cargo check --locked --workspace` refuses to run at
+all: "rustc 1.99.1 is not supported by the following packages: malachite-base@0.15.0 requires
+rustc 1.100.0 …". Holding the one line is what lets the workspace compile here; no crate is
+added, and no other version is moved.
+
 Cause 1 of 1: ListServices returns the wrong service catalog.
 
 AWS: Smithy ListServices -> ListServicesResponse.Services: list<ServiceInfo>, ServiceInfo = {ServiceCode (@length 1-63, @pattern ^[a-zA-Z][a-zA-Z0-9-]{1,63}$), ServiceName}; the operation is @paginated (inputToken/outputToken NextToken, items Services, pageSize MaxResults @range 1-100). The model fixes the shape but not the catalog contents, so the membership and ordering of the list are recorded behavior only: AWS returns one ServiceInfo per Service Quotas-integrated service, ordered by ServiceCode, so a client reading index N or scanning for a code finds that code. Status is 200 on both sides and no error is involved (modelled errors on this op are AccessDeniedException 403, IllegalArgumentException 400, InvalidPaginationTokenException 400, ServiceException 500, TooManyRequestsException 429), so there is no status, error code or error message to quote — the divergence is entirely in the body.

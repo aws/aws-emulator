@@ -157,12 +157,12 @@ const INVENTORY: &[Listed] = &[
     Listed {
         code: "es",
         name: "Amazon OpenSearch Service",
-        shape: "a name shared with another code (opensearch)",
+        shape: "the code Amazon OpenSearch Service itself is integrated under",
     },
     Listed {
         code: "opensearch",
-        name: "Amazon OpenSearch Service",
-        shape: "the other code of that shared name",
+        name: "OpenSearch Application",
+        shape: "a plane of that product named for the plane alone, not for the service",
     },
     Listed {
         code: "events",

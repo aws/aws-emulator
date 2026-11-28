@@ -19,12 +19,15 @@
 //!
 //! What this suite owns, and what it does NOT: `integrated_service_display_names.rs`
 //! owns the SHAPES a display name takes and that a name is never a sibling's;
-//! `inventory_registered_display_names.rs` owns coverage and discovery through paging.
-//! This suite owns the entries whose registered name does NOT follow from the product's
-//! marketing name — a prefix the registration drops, a product the registration spells
-//! out, two words the registration spaces apart, a bare product name — and the sibling
-//! PLANES that are registered as codes of their own, each of which a catalog can get
-//! wrong by "tidying" the name or by folding the plane into its sibling.
+//! `inventory_registered_display_names.rs` owns coverage and discovery through paging;
+//! `inventory_registered_plane_names.rs` owns the MEMBERSHIP half of the rule — that a
+//! registered code is listed and resolves even where its registered name cannot be
+//! cited. This suite owns the entries whose registered name does NOT follow from the
+//! product's marketing name — a prefix the registration drops, a qualifying suffix it
+//! drops, a product the registration spells out, two words the registration spaces
+//! apart, a bare product name — and the sibling PLANES that are registered as codes of
+//! their own, each of which a catalog can get wrong by "tidying" the name or by folding
+//! the plane into its sibling.
 //!
 //! The harness (`client`, `emulator`, `service_inventory`, `default_quotas`) is the one
 //! `quota_workflow.rs` owns.
@@ -59,10 +62,60 @@ struct Registered {
 /// drops only the `Amazon` prefix, one that spells out an abbreviation the product is
 /// better known by, one that spaces two words the product runs together, a family root
 /// named for the product itself, two sibling PLANES registered as codes of their own,
-/// and a plane named for its product family rather than for anything its code spells
-/// out. The last two rows are entries this suite's defect never touched, so the table
-/// pins the rule rather than one repair.
+/// a plane named for its product family rather than for anything its code spells out,
+/// and a plane registered under the product name ALONE. Several rows are entries no
+/// report touched, so the table pins the rule rather than one repair.
 const REGISTERED: &[Registered] = &[
+    Registered {
+        code: "migrationhubstrategy",
+        name: "Migration Hub Strategy Recommendations",
+        form: "a registration that drops the product's AWS prefix",
+    },
+    Registered {
+        code: "rolesanywhere",
+        name: "IAM Roles Anywhere",
+        form: "the same dropped prefix on an unrelated product",
+    },
+    Registered {
+        code: "observabilityadmin",
+        name: "Amazon CloudWatch Observability Admin",
+        form: "a prefixed registration that drops the product's Service suffix",
+    },
+    Registered {
+        code: "oam",
+        name: "Amazon CloudWatch Observability Access Manager",
+        form: "its sibling plane, whose registration spells the product out in full",
+    },
+    Registered {
+        code: "qbusiness",
+        name: "Amazon Q",
+        form: "the product name alone on a code that names a plane of it",
+    },
+    Registered {
+        code: "qapps",
+        name: "Amazon Q Apps",
+        form: "its sibling plane, named for the plane after the product",
+    },
+    Registered {
+        code: "networkinsights",
+        name: "Network Insights",
+        form: "a feature's two words alone, with no prefix at all",
+    },
+    Registered {
+        code: "network-firewall",
+        name: "AWS Network Firewall",
+        form: "the prefixed code beside it, which keeps its prefix",
+    },
+    Registered {
+        code: "opensearch",
+        name: "OpenSearch Application",
+        form: "a plane's own name, not the name of the service beside it",
+    },
+    Registered {
+        code: "es",
+        name: "Amazon OpenSearch Service",
+        form: "the code that service itself is integrated under",
+    },
     Registered {
         code: "health-agent",
         name: "Amazon Connect Health",
@@ -132,19 +185,29 @@ const REGISTERED: &[Registered] = &[
 
 /// The product FAMILIES whose planes are each registered as a code of their own.
 ///
-/// SOURCE: the rows above — these are the codes that share a leading word, so they are
-/// where one plane can silently be served under its sibling's name, or be folded away.
+/// SOURCE: the rows above — these are the codes that share a leading word, or that name
+/// two planes of one product, so they are where one plane can silently be served under
+/// its sibling's name, or be folded away.
 const FAMILIES: &[&[&str]] = &[
     &["iot", "iotcore", "iotdeviceadvisor", "iotwireless"],
     &["ivs", "ivschat"],
     &["kafka", "kafkaconnect"],
     &["internetmonitor", "monitoring"],
     &["health-agent", "healthlake"],
+    &["es", "opensearch"],
+    &["oam", "observabilityadmin"],
+    &["qapps", "qbusiness"],
+    &["network-firewall", "networkinsights"],
+    &["mgn", "migrationhuborchestrator", "migrationhubstrategy"],
 ];
 
 /// `ServiceCode -> ServiceName`, as `ListServices` reports the whole inventory, with
 /// each code listed exactly once.
-async fn inventory(client: &Client) -> BTreeMap<String, String> {
+///
+/// `pub(crate)` so the suite that owns the inventory's MEMBERSHIP
+/// (`inventory_registered_plane_names.rs`) reads the inventory through this one walk
+/// rather than keeping a copy of it.
+pub(crate) async fn inventory(client: &Client) -> BTreeMap<String, String> {
     let listed = service_inventory(client).await;
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     for service in &listed {

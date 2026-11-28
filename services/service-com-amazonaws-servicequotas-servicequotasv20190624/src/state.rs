@@ -4406,29 +4406,30 @@ const SEED_SERVICE_CATALOG: &[(&str, &str)] = &[
     // Registered with the product's two words spaced apart.
     ("medical-imaging", "AWS Health Imaging"),
     ("memorydb", "Amazon MemoryDB"),
-    // Two migration planes the inventory registers under the bare product name: no
-    // `AWS` prefix, and on `mgn` no `Service` suffix either.
+    // Three migration planes the inventory registers under the bare product name: no
+    // `AWS` prefix on any of them, and on `mgn` no `Service` suffix either.
     ("mgn", "Application Migration"),
     ("migrationhuborchestrator", "Migration Hub Orchestrator"),
-    (
-        "migrationhubstrategy",
-        "AWS Migration Hub Strategy Recommendations",
-    ),
+    ("migrationhubstrategy", "Migration Hub Strategy Recommendations"),
     ("monitoring", "Amazon CloudWatch"),
     ("mq", "Amazon MQ"),
     ("neptune", "Amazon Neptune"),
     ("neptune-graph", "Amazon Neptune Analytics"),
     ("network-firewall", "AWS Network Firewall"),
+    // The reachability-analysis plane, registered under the feature's own two words
+    // alone: no `Amazon`/`AWS` prefix on them at all.
+    ("networkinsights", "Network Insights"),
     ("networkmanager", "AWS Cloud WAN"),
     ("networkmonitor", "Amazon CloudWatch Network Monitor"),
     ("notifications", "AWS User Notifications"),
     ("oam", "Amazon CloudWatch Observability Access Manager"),
-    (
-        "observabilityadmin",
-        "Amazon CloudWatch Observability Admin Service",
-    ),
+    // Registered under the plane's name alone: the `Service` suffix the product's own
+    // full name carries is not part of the registration.
+    ("observabilityadmin", "Amazon CloudWatch Observability Admin"),
     ("omics", "AWS HealthOmics"),
-    ("opensearch", "Amazon OpenSearch Service"),
+    // The OpenSearch APPLICATION plane, registered under the plane's own name — NOT the
+    // name of the `es` code, under which Amazon OpenSearch Service itself is integrated.
+    ("opensearch", "OpenSearch Application"),
     ("organizations", "AWS Organizations"),
     ("outposts", "AWS Outposts"),
     ("panorama", "AWS Panorama"),
@@ -4447,7 +4448,9 @@ const SEED_SERVICE_CATALOG: &[(&str, &str)] = &[
     ("profile", "Amazon Connect Customer Profiles"),
     ("proton", "AWS Proton"),
     ("qapps", "Amazon Q Apps"),
-    ("qbusiness", "Amazon Q Business"),
+    // Registered under the product name alone, which is not the longer string its
+    // sibling `qapps` plane carries.
+    ("qbusiness", "Amazon Q"),
     ("qldb", "Amazon Quantum Ledger Database (Amazon QLDB)"),
     ("quicksight", "Amazon QuickSight"),
     ("ram", "AWS Resource Access Manager"),
@@ -4462,7 +4465,8 @@ const SEED_SERVICE_CATALOG: &[(&str, &str)] = &[
     ("resource-explorer-2", "AWS Resource Explorer"),
     ("resource-groups", "AWS Resource Groups"),
     ("robomaker", "AWS RoboMaker"),
-    ("rolesanywhere", "AWS IAM Roles Anywhere"),
+    // Registered without the `AWS` prefix the product's own full name carries.
+    ("rolesanywhere", "IAM Roles Anywhere"),
     ("route53", "Amazon Route 53"),
     (
         "route53-recovery-control-config",
@@ -4583,7 +4587,6 @@ const SEED_SERVICE_CATALOG: &[(&str, &str)] = &[
     // code is reported as the name rather than inventing one: `ServiceCode` — the
     // member every other operation keys on, and the one the model constrains — stays
     // exactly AWS's, and nothing downstream reads `ServiceName`.
-    ("networkinsights", "networkinsights"),
     ("s3files", "s3files"),
     ("securityagent", "securityagent"),
     ("supportauthz", "supportauthz"),
