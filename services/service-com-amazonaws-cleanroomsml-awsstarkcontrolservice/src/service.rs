@@ -22,10 +22,11 @@
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. THIS SERVICE takes it for authorization: a call that names
-//!   the IAM role this service acts as, and carries none, is answered
-//!   `AccessDeniedException` (403) there, because the role is resolved ahead of request
-//!   validation; see [`role_arn_authorization`].
+//!   generated routing table. THIS SERVICE takes it for authorization, which Clean Rooms ML
+//!   settles AHEAD of request validation: a call that names the IAM role this service acts
+//!   as, and carries none, is answered `AccessDeniedException` (403) there (see
+//!   [`role_arn_authorization`]), and so is a call that references a resource this endpoint
+//!   resolves to nothing (see [`resource_authorization`]).
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. THIS SERVICE takes it: a member ABSENT from the request is
 //!   stated with no value token at all; see [`validation`].
@@ -57,6 +58,11 @@ use std::sync::Arc;
 /// names no role is an authorization failure, not a validation one.
 mod role_arn_authorization;
 
+/// The referenced-resource authorization this service takes ahead of request validation: a
+/// call naming a resource this endpoint resolves to nothing is an authorization failure, not a
+/// validation one.
+mod resource_authorization;
+
 /// How this service words a request the framework refused before any handler ran.
 mod validation;
 
@@ -74,6 +80,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// [`Service::override_operation`] can hand out a reference to it; it carries no state,
     /// because the denial is built from the request alone.
     deny_absent_role_arn: role_arn_authorization::DenyAbsentRoleArn,
+    /// The 403 answer for a call that references a resource this endpoint holds none of. Held
+    /// here for the same reason, and it carries the shared engine, because that denial is
+    /// decided from the request AND from this service's own store.
+    deny_unauthorized_reference: resource_authorization::DenyUnauthorizedReference<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -82,9 +92,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             protocol: service_common::date_time_json::DateTimeRestJson::new(),
             deny_absent_role_arn: role_arn_authorization::DenyAbsentRoleArn,
+            deny_unauthorized_reference:
+                resource_authorization::DenyUnauthorizedReference::new(engine),
         }
     }
 
@@ -96,6 +108,18 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     fn names_no_role_to_act_as(&self, req: &aws_smithy_runtime_api::http::Request) -> bool {
         role_arn_authorization::absent_role_arn(self.entry.wire_protocol(req).protocol(), req)
             .is_some()
+    }
+
+    /// Does `req` reference a Clean Rooms ML resource this endpoint resolves to nothing?
+    ///
+    /// The read is the gate's own, the one the refusal is built from too, so the gate and the
+    /// message it answers with cannot disagree about which request is refused.
+    fn references_an_unauthorized_resource(
+        &self,
+        req: &aws_smithy_runtime_api::http::Request,
+    ) -> bool {
+        self.deny_unauthorized_reference
+            .applies(self.entry.wire_protocol(req).protocol(), req)
     }
 }
 
@@ -123,12 +147,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     ) -> Option<&dyn ErasedOperation> {
         // Authorization comes before request validation: a call that names the IAM role this
         // service acts as, and carries none, has no principal whose policies could allow it,
-        // so it is refused `AccessDeniedException` (403) here rather than falling to the
-        // modelled required-member rejection (400) the framework's pre-handler walk would
-        // answer with. See [`role_arn_authorization`]. Every other request resolves through
-        // the generated routing table.
-        self.names_no_role_to_act_as(req)
-            .then_some(&self.deny_absent_role_arn as _)
+        // and a call that references a resource this endpoint holds none of has no
+        // resource-based policy that could allow it — so both are refused
+        // `AccessDeniedException` (403) here rather than falling to the modelled
+        // required-member or constraint rejection (400) the framework's pre-handler walk would
+        // answer with. See [`role_arn_authorization`] and [`resource_authorization`]. Every
+        // other request resolves through the generated routing table.
+        if self.names_no_role_to_act_as(req) {
+            return Some(&self.deny_absent_role_arn as _);
+        }
+        if self.references_an_unauthorized_resource(req) {
+            return Some(&self.deny_unauthorized_reference as _);
+        }
+        None
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

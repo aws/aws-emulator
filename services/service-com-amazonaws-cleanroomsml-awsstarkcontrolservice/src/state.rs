@@ -42,6 +42,10 @@ pub mod training_data_location;
 /// the read the create would make under it.
 pub mod role_authorization;
 
+/// Whether a resource-based policy lets a call reach the resource it REFERENCES, and the
+/// sentences every refusal of that class is worded with.
+pub mod resource_authorization;
+
 // Clean Rooms' own store, which is where a membership lives: Clean Rooms ML
 // resources are created under a membership, and a membership is a Clean Rooms
 // resource, so this service reads one from the service that owns it rather than
@@ -1004,6 +1008,14 @@ impl ComAmazonawsCleanroomsmlAwsstarkcontrolserviceState {
             .filter(|dataset| dataset.region == region)
     }
 
+    /// The trained model `arn` names, if the endpoint `region` serves it — the
+    /// same regional scope as [`Self::training_dataset`].
+    pub fn trained_model(&self, arn: &str, region: &str) -> Option<&TrainedModel> {
+        self.trained_models
+            .get(arn)
+            .filter(|model| model.region == region)
+    }
+
     /// The configured model algorithm `arn` names, if the endpoint `region`
     /// serves it — the same regional scope as [`Self::training_dataset`].
     pub fn configured_model_algorithm(
@@ -1295,6 +1307,22 @@ fn is_uuid(value: &str) -> bool {
     groups.next().is_none()
 }
 
+/// True when `value` names a configured audience model of this service, as
+/// `ConfiguredAudienceModelArn`'s pattern declares one
+/// (`^arn:aws[-a-z]*:cleanrooms-ml:[-a-z0-9]+:[0-9]{12}:configured-audience-model/[-a-zA-Z0-9_/.]+$`).
+///
+/// This is what RESOLVING that reference comes to: the value either names a
+/// configured audience model or it names no such resource at all, which is the
+/// reading the authorization taken ahead of request validation needs
+/// ([`resource_authorization`]).
+pub fn is_configured_audience_model_arn(value: &str) -> bool {
+    cleanrooms_ml_arn_resource(value).is_some_and(|resource| {
+        resource
+            .strip_prefix("configured-audience-model/")
+            .is_some_and(is_arn_resource_id)
+    })
+}
+
 /// True when `value` is shaped like a `TrainingDatasetArn`
 /// (`^arn:aws[-a-z]*:cleanrooms-ml:[-a-z0-9]+:[0-9]{12}:training-dataset/[-a-zA-Z0-9_/.]+$`).
 ///
@@ -1367,7 +1395,18 @@ pub fn is_configured_model_algorithm_association_arn(value: &str) -> bool {
 
 /// The region this request was signed for — what a minted ARN names.
 pub fn request_region(parts: &::http::request::Parts) -> String {
-    ::emulator_server::sigv4_credential_scope(&parts.headers)
+    signed_region(&parts.headers)
+}
+
+/// The region the SigV4 credential scope in `headers` names, else [`DEFAULT_REGION`].
+///
+/// The one reading of a request's region in this crate, so the scope a handler resolves a
+/// resource under and the scope the pre-validation authorization gate resolves the same
+/// resource under cannot disagree. Parsing is the framework's own
+/// (`emulator_server::sigv4_credential_scope`), which is why this takes the header map
+/// rather than the parsed scope.
+pub fn signed_region(headers: &::http::HeaderMap) -> String {
+    ::emulator_server::sigv4_credential_scope(headers)
         .map(|scope| scope.region)
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
 }
@@ -1404,6 +1443,8 @@ pub const KIND_CONFIGURED_MODEL_ALGORITHM: &str = "Configured Model Algorithm";
 /// See [`KIND_TRAINING_DATASET`].
 pub const KIND_CONFIGURED_MODEL_ALGORITHM_ASSOCIATION: &str =
     "Configured Model Algorithm Association";
+/// See [`KIND_TRAINING_DATASET`].
+pub const KIND_TRAINED_MODEL: &str = "Trained Model";
 /// See [`KIND_TRAINING_DATASET`].
 pub const KIND_MEMBERSHIP: &str = "Membership";
 

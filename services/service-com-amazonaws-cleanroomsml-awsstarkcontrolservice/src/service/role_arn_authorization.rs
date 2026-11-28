@@ -22,20 +22,21 @@
 //! chooses the code and the message, and the protocol owns the status).
 //! `Service::override_operation` is the seam that sees a whole request first, so the denial is
 //! an [`ErasedOperation`] that answers that one request. The router still authenticates the
-//! request against the modelled operation's auth schemes before running it.
+//! request against the modelled operation's auth schemes before running it. The 403 itself is
+//! rendered by the one renderer every pre-validation gate of this service answers through
+//! ([`super::resource_authorization::access_denied`]).
 
 use aws_smithy_schema::{Schema, ShapeId, ShapeType};
 use smithy_server_runtime::{
     BoxFuture, ErasedOperation, OperationContext, ServerHttpProtocol, Service,
 };
 
-/// The error code and HTTP status a call that names no role is answered with.
-///
-/// `AccessDeniedException` is modelled by every operation in [`ROLE_MEMBERS`],
-/// `@error("client")` at `@httpError(403)`
-/// (`smithy_query(query="operation",operation="CreateTrainingDataset")`).
-const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
-const ACCESS_DENIED_STATUS: u16 = 403;
+// The wire-level half of a denial is shared by both pre-validation gates of this service:
+// the renderer the 403 goes out through, the fallback for a request no refusal can be read
+// out of, and the namespace the read-only schemas below name themselves in.
+use super::resource_authorization::{
+    access_denied, insufficient_access, AUTHORIZATION_READ_NAMESPACE,
+};
 
 /// The member every operation below expects the role ARN at, as the wire spells it: the one
 /// spelling, held with the rest of this service's role-resolution vocabulary
@@ -56,13 +57,11 @@ const ROLE_MEMBERS: [(&str, &Schema); 2] = [
     ("CreateConfiguredModelAlgorithm", &ROLE_ARN_REQUEST),
 ];
 
-/// The namespace the two read-only schemas below name themselves in. They stand for the READ
-/// this gate performs, not for a shape of the model — the model's own input shapes carry every
-/// other member of their operation, which this read deliberately does not look at — so they
-/// are named after the gate.
-const AUTHORIZATION_READ_NAMESPACE: &str = "emulator.authorization";
-
 /// The `roleArn` member of a request, typed as the string it is on the wire.
+///
+/// The schema stands for the READ this gate performs, not for a shape of the model — the
+/// model's own input shapes carry every other member of their operation, which this read
+/// deliberately does not look at — so it is named after the gate.
 static ROLE_ARN: Schema = Schema::new_member(
     ShapeId::from_static(
         "emulator.authorization#RoleArnRequest$roleArn",
@@ -90,10 +89,6 @@ static ROLE_ARN_REQUEST: Schema = Schema::new_struct(
     ShapeType::Structure,
     &[&ROLE_ARN],
 );
-
-/// The sentence the modelled error states about itself, answered only in the unreachable case
-/// where this operation is reached for a request whose operation cannot be named.
-const INSUFFICIENT_ACCESS: &str = "You do not have sufficient access to perform this action.";
 
 /// Answers one request `AccessDeniedException` (HTTP 403), with the denial built from that
 /// request.
@@ -132,37 +127,22 @@ fn refusal(
     let definition = svc.definition();
     // The protocol THIS request is served in: the request is read, and the denial answered,
     // in the one codec the request arrived in.
-    let wire = definition.wire_protocol(req);
-    let Some((operation, member)) = absent_role_arn(wire.protocol(), req) else {
+    let Some((operation, member)) = absent_role_arn(definition.wire_protocol(req).protocol(), req)
+    else {
         // Unreachable: this operation is reached only for a request whose operation and
         // absent role member `Service::override_operation` has already read out of these same
         // bytes. A request this cannot read names no action, so the refusal names none
         // either, and falls back to the error's own sentence.
-        return definition.framework_error_response(
-            aws_smithy_schema_server::ProtocolError::Unauthenticated {
-                code: ACCESS_DENIED_CODE,
-                message: INSUFFICIENT_ACCESS,
-            },
-            req,
-        );
+        return insufficient_access(svc, req);
     };
-    let denial = crate::ops::types::AccessDeniedException {
-        message: crate::state::role_authorization::role_arn_not_present_message(
-            member,
-            &crate::state::role_authorization::iam_action(
-                definition.identity().signing_name(),
-                operation,
-            ),
+    let message = crate::state::role_authorization::role_arn_not_present_message(
+        member,
+        &crate::state::role_authorization::iam_action(
+            definition.identity().signing_name(),
+            operation,
         ),
-    };
-    wire.protocol()
-        .serialize_error(
-            &denial,
-            &crate::ops::types::SCHEMA_ACCESS_DENIED_EXCEPTION,
-            ACCESS_DENIED_CODE,
-            ACCESS_DENIED_STATUS,
-        )
-        .unwrap_or_else(|error| definition.framework_error_response(error, req))
+    );
+    access_denied(svc, req, message)
 }
 
 /// The operation `req` names and the member its role was expected at, when `req` is one of

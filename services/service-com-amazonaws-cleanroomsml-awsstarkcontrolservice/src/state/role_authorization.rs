@@ -78,23 +78,23 @@ pub fn role_not_assumable_message(role_arn: &str) -> String {
 
 /// The sentence Clean Rooms ML words for a call that carries no role at all: fixed text with
 /// the member the role was expected at and the IAM action the call asks for, both read off the
-/// request.
+/// request, closed by the clause every authorization refusal of this service ends in
+/// ([`super::resource_authorization::denied_by_no_resource_based_policy`]).
 #[must_use]
 pub fn role_arn_not_present_message(member: &str, action: &str) -> String {
-    format!(
-        "Role Arn not present in request. Please provide a valid role arn in the path: \
-         {member}. because no resource-based policy allows the {action} action"
+    super::resource_authorization::denied_by_no_resource_based_policy(
+        &format!(
+            "Role Arn not present in request. Please provide a valid role arn in the path: \
+             {member}."
+        ),
+        action,
     )
 }
 
-/// The IAM action `operation` asks for, spelled as a policy names it: this service's ARN
-/// namespace — its SigV4 signing name, which is the same token — then the operation. The
-/// qualification is the shared one (`service_common::iam_authorization::iam_action`), so this
-/// service and every other that names an action in a refusal spell it the same way.
-#[must_use]
-pub fn iam_action(signing_name: &str, operation: &str) -> String {
-    ::service_common::iam_authorization::iam_action(signing_name, operation)
-}
+/// The IAM action `operation` asks for, spelled as a policy names it — the one spelling every
+/// refusal of this service names an action by
+/// ([`super::resource_authorization::iam_action`]).
+pub use super::resource_authorization::iam_action;
 
 /// The sentence Clean Rooms ML words for a role it assumed and that may not read the table a
 /// dataset points at: fixed text with the role ARN the request carried and the ARN of the
