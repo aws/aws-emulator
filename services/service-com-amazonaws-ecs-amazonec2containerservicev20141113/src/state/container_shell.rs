@@ -184,6 +184,26 @@
 //! SPLITS into consecutive events rather than one the container may not write: a bound below
 //! it would give up on a program a client legitimately runs.
 //!
+//! # The MEMORY its definition gives it
+//!
+//! One limit is the CONTAINER's own rather than this emulator's: `ContainerDefinition$memory`
+//! is "the amount (in MiB) of memory to present to the container", and "if your container
+//! attempts to exceed the memory specified here, the container is killed" — for a container
+//! that states none, the memory its TASK was given
+//! ([`super::container_process::ContainerProcess::memory_limit_bytes`]). So a program whose
+//! values would take the container past that amount is KILLED where it stands
+//! ([`ContainerShell::kill_for_memory`]): nothing of the program after that point runs, the
+//! container exits with the status a killed process exits with
+//! ([`OUT_OF_MEMORY_KILL_STATUS`]) and reports the kill as its detail
+//! ([`OUT_OF_MEMORY_KILLED_REASON`]), while the lines it had already written were delivered as
+//! it wrote them — so its log stream holds exactly what it produced before the kill. The
+//! demand is weighed BEFORE the bytes are held, the way a runtime refuses an allocation past a
+//! process's limit rather than making it first, and what the session holds is weighed again at
+//! every step it takes ([`ContainerShell::account_for_execution`], the one place that figure is
+//! brought up to date). A container that states MORE memory than this emulator gives one run
+//! ([`MAX_DECLARED_MEMORY_SESSION_BYTES`]) is held to that ceiling, and a program past it is
+//! one this emulator gave up on rather than one the runtime killed.
+//!
 //! # A wait the program names is time its container is UP
 //!
 //! The seconds in a `sleep` are seconds the program is still there: "the `sleep` utility shall
@@ -310,6 +330,23 @@ const EXIT_SIGNAL_BASE: i32 = 128;
 /// send a container ("will default to SIGTERM") — so a session with no handler for it ends
 /// with [`EXIT_SIGNAL_BASE`] plus this.
 const SIGTERM_NUMBER: i32 = 15;
+
+/// The number of the signal a container runtime KILLS a process with, which no handler of
+/// that program can intercept: `SIGKILL` is signal 9. The status such a program ends with is
+/// [`EXIT_SIGNAL_BASE`] plus this ([`OUT_OF_MEMORY_KILL_STATUS`]).
+const SIGKILL_NUMBER: i32 = 9;
+
+/// The status a container ends with when the runtime KILLED it for going past the memory its
+/// definition gives it: the kill is a `SIGKILL`, so the exit status is
+/// [`EXIT_SIGNAL_BASE`] plus [`SIGKILL_NUMBER`].
+pub const OUT_OF_MEMORY_KILL_STATUS: i32 = EXIT_SIGNAL_BASE + SIGKILL_NUMBER;
+
+/// `Container$reason` of a container the runtime killed for going past its memory limit, in
+/// the container runtime's own words for that kill — the same sentence the agent reports for
+/// one (`SubmitContainerStateChange`'s `reason`), beside the exit status above. Fixed text
+/// with no variable part: it says what happened to the container and nothing about which one.
+pub const OUT_OF_MEMORY_KILLED_REASON: &str =
+    "OutOfMemoryError: Container killed due to memory usage";
 
 /// How `trap` names the termination signal, and the spellings a program may write it as:
 /// the bare name, the `SIG`-prefixed name and the number.
@@ -526,6 +563,25 @@ const MAX_EXPANSION_BYTES: usize = MAX_LINE_TEXT_BYTES;
 /// EMULATOR'S, under [`MAX_EXPANSION_BYTES`]' rule applied to the session rather than to one
 /// word: past it a command that would set another variable is not performed.
 const MAX_SESSION_BYTES: usize = 2 * MAX_LINE_TEXT_BYTES;
+
+/// How many bytes of variables one run's session may hold at once when its container's
+/// definition states a MEMORY limit of its own — the ceiling that limit is read UNDER
+/// ([`ContainerShell::session_byte_ceiling`]).
+///
+/// THIS NUMBER IS THE EMULATOR'S, and it is what makes the declared limit the operative one
+/// for a container sized near the smallest a definition may state (`ContainerDefinition$memory`
+/// is stated in MiB, and a container is given at least a few of them): such a container is
+/// held to its OWN figure and killed for going past it, which is the rule, rather than to a
+/// ceiling of this emulator's below that figure. A container that states MORE memory than this
+/// is held to this instead — this process cannot give one container hundreds of mebibytes of
+/// itself — and a program that goes past it is one this emulator gave up on
+/// ([`ContainerOutcome::Abandoned`]), which claims nothing about the container rather than
+/// claiming a kill the container's own limit did not earn.
+///
+/// Sized against what the runs of one store can come to: at most [`super::MAX_CONTAINER_RUNS`]
+/// runs are held at once, and only a program that deliberately fills its session reaches this
+/// at all.
+const MAX_DECLARED_MEMORY_SESSION_BYTES: usize = 4 * MAX_SESSION_BYTES;
 
 /// How many variables one run's session may hold at once. THIS NUMBER IS THE EMULATOR'S:
 /// [`MAX_SESSION_BYTES`] bounds the store's SIZE and this bounds its cardinality.
@@ -999,6 +1055,14 @@ pub struct ContainerShell {
     /// or a DAEMON's scheduler maintains, so nothing is waiting for that program to END and no
     /// ceiling is put on the waits it names ([`Self::wait_ceiling_for`]).
     maintained_by_a_service: bool,
+    /// The memory HARD LIMIT this container runs under, in bytes — what its definition gives
+    /// it ([`super::container_process::ContainerProcess::memory_limit_bytes`]) — and `None`
+    /// for a container whose launch states none, which runs under no limit of its own.
+    memory_limit: Option<u64>,
+    /// Whether the runtime KILLED this container for going past that limit, which is what
+    /// makes the outcome [`ContainerOutcome::Exited`] with
+    /// [`OUT_OF_MEMORY_KILL_STATUS`] and the detail [`OUT_OF_MEMORY_KILLED_REASON`].
+    memory_killed: bool,
 }
 
 impl ContainerShell {
@@ -1063,6 +1127,8 @@ impl ContainerShell {
             executing_since: Instant::now(),
             terminal: None,
             maintained_by_a_service: false,
+            memory_limit: None,
+            memory_killed: false,
         }
     }
 
@@ -1082,6 +1148,10 @@ impl ContainerShell {
     /// stating none of them holds, so nothing is reported that a launch did not resolve.
     #[must_use]
     pub fn with_process(mut self, process: ContainerProcess) -> Self {
+        // The memory the launch gives the container is a limit it RUNS under rather than a
+        // value a utility reports, so it is taken here and enforced as the program performs
+        // ([`Self::kill_for_memory`]).
+        self.memory_limit = process.memory_limit_bytes();
         self.process = process;
         self
     }
@@ -1205,11 +1275,35 @@ impl ContainerShell {
         // The last span of this run is accounted for where it ended, so what the run consumed
         // is complete when it is read ([`Self::account_for_execution`]).
         self.account_for_execution();
+        if self.memory_killed {
+            // The runtime killed the container for going past its memory limit, which IS an
+            // end of the container with a status of its own: a killed process exits with the
+            // status of the signal that killed it ([`OUT_OF_MEMORY_KILL_STATUS`]), and the
+            // detail saying why is what the container reports beside it
+            // ([`Self::run_detail`]).
+            return ContainerOutcome::Exited(OUT_OF_MEMORY_KILL_STATUS);
+        }
         if self.abandoned || self.unperformed {
             ContainerOutcome::Abandoned
         } else {
             ContainerOutcome::Exited(status)
         }
+    }
+
+    /// The additional detail this container reports about its run, and `None` for a run there
+    /// is nothing more to say about than the status it ended with.
+    ///
+    /// `Container$reason` is "a short (1024 max characters) human-readable string to provide
+    /// additional details about a running or stopped container": for a container the runtime
+    /// KILLED, that detail is the kill ([`OUT_OF_MEMORY_KILLED_REASON`]) — reported beside the
+    /// exit status, because such a container did end — and for a run that produced no status
+    /// at all it is why nothing did ([`Self::nothing_performed_detail`]).
+    #[must_use]
+    pub fn run_detail(&self) -> Option<String> {
+        if self.memory_killed {
+            return Some(OUT_OF_MEMORY_KILLED_REASON.to_string());
+        }
+        self.nothing_performed_detail()
     }
 
     /// The status a shell answers INSIDE this session for a command, command FORM or
@@ -1751,7 +1845,56 @@ impl ContainerShell {
         self.consumption
             .record_execution(now.saturating_duration_since(self.executing_since));
         self.executing_since = now;
-        self.consumption.hold(self.occupied_bytes());
+        let occupied = self.occupied_bytes();
+        self.consumption.hold(occupied);
+        // The accounting is also where the container is WEIGHED against the memory its
+        // definition gives it: this is the one place that figure is brought up to date, so a
+        // container holding more than it may have is killed at the next step it takes however
+        // it came to hold it ([`Self::kill_for_memory`]).
+        if self.over_memory_limit_bytes(occupied) {
+            self.kill_for_memory();
+        }
+    }
+
+    /// Whether a container holding `bytes` would be past the memory its definition gives it —
+    /// `false` for a container whose launch states no limit, which is held to none.
+    fn over_memory_limit(&self, bytes: usize) -> bool {
+        self.over_memory_limit_bytes(u64::try_from(bytes).unwrap_or(u64::MAX))
+    }
+
+    /// How many bytes of variables this session may hold at once: this emulator's own ceiling
+    /// ([`MAX_SESSION_BYTES`]) for a container whose definition states no memory, and the
+    /// container's OWN figure under [`MAX_DECLARED_MEMORY_SESSION_BYTES`] for one that does —
+    /// so a container sized at a few mebibytes is held to its own limit and killed for going
+    /// past it ([`Self::kill_for_memory`]) rather than refused by a ceiling below it.
+    fn session_byte_ceiling(&self) -> usize {
+        self.memory_limit.map_or(MAX_SESSION_BYTES, |limit| {
+            usize::try_from(limit)
+                .unwrap_or(usize::MAX)
+                .min(MAX_DECLARED_MEMORY_SESSION_BYTES)
+        })
+    }
+
+    /// [`Self::over_memory_limit`] for a figure already counted as this accounting counts it.
+    fn over_memory_limit_bytes(&self, bytes: u64) -> bool {
+        self.memory_limit.is_some_and(|limit| bytes > limit)
+    }
+
+    /// KILL this container: its program asked for more memory than its definition gives it, so
+    /// the runtime ends the container where it stands.
+    ///
+    /// Nothing of the program after this point is performed — the latch is the one `exit` sets,
+    /// and no `trap` of the program sees it, because a `SIGKILL` cannot be handled — and the
+    /// status the container exits with is [`OUT_OF_MEMORY_KILL_STATUS`]. What the program had
+    /// already written was delivered as it wrote it, so the container's log stream holds
+    /// exactly what it produced before the kill and nothing of what it was going to write
+    /// next.
+    fn kill_for_memory(&mut self) {
+        if self.memory_killed {
+            return;
+        }
+        self.memory_killed = true;
+        self.exit_status = Some(OUT_OF_MEMORY_KILL_STATUS);
     }
 
     /// How many bytes of this process this session is holding: the variables it has set and
@@ -2394,6 +2537,10 @@ impl ContainerShell {
     /// [`MAX_SESSION_BYTES`] or [`MAX_SESSION_VARIABLES`] — `false` is then a command this
     /// container did not perform, which is what its caller reports.
     ///
+    /// A value that would take the container past the MEMORY its definition gives it is a
+    /// different answer: the container is KILLED ([`Self::kill_for_memory`]), because that is
+    /// what the runtime does to one that attempts to exceed that amount.
+    ///
     /// A change made while a command SUBSTITUTION is open is recorded on that substitution's
     /// undo log first ([`Self::record_for_rollback`]), so it is put back when the subshell
     /// ends.
@@ -2410,7 +2557,15 @@ impl ContainerShell {
             .saturating_sub(displaced.unwrap_or(0))
             .saturating_add(name.len())
             .saturating_add(value.len());
-        if would_hold > MAX_SESSION_BYTES {
+        // The container asking for more memory than its definition gives it is killed where it
+        // stands, and the demand is weighed BEFORE the bytes are held: a runtime refuses an
+        // allocation past a process's limit rather than making it first
+        // ([`Self::kill_for_memory`]).
+        if self.over_memory_limit(would_hold.saturating_add(self.pending_line.len())) {
+            self.kill_for_memory();
+            return false;
+        }
+        if would_hold > self.session_byte_ceiling() {
             return false;
         }
         self.record_for_rollback(&name);

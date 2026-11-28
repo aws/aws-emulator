@@ -61,6 +61,21 @@
 //! the modelled failure status with a reason NAMING what was not performed, never with an
 //! exit code, a `startedAt` or the reason a container that really exited carries.
 //!
+//! # The MEMORY the job definition gives the container
+//!
+//! `ResourceRequirement$type` `MEMORY` is "the memory hard limit (in MiB) present to the
+//! container", and "if your container attempts to exceed the memory specified, the container
+//! is terminated" — so that figure is not a value the API echoes: it BOUNDS the run
+//! ([`container_memory_limit_bytes`]). A program whose values would take the container past it
+//! is KILLED where it stands ([`ContainerRun::KilledForMemory`]): the program never finishes,
+//! so the job ends `FAILED` with the reason that kill carries
+//! ([`OUT_OF_MEMORY_KILLED_REASON`]) and the exit status a killed process carries
+//! ([`OUT_OF_MEMORY_KILL_STATUS`]) rather than with a status the program answered — while the
+//! lines it had already written are delivered to its log stream, because those are what the
+//! container really produced before the kill. A container that states no such requirement runs
+//! under no limit of its own, and a container that states MORE memory than this emulator gives
+//! one program ([`MAX_DECLARED_MEMORY_SESSION_BYTES`]) is held to that ceiling instead.
+//!
 //! # When it is performed
 //!
 //! `STARTING` is where "the relevant container initiation operations are underway", so the
@@ -111,6 +126,55 @@ pub const MAX_CONTAINER_RUNS_PER_DRAIN: usize = 10;
 /// text with no variable part, so it reports nothing about the job.
 pub const ESSENTIAL_CONTAINER_EXITED_REASON: &str = "Essential container in task exited";
 
+/// The `ContainerDetail$exitCode` of a container the runtime KILLED for going past the memory
+/// its job definition gives it: a killed process exits with the status of the signal that
+/// killed it, which is the status the session performing the program ends with
+/// ([`::service_common::posix_shell_session::KILLED_BY_MEMORY_STATUS`], 128 plus `SIGKILL`'s
+/// number) — read from that one constant rather than restated, so the status the session sets
+/// and the status the job reports cannot drift.
+pub const OUT_OF_MEMORY_KILL_STATUS: i32 =
+    ::service_common::posix_shell_session::KILLED_BY_MEMORY_STATUS;
+
+/// The `statusReason` of a job whose container the runtime killed for going past that memory,
+/// in the container runtime's own words for such a kill — the sibling constant in the Amazon
+/// ECS crate carries the same sentence for the container's `reason`, which is where a job whose
+/// container runs as a task reads it from ([`super::ecs_task`]). Fixed text with no variable
+/// part, so it reports nothing about the job.
+pub const OUT_OF_MEMORY_KILLED_REASON: &str =
+    "OutOfMemoryError: Container killed due to memory usage";
+
+/// How many bytes of its values one container's program may hold at once when its job
+/// definition states a MEMORY requirement — the ceiling that requirement is read UNDER
+/// ([`container_memory_bounds`]).
+///
+/// THIS NUMBER IS THE EMULATOR'S, and it is what makes the declared requirement the operative
+/// limit for a container sized near the smallest one a definition may state
+/// (`ResourceRequirement$value` for `MEMORY` is "the memory hard limit (in MiB)", and "you
+/// must specify at least 4 MiB of memory"): such a container is held to its OWN figure and
+/// killed for going past it, which is the rule, rather than to a ceiling of this emulator's
+/// below that figure. A container that states MORE memory than this is held to this instead —
+/// this process cannot give one container hundreds of mebibytes of itself — and a program past
+/// it is one whose assignment did not happen, as it is for every program this session performs
+/// for a job that states no requirement at all.
+///
+/// Sized against what one pass can come to: at most [`MAX_CONTAINER_RUNS_PER_DRAIN`] programs
+/// are performed per drain, and only a program that deliberately fills its session reaches
+/// this at all.
+pub const MAX_DECLARED_MEMORY_SESSION_BYTES: usize = 8 * 1024 * 1024;
+
+/// How many bytes one mebibyte is, which is the unit the `MEMORY` resource requirement and the
+/// deprecated `memory` member state a container's hard limit in.
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+/// How many times over one program may MATERIALISE the memory its container holds, as it
+/// builds the values it ends up holding ([`container_memory_bounds`]).
+///
+/// THIS NUMBER IS THE EMULATOR'S: a program fills its memory by expanding values it already
+/// holds — each expansion materialised, held and then let go of as the next one replaces it —
+/// so what it materialises over a whole program is a multiple of what it holds at any instant,
+/// and that multiple is bounded here rather than by the request.
+const EXPANSIONS_PER_HELD_BYTE: usize = 4;
+
 /// What one placed job's container program did, or the fact that nothing was performed for
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +196,19 @@ pub enum ContainerRun {
         /// because no container exited.
         reason: String,
     },
+    /// The declared program WAS performed and the RUNTIME KILLED the container part of the way
+    /// through it: what the program held went past the memory hard limit the job definition
+    /// gives the container, so the container was killed rather than left to finish.
+    ///
+    /// No status of the PROGRAM is carried, because the program did not end: the status such a
+    /// container exits with is the signal's ([`OUT_OF_MEMORY_KILL_STATUS`]). What it had
+    /// already written IS carried: those lines are what the container produced before the
+    /// kill, and its log stream holds exactly them.
+    KilledForMemory {
+        /// The lines the program wrote before the kill, under
+        /// [`MAX_CONTAINER_OUTPUT_LINES`] as [`Self::Performed`]'s are.
+        output: Vec<String>,
+    },
 }
 
 impl ContainerRun {
@@ -139,7 +216,18 @@ impl ContainerRun {
     /// reaches `RUNNING` and reports an instant its work started.
     #[must_use]
     pub fn performed(&self) -> bool {
-        matches!(self, Self::Performed { .. })
+        matches!(self, Self::Performed { .. } | Self::KilledForMemory { .. })
+    }
+
+    /// The lines the program wrote, which are the container's own output and so what its log
+    /// stream holds ([`super::job_logs`]) — including the ones a program the runtime KILLED
+    /// had written before the kill. Empty for a run nothing performed, which wrote nothing.
+    #[must_use]
+    pub fn output(&self) -> &[String] {
+        match self {
+            Self::Performed { output, .. } | Self::KilledForMemory { output } => output,
+            Self::NotPerformed { .. } => &[],
+        }
     }
 
     /// The `JobStatus` the job this run belongs to ends in, and the `statusReason` that goes
@@ -147,8 +235,11 @@ impl ContainerRun {
     ///
     /// The exit status decides: zero is the job that succeeded, and every other status is a
     /// job that failed, each reported with the reason a container that exited carries
-    /// ([`ESSENTIAL_CONTAINER_EXITED_REASON`]). A program nothing performed ends the job with
-    /// the reason it carries instead.
+    /// ([`ESSENTIAL_CONTAINER_EXITED_REASON`]). A container the runtime KILLED for going past
+    /// its memory hard limit failed too, with the reason that kill carries
+    /// ([`OUT_OF_MEMORY_KILLED_REASON`]) — the program never finished, so no status of its own
+    /// is what ends the job. A program nothing performed ends the job with the reason it
+    /// carries instead.
     #[must_use]
     pub fn ending(&self) -> (&'static str, String) {
         match self {
@@ -157,6 +248,7 @@ impl ContainerRun {
                 ESSENTIAL_CONTAINER_EXITED_REASON.to_string(),
             ),
             Self::Performed { .. } => (JOB_FAILED, ESSENTIAL_CONTAINER_EXITED_REASON.to_string()),
+            Self::KilledForMemory { .. } => (JOB_FAILED, OUT_OF_MEMORY_KILLED_REASON.to_string()),
             Self::NotPerformed { reason } => (JOB_FAILED, reason.clone()),
         }
     }
@@ -166,6 +258,7 @@ impl ContainerRun {
     pub fn exit_code(&self) -> Option<i32> {
         match self {
             Self::Performed { status, .. } => Some(*status),
+            Self::KilledForMemory { .. } => Some(OUT_OF_MEMORY_KILL_STATUS),
             Self::NotPerformed { .. } => None,
         }
     }
@@ -243,11 +336,73 @@ pub fn performable_program(program: &[String]) -> Option<&str> {
     performed.then_some(name)
 }
 
+/// The memory HARD LIMIT one container runs under, in bytes, and `None` for a container whose
+/// job definition states none — which runs under no limit of its own.
+///
+/// `ResourceRequirement$type` `MEMORY` is "the memory hard limit (in MiB) present to the
+/// container", and "if your container attempts to exceed the memory specified, the container
+/// is terminated", so a definition stating it states the ceiling the container runs under. A
+/// definition that states it the older way instead — `ContainerProperties$memory`, "the hard
+/// limit (in MiB) of memory to present to the container", which the same member's
+/// documentation deprecates in favour of the requirement above — states the same ceiling, so
+/// both are read and the requirement decides where a definition carries both.
+#[must_use]
+pub fn container_memory_limit_bytes(container: &ContainerDetail) -> Option<u64> {
+    let requirements = container.resource_requirements.as_deref().unwrap_or_default();
+    let declared = stated_resource_value(requirements, RESOURCE_TYPE_MEMORY)
+        .and_then(|value| value.parse::<i64>().ok())
+        .or_else(|| container.memory.map(i64::from))
+        .filter(|mib| *mib > 0)?;
+    Some(
+        u64::try_from(declared)
+            .unwrap_or_default()
+            .saturating_mul(BYTES_PER_MIB),
+    )
+}
+
+/// The bounds and the memory a session performing one container's program is given, for a
+/// container whose hard limit is `memory_limit_bytes`.
+///
+/// The limit is the CONTAINER's own, so it is what the session is killed for going past
+/// ([`::service_common::posix_shell_session::SessionConfig::memory`]), and how many bytes the
+/// session may hold is that same figure under this emulator's own ceiling
+/// ([`MAX_DECLARED_MEMORY_SESSION_BYTES`]) — which is what makes the container's figure the
+/// operative one rather than a bound of this emulator below it. A container stating no limit
+/// keeps the bounds every other program this service performs is held to.
+fn container_memory_bounds(
+    memory_limit_bytes: Option<u64>,
+) -> (
+    ::service_common::posix_shell_session::Bounds,
+    Option<usize>,
+) {
+    let mut bounds = ::service_common::posix_shell_session::Bounds::default();
+    let Some(limit) = memory_limit_bytes else {
+        return (bounds, None);
+    };
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let cap = limit.min(MAX_DECLARED_MEMORY_SESSION_BYTES);
+    bounds.session_bytes = bounds.session_bytes.max(cap);
+    // What one WORD may expand to, and what one program may materialise as it goes, are the
+    // same question asked of the memory the container has: a program fills its memory by
+    // expanding the values it already holds, so a word may expand to as much as the container
+    // may hold, and the program may materialise several times that much on the way there — a
+    // value is expanded to build the next one, and the one it replaces is let go of. Neither
+    // is lowered below the figure every other program this service performs is held to.
+    bounds.expansion_bytes = bounds.expansion_bytes.max(cap);
+    bounds.line_expansion_bytes = bounds
+        .line_expansion_bytes
+        .max(cap.saturating_mul(EXPANSIONS_PER_HELD_BYTE));
+    (bounds, Some(limit))
+}
+
 /// Perform `program` — a container's argument vector — and report what it did, or that
 /// nothing was performed for it.
 ///
 /// `image` is the image the job's container runs, which the reason for a container declaring
-/// no program at all names.
+/// no program at all names. `memory_limit_bytes` is the memory hard limit the container runs
+/// under ([`container_memory_limit_bytes`]): a program that goes past it is KILLED, exactly as
+/// the runtime kills a container that attempts to exceed it, and what it had written before
+/// the kill is what the run reports.
 ///
 /// Pure computation over the caller's own words: the session starts no process, opens no host
 /// file and reaches no network, and the work it performs is bounded by that session's own
@@ -257,6 +412,7 @@ pub fn run_container_program(
     program: &[String],
     image: &str,
     environment: &[(String, String)],
+    memory_limit_bytes: Option<u64>,
 ) -> ContainerRun {
     if program.is_empty() {
         return ContainerRun::NotPerformed {
@@ -273,11 +429,14 @@ pub fn run_container_program(
     words.extend(program.iter().skip(1).map(String::as_str));
     let line = ::shell_words::join(words);
     let variables: BTreeMap<String, String> = environment.iter().cloned().collect();
+    let (bounds, memory) = container_memory_bounds(memory_limit_bytes);
     let config = ::service_common::posix_shell_session::SessionConfig {
         output: Some(::service_common::posix_shell_session::OutputLimits {
             lines: MAX_CONTAINER_OUTPUT_LINES,
             line_bytes: MAX_CONTAINER_OUTPUT_LINE_BYTES,
         }),
+        bounds,
+        memory,
         ..::service_common::posix_shell_session::SessionConfig::default()
     };
     // The container has storage of its own — the writable layer and the volumes a task is
@@ -287,6 +446,14 @@ pub fn run_container_program(
         ::service_common::posix_shell_session::ShellSession::new(variables, config)
             .with_file_utilities();
     let status = session.run(&line);
+    if session.killed_for_memory() {
+        // The container went past the memory its definition gives it, so the runtime killed it:
+        // the program never finished, so no status of its own is reported — only the lines it
+        // had written by then.
+        return ContainerRun::KilledForMemory {
+            output: session.output().to_vec(),
+        };
+    }
     // An `exit` the program performed is the status it ended with, the way a shell takes it.
     let status = session.exit_status().unwrap_or(status);
     ContainerRun::Performed {
@@ -305,13 +472,16 @@ pub async fn run_container_program_off_worker(
     program: &[String],
     image: &str,
     environment: &[(String, String)],
+    memory_limit_bytes: Option<u64>,
 ) -> Option<ContainerRun> {
     let program = program.to_vec();
     let image = image.to_string();
     let environment = environment.to_vec();
-    ::tokio::task::spawn_blocking(move || run_container_program(&program, &image, &environment))
-        .await
-        .ok()
+    ::tokio::task::spawn_blocking(move || {
+        run_container_program(&program, &image, &environment, memory_limit_bytes)
+    })
+    .await
+    .ok()
 }
 
 /// What ONE job's container run needs: the job it belongs to, the program its container
@@ -328,6 +498,10 @@ pub struct JobContainerRun {
     /// were merged, followed by the ones AWS Batch sets itself
     /// ([`super::job_variables`]).
     pub environment: Vec<(String, String)>,
+    /// The memory HARD LIMIT its container runs under, in bytes
+    /// ([`container_memory_limit_bytes`]) — `None` for a container whose definition states
+    /// none.
+    pub memory_limit_bytes: Option<u64>,
 }
 
 impl ComAmazonawsBatchAwsbatchv20160810State {
@@ -392,6 +566,7 @@ impl ComAmazonawsBatchAwsbatchv20160810State {
             program: container_program(container.command.as_deref()),
             image: container.image.clone().unwrap_or_default(),
             environment,
+            memory_limit_bytes: container_memory_limit_bytes(&container),
         })
     }
 
@@ -505,7 +680,9 @@ impl ComAmazonawsBatchAwsbatchv20160810State {
         let Some(job) = self.jobs.get(id) else {
             return;
         };
-        let Some(ContainerRun::Performed { output, .. }) = job.container_run.as_ref() else {
+        let Some(ContainerRun::Performed { output, .. } | ContainerRun::KilledForMemory { output }) =
+            job.container_run.as_ref()
+        else {
             return;
         };
         if output.is_empty() {
@@ -559,8 +736,13 @@ pub async fn settle_job_container_runs<Eng: Send + Sync + 'static>(engine: &Eng)
     }
     let mut outcomes: Vec<(String, ContainerRun)> = Vec::with_capacity(waiting.len());
     for job in waiting {
-        if let Some(outcome) =
-            run_container_program_off_worker(&job.program, &job.image, &job.environment).await
+        if let Some(outcome) = run_container_program_off_worker(
+            &job.program,
+            &job.image,
+            &job.environment,
+            job.memory_limit_bytes,
+        )
+        .await
         {
             outcomes.push((job.job_id, outcome));
         }

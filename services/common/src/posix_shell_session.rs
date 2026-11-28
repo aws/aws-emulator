@@ -196,6 +196,18 @@
 //! is HANDED exactly as for the ones its program sets — and, for a caller that KEEPS what the
 //! program wrote ([`OutputLimits`]), how many lines and how many bytes per line it may keep.
 //!
+//! # The MEMORY the caller's environment gives the program
+//!
+//! One limit is NOT one of those: the memory the environment the program runs in has
+//! ([`SessionConfig::memory`]). That is the caller's own fact — the memory a container's
+//! declaration states for it — and it is a HARD limit the way such a declaration is: a
+//! program whose values would take what it holds past that much is KILLED where it stands
+//! ([`ShellSession::killed_for_memory`], the status [`KILLED_BY_MEMORY_STATUS`]), so nothing
+//! of it after that point is performed and what it had already written is the whole of what
+//! it produced. The demand is weighed BEFORE the bytes are held, the way a runtime refuses an
+//! allocation past a process's limit rather than making it first. A caller whose environment
+//! states no such limit leaves it absent, and the bounds above are then the only ceilings.
+//!
 //! # The services that drive it
 //!
 //! * `service-com-amazonaws-codebuild-codebuild-20161006`'s `state::build_shell` performs a
@@ -934,6 +946,20 @@ pub fn stream_text(lines: &[String]) -> String {
     written
 }
 
+/// What a shell adds to a signal number to report the status of a command a signal ended:
+/// "the exit status of a command that terminated because it received a signal shall be
+/// reported as greater than 128" — 128 plus the signal's number.
+pub const EXIT_SIGNAL_BASE: i32 = 128;
+
+/// The number of the signal a runtime KILLS a process with, which no handler can intercept:
+/// `SIGKILL` is signal 9.
+pub const SIGKILL_NUMBER: i32 = 9;
+
+/// The status a program ends with when the environment it runs in KILLED it for using more
+/// memory than that environment gives it ([`SessionConfig::memory`]): the kill is a
+/// `SIGKILL`, so the status is [`EXIT_SIGNAL_BASE`] plus [`SIGKILL_NUMBER`].
+pub const KILLED_BY_MEMORY_STATUS: i32 = EXIT_SIGNAL_BASE + SIGKILL_NUMBER;
+
 /// The statuses a session answers with, so a service whose API reports a status reports the
 /// one a shell answers for its own condition.
 #[derive(Debug, Clone, Copy)]
@@ -1049,8 +1075,8 @@ pub struct OutputLimits {
     pub line_bytes: usize,
 }
 
-/// What a session is constructed with: its statuses, its bounds, and whether it keeps what
-/// the program wrote.
+/// What a session is constructed with: its statuses, its bounds, whether it keeps what
+/// the program wrote, and how much MEMORY the environment it runs in gives it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SessionConfig {
     /// See [`Statuses`].
@@ -1059,6 +1085,15 @@ pub struct SessionConfig {
     pub bounds: Bounds,
     /// See [`OutputLimits`]; `None` keeps no output.
     pub output: Option<OutputLimits>,
+    /// How many BYTES of memory the environment this program runs in gives it.
+    ///
+    /// The CALLER's own fact rather than a bound of this module's — the memory a container's
+    /// declaration states for it — and a HARD one: a program whose values would take what it
+    /// holds past this much is KILLED where it stands
+    /// ([`ShellSession::killed_for_memory`]), because that is what a runtime holding such a
+    /// limit does to a process that goes past it. `None` for a caller whose environment
+    /// states no such limit, which is held to [`Bounds`] alone.
+    pub memory: Option<usize>,
 }
 
 /// The characters that open a nested group in a line, counted by [`within_parse_bounds`]: a
@@ -1263,6 +1298,15 @@ pub struct ShellSession {
     /// How many commands of this program named something NOTHING resolved — see
     /// [`Self::unresolved_commands`].
     unresolved_commands: usize,
+    /// How many bytes of memory the environment this session runs in gives the program
+    /// ([`SessionConfig::memory`]), once the environment the session STARTS with is in place:
+    /// those variables are the environment the program is given rather than something it
+    /// allocated, so the limit is armed after they are held and applies to what the program
+    /// itself would hold on top of them.
+    memory_limit: Option<usize>,
+    /// Set when the environment KILLED the program for going past that limit, after which no
+    /// command of it is performed — see [`Self::killed_for_memory`].
+    memory_killed: bool,
 }
 
 /// What a `break` or a `continue` asked for: which of the two it was, and how many enclosing
@@ -1451,6 +1495,8 @@ impl ShellSession {
             positional: Vec::new(),
             arithmetic_depth: 0,
             unresolved_commands: 0,
+            memory_limit: None,
+            memory_killed: false,
             config,
         };
         for (name, value) in variables {
@@ -1458,6 +1504,11 @@ impl ShellSession {
                 break;
             }
         }
+        // The memory the environment gives the program is a limit on what the PROGRAM holds,
+        // so it is armed once the environment the session starts with is in place (see
+        // [`Self::memory_limit`]). What those variables hold is accounted for all the same:
+        // the program's own values are weighed on top of them.
+        session.memory_limit = config.memory;
         session
     }
 
@@ -1647,6 +1698,30 @@ impl ShellSession {
     #[must_use]
     pub fn exit_status(&self) -> Option<i32> {
         self.exit_status
+    }
+
+    /// Whether the environment this session runs in KILLED the program for using more memory
+    /// than that environment gives it ([`SessionConfig::memory`]).
+    ///
+    /// For a caller whose API reports WHY a program ended: a killed program did not end on its
+    /// own, so what it was doing when the kill landed was never finished — only what it had
+    /// already written is what it produced. The status such a program ends with is
+    /// [`KILLED_BY_MEMORY_STATUS`].
+    #[must_use]
+    pub fn killed_for_memory(&self) -> bool {
+        self.memory_killed
+    }
+
+    /// KILL the program: it asked for more memory than the environment it runs in gives it, so
+    /// the environment ends it where it stands — nothing of it is performed from here on, and
+    /// the status it ends with is the one a killed process ends with
+    /// ([`KILLED_BY_MEMORY_STATUS`]).
+    ///
+    /// A kill is not a command's failure and no handler of the program sees it: the latch is
+    /// the one `exit` sets, which is what makes every later line of the program unperformed.
+    fn kill_for_memory(&mut self) {
+        self.memory_killed = true;
+        self.exit_status = Some(KILLED_BY_MEMORY_STATUS);
     }
 
     /// How many commands of this program named something NOTHING resolved: no utility of this
@@ -3025,6 +3100,13 @@ impl ShellSession {
     /// [`Bounds::session_bytes`] or [`Bounds::session_variables`] — `false` is then a
     /// command this session did not perform, which is what its caller reports.
     ///
+    /// A value that would take what this session holds past the MEMORY its environment gives
+    /// the program ([`SessionConfig::memory`]) is a different answer: the program asked its
+    /// environment for memory that environment does not have, so the program is KILLED rather
+    /// than left to carry on without the value ([`Self::kill_for_memory`]). The demand is
+    /// weighed BEFORE the bytes are held, the way a runtime refuses an allocation past a
+    /// process's limit rather than making it first.
+    ///
     /// A change made while a command substitution is open is recorded on that substitution's
     /// undo log first ([`OpenSubstitution`]), so it can be rolled back when the subshell
     /// ends.
@@ -3041,6 +3123,10 @@ impl ShellSession {
             .saturating_sub(displaced.unwrap_or(0))
             .saturating_add(name.len())
             .saturating_add(value.len());
+        if self.memory_limit.is_some_and(|limit| would_hold > limit) {
+            self.kill_for_memory();
+            return false;
+        }
         if would_hold > self.config.bounds.session_bytes {
             return false;
         }

@@ -21,6 +21,13 @@
 //! container's own layer ([`super::container_filesystem`]). Nothing here is invented for the
 //! report.
 //!
+//! The one setting here that is not only REPORTED is the memory the definition gives the
+//! container ([`ContainerProcess::memory_limit_bytes`]): `ContainerDefinition$memory` is "the
+//! amount (in MiB) of memory to present to the container" and "if your container attempts to
+//! exceed the memory specified here, the container is killed", so it is a limit the container
+//! RUNS under rather than a value a utility writes — the session performing the program
+//! enforces it ([`super::container_shell`]).
+//!
 //! # What is NOT answered
 //!
 //! The settings this emulator holds are the ones the TASK DEFINITION states; everything else
@@ -87,6 +94,10 @@ const CONTAINER_LAYER_DEVICE: &str = "overlay";
 /// Where that layer is mounted, which is the root of the container's filesystem.
 const CONTAINER_LAYER_MOUNT_POINT: &str = "/";
 
+/// How many bytes one mebibyte is, which is the unit a container's and a task's memory are
+/// stated in (`ContainerDefinition$memory`, `TaskDefinition$memory`).
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
 /// How many bytes of a resource one `ulimit` BLOCK is: the unit the utility reports the
 /// limits on a file's size in ("in 512-byte blocks"), while the modelled `Ulimit` value is
 /// the byte count the runtime sets.
@@ -152,6 +163,9 @@ pub struct ContainerProcess {
     /// Whether the task runs on FARGATE, which is the one capacity whose default for a
     /// resource limit this service holds ([`FARGATE_DEFAULT_NOFILE_LIMIT`]).
     on_fargate: bool,
+    /// The memory HARD LIMIT this process runs under, in bytes, and `None` for a launch that
+    /// states none ([`Self::memory_limit_bytes`]).
+    memory_limit_bytes: Option<u64>,
 }
 
 impl ContainerProcess {
@@ -164,14 +178,19 @@ impl ContainerProcess {
     /// definition that states none would: nothing is assumed about such a container beyond
     /// its task's own capacity.
     pub(super) fn of(definition: Option<&ContainerDefinition>, task: &TaskRecord) -> Self {
-        Self::of_settings(
-            definition,
-            task.ephemeral_storage_gib,
-            places_on_fargate(
-                task.launch_type.as_deref(),
-                &placed_through_strategy(task.capacity_provider_name.as_deref()),
-            ),
-        )
+        Self {
+            // The memory the launch gives this container, which is the limit its program runs
+            // under ([`container_memory_limit_bytes`]).
+            memory_limit_bytes: container_memory_limit_bytes(definition, task),
+            ..Self::of_settings(
+                definition,
+                task.ephemeral_storage_gib,
+                places_on_fargate(
+                    task.launch_type.as_deref(),
+                    &placed_through_strategy(task.capacity_provider_name.as_deref()),
+                ),
+            )
+        }
     }
 
     /// The same, off the three facts themselves rather than off a stored task.
@@ -191,7 +210,23 @@ impl ContainerProcess {
                 .unwrap_or_default(),
             storage_gib,
             on_fargate,
+            // A launch read off the three facts alone states no memory limit: the one the
+            // container runs under is read off the definition and the task together
+            // ([`Self::of`], [`container_memory_limit_bytes`]).
+            memory_limit_bytes: None,
         }
+    }
+
+    /// The memory HARD LIMIT the process of this container runs under, in bytes — and `None`
+    /// for a launch that states none, which runs under no limit of its own.
+    ///
+    /// What a session performing the container's program is held to
+    /// ([`super::container_shell`]): a program whose values would take the container past it
+    /// is KILLED, because `ContainerDefinition$memory` is the amount of memory "to present to
+    /// the container" and "if your container attempts to exceed the memory specified here, the
+    /// container is killed".
+    pub fn memory_limit_bytes(&self) -> Option<u64> {
+        self.memory_limit_bytes
     }
 
     /// What `id` writes for this process, or `None` for an invocation it cannot answer: a
@@ -458,6 +493,39 @@ pub fn working_directory_report(arguments: &[String], working_directory: &str) -
         }
     }
     Some(format!("{working_directory}\n"))
+}
+
+/// The memory HARD LIMIT the process of the container `definition` describes runs under in
+/// `task`, in bytes — and `None` where neither states one, which is a container held to no
+/// limit of its own.
+///
+/// `ContainerDefinition$memory` is "the amount (in MiB) of memory to present to the
+/// container", and "if your container attempts to exceed the memory specified here, the
+/// container is killed", so a definition that states it states the container's own ceiling.
+/// A definition that states none is held to the TASK's: the same member documents that "if
+/// you specify both a container-level `memory` and `memoryReservation` value" the hard limit
+/// is the container's, while for a task whose containers state no memory of their own the
+/// amount is the task-level one ("you must specify at least one of `memory` or
+/// `memoryReservation` ... or at the task level"), which is the memory the whole task — and
+/// so each container in it — may use.
+///
+/// `memoryReservation` is deliberately NOT read: it is "the soft limit (in MiB) of memory to
+/// reserve for the container", which a container is not killed for exceeding, so it states no
+/// ceiling at all.
+fn container_memory_limit_bytes(
+    definition: Option<&ContainerDefinition>,
+    task: &TaskRecord,
+) -> Option<u64> {
+    let declared = definition
+        .and_then(|definition| definition.memory)
+        .map(i64::from)
+        .or_else(|| task.memory.as_deref().and_then(memory_mib))
+        .filter(|mib| *mib > 0)?;
+    Some(
+        u64::try_from(declared)
+            .unwrap_or_default()
+            .saturating_mul(BYTES_PER_MIB),
+    )
 }
 
 #[cfg(test)]

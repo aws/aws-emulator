@@ -37,6 +37,21 @@ const MAX_OUTPUT_LINES: usize = 2_048;
 /// See [`MAX_OUTPUT_LINES`].
 const MAX_OUTPUT_LINE_BYTES: usize = 8 * 1024;
 
+/// How many bytes of MEMORY one command of this sandbox may hold at once.
+///
+/// An EMULATOR bound like the two above, and for the same reason: the command line is the
+/// caller's own, so what performing it can make this process hold is decided here. The
+/// session's other ceilings bound other resources — its working tree
+/// ([`MAX_SESSION_FILE_BYTES`]) and what reaches the two result streams
+/// ([`MAX_OUTPUT_LINES`]) — while this one bounds the values the commands themselves hold, and
+/// a command that would go past it is KILLED where it stands
+/// (`ShellSession::killed_for_memory`) rather than left to allocate on.
+///
+/// Stated above the bytes of variables the shared session holds anyway
+/// ([`Bounds::session_bytes`]), so it is this process's own last ceiling on the run rather
+/// than a second, lower limit on the same values.
+const MAX_SESSION_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+
 /// What one command run produced: the two streams, the status it ended with, how long the
 /// shell spent on it and how long the command itself STATED it took.
 #[derive(Debug, Clone)]
@@ -79,6 +94,10 @@ pub fn run_command(command: &str, sandbox: &mut SandboxFilesystem) -> CommandRun
                 lines: MAX_OUTPUT_LINES,
                 line_bytes: MAX_OUTPUT_LINE_BYTES,
             }),
+            // What performing the caller's command line may make this process HOLD
+            // ([`MAX_SESSION_MEMORY_BYTES`]): the sandbox's modelled environment states no
+            // memory of its own, so the ceiling is this emulator's.
+            memory: Some(MAX_SESSION_MEMORY_BYTES),
         },
         // The programs a code interpreter sandbox has installed beside the shell's own
         // utilities ([`super::SandboxPrograms`]), every one of which reports on this same

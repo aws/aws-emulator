@@ -598,6 +598,13 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// the additional detail `detail` carries, recorded on the container
     /// ([`Self::record_container_without_outcome`]).
     ///
+    /// A container that DID end can carry such a detail too: `Container$reason` is "a short
+    /// (1024 max characters) human-readable string to provide additional details about a
+    /// running or stopped container", and the additional detail about a container the runtime
+    /// KILLED is that kill ([`ContainerShell::run_detail`]), reported beside the exit status
+    /// the kill gave it. A detail something else has already recorded for the container is
+    /// left as it was given: this adds what is known about a run, and overwrites nothing.
+    ///
     /// The stop is what a container definition's `essential` member means: "If the
     /// `essential` parameter of a container is marked as `true`, and that container fails or
     /// stops for any reason, all other containers that are part of the task are stopped"
@@ -634,6 +641,11 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 continue;
             };
             container.exit_code = Some(status);
+            if let Some(detail) = detail {
+                if container.reason.is_none() {
+                    container.reason = Some(detail);
+                }
+            }
             container.advance_to(STATUS_STOPPED);
             let essential = container.essential;
             // "Every time a task experiences a change ... the version counter is
@@ -1002,10 +1014,9 @@ async fn run_container<Eng: Send + Sync + 'static>(
         shell = shell.maintained_by_a_service();
     }
     let outcome = shell.run(program).await;
-    // What is known about a run that produced no status of its own, which is what such a
-    // container reports as the additional detail about it
-    // ([`ContainerShell::nothing_performed_detail`]).
-    let detail = shell.nothing_performed_detail();
+    // What is known about the run beside the status it ended with: the kill the runtime made,
+    // or why nothing produced a status at all ([`ContainerShell::run_detail`]).
+    let detail = shell.run_detail();
     // The session is OVER, so it holds nothing more: what the container still occupies is its
     // own layer, which outlives the session that wrote it.
     launch.consumption.release();
