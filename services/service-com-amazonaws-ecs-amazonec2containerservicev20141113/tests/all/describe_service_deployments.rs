@@ -157,6 +157,9 @@ async fn a_described_deployment_reports_the_rollout_its_release_recorded() {
     cluster_with_capacity(&router, CLUSTER, case).await;
     register_definition(&router, "demofamily", case).await;
     let second_definition = register_definition(&router, "demofamily", case).await;
+    // A third revision, so the release that lands while the second rollout is still under
+    // way releases a revision of its own rather than re-deploying the one in flight.
+    let third_definition = register_definition(&router, "demofamily", case).await;
 
     let created = create_service(
         &router,
@@ -348,7 +351,6 @@ async fn a_described_deployment_reports_the_rollout_its_release_recorded() {
             "cluster": CLUSTER,
             "service": "web",
             "taskDefinition": second_definition,
-            "forceNewDeployment": true,
             "deploymentConfiguration": {
                 "deploymentCircuitBreaker": { "enable": false, "rollback": false },
             },
@@ -364,7 +366,7 @@ async fn a_described_deployment_reports_the_rollout_its_release_recorded() {
     );
     assert_ne!(
         second_deployment, first_deployment,
-        "case {case:?}: a forced redeployment records a new service deployment"
+        "case {case:?}: a release of another revision records a new service deployment"
     );
 
     let (deployments, failures) = describe_deployments(
@@ -456,7 +458,7 @@ async fn a_described_deployment_reports_the_rollout_its_release_recorded() {
         json!({
             "cluster": CLUSTER,
             "service": "web",
-            "forceNewDeployment": true,
+            "taskDefinition": third_definition,
         }),
         case,
     )

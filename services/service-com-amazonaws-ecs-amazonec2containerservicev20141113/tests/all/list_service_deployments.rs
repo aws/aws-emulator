@@ -5,8 +5,10 @@
 //!
 //! The rule under test: ONE service deployment is recorded by each call that RELEASES a
 //! service revision for a service whose rollout the ECS scheduler owns — the create, and
-//! an update that forces a new deployment or moves the service onto another task
-//! definition — and by no other call; `ListServiceDeployments` reports that service's own
+//! an update that moves the service onto another workload configuration (another task
+//! definition, or one of the members whose own doc says it triggers a deployment) — and by
+//! no other call, a forced redeployment of the revision already deployed included;
+//! `ListServiceDeployments` reports that service's own
 //! deployments, newest first, each carrying the rollout's status, the instant it was
 //! created and (once it has ended) the instant it finished, narrowed by the `status` and
 //! `createdAt` filters the request sets and cut into pages of `maxResults` entries whose
@@ -47,10 +49,6 @@ use crate::ecs_wire::{
     cluster_with_capacity, create_cluster, list, ok, refusal, refused, register_definition,
     service, string, ACCOUNT, SIGNED_REGION,
 };
-
-/// Long enough for one clock-owed transition (`state::TRANSITION_SPAN` is 500 ms) to fall
-/// due, with margin for a loaded test machine.
-const ONE_SPAN: Duration = Duration::from_millis(900);
 
 /// How often a poll re-reads a service's deployment history.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -119,17 +117,26 @@ fn deployment_arns(deployments: &[Value], case: &str) -> Vec<String> {
         .collect()
 }
 
-/// Re-read the history of the `demo`/`web` service until its NEWEST rollout reports
+/// Re-read the history of `cluster`/`service_name` until its NEWEST rollout reports
 /// itself `SUCCESSFUL`, and answer the history it settled as.
 ///
 /// A rollout that REPLACES a task set takes one scheduler step per task it replaces — the
 /// replacement is started, comes up, and only then is the task it replaces retired — so
 /// its end is polled for rather than timed.
-async fn poll_settled_history(router: &MultiServiceRouter, case: &str) -> Vec<Value> {
+async fn poll_settled_history(
+    router: &MultiServiceRouter,
+    cluster: &str,
+    service_name: &str,
+    case: &str,
+) -> Vec<Value> {
     let deadline = std::time::Instant::now() + POLL_BUDGET;
     loop {
-        let history =
-            all_deployments(router, json!({ "cluster": "demo", "service": "web" }), case).await;
+        let history = all_deployments(
+            router,
+            json!({ "cluster": cluster, "service": service_name }),
+            case,
+        )
+        .await;
         if history
             .first()
             .is_some_and(|newest| string(newest, "status", case) == "SUCCESSFUL")
@@ -255,9 +262,12 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
     let router = service();
     let case = "setup";
     cluster_with_capacity(&router, "demo", case).await;
-    // Two revisions of one family, so a row can move the service onto another revision.
+    // Four revisions of one family, so a row can move the service onto another revision and
+    // the releases after the table have revisions of their own to release.
     register_definition(&router, "demofamily", case).await;
     let second_revision = register_definition(&router, "demofamily", case).await;
+    let third_revision = register_definition(&router, "demofamily", case).await;
+    let fourth_revision = register_definition(&router, "demofamily", case).await;
 
     let created = create_service(&router, "demo", "web", "demofamily:1", 1, case).await;
     let service_arn = string(&created, "serviceArn", case);
@@ -312,7 +322,7 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
     // The CLOCK settles the rollout, and the deployment's status is the same rollout the
     // service's own `rolloutState` reports.
     let case = "the rollout the clock settled";
-    let deployments = poll_settled_history(&router, case).await;
+    let deployments = poll_settled_history(&router, "demo", "web", case).await;
     assert_history_shape(&deployments, &service_arn, case);
     assert_eq!(
         string(&deployments[0], "status", case),
@@ -333,12 +343,15 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
 
     // The rows differ along WHAT the update changes: a forced redeployment, a new task
     // definition, the same task definition again, the count alone, nothing at all, and a
-    // forced redeployment together with a count change.
+    // forced redeployment together with a count change. Only a call that releases another
+    // workload configuration records a service deployment: `forceNewDeployment` "start[s] a
+    // new deployment with no service definition changes", so the revision it rolls out is
+    // the one the release before it recorded.
     let rows: [MutationRow; 6] = [
         MutationRow {
             name: "forceNewDeployment with nothing else changed",
             patch: json!({ "forceNewDeployment": true }),
-            records_a_deployment: true,
+            records_a_deployment: false,
         },
         MutationRow {
             name: "a move onto another task definition revision",
@@ -363,7 +376,7 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
         MutationRow {
             name: "forceNewDeployment together with a count change",
             patch: json!({ "forceNewDeployment": true, "desiredCount": 1 }),
-            records_a_deployment: true,
+            records_a_deployment: false,
         },
     ];
 
@@ -409,7 +422,7 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
             );
             // Let the clock settle this rollout before the next row, so each row starts
             // from a service at its steady state.
-            poll_settled_history(&router, case).await;
+            poll_settled_history(&router, "demo", "web", case).await;
         } else {
             assert_eq!(
                 arns, previous_arns,
@@ -423,11 +436,11 @@ async fn each_release_records_one_service_deployment_and_the_history_reads_newes
     // the steady state it was rolling out can no longer arrive, so it is STOPPED rather
     // than left open.
     let case = "a release that supersedes a rollout in flight";
-    for _ in 0..2 {
+    for revision in [&third_revision, &fourth_revision] {
         ok(
             &router,
             "UpdateService",
-            json!({ "cluster": "demo", "service": "web", "forceNewDeployment": true }),
+            json!({ "cluster": "demo", "service": "web", "taskDefinition": revision }),
             case,
         )
         .await;
@@ -462,21 +475,24 @@ async fn list_service_deployments_pages_in_a_stable_order_and_narrows_by_status(
     let created = create_service(&router, "paged", "web", "pagedfamily", 0, case).await;
     let service_arn = string(&created, "serviceArn", case);
 
-    // Twenty more releases, back to back, so the DEFAULT page size (20) leaves a second
-    // page — and so every superseded rollout is STOPPED while the newest is still under
-    // way.
+    // Twenty more releases, back to back, each of a revision of its own — a release is the
+    // rollout of another workload configuration — so the DEFAULT page size (20) leaves a
+    // second page, and so every superseded rollout is STOPPED while the newest is still
+    // under way.
     for index in 0..20 {
         let case = format!("release {index}");
+        let revision = register_definition(&router, "pagedfamily", case.as_str()).await;
         ok(
             &router,
             "UpdateService",
-            json!({ "cluster": "paged", "service": "web", "forceNewDeployment": true }),
+            json!({ "cluster": "paged", "service": "web", "taskDefinition": revision }),
             case.as_str(),
         )
         .await;
     }
-    // The newest rollout is the only one the clock still owes a steady state.
-    tokio::time::sleep(ONE_SPAN).await;
+    // The newest rollout is the only one the clock still owes a steady state, and it is
+    // POLLED for: the case is about whether it settles, not about how fast this host runs.
+    poll_settled_history(&router, "paged", "web", case).await;
 
     let case = "the whole history";
     let all = all_deployments(&router, json!({ "cluster": "paged", "service": "web" }), case).await;
@@ -628,14 +644,17 @@ async fn list_service_deployments_narrows_by_the_created_at_window() {
     let created = create_service(&router, "windowed", "web", "windowedfamily", 0, case).await;
     let service_arn = string(&created, "serviceArn", case);
 
-    // Three releases spaced far enough apart that a bound can fall BETWEEN two of them.
+    // Three releases, each made once the rollout before it has SETTLED — polled for, so
+    // they fall at instants a bound can lie between without the case depending on how fast
+    // this host runs — and each releasing a revision of its own.
     for index in 0..2 {
         let case = format!("release {index}");
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        poll_settled_history(&router, "windowed", "web", case.as_str()).await;
+        let revision = register_definition(&router, "windowedfamily", case.as_str()).await;
         ok(
             &router,
             "UpdateService",
-            json!({ "cluster": "windowed", "service": "web", "forceNewDeployment": true }),
+            json!({ "cluster": "windowed", "service": "web", "taskDefinition": revision }),
             case.as_str(),
         )
         .await;

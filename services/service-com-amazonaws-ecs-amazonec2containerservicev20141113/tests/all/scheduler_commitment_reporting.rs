@@ -768,6 +768,7 @@ async fn a_service_deployment_arn_ends_in_a_generated_base62_id() {
     let cluster = "deploymentids";
     create_cluster(&router, cluster, case).await;
     register_definition(&router, "idfamily", case).await;
+
     let created = ok(
         &router,
         "CreateService",
@@ -782,10 +783,13 @@ async fn a_service_deployment_arn_ends_in_a_generated_base62_id() {
     )
     .await;
     let first = string(&created["service"], "currentServiceDeployment", case);
+    // A revision registered after the create, so the rollout that follows RELEASES one of
+    // its own: a service deployment is recorded for the revision a call releases.
+    let second_definition = register_definition(&router, "idfamily", case).await;
     let rolled = ok(
         &router,
         "UpdateService",
-        json!({ "cluster": cluster, "service": "web", "forceNewDeployment": true }),
+        json!({ "cluster": cluster, "service": "web", "taskDefinition": second_definition }),
         case,
     )
     .await;

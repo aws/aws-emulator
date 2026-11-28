@@ -38,9 +38,12 @@ use crate::ecs_wire::{
 };
 use crate::task_lifecycle::container;
 
-/// Long enough for one clock-owed transition (`state::TRANSITION_SPAN` is 500 ms) to fall
-/// due, with margin for a loaded test machine.
-const ONE_SPAN: Duration = Duration::from_millis(900);
+/// How often a poll re-reads a service.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long a poll keeps re-reading before it gives up. Generous, since every poll stops
+/// the instant its own condition holds.
+const POLL_BUDGET: Duration = Duration::from_secs(60);
 
 /// The image every container here starts from; irrelevant to every rule, so one value.
 const IMAGE: &str = "public.ecr.aws/docker/library/nginx:latest";
@@ -159,6 +162,29 @@ fn deployments(service: &Value, case: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+/// Re-read `service_name` until it reports ONE deployment: the superseded rollout is
+/// replaced by the clock, one task at a time, so the test waits for that to have happened
+/// rather than for a span to pass.
+async fn poll_single_deployment(
+    router: &MultiServiceRouter,
+    cluster: &str,
+    service_name: &str,
+    case: &str,
+) -> Value {
+    let deadline = std::time::Instant::now() + POLL_BUDGET;
+    loop {
+        let reported = describe(router, cluster, service_name, false, case).await;
+        if deployments(&reported, case).len() == 1 {
+            return reported;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: expected the superseded deployment to be replaced, got {reported}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// The deployment of `service` whose `status` is `status`, which must be there exactly
@@ -915,9 +941,9 @@ async fn an_update_starts_a_new_deployment_for_exactly_the_rolling_members() {
 
     // One row per member, spanning both halves of the rule: the members whose own docs
     // say "This parameter triggers a new service deployment" (and `forceNewDeployment`,
-    // which exists to start one), against the members whose docs say the opposite. The
-    // list members are emptied, which each doc names as a change of its own ("You can
-    // remove existing serviceRegistries by passing an empty list").
+    // which exists to start one with no definition change), against the members whose docs
+    // say the opposite. A member re-stated with the value the service already holds — an
+    // empty list where the service holds none — changes nothing, so it rolls nothing either.
     let rows: Vec<(&str, Value, bool)> = vec![
         (
             "networkConfiguration",
@@ -941,17 +967,21 @@ async fn an_update_starts_a_new_deployment_for_exactly_the_rolling_members() {
             json!({ "forceNewDeployment": true }),
             true,
         ),
-        ("loadBalancers", json!({ "loadBalancers": [] }), true),
-        ("serviceRegistries", json!({ "serviceRegistries": [] }), true),
+        ("loadBalancers", json!({ "loadBalancers": [] }), false),
+        (
+            "serviceRegistries",
+            json!({ "serviceRegistries": [] }),
+            false,
+        ),
         (
             "volumeConfigurations",
             json!({ "volumeConfigurations": [] }),
-            true,
+            false,
         ),
         (
             "vpcLatticeConfigurations",
             json!({ "vpcLatticeConfigurations": [] }),
-            true,
+            false,
         ),
         (
             "serviceConnectConfiguration",
@@ -1075,15 +1105,15 @@ async fn an_update_starts_a_new_deployment_for_exactly_the_rolling_members() {
         }
     }
 
-    // The replacement is owed by the CLOCK: a span later the superseded deployment has
-    // been completely replaced and is no longer one of the service's.
-    tokio::time::sleep(ONE_SPAN).await;
+    // The replacement is owed by the CLOCK: once it falls due the superseded deployment has
+    // been completely replaced and is no longer one of the service's. Polled for, so the
+    // case is about WHETHER it is replaced rather than about how fast this host runs.
     for (index, (case, _, rolls)) in rows.iter().enumerate() {
         if !*rolls {
             continue;
         }
         let name = format!("rolling{index}");
-        let settled = describe(&router, "rolling", &name, false, case).await;
+        let settled = poll_single_deployment(&router, "rolling", &name, case).await;
         let statuses: Vec<String> = deployments(&settled, case)
             .into_iter()
             .map(|(_, status)| status)

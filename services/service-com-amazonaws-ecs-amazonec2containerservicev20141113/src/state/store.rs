@@ -1230,6 +1230,35 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         Some(arn)
     }
 
+    /// Carry `key`'s service deployment over from `previous_deployment_id` to the rollout
+    /// the service is on NOW.
+    ///
+    /// A forced redeployment releases nothing — `forceNewDeployment` is how a caller
+    /// "start[s] a new deployment with no service definition changes" — so no service
+    /// deployment is recorded for it ([`Self::start_service_deployment`]) and the rolling
+    /// update it starts is carried out under the service deployment that released the
+    /// revision those tasks run. That record is reached through the deployment id the
+    /// service is on (`Service$currentServiceDeployment`,
+    /// [`Self::current_service_deployment`]), so it moves onto the new rollout's id with the
+    /// service rather than being left behind on the rollout that one replaced.
+    pub fn carry_service_deployment_onto_rollout(
+        &mut self,
+        key: &(String, String),
+        previous_deployment_id: &str,
+    ) {
+        let Some(service) = self.services.get(key) else {
+            return;
+        };
+        let service_arn = service.arn.clone();
+        let deployment_id = service.deployment_id.clone();
+        if let Some(record) = self.service_deployments.values_mut().find(|deployment| {
+            deployment.service_arn == service_arn
+                && deployment.deployment_id == previous_deployment_id
+        }) {
+            record.deployment_id = deployment_id;
+        }
+    }
+
     /// Capture what `key`'s current service revision IS, under the ARN the service carries
     /// for it.
     ///

@@ -1210,22 +1210,75 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `volumeConfigurations`, `vpcLatticeConfigurations`, `taskDefinition`). The rest
         // say the opposite ("This parameter doesn't trigger a new service deployment"), so
         // changing one of those only changes what the service holds.
-        let rolling_member_requested = input.network_configuration.is_some()
-            || input.platform_version.is_some()
-            || input.load_balancers.is_some()
-            || input.service_registries.is_some()
+        //
+        // What such a member triggers is a deployment of a CHANGED configuration: "When you
+        // update any of these parameters, Amazon ECS starts new tasks with the new
+        // configuration". A member re-sent carrying the value the service already holds
+        // changes nothing for the scheduler to roll out, so it releases nothing — which is
+        // why `forceNewDeployment` exists at all: "You can use this option to start a new
+        // deployment with no service definition changes". Each member is therefore weighed
+        // against what the service HOLDS, in the form the service holds it in: the platform
+        // version as the service declares it — "If one isn't specified, the LATEST platform
+        // version is used", so a service that named none holds that alias and a request that
+        // pins a version off it changes the configuration — and the network configuration as
+        // a create or a previous update stored it.
+        let platform_version_changed = input.platform_version.as_deref().is_some_and(|requested| {
+            requested
+                != snapshot
+                    .platform_version
+                    .as_deref()
+                    .unwrap_or(crate::state::PLATFORM_VERSION_LATEST)
+        });
+        let rolling_member_changed = platform_version_changed
+            || input.network_configuration.is_some()
+                && crate::state::defaulted_network_configuration(
+                    input.network_configuration.as_ref(),
+                ) != snapshot.network_configuration
+            || input
+                .load_balancers
+                .as_deref()
+                .is_some_and(|requested| requested != snapshot.load_balancers.as_slice())
+            || input
+                .service_registries
+                .as_deref()
+                .is_some_and(|requested| requested != snapshot.service_registries.as_slice())
             || input.service_connect_configuration.is_some()
-            || input.volume_configurations.is_some()
-            || input.vpc_lattice_configurations.is_some();
-        let redeploy =
-            input.force_new_deployment || task_definition_changed || rolling_member_requested;
+                && input.service_connect_configuration != snapshot.service_connect_configuration
+            || input
+                .volume_configurations
+                .as_deref()
+                .is_some_and(|requested| requested != snapshot.volume_configurations.as_slice())
+            || input
+                .vpc_lattice_configurations
+                .as_deref()
+                .is_some_and(|requested| {
+                    requested != snapshot.vpc_lattice_configurations.as_slice()
+                });
+        // The configuration the service would be left with differs from the one it runs
+        // exactly when one of those members carries a new value, and THAT is what a
+        // release is: a service revision is "a record of the workload configuration Amazon
+        // ECS is attempting to deploy", captured "whenever you create or deploy a service",
+        // and a service deployment is the release of one ("A service deployment happens when
+        // you release a software update for the service"). So a request that only re-states
+        // the configuration the service already runs releases no revision and records no
+        // service deployment.
+        let releases_revision = task_definition_changed || rolling_member_changed;
+        // `forceNewDeployment` rolls the service's TASKS without releasing anything: "You
+        // can use this option to start a new deployment with no service definition changes.
+        // For example, you can update a service's tasks to use a newer Docker image with the
+        // same image/tag combination". The deployment it starts is a new `Deployment` of the
+        // service revision already deployed — so the service's own rollout starts over, and
+        // the service deployment and the revision that rollout belongs to stay the ones the
+        // release before it recorded.
+        let redeploy = input.force_new_deployment || releases_revision;
         let new_deployment_id = if redeploy {
             Some(guard.next_deployment_id())
         } else {
             None
         };
-        // A new deployment rolls out a new service revision.
-        let new_revision_arn = if redeploy {
+        // A RELEASE rolls out a new service revision; a forced redeployment rolls out the
+        // one the service already carries, so it mints none.
+        let new_revision_arn = if releases_revision {
             Some(guard.next_service_revision_arn(&region, &cluster_name, &name))
         } else {
             None
@@ -1384,13 +1437,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // A NEW deployment is a new SERVICE DEPLOYMENT: "A service deployment happens when
-        // you release a software update for the service", which is what minting a
-        // deployment id above stands for, and it supersedes the rollout it replaces.
-        // Scaling the service is not one: the tasks change but the service revision the
-        // service runs does not.
-        if redeploy {
+        // A RELEASED revision is a new SERVICE DEPLOYMENT: "A service deployment happens
+        // when you release a software update for the service", so the one recorded here is
+        // the rollout of the revision this update released, and it supersedes the rollout it
+        // replaces. The two calls that release nothing record none: scaling the service (the
+        // tasks change but the service revision the service runs does not) and forcing a new
+        // deployment of the revision already deployed, whose tasks are rolled under the
+        // service deployment that released it.
+        if releases_revision {
             guard.start_service_deployment(&key, &region, updated_at, now);
+        } else if redeploy {
+            // A forced redeployment rolls the service's tasks under the service deployment
+            // that released the revision they run, which is the one the service still
+            // reports as current
+            // ([`crate::state::ComAmazonawsEcsAmazonec2containerservicev20141113State::carry_service_deployment_onto_rollout`]).
+            guard.carry_service_deployment_onto_rollout(&key, &snapshot.deployment_id);
         }
 
         let stored = guard

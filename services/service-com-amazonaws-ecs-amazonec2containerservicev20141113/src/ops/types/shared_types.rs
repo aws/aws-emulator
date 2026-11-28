@@ -193,7 +193,7 @@ pub struct Tmpfs {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#Secret")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Secret {
     pub name: String,
     pub value_from: String,
@@ -222,7 +222,7 @@ pub struct Ulimit {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#LogConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogConfiguration {
     pub log_driver: String,
     pub options: Option<std::collections::HashMap<String, String>>,
@@ -396,7 +396,7 @@ pub struct TrustedExecutionConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#Tag")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tag {
     pub key: Option<String>,
     pub value: Option<String>,
@@ -1015,13 +1015,13 @@ pub struct TaskSet {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#NetworkConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkConfiguration {
     pub awsvpc_configuration: Option<AwsVpcConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#AwsVpcConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AwsVpcConfiguration {
     pub subnets: Vec<String>,
     pub security_groups: Option<Vec<String>>,
@@ -1029,7 +1029,7 @@ pub struct AwsVpcConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#LoadBalancer")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoadBalancer {
     pub target_group_arn: Option<String>,
     pub load_balancer_name: Option<String>,
@@ -1039,7 +1039,7 @@ pub struct LoadBalancer {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#AdvancedConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdvancedConfiguration {
     pub alternate_target_group_arn: Option<String>,
     pub production_listener_rule: Option<String>,
@@ -1048,7 +1048,7 @@ pub struct AdvancedConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceRegistry")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceRegistry {
     pub registry_arn: Option<String>,
     pub port: Option<i32>,
@@ -1196,7 +1196,7 @@ pub struct DeploymentController {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectConfiguration {
     pub enabled: bool,
     pub namespace: Option<String>,
@@ -1207,7 +1207,7 @@ pub struct ServiceConnectConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectService")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectService {
     pub port_name: String,
     pub discovery_name: Option<String>,
@@ -1218,7 +1218,7 @@ pub struct ServiceConnectService {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectClientAlias")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectClientAlias {
     pub port: i32,
     pub dns_name: Option<String>,
@@ -1226,33 +1226,33 @@ pub struct ServiceConnectClientAlias {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectTestTrafficRules")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectTestTrafficRules {
     pub header: ServiceConnectTestTrafficHeaderRules,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectTestTrafficHeaderRules")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectTestTrafficHeaderRules {
     pub name: String,
     pub value: Option<ServiceConnectTestTrafficHeaderMatchRules>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectTestTrafficHeaderMatchRules")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectTestTrafficHeaderMatchRules {
     pub exact: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#TimeoutConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TimeoutConfiguration {
     pub idle_timeout_seconds: Option<i32>,
     pub per_request_timeout_seconds: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectTlsConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectTlsConfiguration {
     pub issuer_certificate_authority: ServiceConnectTlsCertificateAuthority,
     pub kms_key: Option<String>,
@@ -1260,13 +1260,13 @@ pub struct ServiceConnectTlsConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectTlsCertificateAuthority")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectTlsCertificateAuthority {
     pub aws_pca_authority_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceConnectAccessLogConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceConnectAccessLogConfiguration {
     pub format: String,
     pub include_query_parameters: Option<String>,
@@ -1274,20 +1274,20 @@ pub struct ServiceConnectAccessLogConfiguration {
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.ecs#ServiceConnectContainerConfiguration")]
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceConnectContainerConfiguration {
     logLevel(String),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceVolumeConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceVolumeConfiguration {
     pub name: String,
     pub managed_ebs_volume: Option<ServiceManagedEBSVolumeConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#ServiceManagedEBSVolumeConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServiceManagedEBSVolumeConfiguration {
     pub encrypted: Option<bool>,
     pub kms_key_id: Option<String>,
@@ -1303,7 +1303,7 @@ pub struct ServiceManagedEBSVolumeConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#EBSTagSpecification")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EBSTagSpecification {
     pub resource_type: String,
     pub tags: Option<Vec<Tag>>,
@@ -1311,7 +1311,7 @@ pub struct EBSTagSpecification {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#VpcLatticeConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VpcLatticeConfiguration {
     pub role_arn: String,
     pub target_group_arn: String,
@@ -1320,7 +1320,7 @@ pub struct VpcLatticeConfiguration {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecs#VpcLatticeAdvancedConfiguration")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VpcLatticeAdvancedConfiguration {
     pub alternate_target_group_arn: Option<String>,
     pub production_listener_rule: Option<String>,
