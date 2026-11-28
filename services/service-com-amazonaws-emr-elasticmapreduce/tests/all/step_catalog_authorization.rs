@@ -55,7 +55,9 @@ use smithy_server_runtime::MultiServiceRouter;
 // held by the suite that first needed them (`crate::step_input_read_authorization`): the
 // crate's tests are ONE binary, so both suites build a profile the same way rather than each
 // carrying a copy.
-use crate::step_input_read_authorization::{iam_ok, policy, statement, trust_policy};
+use crate::step_input_read_authorization::{
+    emr_service_role, iam_ok, policy, statement, trust_policy,
+};
 
 /// The Region every service is addressed in: the one whose `CreateBucket` needs no location
 /// constraint in its body.
@@ -80,8 +82,9 @@ const DATA_ROWS: &str = "5\n10\n20\n";
 /// holds.
 const COUNTED: &str = "3";
 
-/// The service role every launch names. It is no instance profile, so nothing resolves it
-/// against IAM.
+/// The service role every launch names. Amazon EMR resolves it against IAM once the launch has
+/// been accepted, so the setup below writes it in IAM
+/// (`crate::step_input_read_authorization::emr_service_role`).
 const SERVICE_ROLE: &str = "EMR_DefaultRole";
 
 /// The release every cluster of this suite runs.
@@ -565,6 +568,7 @@ fn assert_step(case: &str, form: &str, expected: &Expected, step: &Value) {
 async fn the_instance_roles_permissions_decide_whether_a_step_reaches_the_catalog() {
     let router = emulator();
     let rows = rows();
+    emr_service_role(&router, SERVICE_ROLE).await;
     register_catalog(&router).await;
 
     // Every row's cluster is launched first, so the rows settle alongside each other rather

@@ -58,8 +58,11 @@ const INPUT_BODY: &str = "input bytes\n";
 const MARKER: &str = "ok";
 const MARKER_BODY: &str = "ok\n";
 
-/// The service role every launch names. It is no instance profile, so nothing resolves it
-/// against IAM.
+/// The service role every launch names. Amazon EMR resolves it against IAM once the launch
+/// has been accepted — a cluster whose `ServiceRole` names no role of the account is settled
+/// `TERMINATED_WITH_ERRORS` and runs none of its steps
+/// (`crate::launch_reference_validation`) — so every row's setup writes it in IAM
+/// ([`emr_service_role`]).
 const SERVICE_ROLE: &str = "EMR_DefaultRole";
 
 /// The release every cluster of this suite runs.
@@ -260,6 +263,37 @@ pub(crate) fn policy(statements: Vec<Value>) -> String {
 /// [`iam_ok`] is.
 pub(crate) fn statement(effect: &str, action: &str, resource: Value) -> Value {
     json!({ "Effect": effect, "Action": action, "Resource": resource })
+}
+
+/// The role Amazon EMR itself acts under for a cluster of this suite, written in IAM so the
+/// resolution a launch's `ServiceRole` gets there finds it.
+///
+/// It carries the trust the service principal needs and no permissions policy: the clusters of
+/// these suites create no Amazon EC2 resource that needs one, and the permissions under test
+/// are the INSTANCE profile's. `pub(crate)` for the reason [`iam_ok`] is — every suite that
+/// mounts IAM beside Amazon EMR needs this same fixture.
+pub(crate) async fn emr_service_role(router: &MultiServiceRouter, name: &str) {
+    iam_ok(
+        router,
+        name,
+        "CreateRole",
+        &[
+            ("RoleName", name.to_string()),
+            (
+                "AssumeRolePolicyDocument",
+                json!({
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": { "Service": "elasticmapreduce.amazonaws.com" },
+                        "Action": "sts:AssumeRole",
+                    }],
+                })
+                .to_string(),
+            ),
+        ],
+    )
+    .await;
 }
 
 /// A grant of every action of Amazon S3 over the bucket and everything in it, which is what
@@ -553,6 +587,7 @@ async fn the_instance_roles_permissions_decide_what_a_steps_command_may_read() {
     let router = emulator();
     let rows = rows();
 
+    emr_service_role(&router, SERVICE_ROLE).await;
     create_bucket(&router).await;
     for prefix in [DENIED_PREFIX, ALLOWED_PREFIX] {
         put_object(

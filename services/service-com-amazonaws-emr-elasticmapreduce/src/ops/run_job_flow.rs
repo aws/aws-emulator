@@ -655,6 +655,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::required_cluster_role::SERVICE_ROLE,
             )));
         }
+        // The role itself is NOT resolved here: what that value names is a reference of the
+        // launch, resolved once the launch has been accepted
+        // ([`crate::state::launch_validation_failure`]), so it is kept for that resolution
+        // before the record below moves it.
+        let launch_service_role = input.service_role.clone();
 
         // "The specified managed scaling policy for an Amazon EMR cluster."
         // (RunJobFlow$ManagedScalingPolicy doc.) A policy attached at creation is the
@@ -698,7 +703,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // never made while this service's guard is held. What the block answers with is what
         // the rest of this handler needs: the cluster's id and ARN, and what its
         // collections ask Amazon EC2 for.
-        let (id, arn, planned) = {
+        let (id, arn, planned, configured_placement_roles) = {
         let mut store = state.lock();
 
         // The account holds a bounded number of clusters: a cluster record is kept after
@@ -863,6 +868,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // on the record `GetAutoTerminationPolicy` reads.
             auto_termination_policy: input.auto_termination_policy,
             tags: input.tags.unwrap_or_default(),
+            // Whether the references this launch names resolve is answered below, in the
+            // services that own them, once this store's guard is released: a launch whose
+            // capacity could be described is accepted first.
+            validation_failure: None,
             status: ClusterStatusRecord {
                 // A new cluster is not up yet: the clock owes it the move to
                 // BOOTSTRAPPING once its capacity is provisioned, and then the move to
@@ -912,8 +921,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::LaunchPlacement::of(cluster),
             )
         });
+        // The instance roles this REQUEST asked Amazon EMR to place in a placement group of its
+        // own — the `PlacementGroupConfigs` entries that really create one
+        // ([`crate::state::created_placement_groups`]) — which is what the launch's service
+        // role has to allow Amazon EMR to create below. The placement group Amazon EMR applies
+        // to a multi-primary cluster's primaries on its own is NOT among them: no request asked
+        // for it.
+        let configured_placement_roles: Vec<String> = store
+            .clusters
+            .get(&id)
+            .map(|cluster| {
+                cluster
+                    .placement_groups
+                    .iter()
+                    .map(|config| config.instance_role.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         drop(store);
-        (id, arn, planned)
+        (id, arn, planned, configured_placement_roles)
         };
 
         // "Represents an Amazon EC2 instance provisioned as part of cluster"
@@ -927,18 +953,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ingress Amazon EMR authorizes onto them is written in the service that owns security
         // group rules ([`crate::state::settle_managed_security_groups`]), where it then stays:
         // the groups are the caller's, so removing those rules is the caller's own revoke.
-        crate::state::settle_managed_security_groups(ctx.callback(), &*self.engine, &region).await;
-        let launched = match &planned {
-            Some((launches, placement)) => {
-                crate::state::launch_cluster_instances(ctx, &region, placement, launches).await
+        //
+        // What the launch NAMED is resolved first, in the services that hold those references:
+        // the subnet the instances go into and the role Amazon EMR acts under, including the
+        // permission that role needs for the Amazon EC2 resources this request ASKED Amazon EMR
+        // to create for the cluster ([`crate::state::launch_validation_failure`]). A reference
+        // that resolves to nothing is no refusal of this call — the cluster has been accepted
+        // and its id answered — but a failure of the CLUSTER: it is settled
+        // `TERMINATED_WITH_ERRORS` carrying the modelled `VALIDATION_ERROR` reason once the
+        // clock reaches the instant its capacity would have come up, and none of the Amazon EC2
+        // resources below is asked for at all, so such a cluster holds no instance and creates
+        // no placement group.
+        let validation_failure = match &planned {
+            Some((_, placement)) => {
+                crate::state::launch_validation_failure(
+                    ctx,
+                    &region,
+                    placement,
+                    launch_service_role.as_deref(),
+                    &configured_placement_roles,
+                )
+                .await
             }
-            None => Vec::new(),
+            None => None,
         };
-        // Every instance Amazon EC2 launched becomes a record of this cluster, with the
-        // Amazon EBS volumes its own collection asks for created in the service that owns
-        // volumes first — the ONE path a launched instance is recorded through
-        // ([`crate::state::record_launched_instances`]).
-        crate::state::record_launched_instances(&*self.engine, &id, launched, now).await;
+        match validation_failure {
+            Some(message) => {
+                let mut store = state.lock();
+                if let Some(cluster) = store.clusters.get_mut(&id) {
+                    cluster.validation_failure = Some(message);
+                }
+                drop(store);
+            }
+            None => {
+                crate::state::settle_managed_security_groups(
+                    ctx.callback(),
+                    &*self.engine,
+                    &region,
+                )
+                .await;
+                let launched = match &planned {
+                    Some((launches, placement)) => {
+                        crate::state::launch_cluster_instances(ctx, &region, placement, launches)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                // Every instance Amazon EC2 launched becomes a record of this cluster, with the
+                // Amazon EBS volumes its own collection asks for created in the service that
+                // owns volumes first — the ONE path a launched instance is recorded through
+                // ([`crate::state::record_launched_instances`]).
+                crate::state::record_launched_instances(&*self.engine, &id, launched, now).await;
+            }
+        }
 
         // The cluster is persisted: the record names the id it was minted under, which is
         // what attributes the change after the fact.

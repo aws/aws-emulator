@@ -668,6 +668,23 @@ pub fn vcpu_for_size(size: &str) -> Option<i32> {
     }
 }
 
+/// The CPU architecture one instance of `instance_type` runs — the `architecture::` value this
+/// catalog carries for its family, which is what `SupportedInstanceType$Architecture` reports
+/// ("the CPU architecture, for example `X86_64` or `AARCH64`") — or `None` for a value this
+/// catalog names no instance type under.
+///
+/// The ONE reading of that fact, so what a release's catalog reports and what a cluster's nodes
+/// are really launched from cannot disagree ([`super::cluster_instances`] picks the image a
+/// node boots by it: machine code built for one architecture does not run on the other).
+#[must_use]
+pub fn instance_type_architecture(instance_type: &str) -> Option<&'static str> {
+    let (family, size) = instance_type.split_once('.')?;
+    INSTANCE_FAMILIES
+        .iter()
+        .find(|spec| spec.family == family && spec.sizes.contains(&size))
+        .map(|spec| spec.architecture)
+}
+
 /// The memory, in MiB, one instance of `instance_type` carries, or `None` for a value this
 /// catalog names no instance type under.
 ///

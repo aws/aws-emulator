@@ -768,6 +768,6 @@ const CLUSTER_FAILURE_REASON_CODES: &[&str] = &[
     "INSTANCE_FAILURE",
     "INSTANCE_FLEET_TIMEOUT",
     "STEP_FAILURE",
-    "VALIDATION_ERROR",
+    cluster_state_change_reason_code::VALIDATION_ERROR,
     "INTERNAL_ERROR",
 ];

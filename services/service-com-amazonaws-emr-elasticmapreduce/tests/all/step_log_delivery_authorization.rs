@@ -44,8 +44,9 @@ const REGION: &str = "us-east-1";
 /// The bucket every row's log files would land in.
 const BUCKET: &str = "emr-log-permission-boundary";
 
-/// The service role every launch names. It is no instance profile, so nothing resolves it
-/// against IAM.
+/// The service role every launch names. Amazon EMR resolves it against IAM once the launch has
+/// been accepted, so the setup below writes it in IAM
+/// (`crate::step_input_read_authorization::emr_service_role`).
 const SERVICE_ROLE: &str = "EMR_DefaultRole";
 
 /// How long a poll waits for a condition: both provisioning phases of six clusters, their
@@ -449,6 +450,8 @@ async fn step_states(router: &MultiServiceRouter, cluster_id: &str) -> Vec<Strin
 async fn the_push_roles_permissions_decide_whether_a_clusters_logs_land() {
     let router = emulator();
     let rows = rows();
+
+    crate::step_input_read_authorization::emr_service_role(&router, SERVICE_ROLE).await;
 
     let (status, answered) = s3(&router, "PUT", &format!("/{BUCKET}"), &[]).await;
     assert!(

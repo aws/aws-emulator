@@ -631,7 +631,8 @@ impl LaunchPlacement {
     }
 }
 
-/// The image a cluster's instances are launched from when its launch named no custom AMI.
+/// The image a cluster's instances are launched from when its launch named no custom AMI, per
+/// CPU ARCHITECTURE of the instance type the collection asks for.
 ///
 /// "Amazon EMR releases are based on Amazon Linux" (Amazon EMR Management Guide, "Amazon
 /// Linux release versions"), and the Amazon EMR AMI itself is not an image any account can
@@ -640,8 +641,39 @@ impl LaunchPlacement {
 /// its latest build — "the Systems Manager parameter will resolve to an AMI ID on launch"
 /// (`RunInstancesRequest$ImageId`) — so the launch names no AMI id this service made up and
 /// the instance reports the AMI the account's own catalogue holds.
-const DEFAULT_CLUSTER_IMAGE: &str =
+///
+/// There is one parameter per architecture because an image holds the machine code of ONE
+/// architecture and "you must specify an instance type and an AMI that have matching
+/// architectures" (Amazon EC2 User Guide): a cluster asking for Graviton instance types
+/// (`AARCH64`, [`instance_type_architecture`]) therefore boots the `arm64` image and every
+/// other the `x86_64` one, so a collection of either kind really launches. The two names are
+/// the published Amazon Linux 2023 parameter paths, which differ only in that suffix.
+const CLUSTER_IMAGE_X86_64: &str =
     "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64";
+const CLUSTER_IMAGE_ARM64: &str =
+    "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64";
+
+/// The image the instances of a collection asking for `instance_type` are launched from.
+///
+/// A type this service's catalog does not carry is launched from the `x86_64` image, which is
+/// the architecture of all but the Graviton families: nothing is known about such a type, and
+/// the launch states the image every other collection states rather than none at all. That it
+/// was not known is traced, because a type that is in fact of the other architecture is a
+/// launch Amazon EC2 then refuses for the mismatch.
+fn cluster_image_for(instance_type: &str) -> &'static str {
+    match instance_type_architecture(instance_type) {
+        Some(architecture::AARCH64) => CLUSTER_IMAGE_ARM64,
+        Some(_) => CLUSTER_IMAGE_X86_64,
+        None => {
+            ::tracing::debug!(
+                instance_type = ?instance_type,
+                "this collection's instance type is not in the catalog, so its nodes are \
+                 launched from the x86-64 image"
+            );
+            CLUSTER_IMAGE_X86_64
+        }
+    }
+}
 
 /// The device a cluster's instances hold their ROOT volume at.
 ///
@@ -848,12 +880,15 @@ pub async fn launch_cluster_instances(
     launches: &[InstanceLaunch],
 ) -> Vec<LaunchedInstance> {
     let client = studio_network::ec2_client(ctx, region);
-    let image_id = placement
-        .custom_ami_id
-        .clone()
-        .unwrap_or_else(|| DEFAULT_CLUSTER_IMAGE.to_string());
     let mut launched: Vec<LaunchedInstance> = Vec::new();
     for launch in launches {
+        // WHICH image this collection's instances boot: the custom AMI the launch named for
+        // the whole cluster, or the Amazon Linux image of the architecture THIS collection's
+        // instance type runs ([`cluster_image_for`]).
+        let image_id = placement
+            .custom_ami_id
+            .clone()
+            .unwrap_or_else(|| cluster_image_for(&launch.instance_type).to_string());
         // WHERE this collection's instances are placed, settled before they are launched: a
         // role this cluster places is placed in a placement group OF this cluster, which is
         // Amazon EC2's resource and so is created there ([`ensure_placement_group`]) before a

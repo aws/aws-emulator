@@ -59,7 +59,11 @@ pub(super) fn ec2_client_over(
 const INVALID_VPC_ID: &str = "InvalidVpcID.";
 
 /// The same for a subnet identifier.
-const INVALID_SUBNET_ID: &str = "InvalidSubnetID.";
+///
+/// `pub(super)` because the same reading grounds the CLUSTER launch's own subnet resolution
+/// ([`super::launch_validation`]): one prefix for what Amazon EC2 answers about a subnet it
+/// holds none of, whichever of this service's resources named it.
+pub(super) const INVALID_SUBNET_ID: &str = "InvalidSubnetID.";
 
 /// The same for a security group identifier, which Amazon EC2 spells under TWO names —
 /// `InvalidGroup.NotFound` for an identifier no group of the account carries, and

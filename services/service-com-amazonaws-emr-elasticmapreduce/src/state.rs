@@ -131,6 +131,13 @@ pub use instance_group_capacity::*;
 mod studio_network;
 pub use studio_network::*;
 
+/// The references a CLUSTER launch names — the subnet it runs in, the role Amazon EMR acts
+/// under and what that role's permissions allow — resolved after the launch is accepted, and
+/// the `VALIDATION_ERROR` shutdown a cluster built on one that resolves to nothing is settled
+/// into; split out and re-exported the same way.
+mod launch_validation;
+pub use launch_validation::*;
+
 /// The IAM Identity Center users and groups an EMR Studio session mapping maps, resolved
 /// in the service that owns them; split out and re-exported the same way.
 mod studio_identities;
@@ -618,6 +625,11 @@ pub mod cluster_state_change_reason_code {
     /// "`TERMINATE_CLUSTER` — Shuts down the cluster" (`StepConfig$ActionOnFailure` doc), as
     /// applied by [`super::step_failure_actions`].
     pub const STEP_FAILURE: &str = "STEP_FAILURE";
+
+    /// A reference the launch named could not be resolved once the launch had been accepted —
+    /// the subnet the cluster runs in, the role Amazon EMR acts under, or what that role's
+    /// permissions allow ([`super::launch_validation`]).
+    pub const VALIDATION_ERROR: &str = "VALIDATION_ERROR";
 }
 
 /// `com.amazonaws.emr#InvalidRequestException$ErrorCode` — "the error code associated
@@ -3121,6 +3133,12 @@ pub struct ClusterRecord {
     /// later read reports.
     pub auto_termination_policy: Option<AutoTerminationPolicy>,
     pub tags: Vec<Tag>,
+    /// Why this cluster's launch cannot come up, where resolving the references it named
+    /// answered that one of them is not there ([`launch_validation_failure`]): the sentence the
+    /// `VALIDATION_ERROR` shutdown the clock owes it carries
+    /// ([`ClusterRecord::begin_due_validation_failure`]). `None` for a launch whose references
+    /// all resolved, which is every cluster that comes up.
+    pub validation_failure: Option<String>,
     pub status: ClusterStatusRecord,
     /// Steps in submission order. `ListSteps` reverses this.
     pub steps: Vec<StepRecord>,
@@ -3169,6 +3187,11 @@ impl ClusterRecord {
     /// cluster that is ready runs and then completes, and one the caller terminated
     /// reaches `TERMINATED`.
     pub fn advance_to(&mut self, now: SystemTime) {
+        // A launch whose references did not resolve shuts the cluster down at the instant its
+        // capacity would have come up ([`Self::begin_due_validation_failure`]), so that is
+        // applied BEFORE the shutdown below is materialised: the cluster then reaches its
+        // terminal state on the same reading rather than the next one.
+        self.begin_due_validation_failure(now);
         for session in &mut self.sessions {
             session.advance_to(now);
         }
