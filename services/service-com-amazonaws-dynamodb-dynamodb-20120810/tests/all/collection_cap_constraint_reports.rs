@@ -10,7 +10,11 @@
 //! whose message is the `<N> validation error(s) detected: ` envelope over one
 //! clause per violated member, and that clause states the member's dotted input
 //! path as the operation that was served names it, that the member failed a
-//! constraint, and the BOUND it broke. It states nothing the emulator computed
+//! constraint, and the BOUND it broke — or, where the bound broken is the one
+//! declared on a MAP's VALUES rather than on the member itself, the value
+//! shape's WHOLE declared set inside AWS's `Map value must satisfy constraint:
+//! [ … ]` sentence, stated at the map member.
+//! It states nothing the emulator computed
 //! about the request: not the element count, not a byte total, not the operation
 //! that refused it. The members a WRITE states its actions in are quoted BESIDE
 //! that — the object rendering this service states a refused structure value in,
@@ -76,6 +80,16 @@ fn quoting_report(path: &str, quoted: &str, requirement: &str) -> String {
     format!(
         "1 validation error detected: Value '{quoted}' at '{path}' failed to satisfy \
          constraint: {requirement}"
+    )
+}
+
+/// The requirement a clause states at a MAP member for a bound its VALUES broke: the value
+/// shape's whole declared set, maximum first, inside the sentence AWS nests it in.
+fn map_value_set(max: usize, min: usize) -> String {
+    format!(
+        "Map value must satisfy constraint: [{}, {}]",
+        at_most(max),
+        at_least(min)
     )
 }
 
@@ -255,16 +269,16 @@ async fn a_collection_outside_its_modelled_length_bound_is_reported_against_that
             report("requestItems", &at_least(1)),
         ),
         (
-            // The same member, the same bound and the same empty residue as the row
-            // above, reached by giving the one table it names an empty list: the bound is
-            // on the write requests the map carries, not on its entries.
-            "a batched write whose only table was given no request, below the same minimum",
+            // The same member reached by giving the one table it names an empty list: that
+            // is a bound on the map's VALUES rather than on its entries, so the clause
+            // quotes the map and states the value shape's whole set.
+            "a batched write whose only table was given no request, below the value bound",
             "BatchWriteItem",
             json!({"RequestItems": for_table(json!([]))}),
-            format!(
-                "1 validation error detected: Value '{{{TABLE}=[]}}' at 'requestItems' failed \
-                 to satisfy constraint: {}",
-                at_least(1)
+            quoting_report(
+                "requestItems",
+                &format!("{{{TABLE}=[]}}"),
+                &map_value_set(25, 1),
             ),
         ),
     ];

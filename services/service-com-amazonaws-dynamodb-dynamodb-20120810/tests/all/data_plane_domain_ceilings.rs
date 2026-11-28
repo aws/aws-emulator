@@ -1374,7 +1374,11 @@ async fn a_batched_write_states_its_modelled_bounds_and_absorbs_a_full_batch() {
     // the write requests it carries (`smithy_query(query="operation",
     // operation="BatchWriteItem")`), and this operation names the member by the path the
     // request validator builds. The rows cross each end of that bound, through a map with
-    // no entry at all and through a map whose one table was given no request.
+    // no entry at all — the MAP's own bound, whose clause states the one end that was
+    // broken — and through a map whose entry is outside the bound declared for its VALUES,
+    // whose clause states that value shape's whole set.
+    let value_set = "Map value must satisfy constraint: [Member must have length less than or \
+                     equal to 25, Member must have length greater than or equal to 1]";
     for (case, body, requirement) in [
         (
             "a batched write naming no table at all",
@@ -1384,12 +1388,12 @@ async fn a_batched_write_states_its_modelled_bounds_and_absorbs_a_full_batch() {
         (
             "a batched write whose only table was given no request",
             json!({"RequestItems": {BATCH: []}}),
-            "Member must have length greater than or equal to 1",
+            value_set,
         ),
         (
             "a batched write one request past the 25-request bound",
             json!({"RequestItems": {BATCH: write_requests(26)}}),
-            "Member must have length less than or equal to 25",
+            value_set,
         ),
     ] {
         let stated = refused(&router, case, "BatchWriteItem", body).await;

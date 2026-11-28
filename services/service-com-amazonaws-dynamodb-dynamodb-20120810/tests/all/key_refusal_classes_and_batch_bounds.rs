@@ -649,12 +649,20 @@ async fn a_batched_write_holds_its_request_map_to_the_declared_bound() {
     // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#WriteRequests")` gives
     // @length min 1 max 25, and `BatchWriteItemRequestMap` the same for its entries).
     let (least, most) = (1usize, 25usize);
+    // The requirement a clause about that map states for a bound its VALUES broke: the
+    // value shape's whole declared set, maximum first, inside AWS's map-value sentence.
+    let value_set = format!(
+        "Map value must satisfy constraint: [Member must have length less than or equal to \
+         {most}, Member must have length greater than or equal to {least}]"
+    );
 
     // Each row: the case, the map the request sends, and the refusal it must earn — `None`
     // for a map inside both the bound and the ceiling, which is served. The rows span both
     // ends of the bound, the bound itself, and how the requests are spread over tables.
     let rows: Vec<(&str, Value, Option<Refusal>)> = vec![
         (
+            // The MAP's own minimum, which is the only bound a map carrying no entry can
+            // break: no value broke a constraint, so no value set is stated.
             "a map naming no table at all",
             json!({}),
             Some(Refusal::Clause(format!(
@@ -664,16 +672,20 @@ async fn a_batched_write_holds_its_request_map_to_the_declared_bound() {
         (
             "a map whose one table was given no request",
             json!({"Bounded": []}),
-            Some(Refusal::Clause(format!(
-                "Member must have length greater than or equal to {least}"
-            ))),
+            Some(Refusal::Clause(value_set.clone())),
         ),
         (
             "a map whose two tables were both given no request",
             json!({"Bounded": [], "Bounded2": []}),
-            Some(Refusal::Clause(format!(
-                "Member must have length greater than or equal to {least}"
-            ))),
+            Some(Refusal::Clause(value_set.clone())),
+        ),
+        (
+            // One entry inside the value bound and one below it: the bound is on EVERY
+            // value of the map, so the entry that broke it is refused beside one that did
+            // not.
+            "a map whose second table was given no request",
+            json!({"Bounded": write_requests(1), "Bounded2": []}),
+            Some(Refusal::Clause(value_set.clone())),
         ),
         (
             "one request for one table, at the bound's minimum",
@@ -693,16 +705,12 @@ async fn a_batched_write_holds_its_request_map_to_the_declared_bound() {
         (
             "one request past the bound for one table",
             json!({"Bounded": write_requests(most + 1)}),
-            Some(Refusal::Clause(format!(
-                "Member must have length less than or equal to {most}"
-            ))),
+            Some(Refusal::Clause(value_set.clone())),
         ),
         (
             "half again past the bound for one table",
             json!({"Bounded": write_requests(most + most / 2)}),
-            Some(Refusal::Clause(format!(
-                "Member must have length less than or equal to {most}"
-            ))),
+            Some(Refusal::Clause(value_set.clone())),
         ),
         (
             // Every list inside its own bound, and the operations summed past the call's

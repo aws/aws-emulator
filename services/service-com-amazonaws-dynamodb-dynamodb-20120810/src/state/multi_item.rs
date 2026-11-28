@@ -122,6 +122,27 @@ pub fn batch_table_key(
 /// empty residue.
 pub const MIN_BATCH_WRITE_REQUESTS: usize = 1;
 
+/// The whole requirement set the write-request list one table was given must satisfy, as a
+/// clause about the MAP states it.
+///
+/// The bound 1..25 is declared on the map's VALUE shape (`smithy_query(query="shape",
+/// shape="com.amazonaws.dynamodb#BatchWriteItemRequestMap")` gives a value of
+/// `WriteRequests`, itself `@length{min:1,max:25}`), and a constraint a map's VALUES broke
+/// is stated at the MAP member carrying the value shape's WHOLE declared set, rather than at
+/// the entry whose own list broke it: `Map value must satisfy constraint: [ … ]`, the sibling
+/// of the `Map keys must satisfy constraint: [ … ]` a key that names no table earns
+/// ([`batch_table_key`]). The sentence around the set is the tree's one rendering of it
+/// (`service_common::validation_message::map_value_set_requirement`) and the requirements
+/// inside it are this service's own phrases ([`max_length_requirement`],
+/// [`min_length_requirement`]), stated maximum first, which is the order every constraint set
+/// this service states lists its bounds in.
+fn write_requests_requirement_set() -> String {
+    ::service_common::validation_message::map_value_set_requirement(&[
+        max_length_requirement(MAX_BATCH_WRITE_REQUESTS),
+        min_length_requirement(MIN_BATCH_WRITE_REQUESTS),
+    ])
+}
+
 /// How a `BatchWriteItem` whose `RequestItems` carries a number of write requests outside
 /// its declared bound is refused.
 ///
@@ -129,10 +150,13 @@ pub const MIN_BATCH_WRITE_REQUESTS: usize = 1;
 /// 1..25 the model declares is on the write-request LIST one table was given, and on the
 /// map's own entries (`smithy_query(query="shape",
 /// shape="com.amazonaws.dynamodb#BatchWriteItemRequestMap")`): a list outside it is a
-/// violation of a member the request sent, reported as the request validator's own clause —
-/// the member named by the lowerCamel path that validator builds
-/// ([`REQUEST_ITEMS_MEMBER_PATH`]) and the requirement for the bound that was broken, inside
-/// the envelope that counts the clauses ([`validation_message`]).
+/// constraint the map's VALUES broke, so it is reported at the MAP member — the lowerCamel
+/// path the request validator builds ([`REQUEST_ITEMS_MEMBER_PATH`]) — carrying the value
+/// shape's whole declared set ([`write_requests_requirement_set`]) rather than the one end of
+/// the bound the request happened to break, inside the envelope that counts the clauses
+/// ([`validation_message`]). A list outside EITHER end is that same violation, whichever
+/// table of the map carries it, so an entry given no request at all is refused even when
+/// another entry of the same map carries some.
 ///
 /// The ceiling on the OPERATIONS, "up to 25 item put or delete operations" counted across
 /// every table the request grouped them under, is the CALL's own quota rather than a bound
@@ -142,9 +166,11 @@ pub const MIN_BATCH_WRITE_REQUESTS: usize = 1;
 /// ([`too_many_batch_items`]) — which is how the batched READ refuses its own aggregate
 /// ceiling, and which echoes nothing of the request.
 ///
-/// The rejected value is quoted for a map that HAS entries and withheld for one that has
-/// none, because what the clause echoes is the map the request sent
-/// ([`rendered_batch_write_request_items`]) and an empty map has nothing to show.
+/// The MAP's own `@length` minimum is the third refusal, and the only one a map whose every
+/// entry is inside the value bound can still break: a map carrying no entry at all. Its
+/// clause states the member and the bound alone, because what a clause echoes is the map the
+/// request sent ([`rendered_batch_write_request_items`]) and an empty map has nothing to
+/// show.
 ///
 /// WHY THIS SEAM QUOTES THE MAP AND THE FRAMEWORK'S DOES NOT. The bound on the write
 /// REQUESTS is the handler's to apply — the validating walk ahead of it length-checks the
@@ -160,26 +186,32 @@ pub fn batch_write_requests_outside_bound(
     request_items: &HashMap<String, Vec<WriteRequest>>,
     requested: usize,
 ) -> Option<RequestError> {
-    // The longest list one table was given: the bound the model declares is on THAT list,
-    // whichever table carries it.
-    let longest = request_items.values().map(Vec::len).max().unwrap_or(0);
-    let requirement = if requested < MIN_BATCH_WRITE_REQUESTS {
-        min_length_requirement(MIN_BATCH_WRITE_REQUESTS)
-    } else if longest > MAX_BATCH_WRITE_REQUESTS {
-        max_length_requirement(MAX_BATCH_WRITE_REQUESTS)
-    } else if requested > MAX_BATCH_WRITE_REQUESTS {
+    // A list outside the bound the model declares for the map's VALUES, whichever table
+    // carries it: the clause is about the MAP, so it states that shape's whole set over the
+    // map the request sent.
+    let bound = MIN_BATCH_WRITE_REQUESTS..=MAX_BATCH_WRITE_REQUESTS;
+    if request_items
+        .values()
+        .any(|requests| !bound.contains(&requests.len()))
+    {
+        return Some(invalid_member(
+            REQUEST_ITEMS_MEMBER_PATH,
+            Some(&rendered_batch_write_request_items(request_items)),
+            &write_requests_requirement_set(),
+        ));
+    }
+    // The map's own minimum, which only a map carrying no entry at all reaches here.
+    if requested < MIN_BATCH_WRITE_REQUESTS {
+        return Some(invalid_member(
+            REQUEST_ITEMS_MEMBER_PATH,
+            None,
+            &min_length_requirement(MIN_BATCH_WRITE_REQUESTS),
+        ));
+    }
+    if requested > MAX_BATCH_WRITE_REQUESTS {
         return Some(too_many_batch_items(BATCH_WRITE_CALL));
-    } else {
-        return None;
-    };
-    let quoted = (!request_items.is_empty()).then(|| {
-        rendered_batch_write_request_items(request_items)
-    });
-    Some(invalid_member(
-        REQUEST_ITEMS_MEMBER_PATH,
-        quoted.as_deref(),
-        &requirement,
-    ))
+    }
+    None
 }
 
 /// A `BatchWriteItem`'s `RequestItems` map as the refusal of that member quotes it.

@@ -295,12 +295,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .map_err(lift)?;
 
         // "up to 25 item put or delete operations", and "a map of ONE OR MORE table
-        // names": the `@length` the model declares is on the write-request list one table
-        // was given, while the ceiling of 25 is on the OPERATIONS counted across every
-        // table the request grouped them under — so a batch that spreads 26 writes over
-        // two tables is refused for the CALL's quota, one that gives a single table 26 is
-        // refused for that list's own bound, and one that asks for no operation at all is
-        // refused for the other end of it
+        // names": the `@length` the model declares is on the write-request LIST one table
+        // was given — a bound on the map's VALUES — while the ceiling of 25 is on the
+        // OPERATIONS counted across every table the request grouped them under. So a batch
+        // that spreads 26 writes over two tables is refused for the CALL's quota, one that
+        // gives a single table 26 (or gives any table none) is refused for the value
+        // bound, and one that names no table at all is refused for the map's own minimum
         // ([`crate::state::batch_write_requests_outside_bound`]).
         let requested: usize = input.request_items.values().map(Vec::len).sum();
         if let Some(refusal) =
