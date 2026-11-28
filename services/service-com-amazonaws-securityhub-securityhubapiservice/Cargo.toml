@@ -37,6 +37,9 @@ regex = "1.13"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs` from `tests/all/main.rs`, so a suite
+# needs no hand-written declaration.
+automod = { workspace = true }
 # The standards tests wait past a PENDING -> READY transition's due instant, which
 # needs tokio's timer on top of the features the workspace dependency enables.
 tokio = { workspace = true, features = ["time"] }

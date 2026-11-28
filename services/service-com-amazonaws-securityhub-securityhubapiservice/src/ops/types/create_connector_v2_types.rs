@@ -29,6 +29,7 @@ pub enum ProviderConfiguration {
     JiraCloud(JiraCloudProviderConfiguration),
     ServiceNow(ServiceNowProviderConfiguration),
     Azure(AzureProviderConfiguration),
+    Gcp(GcpProviderConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#JiraCloudProviderConfiguration")]

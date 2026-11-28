@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_securityhub_securityhubapiservice::ops::types::STANDARDS_PROVIDER_VALUES;
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The account every emulated caller presents.
@@ -23,9 +24,13 @@ const REGION: &str = "us-east-1";
 /// A second Region, so "one subscription per account AND Region" is observable.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// Longer than the `PENDING` -> `READY` transition's 500 ms due span, so a read after
-/// this wait must see the transition materialised.
-const PAST_READY_DUE: std::time::Duration = std::time::Duration::from_millis(900);
+/// How long a poll for the `PENDING` -> `READY` transition may run before the test
+/// gives up. Generous on purpose: the test waits for the CONDITION, so its outcome
+/// does not depend on how fast the host runs.
+const READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a poll waits before looking again.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// The subscription ARN of the AWS Foundational Security Best Practices standard in
 /// `region` — one of the two standards `EnableSecurityHub` enables by default.
@@ -120,14 +125,44 @@ impl Harness {
         self.get_enabled_standards_in(REGION, body).await
     }
 
-    /// A harness whose `REGION` hub is enabled with the default standards, waited
-    /// past the `PENDING` -> `READY` transition the enabling call owes.
+    /// A harness whose `REGION` hub is enabled with the default standards, read until
+    /// the `PENDING` -> `READY` transition the enabling call owes is materialised.
     async fn enabled_and_ready() -> Self {
         let harness = Self::new();
         let (status, _) = harness.enable_in(REGION, json!({})).await;
         assert_eq!(status, 200, "EnableSecurityHub must succeed, got {status}");
-        tokio::time::sleep(PAST_READY_DUE).await;
+        harness.await_standards_ready(REGION).await;
         harness
+    }
+
+    /// Look again until every standard enabled in `region` reports `READY`, or the
+    /// deadline passes. The wait is for the condition the clock owes, never for a
+    /// fixed span.
+    async fn await_standards_ready(&self, region: &str) {
+        let deadline = std::time::Instant::now() + READY_DEADLINE;
+        loop {
+            let (status, body) = self.get_enabled_standards_in(region, json!({})).await;
+            assert_eq!(
+                status, 200,
+                "case {region:?}: GetEnabledStandards must succeed, got {status} with {body}"
+            );
+            let subscriptions = body["StandardsSubscriptions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let all_ready = !subscriptions.is_empty()
+                && subscriptions
+                    .iter()
+                    .all(|subscription| subscription["StandardsStatus"] == "READY");
+            if all_ready {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "case {region:?}: the enabled standards must reach READY, got {body}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 }
 
@@ -196,6 +231,11 @@ async fn filters_select_the_enabled_standards_they_name() {
         (
             "Providers naming another modelled provider",
             json!({ "Providers": ["Azure"] }),
+            Vec::new(),
+        ),
+        (
+            "Providers naming a modelled provider no subscription evaluates",
+            json!({ "Providers": ["GCP"] }),
             Vec::new(),
         ),
         (
@@ -317,7 +357,7 @@ async fn a_newly_enabled_standard_becomes_ready_when_the_transition_falls_due() 
         );
     }
 
-    tokio::time::sleep(PAST_READY_DUE).await;
+    harness.await_standards_ready(REGION).await;
     for read in ["first read past the due instant", "second read"] {
         let (status, body) = harness.get_enabled_standards(json!({})).await;
         assert_eq!(
@@ -421,7 +461,7 @@ async fn standards_are_scoped_to_the_region_they_were_enabled_in() {
         status, 200,
         "EnableSecurityHub in {OTHER_REGION} must succeed, got {status}"
     );
-    tokio::time::sleep(PAST_READY_DUE).await;
+    harness.await_standards_ready(OTHER_REGION).await;
 
     for region in [REGION, OTHER_REGION] {
         let (status, body) = harness.get_enabled_standards_in(region, json!({})).await;
@@ -447,7 +487,8 @@ async fn enabling_without_the_default_standards_enables_none() {
         .enable_in(REGION, json!({ "EnableDefaultStandards": false }))
         .await;
     assert_eq!(status, 200, "EnableSecurityHub must succeed, got {status}");
-    tokio::time::sleep(PAST_READY_DUE).await;
+    // Enabling without the default standards subscribes the account to nothing, so no
+    // transition is owed and there is no condition to wait for.
 
     let (status, body) = harness.get_enabled_standards(json!({})).await;
     assert_eq!(
@@ -515,15 +556,23 @@ async fn requests_outside_the_modelled_input_are_refused() {
     let harness = Harness::enabled_and_ready().await;
 
     // `MaxResults` is `@range(min: 1, max: 100)` and `Providers` targets the
-    // `StandardsProvider` enum (`AWS`, `Azure`); `NextToken` is opaque, so only a
-    // token this operation issued resumes a page.
+    // `StandardsProvider` enum, whose values this test reads out of the rendered value
+    // list rather than naming, so a provider the model adds does not turn a refusal row
+    // into a request the service accepts; `NextToken` is opaque, so only a token this
+    // operation issued resumes a page.
+    const UNDEFINED_PROVIDER: &str = "OracleCloud";
+    assert!(
+        !STANDARDS_PROVIDER_VALUES.contains(&UNDEFINED_PROVIDER),
+        "{UNDEFINED_PROVIDER:?} must be a value StandardsProvider does not define, \
+         got {STANDARDS_PROVIDER_VALUES:?}"
+    );
     let cases: Vec<(&str, Value)> = vec![
         ("MaxResults below the published minimum", json!({ "MaxResults": 0 })),
         ("MaxResults above the published maximum", json!({ "MaxResults": 101 })),
         ("MaxResults negative", json!({ "MaxResults": -1 })),
         (
             "Providers outside the modelled enum",
-            json!({ "Providers": ["GCP"] }),
+            json!({ "Providers": [UNDEFINED_PROVIDER] }),
         ),
         (
             "Providers with one modelled and one unmodelled value",

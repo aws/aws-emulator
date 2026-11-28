@@ -488,6 +488,16 @@ async fn out_of_range_and_unissued_inputs_are_refused() {
         .expect("a page shorter than the catalog must carry a NextToken")
         .to_string();
 
+    // A cloud provider `StandardsProvider` does not define, checked against the enum's
+    // own value list so that a model which adds a provider cannot turn this row into a
+    // request the service accepts.
+    const UNDEFINED_PROVIDER: &str = "OracleCloud";
+    assert!(
+        !STANDARDS_PROVIDER_VALUES.contains(&UNDEFINED_PROVIDER),
+        "{UNDEFINED_PROVIDER:?} must be a value StandardsProvider does not define, \
+         got {STANDARDS_PROVIDER_VALUES:?}"
+    );
+
     // (case, query, expected status, expected error code)
     let cases: Vec<(&str, String, u16, &str)> = vec![
         ("MaxResults at the lower bound", "MaxResults=1".into(), 200, ""),
@@ -527,7 +537,7 @@ async fn out_of_range_and_unissued_inputs_are_refused() {
         ),
         (
             "Providers value StandardsProvider does not define",
-            "Providers=GCP".into(),
+            format!("Providers={UNDEFINED_PROVIDER}"),
             400,
             "",
         ),

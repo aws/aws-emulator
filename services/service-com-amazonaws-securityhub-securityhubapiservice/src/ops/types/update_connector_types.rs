@@ -24,6 +24,7 @@ pub struct UpdateConnectorInput {
 #[derive(Debug, Clone)]
 pub enum CspmProviderUpdateConfiguration {
     Azure(AzureUpdateConfiguration),
+    Gcp(GcpUpdateConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#UpdateConnectorResponse")]

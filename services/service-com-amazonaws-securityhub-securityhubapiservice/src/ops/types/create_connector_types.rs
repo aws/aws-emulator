@@ -26,6 +26,7 @@ pub struct CreateConnectorInput {
 #[derive(Debug, Clone)]
 pub enum CspmProviderConfiguration {
     Azure(AzureProviderConfiguration),
+    Gcp(GcpProviderConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#CreateConnectorResponse")]

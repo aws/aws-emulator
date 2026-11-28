@@ -109,13 +109,6 @@ impl From<UpdateStandardsControlErrorModeled> for UpdateStandardsControlError {
     }
 }
 
-/// Every `ControlStatus` value the model declares (`smithy_query(query="shape",
-/// shape="ControlStatus")`): the statuses a control can be put in.
-const CONTROL_STATUSES: [&str; 2] = [
-    crate::state::CONTROL_STATUS_ENABLED,
-    crate::state::CONTROL_STATUS_DISABLED,
-];
-
 /// The longest `DisabledReason` this store keeps. The model bounds neither
 /// `NonEmptyString` nor this member, so the cap is the one this crate already applies
 /// to an unbounded string member ([`crate::state::MAX_ACTION_TARGET_DESCRIPTION_LEN`]):
@@ -182,9 +175,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ControlStatus` the model does not declare, or a disable that names no
         // reason, is refused identically on every hub.
         if let Some(status) = input.control_status.as_deref() {
-            if !CONTROL_STATUSES.contains(&status) {
+            // `CONTROL_STATUS_VALUES` is the `ControlStatus` enum's own value list,
+            // rendered from the model, so the accepted set is whatever the model
+            // declares rather than a list copied into this handler.
+            if !CONTROL_STATUS_VALUES.contains(&status) {
                 return Err(invalid_input(format!(
-                    "ControlStatus: {status} is not a supported control status"
+                    "ControlStatus: {status} is not a ControlStatus; expected one of {}",
+                    CONTROL_STATUS_VALUES.join(", ")
                 )));
             }
         }

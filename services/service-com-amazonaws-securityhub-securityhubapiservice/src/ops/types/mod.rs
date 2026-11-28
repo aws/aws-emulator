@@ -14,10 +14,9 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema/codec macros every structure with a `@timestampFormat("date-time")` member
-// uses, because the vendored codegen drops that trait. Hand-added, not generated; see the
-// module's own note. `#[macro_use]`, and declared FIRST, so the macros are in the textual
-// scope of every `*_types` module below.
+// Where the schema and the codec a `@timestampFormat("date-time")` member needs are
+// declared — see that module's own note. `#[macro_use]`, and declared FIRST, so the macros
+// are in the textual scope of every `*_types` module below.
 #[macro_use]
 pub mod date_time_wire;
 
@@ -106,6 +105,9 @@ pub mod get_resources_statistics_v2_types;
 pub mod get_resources_trends_v2_types;
 pub mod get_resources_v2_types;
 pub mod get_security_control_definition_types;
+pub mod get_software_resources_v2_types;
+pub mod get_software_statistics_v2_types;
+pub mod get_software_v2_types;
 pub mod invite_members_types;
 pub mod list_aggregators_v2_types;
 pub mod list_automation_rules_types;
@@ -316,6 +318,12 @@ pub use get_resources_trends_v2_types::*;
 pub use get_resources_v2_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_security_control_definition_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_software_resources_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_software_statistics_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_software_v2_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use invite_members_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

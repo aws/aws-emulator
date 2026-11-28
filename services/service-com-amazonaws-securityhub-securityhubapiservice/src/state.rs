@@ -283,8 +283,7 @@ pub struct StandardsSubscriptionRecord {
     /// falls due, then `READY`; `DELETING` once a disabling call has started the
     /// removal it owes.
     pub standards_status: String,
-    /// A `StandardsProvider` value (`AWS` or `Azure`) — the cloud whose resources the
-    /// standard evaluates.
+    /// A `StandardsProvider` value — the cloud whose resources the standard evaluates.
     pub provider: String,
     /// Whole nanoseconds since the epoch at which the `PENDING` -> `READY`
     /// transition the enabling call owes becomes due. A reporting operation
@@ -551,7 +550,7 @@ pub struct StandardDefinition {
     pub version: &'static str,
     pub name: &'static str,
     pub description: &'static str,
-    /// A `StandardsProvider` value (`AWS` or `Azure`).
+    /// A `StandardsProvider` value, as `STANDARDS_PROVIDER_VALUES` lists them.
     pub provider: &'static str,
     /// `Standard$EnabledByDefault`: "When Security Hub CSPM is enabled using the
     /// `EnableSecurityHub` API operation, the standard is enabled by default unless

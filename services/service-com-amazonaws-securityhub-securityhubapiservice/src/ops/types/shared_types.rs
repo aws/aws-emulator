@@ -226,9 +226,9 @@ pub enum Target {
 
 /// `ConfigurationPolicyAssociationSummary`. Its schema and codec come from
 /// [`securityhub_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
-/// because `UpdatedAt` targets `Timestamp`, which carries `@timestampFormat("date-time")`
-/// (`smithy_query(query="shape", shape="ConfigurationPolicyAssociationSummary")`, whose
-/// documentation also says "in UTC and ISO 8601 format"), and the derive does not put that
+/// because `UpdatedAt` targets `Timestamp`, which carries
+/// `@timestampFormat("date-time")` (`smithy_query(query="shape",
+/// shape="ConfigurationPolicyAssociationSummary")`), and the derive does not put that
 /// trait on a member schema — see `types/date_time_wire.rs`.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
@@ -716,6 +716,7 @@ pub struct ResourceDetails {
     pub aws_ec2_client_vpn_endpoint: Option<AwsEc2ClientVpnEndpointDetails>,
     pub code_repository: Option<CodeRepositoryDetails>,
     pub azure_resource: Option<::aws_smithy_types::Document>,
+    pub gcp_resource: Option<::aws_smithy_types::Document>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#AwsAutoScalingAutoScalingGroupDetails")]
@@ -6435,6 +6436,21 @@ pub struct AzureScopeConfiguration {
     pub scope_values: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#GcpProviderConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpProviderConfiguration {
+    pub aws_config_connector_arn: String,
+    pub scope_configuration: GcpScopeConfiguration,
+    pub gcp_regions: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#GcpScopeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpScopeConfiguration {
+    pub scope_type: String,
+    pub scope_values: Option<Vec<String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#AwsSecurityFindingFilters")]
 #[derive(Debug, Clone, Default)]
 pub struct AwsSecurityFindingFilters {
@@ -6622,6 +6638,7 @@ pub struct HealthIssue {
 #[derive(Debug, Clone)]
 pub enum CspmProviderDetail {
     Azure(AzureDetail),
+    Gcp(GcpDetail),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#AzureDetail")]
@@ -6632,6 +6649,14 @@ pub struct AzureDetail {
     pub azure_regions: Vec<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#GcpDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpDetail {
+    pub aws_config_connector_arn: String,
+    pub scope_configuration: GcpScopeConfiguration,
+    pub gcp_regions: Vec<String>,
+}
+
 #[smithy_macros::smithy(union_for = "com.amazonaws.securityhub#ProviderDetail")]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
@@ -6639,6 +6664,7 @@ pub enum ProviderDetail {
     JiraCloud(JiraCloudDetail),
     ServiceNow(ServiceNowDetail),
     Azure(AzureDetail),
+    Gcp(GcpDetail),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#JiraCloudDetail")]
@@ -6745,9 +6771,9 @@ pub struct OrganizationNotFoundException {
 
 /// `Member`. Its schema and codec come from [`securityhub_schema_and_codec!`] rather than
 /// `#[smithy_macros::smithy(shape = ...)]` because `InvitedAt` and `UpdatedAt` target
-/// `Timestamp`, which carries `@timestampFormat("date-time")` (`smithy_query(query="shape",
-/// shape="Member")`), and the derive does not put that trait on a member schema — see
-/// `types/date_time_wire.rs`.
+/// `Timestamp`, which carries `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="Member")`), and the derive does not put that trait
+/// on a member schema — see `types/date_time_wire.rs`.
 ///
 /// The member list below is the model's, member for member: same shape ids, same wire
 /// names, same order, same shape types.
@@ -6917,11 +6943,46 @@ pub struct EnumListConfigurationOptions {
     pub allowed_values: Option<Vec<String>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#SoftwareFilters")]
+#[derive(Debug, Clone, Default)]
+pub struct SoftwareFilters {
+    pub composite_filters: Option<Vec<SoftwareCompositeFilter>>,
+    pub composite_operator: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#SoftwareCompositeFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SoftwareCompositeFilter {
+    pub string_filters: Option<Vec<SoftwareStringFilter>>,
+    pub nested_composite_filters: Option<Vec<SoftwareCompositeFilter>>,
+    pub operator: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#SoftwareStringFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct SoftwareStringFilter {
+    pub field_name: Option<String>,
+    pub filter: Option<StringFilter>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#SoftwareScopes")]
+#[derive(Debug, Clone, Default)]
+pub struct SoftwareScopes {
+    pub aws_organizations: Option<Vec<AwsOrganizationScope>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.securityhub#AzureUpdateConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct AzureUpdateConfiguration {
     pub scope_configuration: AzureScopeConfiguration,
     pub azure_regions: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityhub#GcpUpdateConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpUpdateConfiguration {
+    pub scope_configuration: GcpScopeConfiguration,
+    pub gcp_regions: Vec<String>,
 }
 
 /// The values `ActorSessionMfaStatus` accepts on the wire.
@@ -6969,7 +7030,7 @@ pub const BATCH_UPDATE_FINDINGS_V2_UNPROCESSED_FINDING_ERROR_CODE_VALUES: &[&str
 
 
 /// The values `CloudProviderName` accepts on the wire.
-pub const CLOUD_PROVIDER_NAME_VALUES: &[&str] = &["AWS", "Azure"];
+pub const CLOUD_PROVIDER_NAME_VALUES: &[&str] = &["AWS", "Azure", "GCP"];
 
 
 /// The values `ComplianceStatus` accepts on the wire.
@@ -6977,7 +7038,7 @@ pub const COMPLIANCE_STATUS_VALUES: &[&str] = &["FAILED", "NOT_AVAILABLE", "PASS
 
 
 /// The values `ConfigurationPolicyAssociationStatus` accepts on the wire.
-pub const CONFIGURATION_POLICY_ASSOCIATION_STATUS_VALUES: &[&str] = &["FAILED", "PENDING", "SUCCESS"];
+pub const CONFIGURATION_POLICY_ASSOCIATION_STATUS_VALUES: &[&str] = &["DISABLED", "FAILED", "PENDING", "SUCCESS"];
 
 
 /// The values `ConnectionDirection` accepts on the wire.
@@ -6989,7 +7050,7 @@ pub const CONNECTOR_AUTH_STATUS_VALUES: &[&str] = &["ACTIVE", "FAILED"];
 
 
 /// The values `ConnectorProviderName` accepts on the wire.
-pub const CONNECTOR_PROVIDER_NAME_VALUES: &[&str] = &["AZURE", "JIRA_CLOUD", "SERVICENOW"];
+pub const CONNECTOR_PROVIDER_NAME_VALUES: &[&str] = &["AZURE", "GCP", "JIRA_CLOUD", "SERVICENOW"];
 
 
 /// The values `ConnectorStatus` accepts on the wire.
@@ -7005,11 +7066,11 @@ pub const CONTROL_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `CriticalitySourceType` accepts on the wire.
-pub const CRITICALITY_SOURCE_TYPE_VALUES: &[&str] = &["AutomationRule", "ResourceName", "TagInference"];
+pub const CRITICALITY_SOURCE_TYPE_VALUES: &[&str] = &["AutomationRule", "CloudWatchTelemetryInference", "InstalledSoftwareAndPackageInference", "ResourceName", "TagInference"];
 
 
 /// The values `CspmConnectorProviderName` accepts on the wire.
-pub const CSPM_CONNECTOR_PROVIDER_NAME_VALUES: &[&str] = &["AZURE"];
+pub const CSPM_CONNECTOR_PROVIDER_NAME_VALUES: &[&str] = &["AZURE", "GCP"];
 
 
 /// The values `CspmConnectorStatus` accepts on the wire.
@@ -7088,6 +7149,10 @@ pub const FREE_TRIAL_STATUS_VALUE_VALUES: &[&str] = &["ACTIVE", "INACTIVE"];
 pub const FREE_TRIAL_TYPE_VALUES: &[&str] = &["SECURITY_HUB_V2", "SECURITY_HUB_V2_MULTI_CLOUD_AZURE"];
 
 
+/// The values `GcpScopeType` accepts on the wire.
+pub const GCP_SCOPE_TYPE_VALUES: &[&str] = &["ORGANIZATION", "PROJECT"];
+
+
 /// The values `GranularityField` accepts on the wire.
 pub const GRANULARITY_FIELD_VALUES: &[&str] = &["Daily", "Monthly", "Weekly"];
 
@@ -7157,7 +7222,7 @@ pub const ORGANIZATION_CONFIGURATION_CONFIGURATION_TYPE_VALUES: &[&str] = &["CEN
 
 
 /// The values `OrganizationConfigurationStatus` accepts on the wire.
-pub const ORGANIZATION_CONFIGURATION_STATUS_VALUES: &[&str] = &["ENABLED", "FAILED", "PENDING"];
+pub const ORGANIZATION_CONFIGURATION_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED", "FAILED", "PENDING"];
 
 
 /// The values `ParameterValueType` accepts on the wire.
@@ -7249,7 +7314,7 @@ pub const SECURITY_CONTROL_PROPERTY_VALUES: &[&str] = &["Parameters"];
 
 
 /// The values `SecurityControlsProvider` accepts on the wire.
-pub const SECURITY_CONTROLS_PROVIDER_VALUES: &[&str] = &["AWS", "Azure"];
+pub const SECURITY_CONTROLS_PROVIDER_VALUES: &[&str] = &["AWS", "Azure", "GCP"];
 
 
 /// The values `SecurityHubFeature` accepts on the wire.
@@ -7264,6 +7329,14 @@ pub const SEVERITY_LABEL_VALUES: &[&str] = &["CRITICAL", "HIGH", "INFORMATIONAL"
 pub const SEVERITY_RATING_VALUES: &[&str] = &["CRITICAL", "HIGH", "LOW", "MEDIUM"];
 
 
+/// The values `SoftwareGroupByField` accepts on the wire.
+pub const SOFTWARE_GROUP_BY_FIELD_VALUES: &[&str] = &["AccountId", "PackageName", "PackageType", "PackageVersion", "Region", "ResourceCloudPartition", "ResourceId", "ResourceOwnerAccountId", "ResourceOwnerOrgId", "ResourceProvider", "ResourceRegion", "ResourceType"];
+
+
+/// The values `SoftwareStringField` accepts on the wire.
+pub const SOFTWARE_STRING_FIELD_VALUES: &[&str] = &["AccountId", "PackageName", "PackageType", "PackageVersion", "Region", "ResourceCloudPartition", "ResourceId", "ResourceOwnerAccountId", "ResourceOwnerOrgId", "ResourceProvider", "ResourceRegion", "ResourceType"];
+
+
 /// The values `SortOrder` accepts on the wire.
 pub const SORT_ORDER_VALUES: &[&str] = &["asc", "desc"];
 
@@ -7273,7 +7346,7 @@ pub const STANDARDS_CONTROLS_UPDATABLE_VALUES: &[&str] = &["NOT_READY_FOR_UPDATE
 
 
 /// The values `StandardsProvider` accepts on the wire.
-pub const STANDARDS_PROVIDER_VALUES: &[&str] = &["AWS", "Azure"];
+pub const STANDARDS_PROVIDER_VALUES: &[&str] = &["AWS", "Azure", "GCP"];
 
 
 /// The values `StandardsStatus` accepts on the wire.

@@ -455,11 +455,13 @@ async fn every_reported_definition_satisfies_the_modelled_constraints() {
     );
 }
 
-/// RULE: `Providers` selects the published controls whose `Provider` it names, and
-/// naming no provider constrains nothing.
+/// RULE: `Providers` selects the published controls whose `Provider` it names, naming no
+/// provider constrains nothing, and a modelled provider the catalog publishes no control
+/// for selects none rather than being refused.
 ///
 /// The table is driven by `SecurityControlsProvider`'s own value list, so every
-/// modelled provider is exercised, together with the empty filter and the full list.
+/// modelled provider is exercised — including one the published catalog holds no
+/// control for — together with the empty filter and the full list.
 #[tokio::test]
 async fn providers_selects_the_controls_of_the_providers_it_names() {
     let harness = Harness::subscribed("eu-central-1").await;
@@ -503,10 +505,23 @@ async fn providers_selects_the_controls_of_the_providers_it_names() {
             expected,
             "case {case:?}: expected {expected:?}, got {body}"
         );
-        assert!(
-            !expected.is_empty(),
-            "case {case:?}: every modelled provider must publish at least one control"
-        );
+        if expected.is_empty() {
+            // A provider the published catalog holds no control for selects none: the
+            // filter is a selection over the published catalog, not a refusal. The model
+            // declares a provider ahead of the published controls reference — its own
+            // `CreateConnector` documentation says the cloud-provider connector
+            // "Currently supports Azure" — so a declared provider with no control is a
+            // state this listing has to answer.
+            assert!(
+                returned_ids(&body).is_empty(),
+                "case {case:?}: a provider with no published control selects none, got {body}"
+            );
+        } else {
+            assert!(
+                !returned_ids(&body).is_empty(),
+                "case {case:?}: a provider with published controls must select them, got {body}"
+            );
+        }
     }
 
     // The unfiltered catalog is the union of the per-provider selections, so no
@@ -751,6 +766,16 @@ async fn out_of_range_and_unresolvable_inputs_are_refused() {
             .expect("a published standard"),
     );
 
+    // A cloud provider `SecurityControlsProvider` does not define, checked against the
+    // enum's own value list so that a model which adds a provider cannot turn this row
+    // into a request the service accepts.
+    const UNDEFINED_PROVIDER: &str = "OracleCloud";
+    assert!(
+        !SECURITY_CONTROLS_PROVIDER_VALUES.contains(&UNDEFINED_PROVIDER),
+        "{UNDEFINED_PROVIDER:?} must be a value SecurityControlsProvider does not define, \
+         got {SECURITY_CONTROLS_PROVIDER_VALUES:?}"
+    );
+
     let refused: [(&str, String); 6] = [
         ("MaxResults below the minimum", "MaxResults=0".to_string()),
         ("MaxResults above the maximum", "MaxResults=101".to_string()),
@@ -764,7 +789,7 @@ async fn out_of_range_and_unresolvable_inputs_are_refused() {
         ),
         (
             "a provider the enum does not define",
-            "Providers=GCP".to_string(),
+            format!("Providers={UNDEFINED_PROVIDER}"),
         ),
         (
             "a standard of another Region",

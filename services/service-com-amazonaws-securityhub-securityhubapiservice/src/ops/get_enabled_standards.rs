@@ -137,10 +137,6 @@ fn decode_next_token(token: &str) -> Option<usize> {
     crate::state::decode_list_token(NEXT_TOKEN_PREFIX, token)
 }
 
-/// Every `StandardsProvider` value the model declares (`smithy_query(query="shape",
-/// shape="StandardsProvider")`): the cloud providers `Providers` can filter by.
-const STANDARDS_PROVIDERS: [&str; 2] = ["AWS", "Azure"];
-
 /// The `GetEnabledStandards` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -202,9 +198,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // every hub.
         let providers = input.providers.clone().unwrap_or_default();
         for provider in &providers {
-            if !STANDARDS_PROVIDERS.contains(&provider.as_str()) {
+            // `STANDARDS_PROVIDER_VALUES` is the `StandardsProvider` enum's own value
+            // list, rendered from the model, so the accepted set is whatever the model
+            // declares rather than a list copied into this handler.
+            if !STANDARDS_PROVIDER_VALUES.contains(&provider.as_str()) {
                 return Err(invalid_input(format!(
-                    "Providers: {provider} is not a supported cloud provider"
+                    "Providers: {provider} is not a StandardsProvider; expected one of {}",
+                    STANDARDS_PROVIDER_VALUES.join(", ")
                 )));
             }
         }
