@@ -82,6 +82,9 @@ pub struct ScopeGate<Inner: Operation> {
     /// Reads the `Scope` member off this operation's own input, which only the service
     /// wiring the gate can name.
     scope_of: ScopeOf<Inner::Input>,
+    /// Whether this gate judges the scope VALUE as well as the endpoint; see
+    /// [`Self::judging_the_value`].
+    judges_value: bool,
 }
 
 impl<Inner: Operation> ScopeGate<Inner> {
@@ -91,6 +94,27 @@ impl<Inner: Operation> ScopeGate<Inner> {
         Self {
             operation,
             scope_of,
+            judges_value: false,
+        }
+    }
+
+    /// [`Self::over`] for an operation whose refusal for a value WAF READS as a scope
+    /// but will not act on is WAF's own bad-parameter refusal rather than the request
+    /// validator's value-set clause: the global namespace's own token
+    /// ([`crate::state::SCOPE_GLOBAL_NAMESPACE`]).
+    ///
+    /// The judgement is the shared one every scoped operation makes
+    /// ([`crate::service::requests::judge_scope`]), and it is made HERE because the
+    /// boundary walk runs every modelled constraint before the handler: the `Scope`
+    /// member is a modelled enum, so a value outside it is answered by the validator's
+    /// generic clause unless something ahead of that walk answers it first. A token WAF's
+    /// scope vocabulary does not carry at all is left to that walk, which states it in
+    /// the validator's own envelope — the answer WAF gives for it.
+    pub fn judging_the_value(operation: Inner, scope_of: ScopeOf<Inner::Input>) -> Self {
+        Self {
+            operation,
+            scope_of,
+            judges_value: true,
         }
     }
 
@@ -116,6 +140,17 @@ impl<Inner: Operation> ScopeGate<Inner> {
         drop(deserializer);
         let input = read.ok()?;
         let scope = (self.scope_of)(&input)?;
+        if self.judges_value {
+            // The whole judgement, value included ([`Self::judging_the_value`]): WAF's own
+            // parameter refusal is answered here, and the validator's value-set clause is
+            // left to the walk behind the gate.
+            return match crate::service::requests::judge_scope(scope, ctx.parts()) {
+                Err(crate::service::requests::ScopeRefusal::Parameter(refusal)) => {
+                    Some(self.answer(svc, req, &refusal))
+                }
+                Err(crate::service::requests::ScopeRefusal::Constraint(_)) | Ok(()) => None,
+            };
+        }
         let refusal = crate::service::requests::scope_served_here(scope, ctx.parts()).err()?;
         Some(self.answer(svc, req, &refusal))
     }

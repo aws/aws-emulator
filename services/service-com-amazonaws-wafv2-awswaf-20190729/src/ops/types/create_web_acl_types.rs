@@ -30,6 +30,7 @@ pub struct CreateWebACLInput {
     pub on_source_d_do_s_protection_config: Option<OnSourceDDoSProtectionConfig>,
     pub application_config: Option<ApplicationConfig>,
     pub monetization_config: Option<MonetizationConfig>,
+    pub analytics_config: Option<AnalyticsConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#CreateWebACLResponse")]

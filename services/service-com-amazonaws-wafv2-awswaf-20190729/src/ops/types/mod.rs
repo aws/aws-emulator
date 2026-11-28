@@ -35,6 +35,8 @@ pub mod describe_managed_rule_group_types;
 pub mod disassociate_web_acl_types;
 pub mod generate_mobile_sdk_release_url_types;
 pub mod get_decrypted_api_key_types;
+pub mod get_event_actor_types;
+pub mod get_event_types;
 pub mod get_ip_set_types;
 pub mod get_logging_configuration_types;
 pub mod get_managed_rule_set_types;
@@ -53,6 +55,9 @@ pub mod get_web_acl_types;
 pub mod list_api_keys_types;
 pub mod list_available_managed_rule_group_versions_types;
 pub mod list_available_managed_rule_groups_types;
+pub mod list_event_actors_types;
+pub mod list_events_by_web_acl_types;
+pub mod list_events_types;
 pub mod list_ip_sets_types;
 pub mod list_logging_configurations_types;
 pub mod list_managed_rule_sets_types;
@@ -118,6 +123,10 @@ pub use generate_mobile_sdk_release_url_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_decrypted_api_key_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_event_actor_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_event_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_ip_set_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_logging_configuration_types::*;
@@ -153,6 +162,12 @@ pub use list_api_keys_types::*;
 pub use list_available_managed_rule_group_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_available_managed_rule_groups_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_event_actors_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_events_by_web_acl_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_events_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_ip_sets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

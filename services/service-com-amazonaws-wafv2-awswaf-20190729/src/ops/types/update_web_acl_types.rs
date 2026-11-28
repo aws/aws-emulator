@@ -11,20 +11,7 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-wafv2-awswaf-20190729.json");
 
-// `skip_validation` names `Scope`: WAF refuses a scope value its `Scope` enum does not
-// declare as an invalid WAF PARAMETER — `WAFInvalidParameterException` carrying `Field`
-// SCOPE_VALUE, the offending value in `Parameter` and the scope reason — rather than as
-// a generic enum-constraint violation, and the boundary walk runs every modelled
-// constraint before the handler, so leaving the enum there answers the generic one. The
-// handler judges the value instead, against the same two conditions every scoped
-// operation judges it against, split by which of the two refusals WAF answers for an
-// undeclared value (`crate::service::requests::judge_scope`, which delegates the two
-// conditions to the shared `validate_scope`). Every other member keeps its boundary
-// check.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.wafv2#UpdateWebACLRequest",
-    skip_validation = ["Scope"]
-)]
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#UpdateWebACLRequest")]
 #[derive(Debug, Clone, Default)]
 pub struct UpdateWebACLInput {
     pub name: String,
@@ -44,6 +31,7 @@ pub struct UpdateWebACLInput {
     pub on_source_d_do_s_protection_config: Option<OnSourceDDoSProtectionConfig>,
     pub application_config: Option<ApplicationConfig>,
     pub monetization_config: Option<MonetizationConfig>,
+    pub analytics_config: Option<AnalyticsConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#UpdateWebACLResponse")]

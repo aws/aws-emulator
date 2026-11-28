@@ -55,6 +55,9 @@
 //! `LoggingConfiguration` names, which is the other channel a web ACL reports on itself
 //! through.
 
+/// What WAF's API SECURITY analysis makes of the traffic a web ACL inspected: the
+/// events and the event actors its own reports answer with.
+pub mod api_security;
 /// The CloudFront distributions a web ACL is in front of, which — alone among the
 /// protected resources — are bound in the DISTRIBUTION's own configuration rather than
 /// here, so only CloudFront can report them.
@@ -125,6 +128,27 @@ macro_rules! gate_required_scope {
     };
 }
 
+/// [`gate_required_scope`] for an operation whose handler judges the scope VALUE itself —
+/// the refusal for the global namespace's own token is WAF's bad-parameter one rather than
+/// the request validator's value-set clause ([`ScopeGate::judging_the_value`]).
+///
+/// It is the gate rather than the operation's input declaration that makes this judgement,
+/// because the input declaration is rendered from the model and is rewritten by every
+/// model update, while this wiring is this file's own.
+macro_rules! gate_judged_scope {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                ::std::boxed::Box::new(ScopeGate::judging_the_value(
+                    crate::ops::$module::$operation::new(Arc::clone(&$engine)),
+                    |input| Some(input.scope.as_str()),
+                )) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
+    };
+}
+
 /// [`gate_required_scope`] for the operations whose `Scope` is optional because the
 /// request may address its target by ARN instead, which carries the namespace itself:
 /// a request that names no scope names no namespace for the gate to judge.
@@ -172,6 +196,8 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             describe_managed_products_by_vendor::DescribeManagedProductsByVendor,
             describe_managed_rule_group::DescribeManagedRuleGroup,
             get_decrypted_api_key::GetDecryptedAPIKey,
+            get_event::GetEvent,
+            get_event_actor::GetEventActor,
             get_ip_set::GetIPSet,
             get_managed_rule_set::GetManagedRuleSet,
             get_rate_based_statement_managed_keys::GetRateBasedStatementManagedKeys,
@@ -182,6 +208,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             list_api_keys::ListAPIKeys,
             list_available_managed_rule_group_versions::ListAvailableManagedRuleGroupVersions,
             list_available_managed_rule_groups::ListAvailableManagedRuleGroups,
+            list_event_actors::ListEventActors,
+            list_events::ListEvents,
+            list_events_by_web_acl::ListEventsByWebACL,
             list_ip_sets::ListIPSets,
             list_logging_configurations::ListLoggingConfigurations,
             list_managed_rule_sets::ListManagedRuleSets,
@@ -193,8 +222,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             update_managed_rule_set_version_expiry_date::UpdateManagedRuleSetVersionExpiryDate,
             update_regex_pattern_set::UpdateRegexPatternSet,
             update_rule_group::UpdateRuleGroup,
-            update_web_acl::UpdateWebACL,
         );
+        // `UpdateWebACL` judges the scope VALUE as well: the global namespace's own token
+        // is WAF's own bad-parameter refusal there, which the handler words from
+        // `Field`/`Parameter`/`Reason`, so it must be answered ahead of the boundary's
+        // generic enum clause. The two sibling web ACL operations that answer the same
+        // way (`GetWebACL`, `ListWebACLs`) take the scope optionally and are wired below.
+        gate_judged_scope!(gated, engine, update_web_acl::UpdateWebACL);
         // `ListWebACLs` is gated here rather than above although its model marks `Scope`
         // `@required`: it reads its input through `ListWebACLsWireInput`, which keeps an
         // absent scope as the absence it is so the handler can report the omission against

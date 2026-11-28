@@ -552,6 +552,7 @@ pub struct ManagedRuleGroupConfig {
     pub aws_managed_rules_atp_rule_set: Option<AWSManagedRulesATPRuleSet>,
     pub aws_managed_rules_acfp_rule_set: Option<AWSManagedRulesACFPRuleSet>,
     pub aws_managed_rules_anti_d_do_s_rule_set: Option<AWSManagedRulesAntiDDoSRuleSet>,
+    pub aws_managed_rules_ai_security_rule_set: Option<AWSManagedRulesAISecurityRuleSet>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#UsernameField")]
@@ -693,6 +694,37 @@ pub struct ClientSideAction {
 #[derive(Debug, Clone, Default)]
 pub struct Regex {
     pub regex_string: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#AWSManagedRulesAISecurityRuleSet")]
+#[derive(Debug, Clone, Default)]
+pub struct AWSManagedRulesAISecurityRuleSet {
+    pub bedrock_guardrails: BedrockGuardrails,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#BedrockGuardrails")]
+#[derive(Debug, Clone, Default)]
+pub struct BedrockGuardrails {
+    pub disable: Option<DisableBedrockGuardrails>,
+    pub protect_request_only: Option<BedrockGuardrailsRequestOnly>,
+    pub protect_request_and_response: Option<BedrockGuardrailsRequestAndResponse>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#DisableBedrockGuardrails")]
+#[derive(Debug, Clone, Default)]
+pub struct DisableBedrockGuardrails {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#BedrockGuardrailsRequestOnly")]
+#[derive(Debug, Clone, Default)]
+pub struct BedrockGuardrailsRequestOnly {
+    pub role_arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#BedrockGuardrailsRequestAndResponse")]
+#[derive(Debug, Clone, Default)]
+pub struct BedrockGuardrailsRequestAndResponse {
+    pub role_arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#LabelMatchStatement")]
@@ -841,15 +873,9 @@ pub struct CustomResponseBody {
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#MonetizationConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct MonetizationConfig {
-    pub connected_account_configs: Option<Vec<ConnectedAccountConfig>>,
     pub crypto_config: Option<CryptoConfig>,
+    pub connected_account_configs: Option<Vec<ConnectedAccountConfig>>,
     pub currency_mode: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ConnectedAccountConfig")]
-#[derive(Debug, Clone, Default)]
-pub struct ConnectedAccountConfig {
-    pub connected_account_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#CryptoConfig")]
@@ -869,6 +895,27 @@ pub struct PaymentNetwork {
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#Price")]
 #[derive(Debug, Clone, Default)]
 pub struct Price {
+    pub amount: String,
+    pub currency: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ConnectedAccountConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ConnectedAccountConfig {
+    pub connected_account_arn: String,
+    pub payment_networks: Vec<ConnectedAccountChainConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ConnectedAccountChainConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ConnectedAccountChainConfig {
+    pub chain: String,
+    pub prices: Vec<ConnectedAccountPrice>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ConnectedAccountPrice")]
+#[derive(Debug, Clone, Default)]
+pub struct ConnectedAccountPrice {
     pub amount: String,
     pub currency: String,
 }
@@ -915,26 +962,19 @@ pub struct FieldToProtect {
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#AssociationConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct AssociationConfig {
-    /// The resource types WAF injects the challenge JavaScript SDK into the responses
-    /// of, keyed by `AssociatedResourceType`; added to the on-disk model from the
-    /// recorded AWS responses, which accept the member on a save and answer it back
-    /// under `WebACL$AssociationConfig` with the keys the save carried.
-    pub challenge_javascript_sdk_injection:
-        Option<std::collections::HashMap<String, JavascriptSdkInjectionConfig>>,
     pub request_body: Option<std::collections::HashMap<String, RequestBodyAssociatedResourceTypeConfig>>,
+    pub challenge_javascript_sdk_injection: Option<std::collections::HashMap<String, ChallengeJavascriptSdkInjectionConfig>>,
 }
-
-/// One associated resource type's JavaScript-SDK injection settings, the value of an
-/// [`AssociationConfig::challenge_javascript_sdk_injection`] entry; added to the on-disk
-/// model from the recorded AWS responses, which carry it as an empty object.
-#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#JavascriptSdkInjectionConfig")]
-#[derive(Debug, Clone, Default)]
-pub struct JavascriptSdkInjectionConfig {}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#RequestBodyAssociatedResourceTypeConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct RequestBodyAssociatedResourceTypeConfig {
     pub default_size_inspection_limit: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ChallengeJavascriptSdkInjectionConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct ChallengeJavascriptSdkInjectionConfig {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#OnSourceDDoSProtectionConfig")]
@@ -954,6 +994,12 @@ pub struct ApplicationConfig {
 pub struct ApplicationAttribute {
     pub name: Option<String>,
     pub values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#AnalyticsConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct AnalyticsConfig {
+    pub mode: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#WebACLSummary")]
@@ -996,6 +1042,56 @@ pub struct ManagedProductDescriptor {
 #[derive(Debug, Clone, Default)]
 pub struct LabelSummary {
     pub name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#EventDetailSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct EventDetailSummary {
+    pub event_id: String,
+    pub event_status: Option<String>,
+    pub event_category: Option<String>,
+    pub start_time: Option<::aws_smithy_types::DateTime>,
+    pub last_updated_time: Option<::aws_smithy_types::DateTime>,
+    pub end_time: Option<::aws_smithy_types::DateTime>,
+    pub resource_arn: Option<String>,
+    pub web_acl_arn: Option<String>,
+    pub api_security_event_detail: Option<ApiSecurityEventDetail>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ApiSecurityEventDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct ApiSecurityEventDetail {
+    pub label: Option<String>,
+    pub category: Option<String>,
+    pub confidence: Option<String>,
+    pub api_patterns: Option<Vec<ApiPattern>>,
+    pub event_actors: Option<Vec<EventActorReference>>,
+    pub timeline: Option<Vec<EventTimelineEntry>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ApiPattern")]
+#[derive(Debug, Clone, Default)]
+pub struct ApiPattern {
+    pub method: Option<String>,
+    pub path_pattern: Option<String>,
+    pub port: i32,
+    pub domains: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#EventActorReference")]
+#[derive(Debug, Clone, Default)]
+pub struct EventActorReference {
+    pub event_actor_id: Option<String>,
+    pub event_actor_value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#EventTimelineEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct EventTimelineEntry {
+    pub change_time: Option<::aws_smithy_types::DateTime>,
+    pub label: Option<String>,
+    pub confidence: Option<String>,
+    pub api_patterns: Option<Vec<ApiPattern>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#LoggingConfiguration")]
@@ -1083,6 +1179,7 @@ pub struct WebACL {
     pub on_source_d_do_s_protection_config: Option<OnSourceDDoSProtectionConfig>,
     pub application_config: Option<ApplicationConfig>,
     pub monetization_config: Option<MonetizationConfig>,
+    pub analytics_config: Option<AnalyticsConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wafv2#FirewallManagerRuleGroup")]
@@ -1102,12 +1199,32 @@ pub struct FirewallManagerStatement {
     pub rule_group_reference_statement: Option<RuleGroupReferenceStatement>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#EventFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct EventFilter {
+    pub name: String,
+    pub values: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wafv2#ApiPatternFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct ApiPatternFilter {
+    pub method: Option<String>,
+    pub path_pattern: Option<String>,
+    pub port: i32,
+    pub domains: Option<Vec<String>>,
+}
+
 /// The values `ActionValue` accepts on the wire.
 pub const ACTION_VALUE_VALUES: &[&str] = &["ALLOW", "BLOCK", "CAPTCHA", "CHALLENGE", "COUNT", "EXCLUDED_AS_COUNT", "MONETIZE"];
 
 
+/// The values `AnalyticsMode` accepts on the wire.
+pub const ANALYTICS_MODE_VALUES: &[&str] = &["CROSS_REGION", "DISABLED"];
+
+
 /// The values `AssociatedResourceType` accepts on the wire.
-pub const ASSOCIATED_RESOURCE_TYPE_VALUES: &[&str] = &["AGENTCORE_GATEWAY", "API_GATEWAY", "APP_RUNNER_SERVICE", "CLOUDFRONT", "COGNITO_USER_POOL", "VERIFIED_ACCESS_INSTANCE"];
+pub const ASSOCIATED_RESOURCE_TYPE_VALUES: &[&str] = &["AGENTCORE_GATEWAY", "API_GATEWAY", "APPLICATION_LOAD_BALANCER", "APP_RUNNER_SERVICE", "CLOUDFRONT", "COGNITO_USER_POOL", "ELB_PROXY", "VERIFIED_ACCESS_INSTANCE"];
 
 
 /// The values `BlockchainChain` accepts on the wire.
@@ -1120,6 +1237,14 @@ pub const BODY_PARSING_FALLBACK_BEHAVIOR_VALUES: &[&str] = &["EVALUATE_AS_STRING
 
 /// The values `ComparisonOperator` accepts on the wire.
 pub const COMPARISON_OPERATOR_VALUES: &[&str] = &["EQ", "GE", "GT", "LE", "LT", "NE"];
+
+
+/// The values `Confidence` accepts on the wire.
+pub const CONFIDENCE_VALUES: &[&str] = &["HIGH", "LOW", "MEDIUM"];
+
+
+/// The values `ConnectedAccountChain` accepts on the wire.
+pub const CONNECTED_ACCOUNT_CHAIN_VALUES: &[&str] = &["BASE", "SOLANA"];
 
 
 /// The values `CountryCode` accepts on the wire.
@@ -1140,6 +1265,30 @@ pub const CURRENCY_MODE_VALUES: &[&str] = &["REAL", "TEST"];
 
 /// The values `DataProtectionAction` accepts on the wire.
 pub const DATA_PROTECTION_ACTION_VALUES: &[&str] = &["HASH", "SUBSTITUTION"];
+
+
+/// The values `EventActorSortBy` accepts on the wire.
+pub const EVENT_ACTOR_SORT_BY_VALUES: &[&str] = &["EVENT_COUNT"];
+
+
+/// The values `EventCategory` accepts on the wire.
+pub const EVENT_CATEGORY_VALUES: &[&str] = &["API_SECURITY"];
+
+
+/// The values `EventFilterKey` accepts on the wire.
+pub const EVENT_FILTER_KEY_VALUES: &[&str] = &["EVENT_CATEGORY", "RESOURCE_ARN"];
+
+
+/// The values `EventIncludeField` accepts on the wire.
+pub const EVENT_INCLUDE_FIELD_VALUES: &[&str] = &["TIMELINE"];
+
+
+/// The values `EventSortBy` accepts on the wire.
+pub const EVENT_SORT_BY_VALUES: &[&str] = &["CONFIDENCE", "END_TIME", "START_TIME"];
+
+
+/// The values `EventStatus` accepts on the wire.
+pub const EVENT_STATUS_VALUES: &[&str] = &["EVENT_COMPLETED", "EVENT_ENDED", "EVENT_IN_PROGRESS", "EVENT_STARTED"];
 
 
 /// The values `FailureReason` accepts on the wire.
@@ -1211,7 +1360,7 @@ pub const OVERSIZE_HANDLING_VALUES: &[&str] = &["CONTINUE", "MATCH", "NO_MATCH"]
 
 
 /// The values `ParameterExceptionField` accepts on the wire.
-pub const PARAMETER_EXCEPTION_FIELD_VALUES: &[&str] = &["ACP_RULE_SET_RESPONSE_INSPECTION", "AND_STATEMENT", "ASSOCIABLE_RESOURCE", "ASSOCIATED_RESOURCE_TYPE", "ATP_RULE_SET_RESPONSE_INSPECTION", "BODY_PARSING_FALLBACK_BEHAVIOR", "BYTE_MATCH_STATEMENT", "CHALLENGE_CONFIG", "CHANGE_PROPAGATION_STATUS", "COOKIE_MATCH_PATTERN", "CUSTOM_KEYS", "CUSTOM_REQUEST_HANDLING", "CUSTOM_RESPONSE", "CUSTOM_RESPONSE_BODY", "DATA_PROTECTION_CONFIG", "DEFAULT_ACTION", "ENTITY_LIMIT", "EXCLUDED_RULE", "EXPIRE_TIMESTAMP", "FALLBACK_BEHAVIOR", "FIELD_TO_MATCH", "FILTER_CONDITION", "FIREWALL_MANAGER_STATEMENT", "FORWARDED_IP_CONFIG", "GEO_MATCH_STATEMENT", "HEADER_MATCH_PATTERN", "HEADER_NAME", "IP_ADDRESS", "IP_ADDRESS_VERSION", "IP_SET", "IP_SET_FORWARDED_IP_CONFIG", "IP_SET_REFERENCE_STATEMENT", "JSON_MATCH_PATTERN", "JSON_MATCH_SCOPE", "LABEL_MATCH_STATEMENT", "LOGGING_FILTER", "LOG_DESTINATION", "LOW_REPUTATION_MODE", "MANAGED_RULE_GROUP_CONFIG", "MANAGED_RULE_SET", "MANAGED_RULE_SET_STATEMENT", "MAP_MATCH_SCOPE", "METRIC_NAME", "MONETIZATION_CONFIG", "NOT_STATEMENT", "OR_STATEMENT", "OVERRIDE_ACTION", "OVERSIZE_HANDLING", "PAYLOAD_TYPE", "PAYMENT_NETWORK", "POSITION", "PRE_PARSE_TEXT_TRANSFORMATION", "PRICE_AMOUNT", "RATE_BASED_STATEMENT", "REGEX_PATTERN_REFERENCE_STATEMENT", "REGEX_PATTERN_SET", "RESOURCE_ARN", "RESOURCE_TYPE", "RESPONSE_CONTENT_TYPE", "RULE", "RULE_ACTION", "RULE_GROUP", "RULE_GROUP_REFERENCE_STATEMENT", "SCOPE_DOWN", "SCOPE_VALUE", "SINGLE_HEADER", "SINGLE_QUERY_ARGUMENT", "SIZE_CONSTRAINT_STATEMENT", "SQLI_MATCH_STATEMENT", "STATEMENT", "TAGS", "TAG_KEYS", "TEXT_TRANSFORMATION", "TOKEN_DOMAIN", "WALLET_ADDRESS", "WEB_ACL", "XSS_MATCH_STATEMENT"];
+pub const PARAMETER_EXCEPTION_FIELD_VALUES: &[&str] = &["ACP_RULE_SET_RESPONSE_INSPECTION", "AND_STATEMENT", "ASSOCIABLE_RESOURCE", "ASSOCIATED_RESOURCE_TYPE", "ATP_RULE_SET_RESPONSE_INSPECTION", "BEDROCK_GUARDRAILS", "BODY_PARSING_FALLBACK_BEHAVIOR", "BYTE_MATCH_STATEMENT", "CHALLENGE_CONFIG", "CHALLENGE_JAVASCRIPT_SDK_INJECTION_CONFIG", "CHANGE_PROPAGATION_STATUS", "COOKIE_MATCH_PATTERN", "CUSTOM_KEYS", "CUSTOM_REQUEST_HANDLING", "CUSTOM_RESPONSE", "CUSTOM_RESPONSE_BODY", "DATA_PROTECTION_CONFIG", "DEFAULT_ACTION", "ENTITY_LIMIT", "EXCLUDED_RULE", "EXPIRE_TIMESTAMP", "FALLBACK_BEHAVIOR", "FIELD_TO_MATCH", "FILTER_CONDITION", "FIREWALL_MANAGER_STATEMENT", "FORWARDED_IP_CONFIG", "GEO_MATCH_STATEMENT", "HEADER_MATCH_PATTERN", "HEADER_NAME", "IP_ADDRESS", "IP_ADDRESS_VERSION", "IP_SET", "IP_SET_FORWARDED_IP_CONFIG", "IP_SET_REFERENCE_STATEMENT", "JSON_MATCH_PATTERN", "JSON_MATCH_SCOPE", "LABEL_MATCH_STATEMENT", "LOGGING_FILTER", "LOG_DESTINATION", "LOW_REPUTATION_MODE", "MANAGED_RULE_GROUP_CONFIG", "MANAGED_RULE_SET", "MANAGED_RULE_SET_STATEMENT", "MAP_MATCH_SCOPE", "METRIC_NAME", "MONETIZATION_CONFIG", "NOT_STATEMENT", "OR_STATEMENT", "OVERRIDE_ACTION", "OVERSIZE_HANDLING", "PAYLOAD_TYPE", "PAYMENT_NETWORK", "POSITION", "PRE_PARSE_TEXT_TRANSFORMATION", "PRICE_AMOUNT", "RATE_BASED_STATEMENT", "REGEX_PATTERN_REFERENCE_STATEMENT", "REGEX_PATTERN_SET", "RESOURCE_ARN", "RESOURCE_TYPE", "RESPONSE_CONTENT_TYPE", "ROLE_ARN", "RULE", "RULE_ACTION", "RULE_GROUP", "RULE_GROUP_REFERENCE_STATEMENT", "SCOPE_DOWN", "SCOPE_VALUE", "SINGLE_HEADER", "SINGLE_QUERY_ARGUMENT", "SIZE_CONSTRAINT_STATEMENT", "SQLI_MATCH_STATEMENT", "STATEMENT", "TAGS", "TAG_KEYS", "TEXT_TRANSFORMATION", "TOKEN_DOMAIN", "WALLET_ADDRESS", "WEB_ACL", "XSS_MATCH_STATEMENT"];
 
 
 /// The values `PayloadType` accepts on the wire.
@@ -1243,7 +1392,7 @@ pub const RATE_BASED_STATEMENT_AGGREGATE_KEY_TYPE_VALUES: &[&str] = &["CONSTANT"
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["AGENTCORE_GATEWAY", "AMPLIFY", "API_GATEWAY", "APPLICATION_LOAD_BALANCER", "APPSYNC", "APP_RUNNER_SERVICE", "COGNITO_USER_POOL", "VERIFIED_ACCESS_INSTANCE"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["AGENTCORE_GATEWAY", "AMPLIFY", "API_GATEWAY", "APPLICATION_LOAD_BALANCER", "APPSYNC", "APP_RUNNER_SERVICE", "COGNITO_USER_POOL", "ELB_PROXY", "VERIFIED_ACCESS_INSTANCE"];
 
 
 /// The values `ResponseContentType` accepts on the wire.
@@ -1271,7 +1420,7 @@ pub const SETTLEMENT_STATUS_VALUES: &[&str] = &["DUPLICATE", "FAILED", "PENDING"
 
 
 /// The values `SizeInspectionLimit` accepts on the wire.
-pub const SIZE_INSPECTION_LIMIT_VALUES: &[&str] = &["KB_16", "KB_32", "KB_48", "KB_64"];
+pub const SIZE_INSPECTION_LIMIT_VALUES: &[&str] = &["KB_16", "KB_32", "KB_48", "KB_64", "KB_8"];
 
 
 /// The values `SortOrder` accepts on the wire.

@@ -16,14 +16,17 @@
 //! NO connected account is stored and reads back verbatim, whatever else the request
 //! carries.
 //!
-//! The rows differ along what the rule generalises over: the ARN FORM a configuration
-//! carries (partition, region — including the empty one of a partition-global resource —
-//! account, resource-id spelling, and both the `type/id` and `type:id` resource forms),
-//! HOW MANY accounts the configuration names and which of them resolves, what else the
-//! configuration carries beside them, and WHICH of the four saving operations is asked —
-//! a create and an update, of a web ACL and of a rule group. The complement rows are
+//! The rows differ along what the rule generalises over: how the reference is addressed
+//! inside the form `ConnectedAccountArn` pins (the partition, the account, and the
+//! spelling of the account name), the pricing the entry carries — how many of the two
+//! networks and the price amounts at both published bounds — what the configuration
+//! carries beside the entry, and WHICH of the four saving operations is asked — a create
+//! and an update, of a web ACL and of a rule group. The complement rows are
 //! configurations that name no account at all, including requests that carry a Payments
-//! ARN in a member that has nothing to do with settlement, which are created normally.
+//! ARN in a member that has nothing to do with settlement, which are created normally;
+//! and the refusals that are NOT the resolution's are spanned too — a partition connected
+//! accounts are not available in, and a configuration the model's own bounds do not
+//! allow.
 //!
 //! Every call goes through the same front door a real client uses (the `Waf` harness in
 //! [`crate::web_acl_lifecycle`]), so what these tests observe is what an SDK observes.
@@ -78,28 +81,65 @@ fn crypto_config() -> Value {
     })
 }
 
-/// One row: a `MonetizationConfig` whose `ConnectedAccountConfigs` name accounts, and how
-/// those references are written.
+/// A connected-account ARN of the form `ConnectedAccountArn` pins:
+/// `^arn:aws(-[a-z]+)*:payments::[0-9]{12}:connectedaccount/[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}-[A-Za-z0-9]{6}$`
+/// (`smithy_query(query="shape",shape="ConnectedAccountArn")`), in `partition` and for the
+/// account `account`, naming the account `name`.
+fn connected_account_arn(partition: &str, account: &str, name: &str) -> String {
+    format!("arn:{partition}:payments::{account}:connectedaccount/{name}")
+}
+
+/// One per-network configuration of a connected account: the chain and the one price
+/// entry `ConnectedAccountChainConfig$Prices` allows ("currently supports a single price
+/// entry in USDC"), in the currency `CryptoCurrency` declares.
+fn connected_account_network(chain: &str, amount: &str) -> Value {
+    json!({
+        "Chain": chain,
+        "Prices": [{ "Amount": amount, "Currency": "USDC" }],
+    })
+}
+
+/// One row: a `MonetizationConfig` whose `ConnectedAccountConfigs` names an account, and
+/// how that reference and its pricing are written.
 struct ConnectedAccountRow {
     case: &'static str,
     config: Value,
 }
 
-/// The ARN forms a connected-account configuration can carry, each written into a
-/// monetization configuration that differs in what it carries beside them.
+/// The connected-account configurations a save can carry, each written into a
+/// monetization configuration that differs in what it carries beside it.
 ///
-/// Every value is `ResourceArn` (`@length(20..2048)`, `@pattern \S`:
-/// `smithy_query(query="shape",shape="ResourceArn")`), which is what
-/// `ConnectedAccountConfig$ConnectedAccountArn` targets, so each row reaches the
-/// precondition rather than the request validator.
+/// `ConnectedAccountConfigs` is `length(1..1)` — "currently supports exactly one
+/// connected account" — and an entry carries both `ConnectedAccountArn` and
+/// `PaymentNetworks` `@required`, the latter `length(1..2)` ("you can specify 1 to 2
+/// networks"), so the rows differ along what the model leaves open: the partition and the
+/// account the reference is addressed in, the spelling of the account name inside the
+/// published pattern, how many networks the entry prices and which chains they are
+/// (`ConnectedAccountChain` → `BASE`, `SOLANA`), the price amounts at both published
+/// bounds ("valid values range from 0.01 to 999999.99 USDC"), and what the configuration
+/// carries beside the entry.
 fn connected_account_rows() -> Vec<ConnectedAccountRow> {
     vec![
         ConnectedAccountRow {
-            case: "one account, alone on the configuration",
+            case: "one account on one network, at the lowest price allowed",
             config: json!({
                 "ConnectedAccountConfigs": [{
                     "ConnectedAccountArn":
-                        "arn:aws:payments:us-east-1:000000000000:connected-account/acct-1",
+                        connected_account_arn("aws", "000000000000", "acct-ABC123"),
+                    "PaymentNetworks": [connected_account_network("BASE", "0.01")],
+                }],
+            }),
+        },
+        ConnectedAccountRow {
+            case: "one account on both networks, at the highest price allowed",
+            config: json!({
+                "ConnectedAccountConfigs": [{
+                    "ConnectedAccountArn":
+                        connected_account_arn("aws", "111122223333", "payments_acct_01-a1B2c3"),
+                    "PaymentNetworks": [
+                        connected_account_network("BASE", "999999.99"),
+                        connected_account_network("SOLANA", "12.50"),
+                    ],
                 }],
             }),
         },
@@ -109,69 +149,41 @@ fn connected_account_rows() -> Vec<ConnectedAccountRow> {
                 let mut config = crypto_config();
                 config["ConnectedAccountConfigs"] = json!([{
                     "ConnectedAccountArn":
-                        "arn:aws:payments:us-east-1:111122223333:connected-account/\
-                         8f1d2c3b4a5e6f70",
+                        connected_account_arn("aws", "210987654321", "8f1d2c3b4a5e6f70-Zz9900"),
+                    // The crypto configuration above prices BASE, and "a given
+                    // blockchain network (chain) can be used by only one of them"
+                    // (`MonetizationConfig$ConnectedAccountConfigs`), so this prices the
+                    // other network.
+                    "PaymentNetworks": [connected_account_network("SOLANA", "0.25")],
                 }]);
                 config
             },
         },
         ConnectedAccountRow {
-            case: "an ARN of the type:id resource form, beside the currency mode",
-            config: json!({
-                "CurrencyMode": "TEST",
-                "ConnectedAccountConfigs": [{
-                    "ConnectedAccountArn":
-                        "arn:aws:payments:eu-west-1:210987654321:connected-account:acct_T",
-                }],
-            }),
-        },
-        ConnectedAccountRow {
-            case: "an ARN of another partition with no region",
-            config: json!({
-                "ConnectedAccountConfigs": [{
-                    "ConnectedAccountArn":
-                        "arn:aws-us-gov:payments::000000000000:connected-account/gov-1",
-                }],
-            }),
-        },
-        ConnectedAccountRow {
-            case: "an ARN naming another service's resource",
-            config: json!({
-                "ConnectedAccountConfigs": [{
-                    "ConnectedAccountArn":
-                        "arn:aws:wafv2:ap-southeast-2:000000000000:global/webacl/none/0",
-                }],
-            }),
-        },
-        ConnectedAccountRow {
-            case: "two accounts, the second of which is the one that resolves to nothing",
+            case: "an account name at the long end of the published pattern",
             config: json!({
                 "CurrencyMode": "REAL",
-                "ConnectedAccountConfigs": [
-                    { "ConnectedAccountArn":
-                        "arn:aws:payments:us-east-1:000000000000:connected-account/first" },
-                    { "ConnectedAccountArn":
-                        "arn:aws:payments:us-east-1:000000000000:connected-account/second" },
-                ],
-            }),
-        },
-        ConnectedAccountRow {
-            case: "an account beside a configuration entry that names none",
-            config: json!({
-                "ConnectedAccountConfigs": [
-                    {},
-                    { "ConnectedAccountArn":
-                        "arn:aws:payments:ap-south-1:000000000000:connected-account/only" },
-                ],
+                "ConnectedAccountConfigs": [{
+                    "ConnectedAccountArn": connected_account_arn(
+                        "aws",
+                        "000000000000",
+                        "a0123456789012345678901234567890123456789012345678901234567890b-Q7q7Q7",
+                    ),
+                    "PaymentNetworks": [connected_account_network("SOLANA", "3")],
+                }],
             }),
         },
     ]
 }
 
 /// A `MonetizationConfig` that names NO connected account, by row: the well-formed
-/// configuration, the currency mode alone, a testnet network, an empty list of
-/// connected-account configurations and a configuration entry that names no account —
-/// none of them names an account, so none engages the precondition.
+/// configuration, the currency mode alone and a testnet network — none of them names an
+/// account, so none engages the precondition.
+///
+/// A configuration carrying an EMPTY `ConnectedAccountConfigs`, or an entry that names no
+/// account, is not among them: the model bounds the list at `length(1..1)` and marks both
+/// members of an entry `@required`, so each of those is a member-constraint failure
+/// ([`a_connected_account_configuration_the_model_does_not_allow_is_refused`]).
 fn unreferencing_rows() -> Vec<(&'static str, Value)> {
     vec![
         ("a well-formed crypto configuration", crypto_config()),
@@ -188,14 +200,6 @@ fn unreferencing_rows() -> Vec<(&'static str, Value)> {
                 },
                 "CurrencyMode": "TEST",
             }),
-        ),
-        (
-            "an empty list of connected-account configurations",
-            json!({ "CurrencyMode": "REAL", "ConnectedAccountConfigs": [] }),
-        ),
-        (
-            "a connected-account configuration that names no account",
-            json!({ "ConnectedAccountConfigs": [{}] }),
         ),
     ]
 }
@@ -619,6 +623,143 @@ async fn a_regional_save_naming_a_connected_account_is_refused_for_the_namespace
             body["Message"]
         );
         let stored = names_in_scope(&waf, "ListWebACLs", "WebACLs", REGIONAL_SCOPE).await;
+        assert!(
+            !stored.contains(&acl_name),
+            "case {case:?}: a refused create must store no web ACL, got {stored:?}"
+        );
+    }
+}
+
+/// A reference that is well formed but names a partition connected accounts are not
+/// available in is the PARAMETER refusal, not the resolution's.
+///
+/// `ConnectedAccountConfig`'s own doc states both halves: "connected accounts are
+/// available only in the commercial Amazon Web Services partition", and a request that
+/// references one is rejected "with `WAFInvalidParameterException` if the ARN is invalid
+/// or the partition is unsupported" — a different answer from the
+/// `WAFNonexistentItemException` an addressable account that does not exist earns, so a
+/// caller can tell a reference WAF cannot address from one it resolved and did not find.
+///
+/// The rows are the partitions the member's own pattern admits besides the commercial
+/// one (`^arn:aws(-[a-z]+)*:payments::…`), on a reference that is otherwise exactly the
+/// form the pattern pins.
+#[tokio::test]
+async fn a_reference_outside_the_commercial_partition_is_a_parameter_refusal() {
+    let waf = Waf::new();
+
+    for (index, partition) in ["aws-us-gov", "aws-cn", "aws-iso-b"].iter().enumerate() {
+        let acl_name = format!("partition-connected-acl-{index}");
+        let case = format!("CreateWebACL naming the {partition} partition");
+        let (status, body) = waf
+            .call(
+                "CreateWebACL",
+                json!({
+                    "Name": &acl_name,
+                    "Scope": MONETIZED_SCOPE,
+                    "DefaultAction": { "Allow": {} },
+                    "VisibilityConfig": visibility(&acl_name),
+                    "MonetizationConfig": {
+                        "ConnectedAccountConfigs": [{
+                            "ConnectedAccountArn": connected_account_arn(
+                                partition,
+                                "000000000000",
+                                "acct-ABC123",
+                            ),
+                            "PaymentNetworks": [connected_account_network("BASE", "0.01")],
+                        }],
+                    },
+                }),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected the save to be refused with 400, got status {status} \
+             and body {body}"
+        );
+        let code = body["__type"].as_str().unwrap_or_default();
+        assert!(
+            code.ends_with("WAFInvalidParameterException"),
+            "case {case:?}: expected the parameter refusal for an unsupported partition, \
+             got {code:?} in body {body}"
+        );
+        let stored = names_in_scope(&waf, "ListWebACLs", "WebACLs", MONETIZED_SCOPE).await;
+        assert!(
+            !stored.contains(&acl_name),
+            "case {case:?}: a refused create must store no web ACL, got {stored:?}"
+        );
+    }
+}
+
+/// A `ConnectedAccountConfigs` the model does not allow is refused as the member
+/// constraint it is, before any resolution and before anything is written.
+///
+/// The rows span the bounds the model declares for the list and its entries: no entry at
+/// all and two entries against `length(1..1)` ("currently supports exactly one connected
+/// account"), an entry that leaves out either `@required` member, and a `PaymentNetworks`
+/// that is empty or holds three networks against its `length(1..2)` ("you can specify 1
+/// to 2 networks").
+#[tokio::test]
+async fn a_connected_account_configuration_the_model_does_not_allow_is_refused() {
+    let waf = Waf::new();
+    let arn = connected_account_arn("aws", "000000000000", "acct-ABC123");
+    let network = connected_account_network("BASE", "0.01");
+    let entry = json!({ "ConnectedAccountArn": &arn, "PaymentNetworks": [&network] });
+
+    // `(case, the ConnectedAccountConfigs the save carries)`.
+    let cases: Vec<(&str, Value)> = vec![
+        ("no entry at all", json!([])),
+        ("two entries", json!([&entry, &entry])),
+        (
+            "an entry naming no account",
+            json!([{ "PaymentNetworks": [&network] }]),
+        ),
+        (
+            "an entry pricing no network",
+            json!([{ "ConnectedAccountArn": &arn }]),
+        ),
+        (
+            "an entry whose network list is empty",
+            json!([{ "ConnectedAccountArn": &arn, "PaymentNetworks": [] }]),
+        ),
+        (
+            "an entry pricing three networks",
+            json!([{
+                "ConnectedAccountArn": &arn,
+                "PaymentNetworks": [
+                    connected_account_network("BASE", "0.01"),
+                    connected_account_network("SOLANA", "0.02"),
+                    connected_account_network("BASE", "0.03"),
+                ],
+            }]),
+        ),
+    ];
+
+    for (index, (case, configs)) in cases.iter().enumerate() {
+        let acl_name = format!("disallowed-connected-acl-{index}");
+        let (status, body) = waf
+            .call(
+                "CreateWebACL",
+                json!({
+                    "Name": &acl_name,
+                    "Scope": MONETIZED_SCOPE,
+                    "DefaultAction": { "Allow": {} },
+                    "VisibilityConfig": visibility(&acl_name),
+                    "MonetizationConfig": { "ConnectedAccountConfigs": configs },
+                }),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected the member-constraint refusal, got status {status} \
+             and body {body}"
+        );
+        let code = body["__type"].as_str().unwrap_or_default();
+        assert!(
+            code.ends_with("ValidationException"),
+            "case {case:?}: expected the request validator's envelope, got {code:?} in \
+             body {body}"
+        );
+        let stored = names_in_scope(&waf, "ListWebACLs", "WebACLs", MONETIZED_SCOPE).await;
         assert!(
             !stored.contains(&acl_name),
             "case {case:?}: a refused create must store no web ACL, got {stored:?}"

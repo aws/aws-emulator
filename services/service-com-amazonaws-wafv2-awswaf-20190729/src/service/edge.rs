@@ -882,6 +882,12 @@ fn decided<Eng: Send + Sync + 'static>(
                 population.drain(..overflow);
             }
         }
+        // What WAF's API security analysis makes of this request, for a web ACL whose
+        // security analytics is enabled: the events `ListEvents` and its siblings
+        // report are what that analysis produced over the traffic the web ACL saw
+        // ([`super::api_security`]). Written here, with the rest of the bookkeeping of
+        // a request that has just been decided, and never on a read.
+        super::api_security::observe(&mut store, &entry, protected_resource, request, now);
     }
 
     // PHASE 4, with this service's store released: the CloudWatch counters of every

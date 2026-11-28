@@ -60,8 +60,13 @@ struct AssociationRow {
 }
 
 /// The rows: no `AssociationConfig` at all, one carrying only `RequestBody`, injection for
-/// one resource type and for several, injection beside `RequestBody`, and the empty
-/// injection map — which names no resource type, so nothing is injected for anything.
+/// one resource type and for several, and injection beside `RequestBody`.
+///
+/// An injection map that names NO resource type is not among them: the model bounds
+/// `ChallengeJavascriptSdkInjection` at `length(min 1)`
+/// (`smithy_query(query="shape",shape="ChallengeJavascriptSdkInjection")`), so a save
+/// carrying one is refused rather than stored
+/// ([`an_injection_map_naming_no_resource_type_is_refused`]).
 ///
 /// The resource-type keys come from `AssociatedResourceType`
 /// (`smithy_query(query="shape",shape="AssociatedResourceType")` → `CLOUDFRONT`,
@@ -115,12 +120,6 @@ fn association_rows() -> Vec<AssociationRow> {
                 },
             })),
             integrates: true,
-        },
-        AssociationRow {
-            case: "an injection map naming no resource type",
-            scope: "REGIONAL",
-            association_config: Some(json!({ "ChallengeJavascriptSdkInjection": {} })),
-            integrates: false,
         },
     ]
 }
@@ -200,6 +199,40 @@ fn asserted_integration_id(url: &str, base: &str, case: &str) -> String {
          got {id:?} in {url:?}"
     );
     id.to_string()
+}
+
+/// An injection map that names no resource type is refused, and nothing is stored.
+///
+/// `ChallengeJavascriptSdkInjection` is bounded at `length(min 1)`
+/// (`smithy_query(query="shape",shape="ChallengeJavascriptSdkInjection")`) and the member's
+/// own doc states what an absent setting means instead — "if you omit this setting,
+/// CloudFront does not insert the SDK" — so the empty map is a member-constraint failure,
+/// refused in the request validator's own envelope before any web ACL is written.
+#[tokio::test]
+async fn an_injection_map_naming_no_resource_type_is_refused() {
+    let case = "CreateWebACL with an injection map naming no resource type";
+    let waf = Waf::new();
+    let name = "empty-injection-acl";
+    waf.refused(
+        "CreateWebACL",
+        create_request(
+            name,
+            "REGIONAL",
+            Some(&json!({ "ChallengeJavascriptSdkInjection": {} })),
+            json!([]),
+        ),
+        "ValidationException",
+        case,
+    )
+    .await;
+    let listed = waf
+        .ok("ListWebACLs", json!({ "Scope": "REGIONAL" }))
+        .await;
+    assert_eq!(
+        listed["WebACLs"].as_array().map(Vec::len),
+        Some(0),
+        "case {case:?}: a refused save must store no web ACL, got {listed}"
+    );
 }
 
 /// Every `AssociationConfig` a save carries reads back exactly as it was saved, and the

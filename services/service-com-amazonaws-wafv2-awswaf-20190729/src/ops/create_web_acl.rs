@@ -619,8 +619,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             on_source_d_do_s_protection_config: input.on_source_d_do_s_protection_config.clone(),
             application_config: input.application_config.clone(),
             monetization_config: input.monetization_config.clone(),
+            analytics_config: input.analytics_config.clone(),
         };
-        crate::state::apply_web_acl_defaults(&mut web_acl, &rule_group_capacities);
+        crate::state::apply_web_acl_defaults(&mut web_acl, &input.scope, &rule_group_capacities);
         let summary = WebACLSummary {
             name: Some(web_acl.name.clone()),
             id: Some(web_acl.id.clone()),

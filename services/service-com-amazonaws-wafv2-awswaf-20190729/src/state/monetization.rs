@@ -24,7 +24,9 @@
 //! One more precondition is about something the configuration NAMES rather than about
 //! the document: the connected (Payments) account its payments settle into has to
 //! RESOLVE, and a reference that resolves to nothing is the modelled
-//! `WAFNonexistentItemException` ([`connected_account_refusal`]).
+//! `WAFNonexistentItemException` — while one that names a partition connected accounts
+//! are not available in is the modelled `WAFInvalidParameterException`
+//! ([`connected_account_refusal`]).
 
 use super::*;
 use crate::ops::types::{MonetizationConfig, MonetizeAction};
@@ -97,6 +99,16 @@ pub fn connected_account_not_found_exception() -> WAFNonexistentItemException {
     }
 }
 
+/// The `ParameterExceptionField` value naming the settings a connected-account
+/// reference is written in (`smithy_query(query="shape",shape="ParameterExceptionField")`
+/// declares `MONETIZATION_CONFIG`).
+pub const FIELD_MONETIZATION_CONFIG: &str = "MONETIZATION_CONFIG";
+
+/// The one partition a connected account can be addressed in: "connected accounts are
+/// available only in the commercial Amazon Web Services partition"
+/// (`ConnectedAccountConfig`'s own doc).
+pub const CONNECTED_ACCOUNT_PARTITION: &str = "aws";
+
 /// The refusal a save earns from a CONNECTED ACCOUNT its monetization configuration
 /// names, or `None` when it names none or names only accounts that resolve.
 ///
@@ -107,9 +119,17 @@ pub fn connected_account_not_found_exception() -> WAFNonexistentItemException {
 /// for the current ARN — so the save resolves every account it names against the accounts
 /// this service knows of
 /// ([`ComAmazonawsWafv2Awswaf20190729State::connected_accounts`]) before it writes
-/// anything, and the first reference that resolves to nothing is
-/// [`connected_account_not_found_exception`]: an account never created, or deleted and
-/// recreated so the reference is stale, are the same unresolvable reference.
+/// anything.
+///
+/// TWO refusals, which the shape's own doc tells apart: a reference WAF cannot address at
+/// all because "connected accounts are available only in the commercial Amazon Web
+/// Services partition" is the modelled `WAFInvalidParameterException` ("…or
+/// `WAFInvalidParameterException` if the ARN is invalid or the partition is
+/// unsupported"), judged first because such an ARN names no account anywhere; a
+/// well-addressed reference that resolves to nothing — an account never created, or
+/// deleted and recreated so the reference is stale — is
+/// [`connected_account_not_found_exception`] ("`WAFNonexistentItemException` if the ARN
+/// no longer exists").
 ///
 /// Run by every operation that SAVES a monetization configuration, after the
 /// preconditions on the document itself ([`monetization_save_refusal`]): monetization is
@@ -119,13 +139,30 @@ pub fn connected_account_not_found_exception() -> WAFNonexistentItemException {
 pub fn connected_account_refusal(
     monetization_config: Option<&MonetizationConfig>,
     connected_accounts: &BTreeSet<String>,
-) -> Option<WAFNonexistentItemException> {
+) -> Option<MonetizationRefusal> {
     let configured = monetization_config?.connected_account_configs.as_deref()?;
-    configured
+    for named in configured
         .iter()
-        .filter_map(|config| config.connected_account_arn.as_deref())
-        .any(|named| !connected_accounts.contains(named))
-        .then(connected_account_not_found_exception)
+        .map(|config| config.connected_account_arn.as_str())
+    {
+        // The partition is read by the ONE parse this tree shares; the member's
+        // `@pattern` has already settled the ARN's form at the request boundary, so a
+        // value reaching here that does not parse is no ARN of any partition.
+        let partition = ::service_common::arn::parse(named).map(|arn| arn.partition);
+        if partition != Some(CONNECTED_ACCOUNT_PARTITION) {
+            return Some(MonetizationRefusal::Parameter(invalid_parameter_exception(
+                FIELD_MONETIZATION_CONFIG,
+                named,
+                PARAMETER_VALUE_NOT_SUPPORTED_REASON,
+            )));
+        }
+        if !connected_accounts.contains(named) {
+            return Some(MonetizationRefusal::NonexistentItem(
+                connected_account_not_found_exception(),
+            ));
+        }
+    }
+    None
 }
 
 /// A `MonetizeAction` as a refusal's `Parameter` renders it: the shape's name and the
@@ -295,5 +332,4 @@ pub fn monetization_save_refusal(
         ));
     }
     connected_account_refusal(monetization_config, connected_accounts)
-        .map(MonetizationRefusal::NonexistentItem)
 }

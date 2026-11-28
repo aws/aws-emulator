@@ -57,6 +57,9 @@ mod ip_set_addresses;
 /// The managed PRODUCTS this service publishes: both vendor families of managed
 /// rule group, and what one of them is reported as.
 mod managed_products;
+/// The API SECURITY events WAF detected in the traffic a web ACL inspected, the
+/// clients that produced them, and how a listing selects, orders and pages over them.
+mod events;
 /// What a save that configures MONETIZATION has to satisfy: where the feature is
 /// available, which rules may take its action, and the setting those payments settle
 /// against.
@@ -84,6 +87,7 @@ pub use capacity::*;
 pub use catalog::*;
 pub use constraint_clauses::*;
 pub use description::*;
+pub use events::*;
 pub use identifier_refusals::*;
 pub use ip_set_addresses::*;
 pub use managed_products::*;
@@ -1379,6 +1383,27 @@ pub struct ComAmazonawsWafv2Awswaf20190729State {
         crate::service::edge::RateInstanceKey,
         crate::service::edge::RateEvaluation,
     >,
+    /// What WAF's API security analysis has made of the traffic each web ACL inspected,
+    /// by `(Scope, web ACL Id, protected resource)`.
+    ///
+    /// One record per protected resource behind one web ACL — an event is reported
+    /// against the resource whose API the traffic addressed
+    /// (`EventDetailSummary$ResourceArn`) — written by the data plane
+    /// ([`crate::service::api_security::observe`]) for every request of a web ACL whose
+    /// security analytics is enabled, and bounded at
+    /// [`MAX_EVENT_RECORDS_PER_WEB_ACL`] records per web ACL. A web ACL that has
+    /// inspected no such request holds none, which is what an events listing over a
+    /// quiet account answers. See [`ApiSecurityEventRecord`].
+    pub api_security_events: HashMap<(String, String, String), ApiSecurityEventRecord>,
+    /// The clients the API security analysis has seen, by `(Scope, EventActorId)`: the
+    /// actors `ListEventActors` reports and `GetEventActor` resolves. See
+    /// [`EventActorRecord`].
+    pub event_actors: HashMap<(String, String), EventActorRecord>,
+    /// `(Scope, AuthFingerprint)` → `EventActorId`: how the data plane recognises a
+    /// client it has already seen, since the fingerprint of the credentials a client
+    /// offers is what identifies it across events
+    /// (`EventActorSummary$AuthFingerprint`).
+    pub event_actor_ids: HashMap<(String, String), String>,
 }
 
 impl ComAmazonawsWafv2Awswaf20190729State {
@@ -3539,11 +3564,17 @@ pub fn apply_rule_defaults(rules: &mut [Rule]) {
 ///   web requests that you want to manage", and a web ACL with none has an empty
 ///   collection of them, not an unknown one.
 /// * `OnSourceDDoSProtectionConfig` — [`DEFAULT_ALB_LOW_REPUTATION_MODE`].
+/// * `AnalyticsConfig` — the documented default of the namespace the web ACL lives in,
+///   which is why the scope is passed in ([`default_analytics_config`]): "for regional
+///   web ACLs, security analytics is disabled by default when you omit this
+///   configuration. For web ACLs that protect CloudFront distributions (global web
+///   ACLs), security analytics is enabled by default."
 /// * `Capacity` — [`web_acl_capacity`] of the stored rules, which is why it is
 ///   computed AFTER the rule defaults are applied. `rule_group_capacities` prices
 ///   the rule-group references the tree carries; see [`web_acl_capacity`].
 pub fn apply_web_acl_defaults(
     web_acl: &mut WebACL,
+    scope: &str,
     rule_group_capacities: &HashMap<String, i64>,
 ) {
     web_acl.description = stored_description(web_acl.description.take());
@@ -3559,6 +3590,12 @@ pub fn apply_web_acl_defaults(
             .unwrap_or_else(|| OnSourceDDoSProtectionConfig {
                 alb_low_reputation_mode: DEFAULT_ALB_LOW_REPUTATION_MODE.to_string(),
             }),
+    );
+    web_acl.analytics_config = Some(
+        web_acl
+            .analytics_config
+            .take()
+            .unwrap_or_else(|| default_analytics_config(scope)),
     );
 }
 

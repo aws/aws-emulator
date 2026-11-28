@@ -598,7 +598,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         entry.web_acl.on_source_d_do_s_protection_config = input.on_source_d_do_s_protection_config;
         entry.web_acl.application_config = input.application_config;
         entry.web_acl.monetization_config = input.monetization_config;
-        crate::state::apply_web_acl_defaults(&mut entry.web_acl, &rule_group_capacities);
+        entry.web_acl.analytics_config = input.analytics_config;
+        crate::state::apply_web_acl_defaults(&mut entry.web_acl, &input.scope, &rule_group_capacities);
 
         // The token rotates on every successful mutation, so the one the caller just
         // used stops working.
