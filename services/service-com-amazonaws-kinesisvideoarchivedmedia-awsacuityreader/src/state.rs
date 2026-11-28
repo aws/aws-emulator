@@ -990,6 +990,13 @@ pub struct SessionRequest<'a> {
     pub max_fragment_results: Option<i64>,
     /// The selector's `TimestampRange`, when the selector carried one.
     pub range: Option<SelectedTimestampRange>,
+    /// Which of a fragment's two timestamps the selector reads
+    /// (`FragmentSelectorType`), defaulted by the caller: the end of a range
+    /// read by server timestamp is the one the clock bounds.
+    pub origin: TimestampOrigin,
+    /// The instant the request is decided as of, which the server-timestamp end
+    /// is compared against.
+    pub now: SystemTime,
 }
 
 /// What a streaming-session request resolves to: its parameters with the
@@ -1018,7 +1025,8 @@ pub struct SessionParameters {
 /// `LIVE` session that must carry no `TimestampRange`, the range a non-`LIVE`
 /// session must carry, the `StartTimestamp` every such range must carry, the
 /// `EndTimestamp` `ON_DEMAND` must carry, the end that must be later than the
-/// start and within [`MAX_RANGE_SPAN_MILLIS`] of it, and the window built from
+/// start and within [`MAX_RANGE_SPAN_MILLIS`] of it, the end a selector reading
+/// server timestamps may not place ahead of the clock, and the window built from
 /// those bounds. The two operations differ only
 /// in [`SessionRequest::selector_member`], which every refusal that names the
 /// selector is worded with, and in the per-protocol members each input
@@ -1094,6 +1102,13 @@ pub fn session_parameters(request: SessionRequest<'_>) -> Result<SessionParamete
             // over a wider span.
             if !range_within_max_span(start_millis, end_millis) {
                 return Err(TIMESTAMP_RANGE_SPAN_MESSAGE.to_string());
+            }
+            // The clause the same documentation adds for a selector reading
+            // server timestamps: such an end "must be in the past", so no
+            // session is minted over a window the service cannot yet have
+            // stamped a fragment in.
+            if !range_end_requestable(request.origin, end_millis, epoch_millis(request.now)) {
+                return Err(SERVER_RANGE_END_IN_PAST_MESSAGE.to_string());
             }
         }
         SessionWindow::Range {
@@ -1346,6 +1361,29 @@ pub const TIMESTAMP_RANGE_SPAN_MESSAGE: &str =
 #[must_use]
 pub fn range_within_max_span(start_millis: i64, end_millis: i64) -> bool {
     end_millis.saturating_sub(start_millis) <= MAX_RANGE_SPAN_MILLIS
+}
+
+/// The refusal a range read by SERVER timestamp carries when its end lies ahead
+/// of the clock, worded with the clause it breaks: such an `EndTimestamp` "must
+/// be in the past".
+pub const SERVER_RANGE_END_IN_PAST_MESSAGE: &str =
+    "EndTimestamp must be in the past when FragmentSelectorType is SERVER_TIMESTAMP.";
+
+/// Whether the end of a range, in epoch milliseconds, is one a selector reading
+/// `origin` may ask for as of `now_millis`.
+///
+/// Every range of this service whose end carries the 24-hour sentence carries
+/// one more clause with it — "If FragmentSelectorType for the request is
+/// SERVER_TIMESTAMP, this value must be in the past" — so an end AHEAD of the
+/// clock is requestable only by producer timestamp, which the producer stamps
+/// and the service therefore cannot bound. An end AT the clock is not ahead of
+/// it, so only a later one is refused.
+#[must_use]
+pub fn range_end_requestable(origin: TimestampOrigin, end_millis: i64, now_millis: i64) -> bool {
+    match origin {
+        TimestampOrigin::Producer => true,
+        TimestampOrigin::Server => end_millis <= now_millis,
+    }
 }
 
 /// Why a `StreamName`/`StreamARN` pair did not name one stream.

@@ -500,17 +500,20 @@ async fn await_fragments(router: &MultiServiceRouter, stream: &str, count: usize
 
 /// Clip the archive of `stream` through the announced `GET_CLIP` endpoint.
 ///
-/// The window is an hour either side of now, which spans every fragment this
-/// suite ingests (a producer sends them as the test runs) while staying inside
-/// the span `ClipTimestampRange$EndTimestamp` documents: the end "must be within
-/// 24 hours of the specified StartTimestamp".
+/// The window runs from an hour ago to the instant the clip is asked for, at the
+/// millisecond precision the archive stamps a fragment at, which spans every
+/// fragment this suite has ingested by then (a producer sends them as the test
+/// runs, and the clip is asked for only once the archive holds them) while
+/// meeting both clauses `ClipTimestampRange$EndTimestamp` documents: the end
+/// "must be within 24 hours of the specified StartTimestamp", and, because this
+/// selector reads the timestamps the SERVICE stamps, it "must be in the past".
 async fn get_clip(router: &MultiServiceRouter, stream: &str) -> Answer {
     let authority = data_authority(router, stream, "GET_CLIP").await;
-    let now = SystemTime::now()
+    let now_millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
-    let hour = 3_600_i64;
+        .as_millis() as i64;
+    let hour_millis = 3_600_000_i64;
     call(
         router,
         &authority,
@@ -520,8 +523,8 @@ async fn get_clip(router: &MultiServiceRouter, stream: &str) -> Answer {
             "ClipFragmentSelector": {
                 "FragmentSelectorType": "SERVER_TIMESTAMP",
                 "TimestampRange": {
-                    "StartTimestamp": now - hour,
-                    "EndTimestamp": now + hour,
+                    "StartTimestamp": (now_millis - hour_millis) as f64 / 1000.0,
+                    "EndTimestamp": now_millis as f64 / 1000.0,
                 },
             },
         }),

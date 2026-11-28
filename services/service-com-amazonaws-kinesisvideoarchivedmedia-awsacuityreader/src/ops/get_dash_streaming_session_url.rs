@@ -334,10 +334,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into()
         };
 
+        // Which of a fragment's two timestamps the selector reads, which the
+        // range rules below are decided with: the end of a range read by server
+        // timestamp is the one the clock bounds. The membership checks here and
+        // below are belt-and-braces rather than the authoritative enum check:
+        // the framework's walk already refuses a value outside a modelled enum
+        // before this handler runs.
+        let selector = input.dash_fragment_selector.as_ref();
+        let origin_value = selector
+            .and_then(|s| s.fragment_selector_type.clone())
+            .unwrap_or_else(|| TimestampOrigin::Server.as_str().to_string());
+        let Some(origin) = TimestampOrigin::parse(&origin_value) else {
+            return Err(invalid(format!(
+                "{SELECTOR_MEMBER}.FragmentSelectorType must be one of [{}]",
+                D_A_S_H_FRAGMENT_SELECTOR_TYPE_VALUES.join(", ")
+            )));
+        };
+
         // The playback mode, the session-parameter defaults and the mode's
         // selector requirements, by the one rule both streaming-session
         // operations use, worded with THIS operation's selector member.
-        let selector = input.dash_fragment_selector.as_ref();
         let SessionParameters {
             playback_mode,
             expires_in_secs,
@@ -355,22 +371,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     end_millis: range.end_timestamp.as_ref().map(date_time_millis),
                 }
             }),
+            origin,
+            now: SystemTime::now(),
         })
         .map_err(invalid)?;
 
-        // The members this protocol alone carries. The membership checks are
-        // belt-and-braces rather than the authoritative enum check: the
-        // framework's walk already refuses a value outside a modelled enum
-        // before this handler runs.
-        let origin_value = selector
-            .and_then(|s| s.fragment_selector_type.clone())
-            .unwrap_or_else(|| TimestampOrigin::Server.as_str().to_string());
-        let Some(origin) = TimestampOrigin::parse(&origin_value) else {
-            return Err(invalid(format!(
-                "{SELECTOR_MEMBER}.FragmentSelectorType must be one of [{}]",
-                D_A_S_H_FRAGMENT_SELECTOR_TYPE_VALUES.join(", ")
-            )));
-        };
+        // The members this protocol alone carries.
         let display_fragment_timestamp = input
             .display_fragment_timestamp
             .clone()

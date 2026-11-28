@@ -154,10 +154,11 @@ use crate::service::archived_container::{
 // streaming-session operations, which model exactly the same refusals for them.
 use crate::service::media_requirements::{self, MediaRefusal};
 use crate::state::{
-    date_time_millis, epoch_millis, range_within_max_span, service_state, ArchivedStream,
-    StoredFragment, StreamLookupError, TimestampOrigin, NO_DATA_RETENTION_MESSAGE,
-    TIMESTAMP_RANGE_ORDER_MESSAGE, TIMESTAMP_RANGE_SPAN_MESSAGE,
+    date_time_millis, epoch_millis, range_end_requestable, range_within_max_span, service_state,
+    ArchivedStream, StoredFragment, StreamLookupError, TimestampOrigin, NO_DATA_RETENTION_MESSAGE,
+    SERVER_RANGE_END_IN_PAST_MESSAGE, TIMESTAMP_RANGE_ORDER_MESSAGE, TIMESTAMP_RANGE_SPAN_MESSAGE,
 };
+use std::time::SystemTime;
 
 /// The content type `GetClip` reports.
 ///
@@ -372,6 +373,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // hours of the specified StartTimestamp".
             if !range_within_max_span(start_millis, end_millis) {
                 return Err(invalid(TIMESTAMP_RANGE_SPAN_MESSAGE.to_string()));
+            }
+            // The clause the same documentation adds for a selector reading
+            // server timestamps: such an end "must be in the past", so no clip
+            // is built over a window the service cannot yet have stamped a
+            // fragment in.
+            if !range_end_requestable(origin, end_millis, epoch_millis(SystemTime::now())) {
+                return Err(invalid(SERVER_RANGE_END_IN_PAST_MESSAGE.to_string()));
             }
 
             let in_range = stream.fragments_in_range(origin, start_millis, end_millis);

@@ -15,14 +15,18 @@
 //!    is refused with ONE fixed sentence, whichever of the two cases it is;
 //! 3. a `StreamName` or `StreamARN` that resolves to no readable stream is
 //!    refused with one fixed sentence that names neither the stream nor the
-//!    member that addressed it.
+//!    member that addressed it;
+//! 4. a timestamp range whose end the model documents as having to be "in the
+//!    past" when the request selects fragments by SERVER timestamp is refused
+//!    with one fixed sentence, in every operation whose range carries that
+//!    clause, while the same end selected by producer timestamp is not.
 //!
 //! The harness is `archived_media_read_path`'s: the real `MultiServiceRouter`
 //! with this one service registered, so every request walks routing, restJson1
 //! deserialization, constraint validation and the handler.
 
 use crate::archived_media_read_path::{
-    body_json, fragment_number, read_loop_operations, seeded, with_members, STREAM,
+    body_json, fragment_number, read_loop_operations, seeded, with_members, STREAM, T0_SECS,
 };
 
 /// The element constraint set `GetMediaForFragmentList$Fragments` states.
@@ -368,6 +372,252 @@ async fn the_not_found_sentence_carries_nothing_of_the_request() {
                 "case {case}: the message must carry nothing of the request, but {message:?} \
                  contains {leaked:?}"
             );
+        }
+    }
+}
+
+/// The sentence a range read by SERVER timestamps whose end lies ahead of the
+/// clock is refused with.
+///
+/// Worded with the clause the three ranges that carry it state —
+/// `smithy_query(query="doc",shape="HLSTimestampRange",member="EndTimestamp")`,
+/// and the same sentence on `DASHTimestampRange$EndTimestamp` and
+/// `ClipTimestampRange$EndTimestamp`: "If FragmentSelectorType for the request
+/// is SERVER_TIMESTAMP, this value must be in the past."
+const SERVER_END_AHEAD_OF_THE_CLOCK: &str =
+    "EndTimestamp must be in the past when FragmentSelectorType is SERVER_TIMESTAMP.";
+
+/// How wide, in seconds, a range whose end carries that clause may be: the
+/// neighbouring clause in the same paragraph bounds it to 24 hours, so a row
+/// that places its end a day ahead of the clock stays inside that bound and is
+/// decided by the clause under test alone.
+const MAX_RANGE_SPAN_SECS: i64 = 24 * 60 * 60;
+
+/// One operation whose timestamp range's end carries the clause, with the
+/// playback mode its request states (none for the operation that has no mode).
+struct ClockBoundedRange {
+    /// The operation's route.
+    path: &'static str,
+    /// The input member it carries its fragment selector in.
+    selector_member: &'static str,
+    /// The `PlaybackMode` the request states, for an operation that has one.
+    playback_mode: Option<&'static str>,
+}
+
+/// Every operation of this service whose range end carries the clause, in each
+/// playback mode that admits a bounded range.
+const CLOCK_BOUNDED_RANGES: &[ClockBoundedRange] = &[
+    ClockBoundedRange {
+        path: "/getHLSStreamingSessionURL",
+        selector_member: "HLSFragmentSelector",
+        playback_mode: Some("ON_DEMAND"),
+    },
+    ClockBoundedRange {
+        path: "/getHLSStreamingSessionURL",
+        selector_member: "HLSFragmentSelector",
+        playback_mode: Some("LIVE_REPLAY"),
+    },
+    ClockBoundedRange {
+        path: "/getDASHStreamingSessionURL",
+        selector_member: "DASHFragmentSelector",
+        playback_mode: Some("ON_DEMAND"),
+    },
+    ClockBoundedRange {
+        path: "/getDASHStreamingSessionURL",
+        selector_member: "DASHFragmentSelector",
+        playback_mode: Some("LIVE_REPLAY"),
+    },
+    ClockBoundedRange {
+        path: "/getClip",
+        selector_member: "ClipFragmentSelector",
+        playback_mode: None,
+    },
+];
+
+/// What a row expects of the operation it is driven through.
+#[derive(Debug, Clone, Copy)]
+enum EndExpectation {
+    /// The clause refuses the range: HTTP 400 `InvalidArgumentException` with
+    /// [`SERVER_END_AHEAD_OF_THE_CLOCK`].
+    Refused,
+    /// The clause admits the range, and the addressed archive holds no fragment
+    /// in it: HTTP 404 `ResourceNotFoundException`.
+    NoFragments,
+    /// The clause admits the range and the archive answers over it.
+    Served,
+}
+
+/// What an operation of [`CLOCK_BOUNDED_RANGES`] is asked over the range
+/// `[start_secs, end_secs]`, selecting on `selector_type`.
+fn clock_bounded_request(
+    operation: &ClockBoundedRange,
+    selector_type: &str,
+    start_secs: i64,
+    end_secs: i64,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "StreamName": STREAM });
+    if let Some(mode) = operation.playback_mode {
+        body["PlaybackMode"] = serde_json::json!(mode);
+    }
+    body[operation.selector_member] = serde_json::json!({
+        "FragmentSelectorType": selector_type,
+        "TimestampRange": {
+            "StartTimestamp": start_secs,
+            "EndTimestamp": end_secs,
+        },
+    });
+    body
+}
+
+/// Epoch seconds now, the instant every row places its end relative to.
+fn now_secs() -> i64 {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the Unix epoch");
+    i64::try_from(since_epoch.as_secs()).expect("an epoch second this archive can hold")
+}
+
+/// RULE: a timestamp range whose `EndTimestamp` is documented as having to be
+/// "in the past" when `FragmentSelectorType` is `SERVER_TIMESTAMP` admits an end
+/// at or before the instant the request is decided at and refuses a later one —
+/// `InvalidArgumentException` (400) with one fixed sentence carrying nothing of
+/// the request — in every operation whose range carries that clause; a range
+/// read by producer timestamp, which the service does not stamp, is not bounded
+/// by the clock at all.
+///
+/// The rows differ along what the rule generalises over: which timestamp the
+/// selector reads, how far ahead of or behind the clock the end lies (a day, an
+/// hour, seconds, exactly at it, and well in the past), and the operation and
+/// playback mode the range is asked for in.
+#[tokio::test]
+async fn a_server_timestamp_range_ending_ahead_of_the_clock_is_refused_wherever_it_is_bounded() {
+    let harness = seeded();
+    let now = now_secs();
+    // (case, FragmentSelectorType, StartTimestamp, EndTimestamp, expectation)
+    let rows: &[(&str, &str, i64, i64, EndExpectation)] = &[
+        (
+            "a day ahead of the clock, on server timestamps",
+            "SERVER_TIMESTAMP",
+            now,
+            now + MAX_RANGE_SPAN_SECS,
+            EndExpectation::Refused,
+        ),
+        (
+            "an hour ahead of the clock, on server timestamps",
+            "SERVER_TIMESTAMP",
+            now - 3600,
+            now + 3600,
+            EndExpectation::Refused,
+        ),
+        (
+            "ten seconds ahead of the clock, on server timestamps",
+            "SERVER_TIMESTAMP",
+            now - 3600,
+            now + 10,
+            EndExpectation::Refused,
+        ),
+        (
+            // The clause bounds an end AHEAD of the clock, so an end at it is
+            // admitted and the archive decides the answer.
+            "at the clock, on server timestamps",
+            "SERVER_TIMESTAMP",
+            now - 3600,
+            now,
+            EndExpectation::NoFragments,
+        ),
+        (
+            "well in the past, on server timestamps, over the seeded archive",
+            "SERVER_TIMESTAMP",
+            T0_SECS,
+            T0_SECS + 1000,
+            EndExpectation::Served,
+        ),
+        (
+            // The clause names the server-stamped selector only: a producer
+            // stamps its own timestamps, so the service bounds neither.
+            "a day ahead of the clock, on producer timestamps",
+            "PRODUCER_TIMESTAMP",
+            now,
+            now + MAX_RANGE_SPAN_SECS,
+            EndExpectation::NoFragments,
+        ),
+        (
+            "an hour ahead of the clock, on producer timestamps",
+            "PRODUCER_TIMESTAMP",
+            now - 3600,
+            now + 3600,
+            EndExpectation::NoFragments,
+        ),
+        (
+            "well in the past, on producer timestamps, over the seeded archive",
+            "PRODUCER_TIMESTAMP",
+            T0_SECS,
+            T0_SECS + 1000,
+            EndExpectation::Served,
+        ),
+    ];
+
+    for operation in CLOCK_BOUNDED_RANGES {
+        let mode = operation.playback_mode.unwrap_or("no playback mode");
+        for (case, selector_type, start, end, expect) in rows {
+            let case = format!("{case} over {} in {mode}", operation.path);
+            let body = clock_bounded_request(operation, selector_type, *start, *end);
+            let response = harness.post(operation.path, &body).await;
+            let status = response.status().as_u16();
+            match expect {
+                EndExpectation::Refused => {
+                    assert_eq!(
+                        status,
+                        400,
+                        "case {case}: expected HTTP 400, got {status} with body {:?}",
+                        String::from_utf8_lossy(response.body())
+                    );
+                    let (code, message) = reported(&response);
+                    assert_eq!(
+                        code, "InvalidArgumentException",
+                        "case {case}: expected InvalidArgumentException, got {code:?}"
+                    );
+                    assert_eq!(
+                        message, SERVER_END_AHEAD_OF_THE_CLOCK,
+                        "case {case}: expected {SERVER_END_AHEAD_OF_THE_CLOCK:?}, got {message:?}"
+                    );
+                    // The sentence is fixed: nothing the request carried can be
+                    // read back out of it.
+                    for carried in [STREAM.to_string(), start.to_string(), end.to_string()] {
+                        assert!(
+                            !message.contains(&carried),
+                            "case {case}: the refusal must carry nothing of the request, but \
+                             {message:?} contains {carried:?}"
+                        );
+                    }
+                }
+                EndExpectation::NoFragments => {
+                    assert_eq!(
+                        status,
+                        404,
+                        "case {case}: expected HTTP 404, got {status} with body {:?}",
+                        String::from_utf8_lossy(response.body())
+                    );
+                    let (code, message) = reported(&response);
+                    assert_eq!(
+                        code, "ResourceNotFoundException",
+                        "case {case}: expected ResourceNotFoundException, got {code:?}"
+                    );
+                    assert_ne!(
+                        message, SERVER_END_AHEAD_OF_THE_CLOCK,
+                        "case {case}: the clause admits this range, so its refusal must not be \
+                         reported, got {message:?}"
+                    );
+                }
+                EndExpectation::Served => {
+                    assert_eq!(
+                        status,
+                        200,
+                        "case {case}: expected HTTP 200, got {status} with body {:?}",
+                        String::from_utf8_lossy(response.body())
+                    );
+                }
+            }
         }
     }
 }
