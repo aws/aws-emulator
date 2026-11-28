@@ -2,13 +2,35 @@
 
 use super::*;
 
-/// One stored agent profile: the resource `CreateAgentProfile` mints, `GetAgentProfile`
-/// reports and the goals below belong to.
+/// `ProfileType$STANDARD`: "a standard profile that uses an execution role and
+/// aggregation configuration to analyze resources across one or more Amazon Web Services
+/// accounts" (`smithy_query(query="shape", shape="ProfileType")`) — the kind
+/// `CreateAgentProfile` mints.
+pub const PROFILE_TYPE_STANDARD: &str = "STANDARD";
+
+/// `ProfileType$BASIC`: "a zero-configuration profile that generates recommendations
+/// without requiring an execution role or aggregation setup" — the kind
+/// `CreateAgentBasicProfile` mints.
+pub const PROFILE_TYPE_BASIC: &str = "BASIC";
+
+/// `ProfileType$ORGANIZATIONAL`: "a profile that uses Amazon Web Services Organizations
+/// to define its monitoring boundary" — the kind `CreateAgentOrganizationalProfile`
+/// mints.
+pub const PROFILE_TYPE_ORGANIZATIONAL: &str = "ORGANIZATIONAL";
+
+/// One stored agent profile: the resource the agent-profile creates mint,
+/// `GetAgentProfile` reports and the goals below belong to.
 ///
 /// The record holds what the request carried plus what the SERVICE owns — the ARN it
 /// minted, the identity it attributed the create to and when it happened — and the
 /// reporting members (`eligibleFor…`, `fieldErrors`) are DERIVED from it rather than
 /// stored, so they cannot drift from the profile they describe.
+///
+/// One record covers every `ProfileType`, because every profile read projects one shape
+/// whatever kind it reports: the members a kind does not have are the ones the model
+/// leaves optional and documents as "not present for basic profiles"
+/// (`smithy_query(query="shape", shape="AgentProfileSummary")`), so they are held
+/// optional here and reported absent for the kind that has none.
 #[derive(Debug, Clone)]
 pub struct AgentProfileRecord {
     pub arn: String,
@@ -16,10 +38,30 @@ pub struct AgentProfileRecord {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub business_overview: Option<String>,
-    pub pillars: Vec<String>,
+    /// The pillars the profile analyses, absent for a profile kind that names none.
+    pub pillars: Option<Vec<String>>,
     pub deletion_protection: bool,
-    pub execution_role_arn: String,
-    pub aggregation_configuration: Vec<AggregationConfiguration>,
+    /// Which `ProfileType` this profile is — one of [`PROFILE_TYPE_STANDARD`],
+    /// [`PROFILE_TYPE_BASIC`] and [`PROFILE_TYPE_ORGANIZATIONAL`]. It is the create that
+    /// decided the kind, so it is stored rather than guessed from the other members.
+    pub profile_type: String,
+    /// The execution role recommendation actions assume, absent for a kind that needs
+    /// none.
+    pub execution_role_arn: Option<String>,
+    /// The accounts and Regions a STANDARD profile analyses, absent for a kind that
+    /// scopes itself another way.
+    pub aggregation_configuration: Option<Vec<AggregationConfiguration>>,
+    /// The organizational monitoring boundary, "present only for organizational
+    /// profiles".
+    pub organizational_aggregation_configuration: Option<OrganizationalAggregationConfiguration>,
+    /// The resource-based policy `PutAgentProfilePolicy` has attached — "the IAM
+    /// resource-based policy document in JSON format" — or nothing while none is attached.
+    ///
+    /// A SUB-RESOURCE of the profile it governs: it is addressed as
+    /// `…/{profileArn}/policy`, so it can neither be reached without the profile nor
+    /// outlive it. The document is held as the caller sent it: the model constrains it as a
+    /// `ResourcePolicy` string, and nothing in this service reads inside it.
+    pub policy: Option<String>,
     /// The profile's tags, by key — a `BTreeMap` so they are reported in one stable
     /// order, as a workload's and a review template's tags are held.
     pub tags: BTreeMap<String, String>,
@@ -35,26 +77,55 @@ impl AgentProfileRecord {
     /// (`CreateAgentProfileResponse$eligibleForScheduledGeneration` /
     /// `$eligibleForArchitectureGeneration`).
     ///
-    /// Generation analyses the Amazon Web Services resources the profile's
-    /// `aggregationConfiguration` scopes it to ("configuration settings that define the
+    /// Generation analyses the Amazon Web Services resources the profile's monitoring
+    /// boundary scopes it to, so a profile whose kind takes a boundary and names nothing
+    /// in it has nothing to analyse and is eligible for neither: a STANDARD profile is
+    /// scoped by its `aggregationConfiguration` ("configuration settings that define the
     /// scope of Amazon Web Services resources to analyze for optimization
     /// recommendations" — `smithy_query(query="shape",
-    /// shape="AggregationConfiguration")`), and the list is modelled `@length(min: 0)`,
-    /// so a profile that names no account and Region has nothing to analyse and is
-    /// eligible for neither. Both eligibility members answer the same question of the
-    /// same stored scope, so they are derived from it together.
+    /// shape="AggregationConfiguration")`), an ORGANIZATIONAL profile by the
+    /// organizational units and accounts of its `organizationalAggregationConfiguration`,
+    /// and both lists are modelled `@length(min: 0)`. A BASIC profile is
+    /// "zero-configuration" (`smithy_query(query="shape", shape="ProfileType")`), so it
+    /// takes no boundary and is always eligible. Both eligibility members answer the same
+    /// question of the same stored scope, so they are derived from it together.
     pub fn eligible_for_generation(&self) -> bool {
-        !self.aggregation_configuration.is_empty()
+        match self.profile_type.as_str() {
+            PROFILE_TYPE_BASIC => true,
+            PROFILE_TYPE_ORGANIZATIONAL => self
+                .organizational_aggregation_configuration
+                .as_ref()
+                .is_some_and(|boundary| {
+                    boundary
+                        .organizational_units
+                        .as_ref()
+                        .is_some_and(|units| !units.is_empty())
+                        || boundary
+                            .accounts
+                            .as_ref()
+                            .is_some_and(|accounts| !accounts.is_empty())
+                }),
+            _ => self
+                .aggregation_configuration
+                .as_ref()
+                .is_some_and(|configurations| !configurations.is_empty()),
+        }
     }
 
     /// `fieldErrors`: one entry per input member that leaves this profile unable to
     /// generate recommendations, or `None` when none does. Derived from the stored
     /// profile, so it reports what is actually wrong with it rather than what one
-    /// request looked like.
+    /// request looked like — and keyed by the member of the create that carries the
+    /// boundary the profile's own kind is scoped by.
     pub fn field_errors(&self) -> Option<HashMap<String, String>> {
         (!self.eligible_for_generation()).then(|| {
+            let member = if self.profile_type == PROFILE_TYPE_ORGANIZATIONAL {
+                ORGANIZATIONAL_AGGREGATION_CONFIGURATION_MEMBER
+            } else {
+                AGGREGATION_CONFIGURATION_MEMBER
+            };
             HashMap::from([(
-                AGGREGATION_CONFIGURATION_MEMBER.to_string(),
+                member.to_string(),
                 NO_AGGREGATION_CONFIGURATION_MESSAGE.to_string(),
             )])
         })
@@ -78,13 +149,16 @@ impl AgentProfileRecord {
             business_overview: self.business_overview.clone(),
             pillars: self.pillars.clone(),
             deletion_protection: self.deletion_protection,
+            profile_type: Some(self.profile_type.clone()),
             execution_role_arn: self.execution_role_arn.clone(),
             aggregation_configuration: self.aggregation_configuration.clone(),
+            organizational_aggregation_configuration: self
+                .organizational_aggregation_configuration
+                .clone(),
             arn: self.arn.clone(),
             eligible_for_scheduled_generation: Some(self.eligible_for_generation()),
             eligible_for_architecture_generation: Some(self.eligible_for_generation()),
             field_errors: self.field_errors(),
-            tags: self.tag_list(),
             created_by: self.created_by.clone(),
             created_at: ::aws_smithy_types::DateTime::from(self.created_at),
             last_modified_by: self.last_modified_by.clone(),
@@ -249,6 +323,16 @@ pub const GENERATION_QUEUE_DURATION: Duration = Duration::from_millis(250);
 /// reasons [`GENERATION_QUEUE_DURATION`] gives.
 pub const GENERATION_RUN_DURATION: Duration = Duration::from_millis(500);
 
+/// `GenerationType$ONDEMAND`: the generation was started by a caller asking for one
+/// (`smithy_query(query="shape", shape="GenerationType")`).
+///
+/// Every generation this emulator holds was started by a
+/// `StartAgentRecommendationGeneration` call, so this is the type each of them reports.
+/// The enum's other two members describe a generation the SERVICE starts without such a
+/// call — `SCHEDULED` on a schedule, `BASIC` for a profile that generates without being
+/// configured — and nothing here starts one, so neither is reported.
+pub const GENERATION_TYPE_ONDEMAND: &str = "ONDEMAND";
+
 /// One accepted recommendation generation: the asynchronous job
 /// `StartAgentRecommendationGeneration` records and `GetAgentRecommendationGeneration`
 /// reports the status and progress of.
@@ -270,7 +354,14 @@ pub struct AgentGenerationRecord {
     /// generation produces are of; no response shape projects it
     /// (`smithy_query(query="operation", operation="StartAgentRecommendationGeneration")`).
     pub types: Vec<String>,
-    pub scope: Scope,
+    /// The scope the start request named, absent when it named none: `Scope` is modelled
+    /// optional on the request, and the answer reports the scope the caller asked for.
+    pub scope: Option<Scope>,
+    /// The pillars this analysis covers, fixed when it was started: the scope's pillars
+    /// when the request named a scope, otherwise the ones the profile itself names. A
+    /// generation analyses a fixed set of pillars, so the set is recorded rather than
+    /// re-derived from a profile a later update could change under it.
+    pub pillars_in_scope: Vec<String>,
     pub additional_context: Option<::aws_smithy_types::Document>,
     pub created_by: String,
     pub created_at: SystemTime,
@@ -340,7 +431,7 @@ impl AgentGenerationRecord {
     /// `completionPercentage` is that same share of the steps as a percentage, so the two
     /// members always agree.
     pub fn progress(&self, now: SystemTime) -> Progress {
-        let total = i32::try_from(self.scope.pillars.len()).unwrap_or(i32::MAX);
+        let total = i32::try_from(self.pillars_in_scope.len()).unwrap_or(i32::MAX);
         let completed = if now >= self.ends_at {
             total
         } else if now <= self.starts_at || total <= 0 {
@@ -376,6 +467,12 @@ impl AgentGenerationRecord {
         self.types.iter().any(|kind| kind == recommendation_type)
     }
 
+    /// `generationRecommendationTypes` — "the recommendation types the generation covers"
+    /// — which is the set the start request named, held on the record.
+    pub fn generation_recommendation_types(&self) -> Option<Vec<String>> {
+        (!self.types.is_empty()).then(|| self.types.clone())
+    }
+
     /// The `AgentRecommendationGenerationSummary` projection a listing reports this
     /// generation as, so `ListAgentRecommendationGenerations` and
     /// `GetAgentRecommendationGeneration` cannot disagree about a generation: every
@@ -401,6 +498,18 @@ impl AgentGenerationRecord {
                 .map(|(identity, _)| identity.clone()),
             last_modified_at: last_modified
                 .map(|(_, at)| ::aws_smithy_types::DateTime::from(at)),
+            generation_type: Some(GENERATION_TYPE_ONDEMAND.to_string()),
+            generation_recommendation_types: self.generation_recommendation_types(),
+            started_at: self
+                .started_at(now)
+                .map(::aws_smithy_types::DateTime::from),
+            ended_at: self.ended_at(now).map(::aws_smithy_types::DateTime::from),
+            // "Details about the error if the generation status is ERROR": no generation
+            // this emulator records reaches `ERROR` — a start it cannot serve is refused
+            // at `StartAgentRecommendationGeneration` instead — so there are no details
+            // to report, and the member is absent rather than carrying an invented
+            // failure.
+            error_details: None,
         }
     }
 }

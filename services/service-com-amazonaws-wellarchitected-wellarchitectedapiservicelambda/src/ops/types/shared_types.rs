@@ -62,6 +62,23 @@ pub struct ValidationExceptionField {
     pub message: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#Tag")]
+#[derive(Debug, Clone, Default)]
+pub struct Tag {
+    pub key: String,
+    pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub message: String,
+    pub resource_id: Option<String>,
+    pub resource_type: Option<String>,
+    pub quota_code: String,
+    pub service_code: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ContextContent")]
 #[derive(Debug, Clone, Default)]
 pub struct ContextContent {
@@ -70,6 +87,7 @@ pub struct ContextContent {
     pub aws_services: Option<Vec<String>>,
     pub resource_types: Option<Vec<String>>,
     pub resource_tags: Option<Vec<ContextResourceTag>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
     pub application_overview: Option<String>,
     pub industry: Option<String>,
     pub application_type: Option<String>,
@@ -101,16 +119,6 @@ pub struct ContextSummary {
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ServiceQuotaExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub message: String,
-    pub resource_id: Option<String>,
-    pub resource_type: Option<String>,
-    pub quota_code: String,
-    pub service_code: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#GoalSummary")]
 #[derive(Debug, Clone)]
 pub struct GoalSummary {
@@ -125,19 +133,53 @@ pub struct GoalSummary {
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#OrganizationalAggregationConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationalAggregationConfiguration {
+    pub organizational_units: Option<Vec<OrganizationalUnitEntry>>,
+    pub accounts: Option<Vec<OrganizationalAccountEntry>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#OrganizationalUnitEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationalUnitEntry {
+    pub organizational_unit_id: String,
+    pub regions: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#OrganizationalAccountEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationalAccountEntry {
+    pub account_id: String,
+    pub regions: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#OrganizationalReportFilters")]
+#[derive(Debug, Clone, Default)]
+pub struct OrganizationalReportFilters {
+    pub account_ids: Option<Vec<String>>,
+    pub organizational_unit_ids: Option<Vec<String>>,
+    pub pillars: Option<Vec<String>>,
+    pub recommendation_types: Option<Vec<String>>,
+    pub statuses: Option<Vec<String>>,
+    pub priorities: Option<Vec<String>>,
+    pub created_at_range: Option<TimeWindow>,
+    pub updated_at_range: Option<TimeWindow>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#TimeWindow")]
+#[derive(Debug, Clone, Default)]
+pub struct TimeWindow {
+    pub from: Option<::aws_smithy_types::DateTime>,
+    pub to: Option<::aws_smithy_types::DateTime>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#AggregationConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct AggregationConfiguration {
     pub account_id: String,
     pub regions: Vec<String>,
     pub access_role_arn: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#Tag")]
-#[derive(Debug, Clone, Default)]
-pub struct Tag {
-    pub key: String,
-    pub value: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ProfileQuestionUpdate")]
@@ -167,6 +209,13 @@ pub struct WorkloadJiraConfigurationInput {
 pub struct Roi {
     pub estimate: Option<String>,
     pub detail: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ErrorDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct ErrorDetails {
+    pub code: String,
+    pub message: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#Scope")]
@@ -296,13 +345,6 @@ pub struct WorkloadProfile {
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#Workload")]
 #[derive(Debug, Clone, Default)]
 pub struct Workload {
-    /// Whether this workload is supported for a Foundational Technical Review. The member
-    /// was added to this service's on-disk model from the recorded AWS responses — the
-    /// shipped model snapshot carries no such member on this shape, while AWS reports the
-    /// flag on a workload it returns — and its value is projected by
-    /// [`crate::state::WorkloadRecord::to_workload`], the one place a stored workload
-    /// becomes this shape.
-    pub ftr_supported: Option<bool>,
     pub workload_id: Option<String>,
     pub workload_arn: Option<String>,
     pub workload_name: Option<String>,
@@ -535,6 +577,10 @@ pub const FEEDBACK_CATEGORY_VALUES: &[&str] = &["OTHER", "RECOMMENDATION_INCORRE
 pub const GENERATION_STATUS_VALUES: &[&str] = &["COMPLETED", "ERROR", "IN_PROGRESS", "QUEUED"];
 
 
+/// The values `GenerationType` accepts on the wire.
+pub const GENERATION_TYPE_VALUES: &[&str] = &["BASIC", "ONDEMAND", "SCHEDULED"];
+
+
 /// The values `ImpactCategory` accepts on the wire.
 pub const IMPACT_CATEGORY_VALUES: &[&str] = &["HIGH", "LOW", "MEDIUM"];
 
@@ -579,12 +625,32 @@ pub const NOTIFICATION_TYPE_VALUES: &[&str] = &["LENS_VERSION_DEPRECATED", "LENS
 pub const ORGANIZATION_SHARING_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
+/// The values `OrganizationalReportFormat` accepts on the wire.
+pub const ORGANIZATIONAL_REPORT_FORMAT_VALUES: &[&str] = &["CSV", "JSON", "PARQUET"];
+
+
+/// The values `OrganizationalReportState` accepts on the wire.
+pub const ORGANIZATIONAL_REPORT_STATE_VALUES: &[&str] = &["AGGREGATING", "COMPLETED", "COMPRESSING", "DELETING", "DISCOVERING", "FAILED", "SNAPSHOTTING"];
+
+
 /// The values `PermissionType` accepts on the wire.
 pub const PERMISSION_TYPE_VALUES: &[&str] = &["CONTRIBUTOR", "READONLY"];
 
 
 /// The values `Pillar` accepts on the wire.
 pub const PILLAR_VALUES: &[&str] = &["COST_OPTIMIZATION", "OPERATIONAL_EXCELLENCE", "PERFORMANCE", "RESILIENCE", "SECURITY"];
+
+
+/// The values `PreferenceKey` accepts on the wire.
+pub const PREFERENCE_KEY_VALUES: &[&str] = &["ORG_INTEGRATION"];
+
+
+/// The values `PreferenceState` accepts on the wire.
+pub const PREFERENCE_STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `PreferenceStatus` accepts on the wire.
+pub const PREFERENCE_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED", "FAILED"];
 
 
 /// The values `Priority` accepts on the wire.
@@ -597,6 +663,10 @@ pub const PROFILE_NOTIFICATION_TYPE_VALUES: &[&str] = &["PROFILE_ANSWERS_UPDATED
 
 /// The values `ProfileOwnerType` accepts on the wire.
 pub const PROFILE_OWNER_TYPE_VALUES: &[&str] = &["SELF", "SHARED"];
+
+
+/// The values `ProfileType` accepts on the wire.
+pub const PROFILE_TYPE_VALUES: &[&str] = &["BASIC", "ORGANIZATIONAL", "STANDARD"];
 
 
 /// The values `Question` accepts on the wire.

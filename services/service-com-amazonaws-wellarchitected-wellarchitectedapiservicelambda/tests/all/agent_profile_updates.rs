@@ -9,7 +9,10 @@
 //! 1. An update MERGES: every member the request carries replaces the stored one and
 //!    every member it omits is left exactly as it was — never nulled — whatever the
 //!    profile carried and whichever members the request names. The members no update
-//!    request models (`arn`, `name`, `createdBy`, `createdAt`, `tags`) cannot change.
+//!    request models (`arn`, `name`, `createdBy`, `createdAt`) cannot change, and the tags
+//!    the create recorded are left where they are — `UpdateAgentProfileResponse` declares
+//!    no `tags` member, so the update's own answer carries none
+//!    (`smithy_query(query="operation", operation="UpdateAgentProfile")`).
 //! 2. The modification is RECORDED: `lastModifiedBy` is the account the request is
 //!    attributed to and `lastModifiedAt` the instant it happened — both absent on a
 //!    profile nothing has updated yet.
@@ -178,6 +181,12 @@ fn stored_last_modified_at(client: &Client, profile_arn: &str) -> Option<SystemT
 /// profile is left with, and the modification attributed to the emulator's one account.
 fn expected_body(created: &Value, overrides: &Value) -> Value {
     let mut expected = with_overrides(created.clone(), overrides);
+    // `UpdateAgentProfileResponse` declares no `tags` member, while the create's answer
+    // this expectation starts from does: the update neither reports nor changes them.
+    expected
+        .as_object_mut()
+        .expect("the expectation is an object")
+        .remove("tags");
     let eligible = expected
         .get(AGGREGATION_CONFIGURATION)
         .and_then(Value::as_array)
@@ -395,15 +404,34 @@ async fn an_update_merges_its_members_into_the_stored_profile_and_persists_them(
             .remove("clientToken");
         assert_updated_body(&created.body, &overrides, &updated, case);
 
-        // Rule 4: the update is persisted, so the read reports exactly what it answered.
+        // Rule 4: the update is persisted, so the read reports exactly what it answered —
+        // through the read's own shape, which declares two members the update's does not:
+        // the `tags` the create recorded and the `profileType` the profile was minted as.
         let fetched = get_profile(&client, &arn).await;
         assert_eq!(
             fetched.status, 200,
             "case {case:?}: the updated profile must be readable, got {fetched:?}"
         );
+        let mut read_back = fetched.body.clone();
+        let read_only = read_back
+            .as_object_mut()
+            .expect("the answer is an object");
+        let read_tags = read_only.remove("tags");
+        let read_profile_type = read_only.remove("profileType");
         assert_eq!(
-            fetched.body, updated.body,
+            read_back, updated.body,
             "case {case:?}: GetAgentProfile must report what the update answered"
+        );
+        assert_eq!(
+            read_tags,
+            created.body.get("tags").cloned(),
+            "case {case:?}: an update leaves the tags the create recorded, got {read_tags:?}"
+        );
+        assert_eq!(
+            read_profile_type.as_ref().and_then(Value::as_str),
+            Some("STANDARD"),
+            "case {case:?}: the profile keeps the kind it was minted as, \
+             got {read_profile_type:?}"
         );
 
         let still_there = get_profile(&client, &bystander).await;

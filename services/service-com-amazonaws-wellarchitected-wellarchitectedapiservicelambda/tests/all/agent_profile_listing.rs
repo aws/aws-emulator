@@ -216,6 +216,7 @@ async fn every_created_profile_is_listed_as_the_profile_a_read_reports() {
             "eligibleForScheduledGeneration",
             "eligibleForArchitectureGeneration",
             "fieldErrors",
+            "profileType",
             "createdBy",
             "createdAt",
         ] {
@@ -226,11 +227,18 @@ async fn every_created_profile_is_listed_as_the_profile_a_read_reports() {
                  reports, got {summary:?} and {fetched:?}"
             );
         }
+        // A listing projects `AgentProfileSummary`, which declares no `tags` member, while
+        // `GetAgentProfileResponse` does: the tags a read reports are the ones the create
+        // sent, and the listing carries none.
         assert_eq!(
-            tags_by_key(summary.get("tags")),
+            summary.get("tags"),
+            None,
+            "case {case:?}: a listed profile carries no tags member, got {summary:?}"
+        );
+        assert_eq!(
             tags_by_key(fetched.body.get("tags")),
-            "case {case:?}: listed tags must be what a read of the profile reports, \
-             got {summary:?} and {fetched:?}"
+            tags_by_key(body.get("tags")),
+            "case {case:?}: a read of the profile reports the tags as sent, got {fetched:?}"
         );
     }
 }

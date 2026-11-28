@@ -40,7 +40,6 @@ pub struct UpdateAgentProfileOutput {
     pub eligible_for_scheduled_generation: Option<bool>,
     pub eligible_for_architecture_generation: Option<bool>,
     pub field_errors: Option<std::collections::HashMap<String, String>>,
-    pub tags: Option<Vec<Tag>>,
     pub created_by: String,
     pub created_at: ::aws_smithy_types::DateTime,
     pub last_modified_by: Option<String>,

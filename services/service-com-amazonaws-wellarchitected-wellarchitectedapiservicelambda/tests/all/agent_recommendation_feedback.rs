@@ -117,7 +117,7 @@ fn held_feedback(
 
 /// A profile whose one generation over every published pillar has completed, answered as
 /// the `RecommendationArn` of each recommendation it produced, in the listing's order.
-async fn generated_recommendations(client: &Client, name: &str) -> Vec<String> {
+pub(crate) async fn generated_recommendations(client: &Client, name: &str) -> Vec<String> {
     let profile_arn = profile_arn_of(client, name, 1).await;
     let started = start_generation(client, &profile_arn, &PILLARS, RECOMMENDATION_TYPES[0]).await;
     assert_eq!(
@@ -142,7 +142,7 @@ async fn generated_recommendations(client: &Client, name: &str) -> Vec<String> {
 /// A well-formed `AgentRecommendationArn` (the modelled
 /// `…:agent-recommendation/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 /// that no stored recommendation carries.
-fn absent_recommendation_arn() -> String {
+pub(crate) fn absent_recommendation_arn() -> String {
     format!(
         "arn:aws:wellarchitected:us-west-2:{}:agent-recommendation/\
          ffffffff-0000-4a00-8b00-0000000000fe",
@@ -162,13 +162,16 @@ struct Row {
 /// The rows: EVERY published `RecommendationFeedbackType` crossed with every published
 /// `FeedbackCategory` and with none at all, so the table spans the whole value space of
 /// both enum-typed members; the comments vary by SIZE across the rows — none, exactly the
-/// modelled minimum, a middling value and exactly the modelled maximum.
+/// modelled minimum, a middling value, exactly the modelled maximum — and one row carries
+/// the line breaks the member's `@pattern` admits (`[\P{C}\r\n]`), so the class the
+/// pattern spans is exercised and not only its length.
 fn rows() -> Vec<Row> {
-    let comments: [Option<String>; 4] = [
+    let comments: [Option<String>; 5] = [
         None,
         Some("!".repeat(COMMENTS_BOUNDS.0)),
         Some("a middling comment about this finding".to_string()),
         Some("c".repeat(COMMENTS_BOUNDS.1)),
+        Some("a comment\r\nover two lines".to_string()),
     ];
     let mut rows = Vec::new();
     for (type_index, feedback_type) in FEEDBACK_TYPES.iter().enumerate() {
@@ -557,6 +560,15 @@ async fn a_request_the_service_cannot_serve_is_refused() {
                 &client,
                 arn,
                 json!({ "type": FEEDBACK_TYPES[0], "comments": "a bell\u{7} in the comment" }),
+            )
+            .await,
+        ),
+        (
+            "comments opening a variable reference the pattern forbids",
+            put_feedback(
+                &client,
+                arn,
+                json!({ "type": FEEDBACK_TYPES[0], "comments": "${aws:region} in the comment" }),
             )
             .await,
         ),

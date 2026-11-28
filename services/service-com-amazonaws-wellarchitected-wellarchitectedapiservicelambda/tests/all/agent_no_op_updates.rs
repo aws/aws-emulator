@@ -150,7 +150,30 @@ fn records_a_modification(resource: &Value) -> bool {
 /// The rule's no-change half: the resource the no-op answered, and the one the reader
 /// reports afterwards, are both exactly what stood before it — modification members
 /// included.
-fn assert_no_modification_recorded(before: &Value, answered: &Value, read_back: &Value, case: &str) {
+///
+/// `not_answered` names the members the UPDATE's own response shape does not declare,
+/// which the READ's does: they cannot appear in its answer, so they are dropped from the
+/// expectation the answer is compared against and asserted absent from it.
+fn assert_no_modification_recorded(
+    before: &Value,
+    answered: &Value,
+    read_back: &Value,
+    case: &str,
+    not_answered: &[&str],
+) {
+    let mut as_the_update_answers_it = before.clone();
+    let members = as_the_update_answers_it
+        .as_object_mut()
+        .expect("the resource is an object");
+    for name in not_answered {
+        members.remove(*name);
+        assert_eq!(
+            answered.get(*name),
+            None,
+            "case {case:?}: the update's response shape declares no {name} member, \
+             got {answered:?}"
+        );
+    }
     for name in MODIFICATION_MEMBERS {
         assert_eq!(
             answered.get(name),
@@ -162,8 +185,9 @@ fn assert_no_modification_recorded(before: &Value, answered: &Value, read_back: 
         );
     }
     assert_eq!(
-        answered, before,
-        "case {case:?}: expected the resource as it stands {before:?}, got {answered:?}"
+        answered, &as_the_update_answers_it,
+        "case {case:?}: expected the resource as it stands {as_the_update_answers_it:?}, \
+         got {answered:?}"
     );
     assert_eq!(
         read_back, before,
@@ -303,7 +327,8 @@ async fn a_context_update_that_supplies_no_member_records_no_modification() {
                 &case,
                 "GetAgentContext",
             );
-            assert_no_modification_recorded(&before, &answered, &read_back, &case);
+            // `UpdateAgentContext` answers the same `ContextSummary` the read does.
+            assert_no_modification_recorded(&before, &answered, &read_back, &case, &[]);
         }
     }
 }
@@ -426,7 +451,8 @@ async fn a_goal_update_that_supplies_no_member_records_no_modification() {
                 &case,
                 "GetAgentGoal",
             );
-            assert_no_modification_recorded(&before, &answered, &read_back, &case);
+            // `UpdateAgentGoal` answers the same `GoalSummary` the read does.
+            assert_no_modification_recorded(&before, &answered, &read_back, &case, &[]);
         }
     }
 }
@@ -578,7 +604,17 @@ async fn an_agent_profile_update_that_supplies_no_member_records_no_modification
                 "UpdateAgentProfile",
             );
             let read_back = accepted(&get_profile(&client, &arn).await, &case, "GetAgentProfile");
-            assert_no_modification_recorded(&before, &answered, &read_back, &case);
+            // `UpdateAgentProfileResponse` declares neither `profileType` nor `tags`,
+            // which `GetAgentProfileResponse` does
+            // (`smithy_query(query="operation",
+            // operation="UpdateAgentProfile,GetAgentProfile")`).
+            assert_no_modification_recorded(
+                &before,
+                &answered,
+                &read_back,
+                &case,
+                &["profileType", "tags"],
+            );
         }
     }
 }

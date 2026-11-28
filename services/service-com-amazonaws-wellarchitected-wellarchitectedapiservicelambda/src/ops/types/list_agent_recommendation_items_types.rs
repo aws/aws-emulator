@@ -38,5 +38,13 @@ pub struct AgentRecommendationItemSummary {
     pub created_at: ::aws_smithy_types::DateTime,
     pub last_modified_by: Option<String>,
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
+    pub auto_remediation: Option<AutoRemediation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#AutoRemediation")]
+#[derive(Debug, Clone, Default)]
+pub struct AutoRemediation {
+    pub deep_link: Option<String>,
+    pub cli_command: Option<String>,
 }
 

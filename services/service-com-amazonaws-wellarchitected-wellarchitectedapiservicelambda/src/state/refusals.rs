@@ -1504,6 +1504,29 @@ pub fn agent_recommendation_not_found(recommendation_arn: &str) -> ResourceNotFo
     )
 }
 
+/// `ResourceNotFoundException$ResourceType` for the resource-based policy of an agent
+/// resource — the document `PutAgentProfilePolicy` / `PutAgentRecommendationPolicy`
+/// attaches. `ExceptionResourceType` is a free-form string, so it names the kind of
+/// resource that was missing: a policy.
+pub const AGENT_POLICY_RESOURCE_TYPE: &str = "POLICY";
+
+/// [`resource_not_found`] for a read of the resource-based policy of a resource that
+/// carries none.
+///
+/// The policy is a resource of its own — it is attached, read and deleted through its own
+/// routes, and the read's `policy` member is `@required`, so there is nothing to answer
+/// with until one is attached. The `ResourceId` is the ARN of the resource whose policy
+/// was looked for, as sent, and the message names the policy so a caller can tell "no
+/// policy attached" from "no such resource". Shared by both policy reads, so they cannot
+/// word it differently.
+pub fn agent_policy_not_found(resource_arn: &str) -> ResourceNotFoundException {
+    resource_not_found(
+        AGENT_POLICY_RESOURCE_TYPE,
+        resource_arn.to_string(),
+        &format!("resource-based policy attached to the resource with ARN {resource_arn}"),
+    )
+}
+
 /// [`resource_not_found`] for a milestone number that names no recorded milestone of
 /// `workload_id`.
 ///

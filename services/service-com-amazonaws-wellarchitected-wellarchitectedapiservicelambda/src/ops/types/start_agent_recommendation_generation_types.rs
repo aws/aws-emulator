@@ -18,7 +18,7 @@ pub struct StartAgentRecommendationGenerationInput {
     pub types: Vec<String>,
     pub name: Option<String>,
     pub additional_context: Option<::aws_smithy_types::Document>,
-    pub scope: Scope,
+    pub scope: Option<Scope>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#StartAgentRecommendationGenerationResponse")]

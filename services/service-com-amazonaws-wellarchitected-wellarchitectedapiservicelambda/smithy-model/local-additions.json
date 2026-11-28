@@ -1,0 +1,280 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.wellarchitected#Workload": {
+      "type": "structure",
+      "members": {
+        "FTRSupported": { "target": "smithy.api#Boolean" },
+        "WorkloadId": { "target": "com.amazonaws.wellarchitected#WorkloadId" },
+        "WorkloadArn": { "target": "com.amazonaws.wellarchitected#WorkloadArn" },
+        "WorkloadName": { "target": "com.amazonaws.wellarchitected#WorkloadName" },
+        "Description": { "target": "com.amazonaws.wellarchitected#WorkloadDescription" },
+        "Environment": { "target": "com.amazonaws.wellarchitected#WorkloadEnvironment" },
+        "UpdatedAt": { "target": "smithy.api#Timestamp" },
+        "AccountIds": { "target": "com.amazonaws.wellarchitected#WorkloadAccountIds" },
+        "AwsRegions": { "target": "com.amazonaws.wellarchitected#WorkloadAwsRegions" },
+        "NonAwsRegions": { "target": "com.amazonaws.wellarchitected#WorkloadNonAwsRegions" },
+        "ArchitecturalDesign": { "target": "com.amazonaws.wellarchitected#WorkloadArchitecturalDesign" },
+        "ReviewOwner": { "target": "com.amazonaws.wellarchitected#WorkloadReviewOwner" },
+        "ReviewRestrictionDate": { "target": "smithy.api#Timestamp" },
+        "IsReviewOwnerUpdateAcknowledged": { "target": "com.amazonaws.wellarchitected#IsReviewOwnerUpdateAcknowledged" },
+        "IndustryType": { "target": "com.amazonaws.wellarchitected#WorkloadIndustryType" },
+        "Industry": { "target": "com.amazonaws.wellarchitected#WorkloadIndustry" },
+        "Notes": { "target": "com.amazonaws.wellarchitected#Notes" },
+        "ImprovementStatus": { "target": "com.amazonaws.wellarchitected#WorkloadImprovementStatus" },
+        "RiskCounts": { "target": "com.amazonaws.wellarchitected#RiskCounts" },
+        "PillarPriorities": { "target": "com.amazonaws.wellarchitected#WorkloadPillarPriorities" },
+        "Lenses": { "target": "com.amazonaws.wellarchitected#WorkloadLenses" },
+        "Owner": { "target": "com.amazonaws.wellarchitected#AwsAccountId" },
+        "ShareInvitationId": { "target": "com.amazonaws.wellarchitected#ShareInvitationId" },
+        "Tags": { "target": "com.amazonaws.wellarchitected#TagMap" },
+        "DiscoveryConfig": { "target": "com.amazonaws.wellarchitected#WorkloadDiscoveryConfig" },
+        "Applications": { "target": "com.amazonaws.wellarchitected#WorkloadApplications" },
+        "Profiles": { "target": "com.amazonaws.wellarchitected#WorkloadProfiles" },
+        "PrioritizedRiskCounts": { "target": "com.amazonaws.wellarchitected#RiskCounts" },
+        "JiraConfiguration": { "target": "com.amazonaws.wellarchitected#WorkloadJiraConfigurationOutput" }
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 32, "max": 32 },
+        "smithy.api#pattern": "^[0-9a-f]{32}$"
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadArn": { "type": "string" },
+    "com.amazonaws.wellarchitected#WorkloadName": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 3, "max": 100 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadDescription": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 3, "max": 250 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadEnvironment": {
+      "type": "enum",
+      "members": {
+        "PRODUCTION": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PRODUCTION" } },
+        "PREPRODUCTION": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "PREPRODUCTION" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadAccountIds": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#AwsAccountId" },
+      "traits": { "smithy.api#length": { "max": 100 } }
+    },
+    "com.amazonaws.wellarchitected#AwsAccountId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 12, "max": 12 },
+        "smithy.api#pattern": "^[0-9]{12}$"
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadAwsRegions": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#AwsRegion" },
+      "traits": { "smithy.api#length": { "max": 50 } }
+    },
+    "com.amazonaws.wellarchitected#AwsRegion": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "max": 100 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadNonAwsRegions": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#WorkloadNonAwsRegion" },
+      "traits": { "smithy.api#length": { "max": 5 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadNonAwsRegion": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 3, "max": 25 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadArchitecturalDesign": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "max": 2048 },
+        "smithy.api#pattern": "^(|(https?|ftp):\\/\\/[^\\s/$.?#].[^\\s]*)$"
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadReviewOwner": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 3, "max": 255 } }
+    },
+    "com.amazonaws.wellarchitected#IsReviewOwnerUpdateAcknowledged": { "type": "boolean" },
+    "com.amazonaws.wellarchitected#WorkloadIndustryType": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "max": 100 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadIndustry": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "max": 100 } }
+    },
+    "com.amazonaws.wellarchitected#Notes": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "max": 2084 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadImprovementStatus": {
+      "type": "enum",
+      "members": {
+        "NOT_APPLICABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NOT_APPLICABLE" } },
+        "NOT_STARTED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NOT_STARTED" } },
+        "IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "IN_PROGRESS" } },
+        "COMPLETE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COMPLETE" } },
+        "RISK_ACKNOWLEDGED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "RISK_ACKNOWLEDGED" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#RiskCounts": {
+      "type": "map",
+      "key": { "target": "com.amazonaws.wellarchitected#Risk" },
+      "value": { "target": "com.amazonaws.wellarchitected#Count" }
+    },
+    "com.amazonaws.wellarchitected#Risk": {
+      "type": "enum",
+      "members": {
+        "UNANSWERED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "UNANSWERED" } },
+        "HIGH": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "HIGH" } },
+        "MEDIUM": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MEDIUM" } },
+        "NONE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NONE" } },
+        "NOT_APPLICABLE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "NOT_APPLICABLE" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#Count": {
+      "type": "integer",
+      "traits": { "smithy.api#range": { "min": 0 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadPillarPriorities": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#PillarId" }
+    },
+    "com.amazonaws.wellarchitected#PillarId": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 64 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadLenses": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#LensAlias" }
+    },
+    "com.amazonaws.wellarchitected#LensAlias": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 128 } }
+    },
+    "com.amazonaws.wellarchitected#ShareInvitationId": {
+      "type": "string",
+      "traits": { "smithy.api#pattern": "^[0-9a-f]{32}$" }
+    },
+    "com.amazonaws.wellarchitected#TagMap": {
+      "type": "map",
+      "key": { "target": "com.amazonaws.wellarchitected#TagKey" },
+      "value": { "target": "com.amazonaws.wellarchitected#TagValue" },
+      "traits": { "smithy.api#length": { "min": 1, "max": 50 } }
+    },
+    "com.amazonaws.wellarchitected#TagKey": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 128 },
+        "smithy.api#pattern": "^[\\p{L}\\p{N}\\p{Z}_.:/=+@-]+$"
+      }
+    },
+    "com.amazonaws.wellarchitected#TagValue": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "max": 256 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadDiscoveryConfig": {
+      "type": "structure",
+      "members": {
+        "TrustedAdvisorIntegrationStatus": { "target": "com.amazonaws.wellarchitected#TrustedAdvisorIntegrationStatus" },
+        "WorkloadResourceDefinition": { "target": "com.amazonaws.wellarchitected#WorkloadResourceDefinition" }
+      }
+    },
+    "com.amazonaws.wellarchitected#TrustedAdvisorIntegrationStatus": {
+      "type": "enum",
+      "members": {
+        "ENABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ENABLED" } },
+        "DISABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DISABLED" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadResourceDefinition": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#DefinitionType" }
+    },
+    "com.amazonaws.wellarchitected#DefinitionType": {
+      "type": "enum",
+      "members": {
+        "WORKLOAD_METADATA": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "WORKLOAD_METADATA" } },
+        "APP_REGISTRY": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "APP_REGISTRY" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadApplications": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#ApplicationArn" },
+      "traits": { "smithy.api#length": { "max": 1 } }
+    },
+    "com.amazonaws.wellarchitected#ApplicationArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "max": 2084 },
+        "smithy.api#pattern": "^arn:aws[-a-z]*:servicecatalog:[a-z]{2}(-gov)?-[a-z]+-\\d:\\d{12}:/applications/[a-z0-9]+$"
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadProfiles": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.wellarchitected#WorkloadProfile" },
+      "traits": { "smithy.api#length": { "max": 1 } }
+    },
+    "com.amazonaws.wellarchitected#WorkloadProfile": {
+      "type": "structure",
+      "members": {
+        "ProfileArn": { "target": "com.amazonaws.wellarchitected#ProfileArn" },
+        "ProfileVersion": { "target": "com.amazonaws.wellarchitected#ProfileVersion" }
+      }
+    },
+    "com.amazonaws.wellarchitected#ProfileArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "max": 2084 },
+        "smithy.api#pattern": "^arn:aws[-a-z]*:wellarchitected:[a-z]{2}(-gov)?-[a-z]+-\\d:\\d{12}:profile/[a-z0-9]+$"
+      }
+    },
+    "com.amazonaws.wellarchitected#ProfileVersion": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 32 },
+        "smithy.api#pattern": "^[A-Za-z0-9-]+$"
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadJiraConfigurationOutput": {
+      "type": "structure",
+      "members": {
+        "IssueManagementStatus": { "target": "com.amazonaws.wellarchitected#WorkloadIssueManagementStatus" },
+        "IssueManagementType": { "target": "com.amazonaws.wellarchitected#IssueManagementType" },
+        "JiraProjectKey": { "target": "com.amazonaws.wellarchitected#JiraProjectKey" },
+        "StatusMessage": { "target": "com.amazonaws.wellarchitected#StatusMessage" }
+      }
+    },
+    "com.amazonaws.wellarchitected#WorkloadIssueManagementStatus": {
+      "type": "enum",
+      "members": {
+        "ENABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ENABLED" } },
+        "DISABLED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DISABLED" } },
+        "INHERIT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "INHERIT" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#IssueManagementType": {
+      "type": "enum",
+      "members": {
+        "AUTO": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "AUTO" } },
+        "MANUAL": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "MANUAL" } }
+      }
+    },
+    "com.amazonaws.wellarchitected#JiraProjectKey": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 100 },
+        "smithy.api#pattern": "^[A-Z][A-Z0-9_]*$"
+      }
+    },
+    "com.amazonaws.wellarchitected#StatusMessage": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 512 } }
+    }
+  }
+}

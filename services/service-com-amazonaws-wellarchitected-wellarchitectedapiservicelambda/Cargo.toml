@@ -39,6 +39,9 @@ textwrap = { version = "0.16", default-features = false }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one `mod <name>;` per `tests/all/<name>.rs` from `tests/all/main.rs`, so a new
+# suite is a new file and no hand-written list can forget it.
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 

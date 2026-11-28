@@ -234,9 +234,11 @@ async fn a_tag_write_records_only_values_the_resources_own_tag_shape_can_carry()
         );
     }
 
-    // Every value the profile admitted is reported by each read of it: the summary the
-    // list projects and the `TagMap` plane the tag read answers through agree with the
-    // single-profile read above.
+    // Every value the profile admitted is reported by each read that projects them: the
+    // single-profile read above and the `TagMap` plane the tag read answers through.
+    // `AgentProfileSummary` declares no `tags` member
+    // (`smithy_query(query="shape", shape="AgentProfileSummary")`), so the summary a
+    // listing projects carries none at all.
     let listed = list_profiles(&client, "").await;
     let summary = listed
         .body
@@ -250,9 +252,9 @@ async fn a_tag_write_records_only_values_the_resources_own_tag_shape_can_carry()
         .unwrap_or_else(|| panic!("expected the tagged profile in {listed:?}"))
         .clone();
     assert_eq!(
-        profile_tags(summary.get("tags")),
-        recorded,
-        "ListAgentProfiles must report the tags the profile carries, got {listed:?}"
+        summary.get("tags"),
+        None,
+        "a listed profile carries no tags member, got {listed:?}"
     );
     let read_back = list_tags(&client, &arn).await;
     assert_eq!(

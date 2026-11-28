@@ -222,7 +222,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ),
             "name": &input.name,
             "profileArn": &input.profile_arn,
-            "scope": scope_fingerprint(&input.scope),
+            "scope": input.scope.as_ref().map(scope_fingerprint),
             "types": &input.types,
         }));
         let now = std::time::SystemTime::now();
@@ -271,11 +271,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // The pillars this analysis covers. `scope` is modelled OPTIONAL, and a scope that
+        // is named carries its pillars `@required`; a start that names no scope asks for
+        // the whole of what the profile covers, which is the pillars the profile names, and
+        // a profile that names none (the "zero-configuration" kind) covers the published
+        // framework. The set is recorded with the generation, so a later change to the
+        // profile cannot move the scope of an analysis already running.
+        let pillars_in_scope: Vec<String> = match input.scope.as_ref() {
+            Some(scope) => scope.pillars.clone(),
+            None => match profile.pillars.as_deref() {
+                Some(pillars) if !pillars.is_empty() => pillars.to_vec(),
+                _ => PILLAR_VALUES
+                    .iter()
+                    .map(|pillar| (*pillar).to_string())
+                    .collect(),
+            },
+        };
+
         // `Scope$goalIds` names "specific goal IDs to focus on during recommendation
         // generation", and a goal is reached only through the profile that holds it: an id
         // that names no goal OF THIS PROFILE scopes the generation to nothing, so it is
         // refused naming the member that carried it.
-        if let Some(goal_ids) = input.scope.goal_ids.as_ref() {
+        if let Some(goal_ids) = input.scope.as_ref().and_then(|scope| scope.goal_ids.as_ref()) {
             if let Some(goal_id) = goal_ids
                 .iter()
                 .find(|goal_id| store.agent_goal(&input.profile_arn, goal_id).is_none())
@@ -347,6 +364,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: input.name,
             types: input.types,
             scope: input.scope,
+            pillars_in_scope,
             additional_context: input.additional_context,
             // "The identifier of the user or system that started this generation": every
             // request this emulator serves is attributed to its one account, so that is the
@@ -396,14 +414,13 @@ fn unpublished_enum_exception(
 ) -> Option<ValidationException> {
     let scope_pillars = input
         .scope
-        .pillars
         .iter()
+        .flat_map(|scope| scope.pillars.iter())
         .map(|pillar| (SCOPE_PILLARS_MEMBER, pillar, PILLAR_VALUES));
     let item_pillars = input
         .scope
-        .items
         .iter()
-        .flatten()
+        .flat_map(|scope| scope.items.iter().flatten())
         .map(|item| (SCOPE_ITEMS_PILLAR_MEMBER, &item.pillar, PILLAR_VALUES));
     let findings: Vec<(String, String)> = input
         .types

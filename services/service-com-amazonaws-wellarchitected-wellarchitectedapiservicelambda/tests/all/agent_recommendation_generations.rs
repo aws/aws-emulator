@@ -111,6 +111,12 @@ const GENERATION_STATUSES: [&str; 3] = ["QUEUED", "IN_PROGRESS", "COMPLETED"];
 /// (`smithy_query(query="shape", shape="RecommendationType")`).
 const RECOMMENDATION_TYPES: [&str; 3] = ["RESOURCE", "ARCHITECTURE", "APPLICATION"];
 
+/// The published bounds of `StartAgentRecommendationGenerationRequest$types`
+/// (`RecommendationTypes`, `@length(min: 1, max: 2)` with `@uniqueItems` —
+/// `smithy_query(query="shape", shape="RecommendationTypes")`). A start naming the
+/// maximum is served and one naming a type more is refused.
+const TYPES_MAX: usize = 2;
+
 /// `POST /api/v1/agent-profiles/{profileArn}/generations`: the ARN is a non-greedy
 /// `@httpLabel`, so it travels percent-encoded in one path segment, exactly as an SDK
 /// sends it.
@@ -1708,7 +1714,7 @@ async fn a_start_the_service_cannot_serve_is_refused_as_a_validation_exception()
             "more recommendation types than the published maximum",
             profile_arn.clone(),
             json!({
-                "types": ["RESOURCE", "ARCHITECTURE"],
+                "types": RECOMMENDATION_TYPES[..=TYPES_MAX],
                 "scope": { "pillars": ["SECURITY"] },
             }),
         ),
@@ -1760,6 +1766,26 @@ async fn a_start_the_service_cannot_serve_is_refused_as_a_validation_exception()
         "a document nested to the ceiling round-trips as sent, got {fetched:?}"
     );
 
+    // The type list's `@length` is a BOUND too: a start naming the published maximum is
+    // SERVED, and only one naming a type more is refused (the row above), and the
+    // generation reports the whole set it covers.
+    let at_the_type_maximum = json!({
+        "types": RECOMMENDATION_TYPES[..TYPES_MAX],
+        "scope": { "pillars": ["SECURITY"] },
+    });
+    let answer = start_generation(&client, &profile_arn, at_the_type_maximum).await;
+    let typed_id = started_id(&answer, "types at the published maximum");
+    let fetched = get_generation(&client, &profile_arn, &typed_id).await;
+    assert_eq!(
+        fetched
+            .body
+            .get("generationRecommendationTypes")
+            .and_then(Value::as_array)
+            .map(|types| types.len()),
+        Some(TYPES_MAX),
+        "a generation reports every recommendation type it covers, got {fetched:?}"
+    );
+
     // The refusal that names the profile's own missing scope says which member leaves it
     // ineligible — the sentence `GetAgentProfile` reports in `fieldErrors`.
     let answer = start_generation(&client, &ineligible_arn, good_body.clone()).await;
@@ -1777,6 +1803,9 @@ async fn a_start_the_service_cannot_serve_is_refused_as_a_validation_exception()
 
     // Nothing was recorded by any refusal: the eligible profile's only generation is the
     // one a successful start records now.
+    // Nothing was recorded by any refusal: the profile holds exactly the starts that WERE
+    // served — the document nested to the ceiling, the type list at its published maximum,
+    // and this one.
     let started = start_generation(&client, &profile_arn, good_body).await;
     let id = started_id(&started, "after the refusals");
     let fetched = get_generation(&client, &profile_arn, &id).await;
@@ -1784,18 +1813,18 @@ async fn a_start_the_service_cannot_serve_is_refused_as_a_validation_exception()
         fetched.status, 200,
         "a start after the refusals must still record its generation, got {fetched:?}"
     );
+    // Read through the guard into a value before asserting: a failing assertion whose
+    // message takes the store's lock again would deadlock instead of reporting.
+    let served = client.store().lock().agent_generation_count(&profile_arn);
     assert_eq!(
-        client.store().lock().agent_generation_count(&profile_arn),
-        2,
-        "the refusals must have recorded no generation beside the two starts that were \
-         served, got {} for {profile_arn}",
-        client.store().lock().agent_generation_count(&profile_arn)
+        served, 3,
+        "the refusals must have recorded no generation beside the starts that were \
+         served, got {served} for {profile_arn}"
     );
+    let ineligible_generations = client.store().lock().agent_generation_count(&ineligible_arn);
     assert_eq!(
-        client.store().lock().agent_generation_count(&ineligible_arn),
-        0,
-        "an ineligible profile holds no generation, got {}",
-        client.store().lock().agent_generation_count(&ineligible_arn)
+        ineligible_generations, 0,
+        "an ineligible profile holds no generation, got {ineligible_generations}"
     );
     assert!(
         !goals.is_empty(),

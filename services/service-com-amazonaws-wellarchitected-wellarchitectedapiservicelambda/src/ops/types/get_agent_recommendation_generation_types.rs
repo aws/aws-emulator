@@ -30,12 +30,14 @@ pub struct GetAgentRecommendationGenerationOutput {
     pub created_at: ::aws_smithy_types::DateTime,
     pub last_modified_by: Option<String>,
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
-    pub additional_context: Option<::aws_smithy_types::Document>,
-    pub scope: Option<Scope>,
+    pub generation_type: Option<String>,
+    pub generation_recommendation_types: Option<Vec<String>>,
     pub started_at: Option<::aws_smithy_types::DateTime>,
     pub ended_at: Option<::aws_smithy_types::DateTime>,
-    pub progress: Option<Progress>,
     pub error_details: Option<ErrorDetails>,
+    pub additional_context: Option<::aws_smithy_types::Document>,
+    pub scope: Option<Scope>,
+    pub progress: Option<Progress>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#Progress")]
@@ -44,12 +46,5 @@ pub struct Progress {
     pub steps_completed: i32,
     pub total_steps: i32,
     pub completion_percentage: f64,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.wellarchitected#ErrorDetails")]
-#[derive(Debug, Clone, Default)]
-pub struct ErrorDetails {
-    pub code: String,
-    pub message: String,
 }
 

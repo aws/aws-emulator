@@ -223,7 +223,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_modified_by: last_modified.as_ref().map(|(identity, _)| identity.clone()),
             last_modified_at: last_modified.map(|(_, at)| ::aws_smithy_types::DateTime::from(at)),
             additional_context: record.additional_context.clone(),
-            scope: Some(record.scope.clone()),
+            scope: record.scope.clone(),
+            // How the generation was started, and the recommendation types it covers:
+            // both are properties of the start this record holds.
+            generation_type: Some(crate::state::GENERATION_TYPE_ONDEMAND.to_string()),
+            generation_recommendation_types: record.generation_recommendation_types(),
             started_at: record
                 .started_at(now)
                 .map(::aws_smithy_types::DateTime::from),

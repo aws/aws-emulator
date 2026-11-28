@@ -196,8 +196,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             business_overview: record.business_overview.clone(),
             pillars: record.pillars.clone(),
             deletion_protection: record.deletion_protection,
+            // Which kind of profile this is, and the two scope members whose presence
+            // follows from that kind — "not present for basic profiles", "present only
+            // for organizational profiles" (`smithy_query(query="shape",
+            // shape="AgentProfileSummary")`) — are reported as the create recorded them.
+            profile_type: Some(record.profile_type.clone()),
             execution_role_arn: record.execution_role_arn.clone(),
             aggregation_configuration: record.aggregation_configuration.clone(),
+            organizational_aggregation_configuration: record
+                .organizational_aggregation_configuration
+                .clone(),
             arn: record.arn.clone(),
             // Both eligibility members and `fieldErrors` are derived from the stored
             // profile's own scope (`crate::state::AgentProfileRecord`), so this read

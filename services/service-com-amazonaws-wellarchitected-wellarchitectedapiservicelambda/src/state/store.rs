@@ -443,8 +443,7 @@ impl ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState {
                     generation.id.clone(),
                     generation.types.first()?.clone(),
                     generation
-                        .scope
-                        .pillars
+                        .pillars_in_scope
                         .iter()
                         .filter_map(|pillar| recommendation_content(pillar))
                         .collect(),
@@ -484,6 +483,9 @@ impl ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState {
                     // Nobody has judged the finding yet: the feedback sub-resource exists
                     // only once a caller submits one.
                     feedback: None,
+                    // And nothing governs access to it yet: the policy sub-resource exists
+                    // only once a caller attaches one.
+                    policy: None,
                 };
                 self.agent_recommendations
                     .entry(profile_arn.clone())

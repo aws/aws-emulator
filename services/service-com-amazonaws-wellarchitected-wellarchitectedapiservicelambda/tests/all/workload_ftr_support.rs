@@ -10,8 +10,10 @@
 //! supported" from "unknown". No operation this service exposes enrols a workload in that
 //! review, so no workload this emulator holds is FTR-supported.
 //!
-//! The member is absent from the on-disk model snapshot and was added to it from the
-//! recorded AWS responses; see `Workload::ftr_supported` in `src/ops/types/shared_types.rs`.
+//! The member is absent from the upstream model snapshot and is declared from the overlay
+//! model beside it (`smithy-model/LOCAL-ADDITIONS.md`); see `Workload::ftr_supported` in
+//! `src/ops/types/workload_projection_types.rs`. `super::workload_projection_members` pins
+//! that declaration against the snapshot's own member list.
 //!
 //! Requests go through the real `MultiServiceRouter`, so routing, restJson1
 //! (de)serialization, boundary constraint validation and the handler all run as they do in

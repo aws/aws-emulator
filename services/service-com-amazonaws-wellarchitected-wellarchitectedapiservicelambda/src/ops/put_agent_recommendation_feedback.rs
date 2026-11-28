@@ -192,6 +192,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `comments` carries a `@pattern` that forbids a `${name:` variable reference with
+        // a negative lookahead, which the boundary validator's engine cannot compile — an
+        // expression it cannot compile is treated there as satisfied, so the requirement is
+        // held to here (`crate::state::comments_admitted`, which evaluates the model's own
+        // expression through `service_common::unapplied_patterns`) and no feedback is
+        // STORED carrying a value the model's own pattern excludes.
+        if let Some(comments) = input.comments.as_deref() {
+            if !crate::state::comments_admitted(comments) {
+                return Err(
+                    PutAgentRecommendationFeedbackErrorModeled::ValidationException(
+                        crate::state::member_constraint_exception(
+                            COMMENTS_MEMBER,
+                            &crate::state::pattern_constraint(crate::state::COMMENTS_PATTERN),
+                        ),
+                    )
+                    .into(),
+                );
+            }
+        }
+
         let now = std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -257,3 +277,7 @@ const TYPE_MEMBER: &str = "type";
 /// The modelled input member a feedback-category finding names
 /// (`PutAgentRecommendationFeedbackRequest$feedbackCategory`).
 const FEEDBACK_CATEGORY_MEMBER: &str = "feedbackCategory";
+
+/// The modelled input member a comments finding names
+/// (`PutAgentRecommendationFeedbackRequest$comments`).
+const COMMENTS_MEMBER: &str = "comments";

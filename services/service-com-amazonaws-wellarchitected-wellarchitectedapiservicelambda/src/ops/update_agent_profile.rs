@@ -119,6 +119,7 @@
 //! * `InternalServerException` (HTTP 500) — There is a problem with the Well-Architected Tool
 //!   API service.
 //! * `ResourceNotFoundException` (HTTP 404) — The requested resource was not found.
+//! * `ServiceQuotaExceededException` (HTTP 402) — The user has reached their resource quota.
 //! * `ThrottlingException` (HTTP 429) — Request was denied due to request throttling.
 //! * `ValidationException` (HTTP 400) — The user input is not valid.
 
@@ -142,6 +143,7 @@ pub enum UpdateAgentProfileErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -303,16 +305,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 record.business_overview = Some(business_overview);
             }
             if let Some(pillars) = input.pillars {
-                record.pillars = pillars;
+                record.pillars = Some(pillars);
             }
             if let Some(deletion_protection) = input.deletion_protection {
                 record.deletion_protection = deletion_protection;
             }
             if let Some(execution_role_arn) = input.execution_role_arn {
-                record.execution_role_arn = execution_role_arn;
+                record.execution_role_arn = Some(execution_role_arn);
             }
             if let Some(aggregation_configuration) = input.aggregation_configuration {
-                record.aggregation_configuration = aggregation_configuration;
+                record.aggregation_configuration = Some(aggregation_configuration);
             }
             // "The identifier of the user or system that last modified this profile":
             // every request this emulator serves is attributed to its one account, as the
@@ -357,15 +359,14 @@ fn profile_output(record: &crate::state::AgentProfileRecord) -> UpdateAgentProfi
         display_name: record.display_name.clone(),
         description: record.description.clone(),
         business_overview: record.business_overview.clone(),
-        pillars: record.pillars.clone(),
+        pillars: record.pillars.clone().unwrap_or_default(),
         deletion_protection: record.deletion_protection,
-        execution_role_arn: record.execution_role_arn.clone(),
-        aggregation_configuration: record.aggregation_configuration.clone(),
+        execution_role_arn: record.execution_role_arn.clone().unwrap_or_default(),
+        aggregation_configuration: record.aggregation_configuration.clone().unwrap_or_default(),
         arn: record.arn.clone(),
         eligible_for_scheduled_generation: Some(record.eligible_for_generation()),
         eligible_for_architecture_generation: Some(record.eligible_for_generation()),
         field_errors: record.field_errors(),
-        tags: record.tag_list(),
         created_by: record.created_by.clone(),
         created_at: ::aws_smithy_types::DateTime::from(record.created_at),
         last_modified_by: record.last_modified_by.clone(),

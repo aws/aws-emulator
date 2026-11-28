@@ -39,5 +39,10 @@ pub struct AgentRecommendationGenerationSummary {
     pub created_at: ::aws_smithy_types::DateTime,
     pub last_modified_by: Option<String>,
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
+    pub generation_type: Option<String>,
+    pub generation_recommendation_types: Option<Vec<String>>,
+    pub started_at: Option<::aws_smithy_types::DateTime>,
+    pub ended_at: Option<::aws_smithy_types::DateTime>,
+    pub error_details: Option<ErrorDetails>,
 }
 

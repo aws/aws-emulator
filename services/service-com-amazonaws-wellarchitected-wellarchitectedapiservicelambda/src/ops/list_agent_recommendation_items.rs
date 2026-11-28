@@ -345,6 +345,17 @@ const CROSS_PILLAR_BENEFITS_MEMBER: &str = "crossPillarBenefits";
 /// (`GetAgentRecommendationResponse$tradeOffs`), as `relatedThrough` names it.
 const TRADE_OFFS_MEMBER: &str = "tradeOffs";
 
+/// `autoRemediation` as every item of this service reports it: absent.
+///
+/// The member carries "one AWS Systems Manager (SSM) runbook execution that targets the
+/// resource" and is "present only when the resource's check is backed by an SSM automation
+/// runbook" (`smithy_query(query="shape", shape="AutoRemediation")`). The findings this
+/// service publishes carry their fix as the remediation steps
+/// `GetAgentRecommendation` reports, and no runbook stands behind any of them, so there is
+/// no execution to deep-link to or to express as a command and the member is reported
+/// absent rather than naming a runbook nothing would run.
+const NO_AUTO_REMEDIATION: Option<AutoRemediation> = None;
+
 /// Every item of one recommendation, in id order.
 ///
 /// The module docs give the two kinds and why they are derived rather than stored. Both
@@ -378,6 +389,7 @@ fn item_summaries(
             created_at,
             last_modified_by: None,
             last_modified_at: None,
+            auto_remediation: NO_AUTO_REMEDIATION,
         })
         .collect();
 
@@ -460,6 +472,7 @@ fn item_summaries(
             created_at,
             last_modified_by: None,
             last_modified_at: None,
+            auto_remediation: NO_AUTO_REMEDIATION,
         });
     }
 

@@ -143,6 +143,8 @@ mod store;
 /// language of the lens JSON format, evaluated against the choices an answer records.
 mod risk_rules;
 mod refusals;
+mod prose_patterns;
+mod resource_policies;
 mod shares;
 mod agents;
 mod profiles;
@@ -157,6 +159,8 @@ pub use profiles::*;
 pub use agents::*;
 pub use shares::*;
 pub use refusals::*;
+pub use prose_patterns::*;
+pub use resource_policies::*;
 pub use risk_rules::*;
 pub use framework_lens::*;
 pub use lens_document::*;
@@ -201,7 +205,8 @@ use crate::ops::types::{
     ChoiceAnswerSummary, ChoiceContent, ConflictException,
     ContextContent, ContextSummary, GetGlobalSettingsOutput, GoalSummary, JiraConfiguration,
     JiraSelectedQuestionConfiguration, LensReview, LensShareSummary, LensSummary,
-    Milestone, MilestoneSummary, PillarReviewSummary, Profile, ProfileQuestion,
+    Milestone, MilestoneSummary, OrganizationalAggregationConfiguration, PillarReviewSummary,
+    Profile, ProfileQuestion,
     ProfileShareSummary, ProfileSummary, Progress, ResourceNotFoundException, ReviewTemplate,
     ReviewTemplateAnswer, ReviewTemplateLensReview, ReviewTemplatePillarReviewSummary,
     ReviewTemplateSummary, Scope,
@@ -3926,6 +3931,14 @@ pub fn unknown_context_enum_exception(
 /// messages for invalid or missing input fields".
 pub const AGGREGATION_CONFIGURATION_MEMBER: &str = "aggregationConfiguration";
 
+/// The modelled input member an ORGANIZATIONAL profile's generation-eligibility finding
+/// names (`CreateAgentOrganizationalProfileRequest$organizationalAggregationConfiguration`):
+/// that kind of profile is scoped by the organizational boundary rather than by an
+/// account-and-Region aggregation, so a finding about its scope has to name the member the
+/// request actually carries it in.
+pub const ORGANIZATIONAL_AGGREGATION_CONFIGURATION_MEMBER: &str =
+    "organizationalAggregationConfiguration";
+
 /// What `fieldErrors` says about a profile that names no scope to analyse, and so is
 /// not eligible for recommendation generation (see
 /// [`AgentProfileRecord::eligible_for_generation`]).
@@ -3999,6 +4012,16 @@ pub struct AgentRecommendationRecord {
     /// The feedback a caller has submitted on this recommendation
     /// ([`AgentRecommendationFeedback`]), or nothing while none has been submitted.
     pub feedback: Option<AgentRecommendationFeedback>,
+    /// The resource-based policy `PutAgentRecommendationPolicy` has attached — "the IAM
+    /// resource-based policy document in JSON format" — or nothing while none is
+    /// attached.
+    ///
+    /// A SUB-RESOURCE of the recommendation it governs, held here for the reason the
+    /// feedback above is: it is addressed as `…/{recommendationArn}/policy`, so it can
+    /// neither be reached without the recommendation nor outlive it. The document is held
+    /// as the caller sent it: the model constrains it as a `ResourcePolicy` string, and
+    /// nothing in this service reads inside it.
+    pub policy: Option<String>,
 }
 
 /// The feedback submitted on one recommendation: what `PutAgentRecommendationFeedback`

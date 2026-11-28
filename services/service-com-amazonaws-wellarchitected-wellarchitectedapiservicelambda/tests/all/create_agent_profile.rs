@@ -42,7 +42,7 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 
 use service_com_amazonaws_wellarchitected_wellarchitectedapiservicelambda::state::{
-    AgentProfileRecord, MAX_AGENT_PROFILES, MAX_TAGS_PER_RESOURCE,
+    AgentProfileRecord, MAX_AGENT_PROFILES, MAX_TAGS_PER_RESOURCE, PROFILE_TYPE_STANDARD,
 };
 
 use super::agent_goals::{
@@ -683,13 +683,16 @@ async fn the_agent_profile_quota_bounds_the_create_and_the_refusal_records_nothi
                         display_name: None,
                         description: None,
                         business_overview: None,
-                        pillars: vec!["SECURITY".to_string()],
+                        pillars: Some(vec!["SECURITY".to_string()]),
                         deletion_protection: false,
-                        execution_role_arn: format!(
+                        profile_type: PROFILE_TYPE_STANDARD.to_string(),
+                        execution_role_arn: Some(format!(
                             "arn:aws:iam::{}:role/SeededAgentProfileExecution",
                             engine::emulator_account_id()
-                        ),
-                        aggregation_configuration: Vec::new(),
+                        )),
+                        aggregation_configuration: Some(Vec::new()),
+                        organizational_aggregation_configuration: None,
+                        policy: None,
                         tags: std::collections::BTreeMap::new(),
                         created_by: engine::emulator_account_id().to_string(),
                         created_at: SystemTime::now(),

@@ -325,10 +325,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             display_name: input.display_name,
             description: input.description,
             business_overview: input.business_overview,
-            pillars: input.pillars,
+            pillars: Some(input.pillars),
             deletion_protection: input.deletion_protection,
-            execution_role_arn: input.execution_role_arn,
-            aggregation_configuration: input.aggregation_configuration,
+            // This create is the one that mints a STANDARD profile: its
+            // `executionRoleArn` and `aggregationConfiguration` are modelled `@required`,
+            // which is exactly what that kind is defined by
+            // (`smithy_query(query="shape", shape="ProfileType")`), and the
+            // organizational boundary belongs to the kind that is scoped by one.
+            profile_type: crate::state::PROFILE_TYPE_STANDARD.to_string(),
+            execution_role_arn: Some(input.execution_role_arn),
+            aggregation_configuration: Some(input.aggregation_configuration),
+            organizational_aggregation_configuration: None,
+            // Nothing governs access to a profile that has just been created: the policy
+            // sub-resource exists only once `PutAgentProfilePolicy` attaches one.
+            policy: None,
             tags,
             // "The identifier of the user or system that created this profile": every
             // request this emulator serves is attributed to its one account, so that is
@@ -372,10 +382,13 @@ fn profile_output(record: &crate::state::AgentProfileRecord) -> CreateAgentProfi
         display_name: record.display_name.clone(),
         description: record.description.clone(),
         business_overview: record.business_overview.clone(),
-        pillars: record.pillars.clone(),
+        // A STANDARD profile is the only kind this create mints, and the shape it answers
+        // declares all three members `@required`, so they are reported as the create
+        // stored them.
+        pillars: record.pillars.clone().unwrap_or_default(),
         deletion_protection: record.deletion_protection,
-        execution_role_arn: record.execution_role_arn.clone(),
-        aggregation_configuration: record.aggregation_configuration.clone(),
+        execution_role_arn: record.execution_role_arn.clone().unwrap_or_default(),
+        aggregation_configuration: record.aggregation_configuration.clone().unwrap_or_default(),
         arn: record.arn.clone(),
         eligible_for_scheduled_generation: Some(record.eligible_for_generation()),
         eligible_for_architecture_generation: Some(record.eligible_for_generation()),

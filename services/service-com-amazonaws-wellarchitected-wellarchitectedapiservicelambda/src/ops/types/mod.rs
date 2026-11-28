@@ -16,8 +16,11 @@
 
 pub mod associate_lenses_types;
 pub mod associate_profiles_types;
+pub mod create_agent_basic_profile_types;
 pub mod create_agent_context_types;
 pub mod create_agent_goal_types;
+pub mod create_agent_organizational_profile_types;
+pub mod create_agent_organizational_report_types;
 pub mod create_agent_profile_types;
 pub mod create_lens_share_types;
 pub mod create_lens_version_types;
@@ -30,7 +33,10 @@ pub mod create_workload_share_types;
 pub mod create_workload_types;
 pub mod delete_agent_context_types;
 pub mod delete_agent_goal_types;
+pub mod delete_agent_organizational_report_types;
+pub mod delete_agent_profile_policy_types;
 pub mod delete_agent_profile_types;
+pub mod delete_agent_recommendation_policy_types;
 pub mod delete_lens_share_types;
 pub mod delete_lens_types;
 pub mod delete_profile_share_types;
@@ -44,11 +50,19 @@ pub mod disassociate_profiles_types;
 pub mod export_lens_types;
 pub mod get_agent_context_types;
 pub mod get_agent_goal_types;
+pub mod get_agent_organizational_report_data_types;
+pub mod get_agent_organizational_report_types;
+pub mod get_agent_preferences_types;
+pub mod get_agent_profile_policy_types;
 pub mod get_agent_profile_types;
 pub mod get_agent_recommendation_generation_types;
+pub mod get_agent_recommendation_policy_types;
 pub mod get_agent_recommendation_types;
 pub mod get_answer_types;
 pub mod get_consolidated_report_types;
+// Hand-authored, not rendered: the op-stub generator declines `GetGlobalSettings` for its
+// `smithy.api#Unit` input (`src/ops/SKIPPED_STUBS.md`), so it renders no module for it and
+// this declaration is what reaches the one it has instead.
 pub mod get_global_settings_types;
 pub mod get_lens_review_report_types;
 pub mod get_lens_review_types;
@@ -64,6 +78,7 @@ pub mod get_workload_types;
 pub mod import_lens_types;
 pub mod list_agent_contexts_types;
 pub mod list_agent_goals_types;
+pub mod list_agent_organizational_reports_types;
 pub mod list_agent_profiles_types;
 pub mod list_agent_recommendation_generations_types;
 pub mod list_agent_recommendation_items_types;
@@ -87,13 +102,18 @@ pub mod list_tags_for_resource_types;
 pub mod list_template_shares_types;
 pub mod list_workload_shares_types;
 pub mod list_workloads_types;
+pub mod put_agent_preferences_types;
+pub mod put_agent_profile_policy_types;
 pub mod put_agent_recommendation_feedback_types;
+pub mod put_agent_recommendation_policy_types;
+pub mod send_agent_organizational_report_data_to_s3_types;
 pub mod shared_types;
 pub mod start_agent_recommendation_generation_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_agent_context_types;
 pub mod update_agent_goal_types;
+pub mod update_agent_organizational_profile_types;
 pub mod update_agent_profile_types;
 pub mod update_agent_recommendation_status_types;
 pub mod update_answer_types;
@@ -110,15 +130,25 @@ pub mod update_workload_types;
 pub mod upgrade_lens_review_types;
 pub mod upgrade_profile_version_types;
 pub mod upgrade_review_template_lens_review_types;
+// Hand-authored, not rendered: `Workload` carries one member AWS answers and the upstream
+// model does not declare, so it is generated from the overlay model beside the snapshot
+// (`smithy-model/LOCAL-ADDITIONS.md`) rather than from the snapshot.
+pub mod workload_projection_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_lenses_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_profiles_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_agent_basic_profile_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_agent_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_agent_goal_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_agent_organizational_profile_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_agent_organizational_report_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_agent_profile_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -144,7 +174,13 @@ pub use delete_agent_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_agent_goal_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_agent_organizational_report_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_agent_profile_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_agent_profile_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_agent_recommendation_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_lens_share_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -172,9 +208,19 @@ pub use get_agent_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agent_goal_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_organizational_report_data_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_organizational_report_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_preferences_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_profile_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agent_profile_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agent_recommendation_generation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agent_recommendation_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agent_recommendation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -211,6 +257,8 @@ pub use import_lens_types::*;
 pub use list_agent_contexts_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_agent_goals_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_agent_organizational_reports_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_agent_profiles_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -258,7 +306,15 @@ pub use list_workload_shares_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_workloads_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_agent_preferences_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_agent_profile_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_agent_recommendation_feedback_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_agent_recommendation_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use send_agent_organizational_report_data_to_s3_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -271,6 +327,8 @@ pub use untag_resource_types::*;
 pub use update_agent_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_agent_goal_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_agent_organizational_profile_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_agent_profile_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -303,4 +361,10 @@ pub use upgrade_lens_review_types::*;
 pub use upgrade_profile_version_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use upgrade_review_template_lens_review_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use workload_projection_types::*;
+// EXPLICIT, so this `Workload` — the one with the member AWS answers — is what every
+// `use super::types::*` resolves: `shared_types` declares the snapshot's shape of the same
+// name, and an explicit re-export takes precedence over a glob.
+pub use workload_projection_types::Workload;
 

@@ -24,10 +24,11 @@ pub struct GetAgentProfileOutput {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub business_overview: Option<String>,
-    pub pillars: Vec<String>,
+    pub pillars: Option<Vec<String>>,
     pub deletion_protection: bool,
-    pub execution_role_arn: String,
-    pub aggregation_configuration: Vec<AggregationConfiguration>,
+    pub profile_type: Option<String>,
+    pub execution_role_arn: Option<String>,
+    pub aggregation_configuration: Option<Vec<AggregationConfiguration>>,
     pub arn: String,
     pub eligible_for_scheduled_generation: Option<bool>,
     pub eligible_for_architecture_generation: Option<bool>,
@@ -37,5 +38,6 @@ pub struct GetAgentProfileOutput {
     pub created_at: ::aws_smithy_types::DateTime,
     pub last_modified_by: Option<String>,
     pub last_modified_at: Option<::aws_smithy_types::DateTime>,
+    pub organizational_aggregation_configuration: Option<OrganizationalAggregationConfiguration>,
 }
 

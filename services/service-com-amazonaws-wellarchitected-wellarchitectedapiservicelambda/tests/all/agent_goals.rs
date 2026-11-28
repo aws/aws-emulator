@@ -255,6 +255,30 @@ pub(crate) fn tags_by_key(value: Option<&Value>) -> Vec<(String, String)> {
     tags
 }
 
+/// Whether the response shape `reader` projects an agent profile through declares
+/// `member`.
+///
+/// The three projections of one stored profile are three shapes, and the model gives them
+/// different member lists (`smithy_query(query="operation",
+/// operation="CreateAgentProfile,GetAgentProfile")`, `smithy_query(query="shape",
+/// shape="AgentProfileSummary")`):
+///
+/// * `tags` — `CreateAgentProfileResponse` and `GetAgentProfileResponse` only.
+/// * `profileType` and `organizationalAggregationConfiguration` —
+///   `GetAgentProfileResponse` and `AgentProfileSummary` only.
+///
+/// Held in one place so each suite asserts the members ITS shape declares, and the
+/// absence of the ones it does not.
+pub(crate) fn declares(reader: &str, member: &str) -> bool {
+    match member {
+        "tags" => matches!(reader, "CreateAgentProfile" | "GetAgentProfile"),
+        "profileType" | "organizationalAggregationConfiguration" => {
+            matches!(reader, "GetAgentProfile" | "ListAgentProfiles")
+        }
+        other => panic!("no projection rule is held for the member {other:?}"),
+    }
+}
+
 /// Assert that `answer` projects the agent profile `sent` created: every member the
 /// request carried comes back as sent, the members the SERVICE owns are its own, and the
 /// members DERIVED from the stored profile answer for that profile's aggregation scope.
@@ -267,6 +291,11 @@ pub(crate) fn tags_by_key(value: Option<&Value>) -> Vec<(String, String)> {
 /// the operation whose answer is under test, `expected_protection` the
 /// `deletionProtection` the row must read back (the value sent, or the modelled
 /// `default: true`), and `eligible` whether the profile names a scope to analyse.
+///
+/// Which members the answer must carry follows from the SHAPE the `reader` projects the
+/// profile through, which is what [`declares`] holds: the model gives `tags` to the create
+/// and the read responses only, and `profileType` with
+/// `organizationalAggregationConfiguration` to the read response and the summary only.
 pub(crate) fn assert_profile_projection(
     projection: &Value,
     sent: &Value,
@@ -290,11 +319,40 @@ pub(crate) fn assert_profile_projection(
             "case {case:?}/{reader}: expected {member_name} as sent, got {projection:?}"
         );
     }
-    assert_eq!(
-        tags_by_key(projection.get("tags")),
-        tags_by_key(sent.get("tags")),
-        "case {case:?}/{reader}: expected the tags as sent, got {projection:?}"
-    );
+    if declares(reader, "tags") {
+        assert_eq!(
+            tags_by_key(projection.get("tags")),
+            tags_by_key(sent.get("tags")),
+            "case {case:?}/{reader}: expected the tags as sent, got {projection:?}"
+        );
+    } else {
+        assert_eq!(
+            projection.get("tags"),
+            None,
+            "case {case:?}/{reader}: the shape this projection goes through declares no \
+             tags member, got {projection:?}"
+        );
+    }
+    if declares(reader, "profileType") {
+        // Which kind of profile the create minted: `CreateAgentProfile` takes the
+        // execution role and the aggregation configuration `@required`, which is what
+        // `ProfileType$STANDARD` is defined by (`smithy_query(query="shape",
+        // shape="ProfileType")`), so every projection of a profile this create minted
+        // reports that kind.
+        assert_eq!(
+            projection.get("profileType").and_then(Value::as_str),
+            Some("STANDARD"),
+            "case {case:?}/{reader}: expected profileType STANDARD, got {projection:?}"
+        );
+        // The organizational monitoring boundary is "present only for organizational
+        // profiles", so a STANDARD profile reports none.
+        assert_eq!(
+            projection.get("organizationalAggregationConfiguration"),
+            None,
+            "case {case:?}/{reader}: a STANDARD profile carries no organizational \
+             boundary, got {projection:?}"
+        );
+    }
     assert_eq!(
         projection.get("deletionProtection").and_then(Value::as_bool),
         Some(expected_protection),
@@ -1057,9 +1115,23 @@ async fn a_created_agent_profile_round_trips_with_its_derived_members() {
             );
         }
 
+        // The create and the read answer the same stored profile through two shapes, and
+        // the read's declares one member the create's does not: the kind the profile was
+        // minted as (`GetAgentProfileResponse$profileType`).
+        let mut read_back = fetched.body.clone();
+        let projected_type = read_back
+            .as_object_mut()
+            .expect("the answer is an object")
+            .remove("profileType");
         assert_eq!(
-            created.body, fetched.body,
+            read_back, created.body,
             "case {case:?}: GetAgentProfile must report what the create answered"
+        );
+        assert_eq!(
+            projected_type.as_ref().and_then(Value::as_str),
+            Some("STANDARD"),
+            "case {case:?}: the read reports the kind the create minted, \
+             got {projected_type:?}"
         );
     }
 }
