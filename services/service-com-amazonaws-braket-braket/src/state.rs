@@ -903,7 +903,7 @@ const FORBIDDEN_ARRAY_OPERATIONS: &[&str] = &[
     "negativeIndex",
     "range",
     "rangeWithStep",
-    "slice",
+    "slicing",
 ];
 
 /// The observables a measured result type may be taken against — the Pauli bases,
@@ -944,10 +944,31 @@ const RESULT_TYPE_PRAGMAS: &[(&str, &str)] = &[
 ];
 
 /// `verbatim`: run a box of native gates exactly as written, with no recompilation.
+///
+/// A device PUBLISHES this pragma only where it runs one: a verbatim box addresses the
+/// device's own native gate layer, so a device that has none (a simulator applies the
+/// program as written) neither supports it nor forbids it — the pragma is not part of
+/// the vocabulary its action schema publishes at all.
 const VERBATIM_PRAGMA: &str = "verbatim";
-/// `braket_unitary_matrix`: apply a caller-supplied unitary, legal exactly where the
-/// device accepts the `unitary` operation.
-const UNITARY_MATRIX_PRAGMA: &str = "braket_unitary_matrix";
+/// The pragmas that apply a CALLER-SUPPLIED MATRIX to the state: an arbitrary unitary
+/// (`braket_unitary_matrix`) and the rotation into the basis a measurement is taken in
+/// (`braket_basis_rotation`).
+///
+/// Applying a matrix a program names needs a device that can apply ANY matrix, which is
+/// a device with no native gate layer underneath the program — hardware executes its own
+/// native gates, so it forbids both and a caller reaches its gates through a verbatim box
+/// instead.
+const MATRIX_PRAGMAS: &[&str] = &["braket_unitary_matrix", "braket_basis_rotation"];
+
+/// The result types a program asks for by reading the WHOLE computed state, which only
+/// the legacy JAQCD action can ask for.
+///
+/// An OpenQASM program asks for a result type through a `braket_result_type_*` pragma,
+/// and the OpenQASM device-action schema forbids the two that return the whole state, so
+/// an OpenQASM action entry publishes neither of them as a result type nor their pragmas
+/// as supported; a JAQCD program names its result types directly, so the legacy entry
+/// publishes whichever of them the device computes.
+const WHOLE_STATE_RESULT_TYPES: &[&str] = &["StateVector", "DensityMatrix"];
 
 /// One result type a device publishes in its action properties.
 struct ResultTypeSeed {
@@ -1007,8 +1028,17 @@ const QPU_RESULT_TYPES: &[ResultTypeSeed] = &[
 
 /// The gate-model operations a program submitted to this inventory may use, in the
 /// names the Braket device schemas publish them under (Amazon Braket's supported-gates
-/// documentation). Braket compiles a program to the device's own
-/// [`DeviceSeed::native_gates`], so a gate-model device accepts the whole set.
+/// documentation): the standard gate catalog first, and after it the provider-native
+/// gates Braket also compiles for a gate-model device. Braket compiles a program to the
+/// device's own [`DeviceSeed::native_gates`], so a gate-model device accepts the whole
+/// set, plus any native gate of its own this catalog does not name (see
+/// [`published_operations`]).
+///
+/// `supportedOperations` names GATES, so it carries nothing a program expresses in any
+/// other way: not the OpenQASM statements that measure, reset or globally phase a
+/// register, not the `u` the standard gate library builds the named gates out of, and
+/// not a caller-supplied matrix, which a program asks for with a pragma
+/// ([`MATRIX_PRAGMAS`]) rather than by naming an operation.
 const GATE_MODEL_OPERATIONS: &[&str] = &[
     "barrier",
     "ccnot",
@@ -1018,22 +1048,14 @@ const GATE_MODEL_OPERATIONS: &[&str] = &[
     "cphaseshift01",
     "cphaseshift10",
     "cswap",
-    "cv",
     "cy",
     "cz",
     "ecr",
-    "gphase",
-    "gpi",
-    "gpi2",
     "h",
     "i",
     "iswap",
-    "measure",
-    "ms",
-    "phaseshift",
-    "prx",
     "pswap",
-    "reset",
+    "phaseshift",
     "rx",
     "ry",
     "rz",
@@ -1042,8 +1064,6 @@ const GATE_MODEL_OPERATIONS: &[&str] = &[
     "swap",
     "t",
     "ti",
-    "u",
-    "unitary",
     "v",
     "vi",
     "x",
@@ -1053,6 +1073,11 @@ const GATE_MODEL_OPERATIONS: &[&str] = &[
     "yy",
     "z",
     "zz",
+    // The provider-native gates Braket accepts in a program for any gate-model device,
+    // published after the standard catalog rather than sorted into it.
+    "gpi",
+    "gpi2",
+    "ms",
 ];
 
 /// Where `deviceDocumentation.externalDocumentationUrl` points: the Amazon Braket
@@ -1061,6 +1086,10 @@ const DOCUMENTATION_BASE: &str = "https://docs.aws.amazon.com/braket/latest/deve
 /// The page of that guide the devices are documented on, which each device's own link
 /// anchors on its [`DeviceSeed::documentation_section`].
 const DEVICE_LIST_PAGE: &str = "braket-devices.html";
+/// The section of [`DEVICE_LIST_PAGE`] that documents the on-demand SIMULATORS: the
+/// guide documents the simulators together, in the section a caller chooses one in,
+/// rather than under a heading per simulator.
+const SIMULATOR_SECTION: &str = "choose-a-simulator";
 
 /// One row of the seeded inventory.
 ///
@@ -1076,12 +1105,14 @@ struct DeviceSeed {
     qubit_count: u32,
     shots_range: (i64, i64),
     action_types: &'static [&'static str],
-    /// The operations a program for this device may use (`supportedOperations`);
-    /// empty for a device whose programs name no gates at all.
+    /// The operations a program for this device may use (`supportedOperations`), before
+    /// the device's own [`DeviceSeed::native_gates`] are added to them; empty for a
+    /// device whose programs name no gates at all.
     supported_operations: &'static [&'static str],
     /// The operations the device executes without recompilation
-    /// (`paradigm.nativeGateSet`) — a subset of `supported_operations`. Empty for a
-    /// device with no native gate layer beneath the one a program is written in.
+    /// (`paradigm.nativeGateSet`). Empty for a device with no native gate layer beneath
+    /// the one a program is written in; a device that HAS one accepts every gate of it,
+    /// so its natives are published as operations too ([`published_operations`]).
     native_gates: &'static [&'static str],
     /// The result types the device computes (`supportedResultTypes`), which also
     /// decide its `braket_result_type_*` pragmas.
@@ -1156,9 +1187,13 @@ const DEVICE_SEEDS: &[DeviceSeed] = &[
         noise: false,
         cost: (0.075, "minute"),
         summary: "Amazon Braket state vector simulator",
-        documentation_section: "braket-simulator-sv1",
-        image_url: "https://d1.awsstatic.com/braket/devices/amazon-sv1.png",
-        published_at: "2020-08-13T00:00:00",
+        documentation_section: SIMULATOR_SECTION,
+        // The asset this entry is published with. A published asset URL may carry a
+        // content fingerprint of the asset between its name and its extension; that
+        // fingerprint belongs to the asset served rather than to the catalog entry, so
+        // the entry carries the asset's own path.
+        image_url: "https://d1.awsstatic.com/about-aws/whats-new/lpm-assets/services/SiteMerch_Qx_Editorial-reInvent.png",
+        published_at: "2022-06-22T10:18:00",
     },
     DeviceSeed {
         arn: "arn:aws:braket:::device/quantum-simulator/amazon/dm1",
@@ -1176,7 +1211,7 @@ const DEVICE_SEEDS: &[DeviceSeed] = &[
         noise: true,
         cost: (0.075, "minute"),
         summary: "Amazon Braket density matrix simulator",
-        documentation_section: "braket-simulator-dm1",
+        documentation_section: SIMULATOR_SECTION,
         image_url: "https://d1.awsstatic.com/braket/devices/amazon-dm1.png",
         published_at: "2021-05-26T00:00:00",
     },
@@ -1196,7 +1231,7 @@ const DEVICE_SEEDS: &[DeviceSeed] = &[
         noise: false,
         cost: (0.275, "minute"),
         summary: "Amazon Braket tensor network simulator",
-        documentation_section: "braket-simulator-tn1",
+        documentation_section: SIMULATOR_SECTION,
         image_url: "https://d1.awsstatic.com/braket/devices/amazon-tn1.png",
         published_at: "2021-02-10T00:00:00",
     },
@@ -1549,11 +1584,11 @@ fn capabilities_document(seed: &DeviceSeed) -> String {
             )
         })
         .collect();
+    // The sections go out in the order the published document carries them: what the
+    // service offers, then what a program for the device may contain, then the schema
+    // of a task's device parameters, the schema the whole document is an instance of,
+    // and the device's own computing properties.
     let mut document = serde_json::json!({
-        "braketSchemaHeader": {
-            "name": capabilities_schema(seed),
-            "version": "1",
-        },
         "service": {
             "braketSchemaHeader": {
                 "name": "braket.device_schema.device_service_properties",
@@ -1582,6 +1617,10 @@ fn capabilities_document(seed: &DeviceSeed) -> String {
         },
         "action": serde_json::Value::Object(actions),
         "deviceParameters": device_parameters_schema(seed),
+        "braketSchemaHeader": {
+            "name": capabilities_schema(seed),
+            "version": "1",
+        },
     });
     // The device's own computing properties go under the key its family publishes them
     // as, so a client reads the section the device-schema layout gives it.
@@ -1699,21 +1738,17 @@ fn device_parameters_schema(seed: &DeviceSeed) -> serde_json::Value {
 /// [`ACTION_SCHEMA_VERSIONS`] it accepts.
 fn action_properties(seed: &DeviceSeed, action_type: &str) -> serde_json::Value {
     let mut entry = serde_json::Map::new();
-    entry.insert("actionType".to_string(), serde_json::json!(action_type));
     entry.insert(
         "version".to_string(),
         serde_json::json!(ACTION_SCHEMA_VERSIONS),
     );
+    entry.insert("actionType".to_string(), serde_json::json!(action_type));
     if !is_gate_model_action(action_type) {
         return serde_json::Value::Object(entry);
     }
     entry.insert(
         "supportedOperations".to_string(),
-        serde_json::json!(seed.supported_operations),
-    );
-    entry.insert(
-        "supportedResultTypes".to_string(),
-        supported_result_types(seed),
+        serde_json::json!(published_operations(seed)),
     );
     if action_type == ACTION_OPENQASM {
         let (supported, forbidden) = pragmas(seed);
@@ -1731,6 +1766,12 @@ fn action_properties(seed: &DeviceSeed, action_type: &str) -> serde_json::Value 
             "forbiddenArrayOperations".to_string(),
             serde_json::json!(FORBIDDEN_ARRAY_OPERATIONS),
         );
+    }
+    entry.insert(
+        "supportedResultTypes".to_string(),
+        supported_result_types(seed, action_type),
+    );
+    if action_type == ACTION_OPENQASM {
         // The hardware constraints a program must respect, which a client checks
         // before it builds one. A simulator imposes none of them: it applies the
         // program as written, to whichever qubits the program names. Hardware is
@@ -1752,13 +1793,42 @@ fn action_properties(seed: &DeviceSeed, action_type: &str) -> serde_json::Value 
     serde_json::Value::Object(entry)
 }
 
-/// `supportedResultTypes`: one entry per result type the device computes, each with
-/// the observables it may be taken against and the shot range it needs — none for an
-/// exactly computed result type, the device's own range for a sampled one.
-fn supported_result_types(seed: &DeviceSeed) -> serde_json::Value {
+/// `supportedOperations`: the operations a gate-model program for this device may name.
+///
+/// The catalog of operations Braket accepts in a program for a gate-model device
+/// ([`GATE_MODEL_OPERATIONS`]), and after it whichever of the device's own native gates
+/// that catalog does not already name: a device executes its native gates, so a program
+/// for it may name them. Nothing else is published — advertising an operation the service
+/// does not accept is what makes a client build a program it cannot submit.
+fn published_operations(seed: &DeviceSeed) -> Vec<&'static str> {
+    let mut operations: Vec<&'static str> = seed.supported_operations.to_vec();
+    for native in seed.native_gates {
+        if !operations.contains(native) {
+            operations.push(native);
+        }
+    }
+    operations
+}
+
+/// The result types one device publishes for ONE action type: the result types the
+/// device computes, less the ones a program written in that action's language cannot
+/// ask for (see [`WHOLE_STATE_RESULT_TYPES`]).
+fn action_result_types(seed: &DeviceSeed, action_type: &str) -> Vec<&'static ResultTypeSeed> {
+    seed.result_types
+        .iter()
+        .filter(|result_type| {
+            action_type != ACTION_OPENQASM || !WHOLE_STATE_RESULT_TYPES.contains(&result_type.name)
+        })
+        .collect()
+}
+
+/// `supportedResultTypes`: one entry per result type the device computes for this action,
+/// each with the observables it may be taken against and the shot range it needs — none
+/// for an exactly computed result type, the device's own range for a sampled one.
+fn supported_result_types(seed: &DeviceSeed, action_type: &str) -> serde_json::Value {
     serde_json::Value::Array(
-        seed.result_types
-            .iter()
+        action_result_types(seed, action_type)
+            .into_iter()
             .map(|result_type| {
                 let (min_shots, max_shots) = if result_type.exact {
                     (0, 0)
@@ -1784,13 +1854,20 @@ fn supported_result_types(seed: &DeviceSeed) -> serde_json::Value {
 /// The pragmas an OpenQASM program for this device may and may not carry, as
 /// (`supportedPragmas`, `forbiddenPragmas`).
 ///
-/// Every pragma the service knows about appears in exactly one of the two lists, so a
-/// client can tell "this device refuses it" from "this device has never heard of it":
-/// a `braket_result_type_*` pragma is supported exactly where the device publishes
-/// the matching result type, the [`NOISE_PRAGMAS`] exactly where it models noise,
-/// `verbatim` exactly where it has a native gate layer to address, and
-/// `braket_unitary_matrix` exactly where it accepts the `unitary` operation.
+/// Each list is published in the order the device-action schema lays the pragma families
+/// out in: `verbatim`, the pragmas that apply a caller-supplied matrix, the pragmas that
+/// ask for a result type, then the pragmas that apply a noise channel. Every pragma of
+/// the vocabulary appears in exactly one of the two lists, so a client can tell "this
+/// device refuses it" from "this device has never heard of it": a `braket_result_type_*`
+/// pragma is supported exactly where this action publishes the result type it asks for
+/// (see [`action_result_types`]), the [`NOISE_PRAGMAS`] exactly where the device models
+/// noise, and the [`MATRIX_PRAGMAS`] exactly where it applies any matrix a program names
+/// rather than compiling the program to a native gate layer. [`VERBATIM_PRAGMA`] is the
+/// one pragma that is not part of every device's vocabulary: a device with no native gate
+/// layer publishes it in NEITHER list, because there is nothing for a verbatim box to
+/// address on it.
 fn pragmas(seed: &DeviceSeed) -> (Vec<&'static str>, Vec<&'static str>) {
+    let published = action_result_types(seed, ACTION_OPENQASM);
     let mut supported: Vec<&'static str> = Vec::new();
     let mut forbidden: Vec<&'static str> = Vec::new();
     let mut sort = |pragma: &'static str, allowed: bool| {
@@ -1800,20 +1877,23 @@ fn pragmas(seed: &DeviceSeed) -> (Vec<&'static str>, Vec<&'static str>) {
             forbidden.push(pragma);
         }
     };
-    sort(VERBATIM_PRAGMA, seed.verbatim);
-    sort(
-        UNITARY_MATRIX_PRAGMA,
-        seed.supported_operations.contains(&"unitary"),
-    );
-    for pragma in NOISE_PRAGMAS {
-        sort(pragma, seed.noise);
+    if seed.verbatim {
+        sort(VERBATIM_PRAGMA, true);
+    }
+    // A device compiles a program to its own native gates exactly when it HAS a native
+    // gate layer; one that has none applies whatever matrix a program hands it.
+    let applies_any_matrix = seed.native_gates.is_empty();
+    for pragma in MATRIX_PRAGMAS {
+        sort(pragma, applies_any_matrix);
     }
     for (result_type, pragma) in RESULT_TYPE_PRAGMAS {
-        let published = seed
-            .result_types
-            .iter()
-            .any(|seeded| seeded.name == *result_type);
-        sort(pragma, published);
+        sort(
+            pragma,
+            published.iter().any(|seeded| seeded.name == *result_type),
+        );
+    }
+    for pragma in NOISE_PRAGMAS {
+        sort(pragma, seed.noise);
     }
     (supported, forbidden)
 }

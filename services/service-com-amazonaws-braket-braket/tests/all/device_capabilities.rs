@@ -849,3 +849,349 @@ async fn a_published_status_reason_is_the_same_reason_after_a_restart() {
          publishes a status reason, and the catalog published none"
     );
 }
+
+/// The operations Amazon Braket accepts in a gate-model program, in the names its
+/// device-action schemas publish them under.
+///
+/// Source: the `supportedOperations` property of the Braket gate-model device-action
+/// schemas — Amazon Braket's supported-operations documentation for a program, whose
+/// standard catalog is published first and the provider-native gates it also compiles
+/// after it. Written out here, independently of the service, so a catalog the service
+/// grew or shrank by itself fails this suite. A device publishes these and the gates it
+/// runs natively, and nothing else.
+const PROGRAM_OPERATIONS: &[&str] = &[
+    "barrier",
+    "ccnot",
+    "cnot",
+    "cphaseshift",
+    "cphaseshift00",
+    "cphaseshift01",
+    "cphaseshift10",
+    "cswap",
+    "cy",
+    "cz",
+    "ecr",
+    "h",
+    "i",
+    "iswap",
+    "pswap",
+    "phaseshift",
+    "rx",
+    "ry",
+    "rz",
+    "s",
+    "si",
+    "swap",
+    "t",
+    "ti",
+    "v",
+    "vi",
+    "x",
+    "xx",
+    "xy",
+    "y",
+    "yy",
+    "z",
+    "zz",
+    "gpi",
+    "gpi2",
+    "ms",
+];
+
+/// What a gate-model program expresses WITHOUT naming an operation, so no published
+/// `supportedOperations` carries it: the statements that measure, reset or globally
+/// phase a register, the standard gate library's general single-qubit unitary the named
+/// gates are built out of, and a caller-supplied matrix — which a program asks for with
+/// a pragma, not by naming a gate.
+const NOT_PUBLISHED_AS_OPERATIONS: &[&str] = &["measure", "reset", "gphase", "u", "unitary"];
+
+/// The pragmas that apply a matrix the PROGRAM supplies: an arbitrary unitary, and the
+/// rotation into the basis a measurement is taken in.
+///
+/// Source: the `supportedPragmas` / `forbiddenPragmas` vocabulary of the Braket OpenQASM
+/// device-action schema.
+const MATRIX_PRAGMAS: &[&str] = &["braket_unitary_matrix", "braket_basis_rotation"];
+
+/// The result types that report the WHOLE computed state, which an OpenQASM program
+/// cannot ask for.
+///
+/// Source: the `braket_result_type_*` pragmas the Braket OpenQASM device-action schema
+/// forbids; a JAQCD program names its result types directly instead.
+const WHOLE_STATE_RESULT_TYPES: &[&str] = &["StateVector", "DensityMatrix"];
+
+/// The gate-model action entries of one device's document, as (action type, entry).
+fn gate_model_entries(document: &Value, case: &str) -> Vec<(String, Value)> {
+    document
+        .get("action")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("case {case}: no action map: {document}"))
+        .iter()
+        .filter(|(action_type, _)| GATE_MODEL_ACTIONS.contains(&action_type.as_str()))
+        .map(|(action_type, entry)| (action_type.clone(), entry.clone()))
+        .collect()
+}
+
+/// The names of the result types one action entry publishes.
+fn result_type_names(entry: &Value, case: &str) -> Vec<String> {
+    array(entry, "supportedResultTypes", case)
+        .iter()
+        .map(|result_type| member(result_type, "name").to_string())
+        .collect()
+}
+
+/// The device's native gate set, empty for a device that publishes none.
+fn native_gate_set(document: &Value, case: &str) -> Vec<String> {
+    let properties = device_properties(document, case);
+    properties
+        .get("nativeGateSet")
+        .map(|_| string_array(properties, "nativeGateSet", case))
+        .unwrap_or_default()
+}
+
+/// RULE: a gate-model action entry publishes the operations the service ACCEPTS in a
+/// program for that device — the catalog of operations Braket compiles for a gate-model
+/// device, plus the gates the device runs natively — and nothing a program expresses in
+/// any other way, because `supportedOperations` is what a client builds a submittable
+/// program out of.
+///
+/// The table is the whole inventory, whose rows differ in device type, provider, native
+/// gate set (empty, and three different hardware sets) and action family, so the rule is
+/// checked on entries the catalog publishes for every family rather than on one device.
+#[tokio::test]
+async fn a_gate_model_entry_publishes_the_operations_the_service_accepts() {
+    let braket = Braket::new();
+    let inventory = braket.inventory().await;
+
+    let mut checked_entries = 0usize;
+    let mut with_native_gates = 0usize;
+    let mut beyond_the_catalog: Vec<String> = Vec::new();
+
+    for summary in &inventory {
+        let arn = member(summary, "deviceArn");
+        let case = format!("device {arn}");
+        let document = capabilities(&braket, arn).await;
+        let natives = native_gate_set(&document, &case);
+
+        for (action_type, entry) in gate_model_entries(&document, &case) {
+            let case = format!("device {arn} action {action_type}");
+            checked_entries += 1;
+            let published = string_array(&entry, "supportedOperations", &case);
+
+            for operation in &published {
+                assert!(
+                    PROGRAM_OPERATIONS.contains(&operation.as_str())
+                        || natives.contains(operation),
+                    "case {case}: {operation:?} is neither an operation Braket accepts \
+                     in a program ({PROGRAM_OPERATIONS:?}) nor a gate this device runs \
+                     natively ({natives:?}), so it must not be published, got {published:?}"
+                );
+            }
+            for statement in NOT_PUBLISHED_AS_OPERATIONS {
+                assert!(
+                    !published.contains(&(*statement).to_string()),
+                    "case {case}: {statement:?} is not an operation a program names, so \
+                     it must not be published, got {published:?}"
+                );
+            }
+            for native in &natives {
+                assert!(
+                    published.contains(native),
+                    "case {case}: the device runs {native:?} natively, so a program may \
+                     name it, got {published:?}"
+                );
+                if !PROGRAM_OPERATIONS.contains(&native.as_str()) {
+                    beyond_the_catalog.push(native.clone());
+                }
+            }
+            if natives.is_empty() {
+                let published: Vec<&str> = published.iter().map(String::as_str).collect();
+                assert_eq!(
+                    published, PROGRAM_OPERATIONS,
+                    "case {case}: a device with no native gate layer publishes exactly \
+                     the catalog Braket compiles for it, got {published:?}"
+                );
+            } else {
+                with_native_gates += 1;
+            }
+        }
+    }
+
+    assert!(
+        checked_entries >= 2 && with_native_gates >= 1,
+        "case the published catalog: the table must span devices with and without a \
+         native gate layer, got {checked_entries} gate-model entries of which \
+         {with_native_gates} publish native gates"
+    );
+    assert!(
+        !beyond_the_catalog.is_empty(),
+        "case the published catalog: the rule's second half is only exercised by a \
+         device whose native gates the catalog does not already name, and the inventory \
+         published none"
+    );
+}
+
+/// RULE: the two pragma lists of an OpenQASM entry classify the pragmas by what the
+/// DEVICE can do: a pragma that applies a matrix the program supplies is supported
+/// exactly where the device applies any matrix it is handed (a device with no native
+/// gate layer) and forbidden on a device that compiles the program to its own native
+/// gates; and `verbatim`, which addresses that native gate layer, is published only
+/// where there IS one — a device without one publishes it in neither list rather than
+/// refusing a pragma that means nothing to it.
+///
+/// The table is the whole inventory again: it spans devices with and without a native
+/// gate layer, and the simulator that models noise.
+#[tokio::test]
+async fn the_pragma_lists_classify_a_pragma_by_what_the_device_can_do() {
+    let braket = Braket::new();
+    let inventory = braket.inventory().await;
+
+    let mut applies_any_matrix = 0usize;
+    let mut compiles_to_natives = 0usize;
+
+    for summary in &inventory {
+        let arn = member(summary, "deviceArn");
+        let case = format!("device {arn}");
+        let document = capabilities(&braket, arn).await;
+        let natives = native_gate_set(&document, &case);
+
+        for (action_type, entry) in gate_model_entries(&document, &case) {
+            if action_type != ACTION_OPENQASM {
+                continue;
+            }
+            let case = format!("device {arn} action {action_type}");
+            let supported = string_array(&entry, "supportedPragmas", &case);
+            let forbidden = string_array(&entry, "forbiddenPragmas", &case);
+
+            for pragma in MATRIX_PRAGMAS {
+                let pragma = (*pragma).to_string();
+                assert_eq!(
+                    supported.contains(&pragma),
+                    natives.is_empty(),
+                    "case {case}: {pragma:?} applies a matrix the program supplies, so \
+                     it is supported exactly where the device has no native gate layer \
+                     (native gates {natives:?}), got supported {supported:?}"
+                );
+                assert!(
+                    supported.contains(&pragma) != forbidden.contains(&pragma),
+                    "case {case}: {pragma:?} belongs to exactly one list, got supported \
+                     {supported:?} forbidden {forbidden:?}"
+                );
+            }
+
+            let verbatim = "verbatim".to_string();
+            assert!(
+                !forbidden.contains(&verbatim),
+                "case {case}: a device that runs no verbatim box publishes no verbatim \
+                 pragma at all, got forbidden {forbidden:?}"
+            );
+            assert_eq!(
+                supported.contains(&verbatim),
+                !natives.is_empty(),
+                "case {case}: a verbatim box addresses the device's native gate layer \
+                 (native gates {natives:?}), got supported {supported:?}"
+            );
+
+            if natives.is_empty() {
+                applies_any_matrix += 1;
+            } else {
+                compiles_to_natives += 1;
+            }
+        }
+    }
+
+    assert!(
+        applies_any_matrix >= 1 && compiles_to_natives >= 1,
+        "case the published catalog: the table must span both halves of the rule, got \
+         {applies_any_matrix} devices with no native gate layer and \
+         {compiles_to_natives} with one"
+    );
+}
+
+/// RULE: a result type is published for the action whose language can ASK for it. An
+/// OpenQASM program asks for a result type with a `braket_result_type_*` pragma, and the
+/// OpenQASM action schema forbids the two pragmas that read the whole computed state, so
+/// an OpenQASM entry publishes neither of those result types and forbids both pragmas;
+/// the legacy JAQCD entry, whose programs name their result types directly, publishes
+/// whichever of them the device computes.
+///
+/// The table is the inventory: it spans the device that computes the state vector, the
+/// one that computes the density matrix, a simulator that computes neither and hardware
+/// that only ever samples.
+#[tokio::test]
+async fn an_openqasm_entry_publishes_only_the_result_types_a_pragma_can_ask_for() {
+    let braket = Braket::new();
+    let inventory = braket.inventory().await;
+
+    let mut published_by_jaqcd: Vec<String> = Vec::new();
+    let mut openqasm_entries = 0usize;
+
+    for summary in &inventory {
+        let arn = member(summary, "deviceArn");
+        let case = format!("device {arn}");
+        let document = capabilities(&braket, arn).await;
+
+        for (action_type, entry) in gate_model_entries(&document, &case) {
+            let case = format!("device {arn} action {action_type}");
+            let names = result_type_names(&entry, &case);
+            if action_type != ACTION_OPENQASM {
+                for name in &names {
+                    if WHOLE_STATE_RESULT_TYPES.contains(&name.as_str()) {
+                        published_by_jaqcd.push(format!("{arn} {name}"));
+                    }
+                }
+                continue;
+            }
+            openqasm_entries += 1;
+            let forbidden = string_array(&entry, "forbiddenPragmas", &case);
+            for whole_state in WHOLE_STATE_RESULT_TYPES {
+                assert!(
+                    !names.contains(&(*whole_state).to_string()),
+                    "case {case}: an OpenQASM program cannot ask for {whole_state:?}, so \
+                     the entry publishes no such result type, got {names:?}"
+                );
+                let pragma = result_type_pragma(whole_state);                assert!(
+                    forbidden.contains(&pragma),
+                    "case {case}: {pragma:?} is forbidden in an OpenQASM program, got \
+                     forbidden {forbidden:?}"
+                );
+            }
+            assert!(
+                !names.is_empty(),
+                "case {case}: the entry still publishes the result types a pragma can \
+                 ask for, got {entry}"
+            );
+        }
+    }
+
+    assert!(
+        openqasm_entries >= 2,
+        "case the published catalog: expected the rule to be checked on more than one \
+         OpenQASM entry, got {openqasm_entries}"
+    );
+    // The other half: a device that COMPUTES a whole-state result type still publishes
+    // it for the action whose programs can name it.
+    assert!(
+        published_by_jaqcd.len() >= 2,
+        "case the published catalog: the devices that compute a whole-state result type \
+         publish it on their legacy action, got {published_by_jaqcd:?}"
+    );
+}
+
+/// RULE: the published document carries its sections in the order the published catalog
+/// document lays them out, led by the `service` section a client reads to decide whether
+/// it may submit work at all.
+///
+/// The table is the whole inventory, whose documents differ in schema, action families
+/// and device-properties section.
+#[tokio::test]
+async fn the_published_document_leads_with_the_service_section() {
+    let braket = Braket::new();
+    for summary in braket.inventory().await {
+        let arn = member(&summary, "deviceArn");
+        let document = member(&braket.get_device(arn).await.body, "deviceCapabilities").to_string();
+        assert!(
+            document.starts_with("{\"service\":"),
+            "case device {arn}: the document leads with its service section, got {document}"
+        );
+    }
+}

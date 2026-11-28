@@ -348,10 +348,11 @@ struct GateMatrix {
 /// The matrix of the gate `gate` names, with its parameters applied.
 ///
 /// The names are the gate-model operations this service's device inventory publishes
-/// (`super::GATE_MODEL_OPERATIONS`), plus the aliases the OpenQASM standard gate library
-/// gives them (`cx` for `cnot`, `sdg` for `si`, `p` for `phaseshift`, ...), so a program
-/// written against either vocabulary runs. A name outside both, or a parameter count the
-/// gate does not take, stops the run with the reason.
+/// (`super::GATE_MODEL_OPERATIONS`), the gates its devices run natively (`prx`, `cv`),
+/// and the aliases the OpenQASM standard gate library gives them (`cx` for `cnot`, `sdg`
+/// for `si`, `p` for `phaseshift`, `u` for the general single-qubit unitary, ...), so a
+/// program written against any of those vocabularies runs. A name outside them, or a
+/// parameter count the gate does not take, stops the run with the reason.
 fn gate_matrix(gate: &GateCall) -> Result<Vec<Complex<f64>>, ProgramRefusal> {
     let matrix = matrix_of(&gate.name, &gate.parameters).ok_or_else(|| {
         ProgramRefusal::new(format!(
