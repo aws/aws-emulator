@@ -364,9 +364,11 @@ fn already_exists_message(certificate_id: &str) -> String {
     format!("Certificate already exists (certificateId: {certificate_id})")
 }
 
-/// The message every reader of a certificate this account holds none of states.
-fn missing_message(certificate_id: &str) -> String {
-    format!("CertificateId {certificate_id} does not exist")
+/// The message every reader of ONE registered CA certificate states a miss with: the CA
+/// plane words it after the resource the request addressed, so the whole sentence is fixed
+/// text and the requested id is no part of it.
+fn missing_message() -> String {
+    "Requested CA Certificate does not exist.".to_string()
 }
 
 /// One case of the registration table: a request, and what the record it writes must look
@@ -1066,9 +1068,9 @@ async fn describing_an_unregistered_ca_certificate_is_refused_not_found() {
         );
         assert_eq!(
             refused.message(),
-            missing_message(&certificate_id),
+            missing_message(),
             "case {certificate_id:?}: expected {:?}, got {refused:?}",
-            missing_message(&certificate_id)
+            missing_message()
         );
     }
 

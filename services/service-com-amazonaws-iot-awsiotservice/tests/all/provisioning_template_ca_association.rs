@@ -858,7 +858,9 @@ async fn a_ca_certificate_is_deleted_only_when_the_registry_admits_it() {
         (
             406,
             "CertificateStateException".to_string(),
-            format!("Certificate must be deactivated (not ACTIVE) before deletion. Id: {active}")
+            format!(
+                "CA Certificate must be deactivated (not ACTIVE) before deletion. Id: {active}"
+            )
         ),
         "case an active CA: expected 406 CertificateStateException, got {} body {}",
         refused.status,

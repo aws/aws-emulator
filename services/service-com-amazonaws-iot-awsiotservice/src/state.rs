@@ -3469,10 +3469,10 @@ pub use ca_certificates::{
     ca_certificate_arn, ca_registry_full_message, ca_subject_limit_message,
     not_a_certificate_authority_message, unreadable_ca_certificate_message,
     verification_certificate_not_allowed_message, verification_certificate_required_message,
-    CaCertificateRegistration, CaCertificateRegistrationRefusal, RegisteredCaCertificate,
-    AUTO_REGISTRATION_DISABLE, AUTO_REGISTRATION_ENABLE, CA_CERTIFICATE_STATUS_ACTIVE,
-    CA_CERTIFICATE_STATUS_INACTIVE, CERTIFICATE_MODE_SNI_ONLY, MAX_CA_CERTIFICATES,
-    MAX_CA_CERTIFICATES_PER_SUBJECT,
+    CaCertificateRegistration, CaCertificateRegistrationRefusal, CaCertificateUpdate,
+    RegisteredCaCertificate, AUTO_REGISTRATION_DISABLE, AUTO_REGISTRATION_ENABLE,
+    CA_CERTIFICATE_STATUS_ACTIVE, CA_CERTIFICATE_STATUS_INACTIVE, CERTIFICATE_MODE_SNI_ONLY,
+    MAX_CA_CERTIFICATES, MAX_CA_CERTIFICATES_PER_SUBJECT,
 };
 
 // WHAT a caller proves it holds a certificate authority's private key with — the account's

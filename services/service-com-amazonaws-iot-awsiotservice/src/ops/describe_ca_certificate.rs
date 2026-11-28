@@ -157,17 +157,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A pure read: the record is cloned out as the modelled
         // `CACertificateDescription`, and an id the registry holds no CA certificate
         // under is the modelled `ResourceNotFoundException` ("The specified resource does
-        // not exist", HTTP 404), refused with the sentence every reader of a certificate
-        // this service holds none of states — the member the request carried is
-        // `certificateId` here exactly as it is on a device certificate, so the two are
-        // one sentence rather than two.
+        // not exist", HTTP 404), refused with the sentence THIS plane states a miss of one
+        // registered CA certificate in — worded after the resource the request addressed,
+        // a CA certificate, and not after the `certificateId` member the DEVICE
+        // certificate family names its own miss by.
         let store = state.lock();
         let certificate = store.ca_certificates.get(&input.certificate_id).ok_or_else(|| {
             DescribeCACertificateErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
-                    message: Some(crate::state::missing_certificate_message(
-                        &input.certificate_id,
-                    )),
+                    message: Some(
+                        crate::state::ca_certificates::MISSING_CA_CERTIFICATE_MESSAGE.to_string(),
+                    ),
                 },
             )
         })?;

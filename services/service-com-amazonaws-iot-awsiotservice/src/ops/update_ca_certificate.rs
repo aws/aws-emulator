@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateCACertificate
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateCACertificate`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateCACertificate::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -139,6 +130,37 @@ impl From<UpdateCACertificateErrorModeled> for UpdateCACertificateError {
     }
 }
 
+/// Record this state-changing call for attribution: the operation, the identity the
+/// request PRESENTED (the SigV4 access key id, a public identifier and never a secret),
+/// the request target, the CA certificate and status the call named and how the call ended.
+///
+/// The status a CA certificate carries is what decides whether device certificates may be
+/// signed by it and whether it may be deleted, so who moved it and when is not recoverable
+/// from the record afterwards — only the status it ended on is. Every request-derived field
+/// goes through [`crate::state::audit_field`], which bounds it and strips the control
+/// characters that would otherwise forge a second record; the subscriber supplies the
+/// timestamp.
+fn audit(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    certificate_id: &str,
+    new_status: &str,
+    outcome: &'static str,
+) {
+    let parts = ctx.parts();
+    ::tracing::info!(
+        target: "emulator::audit",
+        service = ctx.identity().signing_name(),
+        operation = "UpdateCACertificate",
+        access_key_id = %crate::state::audit_field(&::engine::extract_akid(&parts.headers)),
+        request_target =
+            %crate::state::audit_field(&format!("{} {}", parts.method, parts.uri.path())),
+        certificate_id = %crate::state::audit_field(certificate_id),
+        new_status = %crate::state::audit_field(new_status),
+        outcome,
+        "state-changing operation"
+    );
+}
+
 /// The `UpdateCACertificate` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -175,18 +197,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateCACertificate` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateCACertificateErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateCACertificate"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateCACertificateErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        // "Updates a registered CA certificate": the id is the record's identity and its
+        // key in the account's CA registry, so the whole decision and the whole write
+        // happen under one lock beside the record they read
+        // (`crate::state::ca_certificates`) and no caller can observe the record between
+        // the values the call read and the ones it left.
+        let new_status = input.new_status.clone().unwrap_or_default();
+        let updated = state.lock().update_ca_certificate(
+            &input.certificate_id,
+            crate::state::CaCertificateUpdate {
+                new_status: input.new_status,
+                new_auto_registration_status: input.new_auto_registration_status,
+                registration_config: input.registration_config,
+                remove_auto_registration: input.remove_auto_registration,
+            },
+            ::std::time::SystemTime::now(),
+        );
+
+        // What the call DID: the values a reader sees afterwards are the end of the change
+        // and not the change itself.
+        audit(
+            ctx,
+            &input.certificate_id,
+            &new_status,
+            if updated.is_some() {
+                "updated"
+            } else {
+                "no-such-ca-certificate"
+            },
+        );
+
+        // An id the registry holds no CA certificate under is the modelled
+        // `ResourceNotFoundException` ("The specified resource does not exist", HTTP 404),
+        // refused with the sentence this plane states a miss of ONE registered CA
+        // certificate in, rather than as a hollow success.
+        if updated.is_none() {
+            return Err(UpdateCACertificateErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(
+                        crate::state::ca_certificates::MISSING_CA_CERTIFICATE_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
+
+        // The operation's output shape is `Unit`: a successful update reports nothing, and
+        // what it left is read back through `DescribeCACertificate`.
+        Ok(UpdateCACertificateOutput)
     }
 }

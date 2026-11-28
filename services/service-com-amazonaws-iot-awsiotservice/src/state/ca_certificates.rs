@@ -330,8 +330,50 @@ pub const MISSING_CA_CERTIFICATE_MESSAGE: &str = "Requested CA Certificate does 
 /// certificate family states ([`super::active_certificate_deletion_message`]) — and the
 /// sentence names the CA by the id the request carried, because the caller's next step,
 /// `UpdateCACertificate`, takes that same id.
+///
+/// Like every other refusal of this plane ([`MISSING_CA_CERTIFICATE_MESSAGE`]), the
+/// sentence names the resource the request addressed — a CA certificate, reached through
+/// `/cacertificate/{certificateId}` — so a caller can tell this refusal from the DEVICE
+/// certificate family's identically-shaped one, whose remediation is `UpdateCertificate`
+/// rather than `UpdateCACertificate`.
 pub fn active_ca_certificate_deletion_message(certificate_id: &str) -> String {
-    format!("Certificate must be deactivated (not ACTIVE) before deletion. Id: {certificate_id}")
+    format!("CA Certificate must be deactivated (not ACTIVE) before deletion. Id: {certificate_id}")
+}
+
+/// What one `UpdateCACertificate` asks to change about a registered CA certificate.
+///
+/// A struct rather than a parameter list for the same reason
+/// [`CaCertificateRegistration`] is one: the request is what the one write takes. Every
+/// member is absent when the request named none, which is what leaves the record's own
+/// value standing — `removeAutoRegistration` is modelled `default false`, so its absence
+/// is `false`.
+#[derive(Debug, Clone, Default)]
+pub struct CaCertificateUpdate {
+    /// `newStatus` — "The updated status of the CA certificate":
+    /// [`CA_CERTIFICATE_STATUS_ACTIVE`] or [`CA_CERTIFICATE_STATUS_INACTIVE`].
+    pub new_status: Option<String>,
+    /// `newAutoRegistrationStatus` — "The new value for the auto registration status":
+    /// [`AUTO_REGISTRATION_ENABLE`] or [`AUTO_REGISTRATION_DISABLE`].
+    pub new_auto_registration_status: Option<String>,
+    /// `registrationConfig` — "Information about the registration configuration".
+    pub registration_config: Option<RegistrationConfig>,
+    /// `removeAutoRegistration` — "If true, removes auto registration".
+    pub remove_auto_registration: bool,
+}
+
+/// The members of a `registrationConfig`, as a value two states of one record are compared
+/// by: the modelled shape derives no equality, and what a write has to decide is whether
+/// it changed the record at all.
+fn registration_config_members(
+    registration_config: Option<&RegistrationConfig>,
+) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    registration_config.map(|configuration| {
+        (
+            configuration.template_body.clone(),
+            configuration.role_arn.clone(),
+            configuration.template_name.clone(),
+        )
+    })
 }
 
 /// Why a CA certificate was NOT deleted.
@@ -390,6 +432,73 @@ impl super::ComAmazonawsIotAwsiotserviceState {
         self.ca_certificates.remove(certificate_id).ok_or_else(|| {
             CaCertificateDeletionRefusal::NotFound(MISSING_CA_CERTIFICATE_MESSAGE.to_string())
         })
+    }
+
+    /// Apply `update` to the CA certificate recorded under `certificate_id`, answering the
+    /// record as it stands afterwards, or `None` when the registry holds none under that id.
+    ///
+    /// "Updates a registered CA certificate" (`UpdateCACertificate`): every member the
+    /// request carries is one the record holds, so the update writes the ones the request
+    /// named and leaves the rest as they stand — `newStatus` is the status
+    /// ([`CA_CERTIFICATE_STATUS_ACTIVE`] or [`CA_CERTIFICATE_STATUS_INACTIVE`]), which is
+    /// what decides whether device certificates may be signed by this CA and therefore what
+    /// `DeleteCACertificate`'s precondition reads ([`active_ca_certificate_deletion_message`]);
+    /// `newAutoRegistrationStatus` is "The new value for the auto registration status"; and
+    /// `registrationConfig` is "Information about the registration configuration".
+    /// `removeAutoRegistration` — "If true, removes auto registration" — is applied last and
+    /// takes the record out of auto registration altogether: the status goes to
+    /// [`AUTO_REGISTRATION_DISABLE`] and the configuration auto registration provisioned
+    /// through is dropped.
+    ///
+    /// A call that leaves every one of those members as it found them is a write that
+    /// changed nothing, so it moves neither `lastModifiedDate` nor `customerVersion`; one
+    /// that does change the record stamps `now` as the moment it was last modified and takes
+    /// the record to its next `customerVersion` — "The customer version of the CA
+    /// certificate", the member counting the customer-initiated writes to it, exactly as the
+    /// DEVICE certificate family counts its own
+    /// ([`super::ComAmazonawsIotAwsiotserviceState::update_certificate_status`]).
+    ///
+    /// `newStatus` and `newAutoRegistrationStatus` are checked against the modelled
+    /// `CACertificateStatus` and `AutoRegistrationStatus` enums before a handler is reached,
+    /// so no value is refused here: what the account holds is the only thing that can refuse
+    /// this call, and the only such refusal is an id it holds nothing under.
+    pub fn update_ca_certificate(
+        &mut self,
+        certificate_id: &str,
+        update: CaCertificateUpdate,
+        now: SystemTime,
+    ) -> Option<RegisteredCaCertificate> {
+        let certificate = self.ca_certificates.get_mut(certificate_id)?;
+        let before = (
+            certificate.status.clone(),
+            certificate.auto_registration_status.clone(),
+            registration_config_members(certificate.registration_config.as_ref()),
+        );
+
+        if let Some(new_status) = update.new_status {
+            certificate.status = new_status;
+        }
+        if let Some(new_auto_registration_status) = update.new_auto_registration_status {
+            certificate.auto_registration_status = new_auto_registration_status;
+        }
+        if let Some(registration_config) = update.registration_config {
+            certificate.registration_config = Some(registration_config);
+        }
+        if update.remove_auto_registration {
+            certificate.auto_registration_status = AUTO_REGISTRATION_DISABLE.to_string();
+            certificate.registration_config = None;
+        }
+
+        let after = (
+            certificate.status.clone(),
+            certificate.auto_registration_status.clone(),
+            registration_config_members(certificate.registration_config.as_ref()),
+        );
+        if after != before {
+            certificate.last_modified_date = now;
+            certificate.customer_version = certificate.customer_version.saturating_add(1);
+        }
+        Some(certificate.clone())
     }
 
     /// Register the CA certificate `request` carries, answering the record that was

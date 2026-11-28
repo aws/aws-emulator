@@ -365,10 +365,13 @@ impl TaggedResource {
             Self::RoleAlias(alias) => super::missing_role_alias_message(alias),
             Self::DomainConfiguration(name) => super::missing_domain_configuration_message(name),
             Self::ProvisioningTemplate(name) => super::missing_provisioning_template_message(name),
-            // A CA certificate is addressed by the same `certificateId` member a device
-            // certificate is, and every reader of a certificate this service holds none
-            // of states the miss in one sentence (`ops::describe_ca_certificate`).
-            Self::CaCertificate(id) => super::missing_certificate_message(id),
+            // A CA certificate is a resource of the CA plane, which words a miss after the
+            // resource the request addressed rather than after the `certificateId` member
+            // the DEVICE certificate family names its own miss by
+            // (`ops::describe_ca_certificate`).
+            Self::CaCertificate(_) => {
+                super::ca_certificates::MISSING_CA_CERTIFICATE_MESSAGE.to_string()
+            }
             Self::CertificateProvider(name) => super::missing_certificate_provider_message(name),
             Self::TopicRule(name) => missing_topic_rule_message(name),
             Self::ScheduledAudit(name) => super::missing_scheduled_audit_message(name),
