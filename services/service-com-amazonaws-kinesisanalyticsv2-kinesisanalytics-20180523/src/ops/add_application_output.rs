@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AddApplicationOutput
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AddApplicationOutput`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AddApplicationOutput::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Implemented: adds an external destination to a SQL-based application's stored
+//! configuration and answers with the output descriptions it now carries. This is the ONLY
+//! file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -173,18 +167,114 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AddApplicationOutput` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AddApplicationOutputErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AddApplicationOutput"))
+        let _ = ctx;
+        // Every modelled constraint on the input — `ApplicationName`'s length and
+        // `^[a-zA-Z0-9_.-]+$` pattern, `CurrentApplicationVersionId`'s 1..999999999 range
+        // and the required members of `Output` (its `Name` and `DestinationSchema`) — is
+        // refused at the boundary with HTTP 400 before this handler runs, so reaching here
+        // means the request satisfies every one of them.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(AddApplicationOutputErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        "this service is not mounted on a stateful engine, so no \
+                         application output can be stored"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+
+        let name = input.application_name.clone();
+        let now = crate::state::now_timestamp();
+
+        let mut store = state.lock();
+        store.settle_named(&name);
+
+        let Some(application) = store.applications.get(&name) else {
+            return Err(AddApplicationOutputErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::missing_application_message(&name)),
+                },
+            )
+            .into());
+        };
+        let runtime_environment = application.runtime_environment.clone();
+        let arn = application.arn.clone();
+        let stored_version = application.version_id;
+        let stored_outputs = application.described_outputs();
+
+        // An external destination is part of a SQL application's configuration: this
+        // operation "adds an external destination to your SQL-based Kinesis Data Analytics
+        // application" (its own doc), mapping an IN-APPLICATION stream to that destination,
+        // and an application of any other runtime family has no in-application stream and
+        // so no SQL configuration for an output to join. The refusal is about the runtime
+        // the STORED application declares, not about anything in the request, and it is
+        // checked before the version token because it holds for every version that
+        // application will ever be on.
+        if !crate::state::is_sql_runtime(&runtime_environment) {
+            return Err(AddApplicationOutputErrorModeled::InvalidArgumentException(
+                InvalidArgumentException {
+                    message: Some(crate::state::sql_configuration_on_flink_message(Some(
+                        crate::state::OUTPUT_CONFIGURATION,
+                    ))),
+                },
+            )
+            .into());
+        }
+
+        // The optimistic-concurrency token: a configuration update is accepted only
+        // against the version the application is on NOW, so a caller replaying a consumed
+        // version id is refused rather than silently overwriting whatever landed since.
+        if input.current_application_version_id != stored_version {
+            return Err(
+                AddApplicationOutputErrorModeled::ConcurrentModificationException(
+                    ConcurrentModificationException {
+                        message: Some(crate::state::stale_version_message(
+                            crate::state::VERSION_ID_MEMBER,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // One application writes to a bounded number of destinations
+        // (`MAX_OUTPUTS_PER_APPLICATION`), so an application already configured up to that
+        // ceiling is not a valid argument to add another to — and this is what bounds the
+        // output list a caller can grow by repeating this operation.
+        if stored_outputs >= crate::state::MAX_OUTPUTS_PER_APPLICATION {
+            return Err(AddApplicationOutputErrorModeled::InvalidArgumentException(
+                InvalidArgumentException {
+                    message: Some(crate::state::too_many_outputs_message(&name)),
+                },
+            )
+            .into());
+        }
+
+        // Accepted: the destination is described with the id the service assigns it, stored
+        // on the application's SQL configuration beside the destinations it already has,
+        // and the application is moved on to a new version — which is what "any
+        // configuration update, including adding a streaming source using this operation,
+        // results in a new version of the application" means.
+        let Some((application_version_id, output_descriptions)) =
+            store.add_output(&name, &input.output, now)
+        else {
+            return Err(AddApplicationOutputErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::missing_application_message(&name)),
+                },
+            )
+            .into());
+        };
+
+        // Answered out of the store, so what the caller receives is exactly what a later
+        // DescribeApplication will report.
+        Ok(AddApplicationOutputOutput {
+            application_arn: Some(arn),
+            application_version_id: Some(application_version_id),
+            output_descriptions: Some(output_descriptions),
+        })
     }
 }

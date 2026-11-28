@@ -211,10 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if !crate::state::is_sql_runtime(&runtime_environment) {
             return Err(AddApplicationInputErrorModeled::InvalidArgumentException(
                 InvalidArgumentException {
-                    message: Some(
-                        "You cannot add sql configuration to a Flink application."
-                            .to_string(),
-                    ),
+                    message: Some(crate::state::sql_configuration_on_flink_message(None)),
                 },
             )
             .into());

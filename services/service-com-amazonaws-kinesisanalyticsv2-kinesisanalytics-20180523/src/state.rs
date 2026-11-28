@@ -64,7 +64,8 @@ use crate::ops::types::{
     InputProcessingConfigurationDescription, InputLambdaProcessorDescription,
     KinesisFirehoseInputDescription, KinesisFirehoseOutputDescription,
     KinesisStreamsInputDescription, KinesisStreamsOutputDescription, LambdaOutputDescription,
-    MonitoringConfigurationDescription, OutputDescription, ParallelismConfigurationDescription,
+    MonitoringConfigurationDescription, Output, OutputDescription,
+    ParallelismConfigurationDescription,
     ReferenceDataSourceDescription, RunConfigurationDescription, RunConfigurationUpdate,
     S3ApplicationCodeLocationDescription, S3ContentBaseLocationDescription,
     S3ReferenceDataSourceDescription, SnapshotDetails, SqlApplicationConfigurationDescription, Tag,
@@ -286,6 +287,21 @@ impl Application {
                     || content.s3_application_code_location_description.is_some()
                     || content.code_size.is_some_and(|size| size > 0)
             })
+    }
+
+    /// How many external destinations this application's stored SQL configuration already
+    /// describes — the count `AddApplicationOutput` holds to
+    /// [`MAX_OUTPUTS_PER_APPLICATION`], and 0 for an application carrying no SQL
+    /// configuration at all.
+    ///
+    /// Read off the STORED description rather than off a request, so what decides is the
+    /// configuration a create or an add actually persisted.
+    pub fn described_outputs(&self) -> usize {
+        self.configuration
+            .as_ref()
+            .and_then(|cfg| cfg.sql_application_configuration_description.as_ref())
+            .and_then(|sql| sql.output_descriptions.as_ref())
+            .map_or(0, Vec::len)
     }
 
     /// The `ApplicationDetail` `CreateApplication` and `DescribeApplication` return.
@@ -884,8 +900,20 @@ pub const MAX_SNAPSHOTS_PER_APPLICATION: usize = 1_000;
 /// emulator's own.
 pub const MAX_RETAINED_VERSIONS: usize = 1_000;
 
-/// The ceiling on user-defined application tags, from the `CreateApplication$Tags`,
-/// `TagResource` and `TooManyTagsException` docs: "the maximum number of application tags
+/// How many external destinations ONE SQL-based application writes to.
+///
+/// `AddApplicationOutput` documents that "you can configure one or more outputs for your
+/// application" and neither it nor the `Outputs` list states a ceiling
+/// (`smithy_query(query="shape",shape="Outputs")`), so the NUMBER here is the emulator's
+/// own: every accepted add appends one description to the stored application, so without a
+/// ceiling a caller repeating the operation grows one application's configuration — and the
+/// answer that reports it — without limit. Same reasoning as [`MAX_SNAPSHOTS_PER_APPLICATION`]
+/// and [`MAX_OPERATIONS_PER_APPLICATION`]; unlike those it is REFUSED rather than trimmed,
+/// because a destination dropped to make room would be one the caller believes its
+/// application still writes to.
+pub const MAX_OUTPUTS_PER_APPLICATION: usize = 3;
+
+/// The ceiling on user-defined application tags, from the `CreateApplication$Tags`,/// `TagResource` and `TooManyTagsException` docs: "the maximum number of application tags
 /// includes system tags. The maximum number of user-defined application tags is 50". The
 /// modelled `Tags` bound (`@length 1..200`) counts the system tags too, so this ceiling is
 /// the service's own rule and every operation that assigns a tag holds to it.
@@ -1243,6 +1271,118 @@ impl ComAmazonawsKinesisanalyticsv2Kinesisanalytics20180523State {
         }
     }
 
+    /// The description of one output configuration — one in-application stream and the
+    /// destination its data is written to — with the id the service assigns it.
+    ///
+    /// Shared by `CreateApplication`'s `SqlApplicationConfiguration` and by
+    /// `AddApplicationOutput`, so a destination added after the fact is described exactly
+    /// like one supplied at create time.
+    pub fn describe_output(&mut self, output: &Output) -> OutputDescription {
+        OutputDescription {
+            output_id: Some(self.mint_id("Output")),
+            name: Some(output.name.clone()),
+            kinesis_streams_output_description: output.kinesis_streams_output.as_ref().map(|k| {
+                KinesisStreamsOutputDescription {
+                    resource_arn: k.resource_arn.clone(),
+                    role_arn: None,
+                }
+            }),
+            kinesis_firehose_output_description: output.kinesis_firehose_output.as_ref().map(|k| {
+                KinesisFirehoseOutputDescription {
+                    resource_arn: k.resource_arn.clone(),
+                    role_arn: None,
+                }
+            }),
+            lambda_output_description: output.lambda_output.as_ref().map(|l| {
+                LambdaOutputDescription {
+                    resource_arn: l.resource_arn.clone(),
+                    role_arn: None,
+                }
+            }),
+            destination_schema: Some(output.destination_schema.clone()),
+        }
+    }
+
+    /// Store `output` as one of `application`'s destinations and move the application on to
+    /// a new version; answers that version and the output descriptions it now carries.
+    ///
+    /// The whole accepted mutation of `AddApplicationOutput`, in one place beside the other
+    /// writers of this store: the description (with the id the service assigns it), the
+    /// version advance, and the answer read back out of what was stored. The list GROWS —
+    /// "You can configure one or more outputs for your application" (the operation's doc) —
+    /// so a second destination joins the first rather than replacing it, up to
+    /// [`MAX_OUTPUTS_PER_APPLICATION`].
+    ///
+    /// `None` when no application is stored under `application`, and when the one stored is
+    /// already configured up to that ceiling — the second line of defence behind the
+    /// handler's own check, so no writer can grow one application's configuration past it.
+    /// Nothing is written and no version is consumed on either.
+    pub fn add_output(
+        &mut self,
+        application: &str,
+        output: &Output,
+        now: DateTime,
+    ) -> Option<(i64, Vec<OutputDescription>)> {
+        let stored = self.applications.get(application)?;
+        if stored.described_outputs() >= MAX_OUTPUTS_PER_APPLICATION {
+            return None;
+        }
+        let description = self.describe_output(output);
+        // The detail of the version this add LEAVES: read before the output is stored, so
+        // the record kept for it describes the application as that version ran.
+        let superseded = self.applications.get(application)?.detail();
+        let version_id = self.advance_version(application, now, superseded)?;
+        let app = self.applications.get_mut(application)?;
+        let descriptions = app
+            .configuration
+            .get_or_insert_with(ApplicationConfigurationDescription::default)
+            .sql_application_configuration_description
+            .get_or_insert_with(SqlApplicationConfigurationDescription::default)
+            .output_descriptions
+            .get_or_insert_with(Vec::new);
+        descriptions.push(description);
+        Some((version_id, descriptions.clone()))
+    }
+
+    /// Drop the output configuration `application` carries under `output_id` and move the
+    /// application on to a new version; answers that version and the descriptions that
+    /// REMAIN.
+    ///
+    /// `None` when no application is stored under that name, or when the one stored carries
+    /// no output under that id — so nothing is written and no version is consumed for a
+    /// request naming a destination that was never configured.
+    pub fn remove_output(
+        &mut self,
+        application: &str,
+        output_id: &str,
+        now: DateTime,
+    ) -> Option<(i64, Vec<OutputDescription>)> {
+        let app = self.applications.get(application)?;
+        let described = app
+            .configuration
+            .as_ref()?
+            .sql_application_configuration_description
+            .as_ref()?
+            .output_descriptions
+            .as_ref()?;
+        let position = described
+            .iter()
+            .position(|output| output.output_id.as_deref() == Some(output_id))?;
+        let superseded = app.detail();
+        let version_id = self.advance_version(application, now, superseded)?;
+        let descriptions = self
+            .applications
+            .get_mut(application)?
+            .configuration
+            .as_mut()?
+            .sql_application_configuration_description
+            .as_mut()?
+            .output_descriptions
+            .as_mut()?;
+        descriptions.remove(position);
+        Some((version_id, descriptions.clone()))
+    }
+
     /// The description of the members a request actually supplied, before the service
     /// defaults complete it.
     fn describe_supplied_configuration(
@@ -1260,31 +1400,7 @@ impl ComAmazonawsKinesisanalyticsv2Kinesisanalytics20180523State {
                 output_descriptions: sql.outputs.as_ref().map(|outputs| {
                     outputs
                         .iter()
-                        .map(|output| OutputDescription {
-                            output_id: Some(self.mint_id("Output")),
-                            name: Some(output.name.clone()),
-                            kinesis_streams_output_description: output
-                                .kinesis_streams_output
-                                .as_ref()
-                                .map(|k| KinesisStreamsOutputDescription {
-                                    resource_arn: k.resource_arn.clone(),
-                                    role_arn: None,
-                                }),
-                            kinesis_firehose_output_description: output
-                                .kinesis_firehose_output
-                                .as_ref()
-                                .map(|k| KinesisFirehoseOutputDescription {
-                                    resource_arn: k.resource_arn.clone(),
-                                    role_arn: None,
-                                }),
-                            lambda_output_description: output.lambda_output.as_ref().map(|l| {
-                                LambdaOutputDescription {
-                                    resource_arn: l.resource_arn.clone(),
-                                    role_arn: None,
-                                }
-                            }),
-                            destination_schema: Some(output.destination_schema.clone()),
-                        })
+                        .map(|output| self.describe_output(output))
                         .collect()
                 }),
                 reference_data_source_descriptions: sql.reference_data_sources.as_ref().map(
@@ -1881,6 +1997,63 @@ const SQL_RUNTIME_FAMILY: &str = "SQL-";
 pub fn is_sql_runtime(runtime: &str) -> bool {
     runtime.starts_with(SQL_RUNTIME_FAMILY)
 }
+
+/// How this service words an add that would leave an application writing to more
+/// destinations than [`MAX_OUTPUTS_PER_APPLICATION`] admits: the application it was asked
+/// of, and the ceiling.
+pub fn too_many_outputs_message(application: &str) -> String {
+    format!(
+        "Application {application} already has {MAX_OUTPUTS_PER_APPLICATION} outputs. A \
+         SQL-based application supports at most {MAX_OUTPUTS_PER_APPLICATION} output \
+         destinations."
+    )
+}
+
+/// How this service words a delete that names an output configuration the application's
+/// current version does not carry: the `OutputId` the request named.
+///
+/// An output is addressed by the id the service assigned it, so this is what
+/// `DeleteApplicationOutput` answers for an id the stored configuration does not hold —
+/// including on an application that carries no SQL configuration at all, which is the
+/// answer the behavioural unit
+/// `kinesisanalyticsv2.add-application-output-kinesis-stream-on-flink-application-rejected`
+/// records for a delete on an application of another runtime family. The sentence is the
+/// recorded one, which ends without a full stop — as this service's other refusals about
+/// what an application cannot do do ([`ineligible_status_message`]).
+pub fn missing_output_message(output_id: &str) -> String {
+    format!("There are no outputs with OutputId {output_id} that you would like to delete")
+}
+
+/// How this service words a SQL configuration offered to an application that runs no SQL.
+///
+/// One sentence for every operation that extends a SQL application's configuration — the
+/// streaming source, the destination, the reference data table — so two of them cannot
+/// report the same refusal differently. `configuration` names the SQL configuration the
+/// REQUEST carries, spelled as the model spells the member that carries it
+/// ([`OUTPUT_CONFIGURATION`]); it is `None` for `AddApplicationInput`, whose recorded
+/// sentence names none (the behavioural unit
+/// `kinesis-analytics-v2.add-application-input-on-flink-application-rejected` expects
+/// "You cannot add sql configuration to a Flink application.").
+///
+/// The refusal is about the runtime the STORED application declares rather than about
+/// anything in the request, which is why no caller passes the runtime in: an application
+/// this service did not create as a SQL one runs its records through the code it runs, and
+/// every such runtime family this API knows is a Flink one ([`is_flink_runtime`],
+/// [`is_notebook_runtime`] — a Studio notebook runs Zeppelin over Flink).
+pub fn sql_configuration_on_flink_message(configuration: Option<&str>) -> String {
+    match configuration {
+        Some(configuration) => {
+            format!("You cannot add sql configuration {configuration} to a Flink application.")
+        }
+        None => "You cannot add sql configuration to a Flink application.".to_string(),
+    }
+}
+
+/// The SQL configuration `AddApplicationOutput` offers, as [`sql_configuration_on_flink_message`]
+/// names it: the model's `AddApplicationOutput$Output` member
+/// (`smithy_query(query="operation",operation="AddApplicationOutput")`), which is the
+/// configuration that request carries.
+pub const OUTPUT_CONFIGURATION: &str = "Output";
 
 /// The `RuntimeEnvironment` family a Studio notebook runs on: Apache Zeppelin over
 /// Flink, `ZEPPELIN-FLINK-<major>_<minor>` (`ZEPPELIN-FLINK-1_0` … `ZEPPELIN-FLINK-3_0`

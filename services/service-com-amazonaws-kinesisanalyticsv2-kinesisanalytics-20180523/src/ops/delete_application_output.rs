@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteApplicationOutput
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteApplicationOutput`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteApplicationOutput::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Implemented: removes one output destination from a SQL-based application's stored
+//! configuration and moves the application on to a new version. This is the ONLY file to
+//! touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -162,18 +156,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteApplicationOutput` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteApplicationOutputErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteApplicationOutput"))
+        let _ = ctx;
+        // Every modelled constraint on the input — `ApplicationName`'s and `OutputId`'s
+        // length and `^[a-zA-Z0-9_.-]+$` pattern and `CurrentApplicationVersionId`'s
+        // 1..999999999 range — is refused at the boundary with HTTP 400 before this handler
+        // runs, so reaching here means the request satisfies every one of them.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteApplicationOutputErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        "this service is not mounted on a stateful engine, so no \
+                         application output can be deleted"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
+
+        let name = input.application_name.clone();
+        let now = crate::state::now_timestamp();
+
+        let mut store = state.lock();
+        store.settle_named(&name);
+
+        let Some(application) = store.applications.get(&name) else {
+            return Err(DeleteApplicationOutputErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::missing_application_message(&name)),
+                },
+            )
+            .into());
+        };
+        let arn = application.arn.clone();
+        let stored_version = application.version_id;
+
+        // The optimistic-concurrency token, checked before the output id: which outputs an
+        // application carries is a property of the version in force, so a request addressed
+        // to another version is refused as stale rather than answered about the outputs of
+        // a version the caller was not looking at.
+        if input.current_application_version_id != stored_version {
+            return Err(
+                DeleteApplicationOutputErrorModeled::ConcurrentModificationException(
+                    ConcurrentModificationException {
+                        message: Some(crate::state::stale_version_message(
+                            crate::state::VERSION_ID_MEMBER,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // An output is addressed by the id the service assigned it, so a request naming an
+        // id the application's current configuration does not carry names no configuration
+        // to delete — which is the one refusal this operation has for it, whatever the
+        // application's runtime: an application carrying no SQL configuration at all
+        // carries no output under that id either. Nothing is written and no version is
+        // consumed for it (`crate::state::remove_output`).
+        let Some((application_version_id, _remaining)) =
+            store.remove_output(&name, &input.output_id, now)
+        else {
+            return Err(DeleteApplicationOutputErrorModeled::InvalidArgumentException(
+                InvalidArgumentException {
+                    message: Some(crate::state::missing_output_message(&input.output_id)),
+                },
+            )
+            .into());
+        };
+
+        // Answered out of the store, so the version the caller receives is the one a later
+        // DescribeApplication reports — and the output it named is gone from it.
+        Ok(DeleteApplicationOutputOutput {
+            application_arn: Some(arn),
+            application_version_id: Some(application_version_id),
+        })
     }
 }

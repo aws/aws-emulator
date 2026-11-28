@@ -19,7 +19,8 @@
 //! the name, two operations with no such tension (`AddApplicationOutput`,
 //! `DeleteApplicationCloudWatchLoggingOption`), and every one of them driven over the
 //! wire — `DeleteApplication` to a real 200 (it is implemented, so its success response
-//! is serialized through its own output shape) and each scaffold to its own 501.
+//! is serialized through its own output shape) and each of the two output operations to
+//! the modelled refusal only its own handler words.
 
 use std::any::{type_name, TypeId};
 use std::sync::Arc;
@@ -200,36 +201,54 @@ impl Emulator {
     }
 }
 
-/// One VALID request per still-scaffolded operation — valid so the boundary validator
-/// passes it and it reaches that operation's own handler. Members and constraints from
+/// The application the dispatch rows below are driven against: a Managed Service for
+/// Apache Flink application, so it carries no SQL configuration for either operation to
+/// change. Members and constraints from `OPERATIONS.md`.
+const DISPATCH_APPLICATION: &str = r#"{"ApplicationName":"collision-case","RuntimeEnvironment":"FLINK-1_20","ApplicationMode":"STREAMING","ServiceExecutionRole":"arn:aws:iam::000000000000:role/kda-service-role"}"#;
+
+/// One VALID request per operation whose name is at risk, with the error code and the
+/// message that identify the handler it reached. Valid so the boundary validator passes it
+/// and the request reaches that operation's own handler; members and constraints from
 /// `OPERATIONS.md`.
-const SCAFFOLDED_DISPATCH_TABLE: [(&str, &str); 2] = [
+///
+/// Both operations are implemented, so what identifies the handler is the modelled refusal
+/// it words for [`DISPATCH_APPLICATION`]: the two sentences are each one handler's own.
+const DISPATCH_TABLE: [(&str, &str, &str, &str); 2] = [
     (
         "DeleteApplicationOutput",
         r#"{"ApplicationName":"collision-case","CurrentApplicationVersionId":1,"OutputId":"out-1"}"#,
+        "InvalidArgumentException",
+        "There are no outputs with OutputId out-1 that you would like to delete",
     ),
     (
         "AddApplicationOutput",
         r#"{"ApplicationName":"collision-case","CurrentApplicationVersionId":1,"Output":{"Name":"in_app_stream","DestinationSchema":{"RecordFormatType":"JSON"}}}"#,
+        "InvalidArgumentException",
+        "You cannot add sql configuration Output to a Flink application.",
     ),
 ];
 
 #[tokio::test]
 async fn every_operation_dispatches_to_the_handler_that_bears_its_name() {
     let emulator = Emulator::new();
+    let (status, _, created) = emulator
+        .call("CreateApplication", DISPATCH_APPLICATION)
+        .await;
+    assert_eq!(
+        status, 200,
+        "the application the rows are driven against was not created: {status} {created:?}"
+    );
 
-    for (operation, body) in SCAFFOLDED_DISPATCH_TABLE {
+    for (operation, body, expected_code, expected_message) in DISPATCH_TABLE {
         let (status, code, parsed) = emulator.call(operation, body).await;
 
-        // These operations are still scaffolds, so the answer that identifies the handler
-        // the request reached is its 501 — which names the operation.
         assert_eq!(
-            status, 501,
-            "case {operation:?}: expected HTTP 501 from the scaffolded handler, got {status} with {parsed:?}"
+            status, 400,
+            "case {operation:?}: expected the modelled client error, got {status} with {parsed:?}"
         );
         assert!(
-            code.ends_with("NotImplemented"),
-            "case {operation:?}: expected the error code NotImplemented, got {code:?} with {parsed:?}"
+            code.ends_with(expected_code),
+            "case {operation:?}: expected the error code {expected_code}, got {code:?} with {parsed:?}"
         );
 
         let message = parsed
@@ -237,9 +256,10 @@ async fn every_operation_dispatches_to_the_handler_that_bears_its_name() {
             .or_else(|| parsed.get("Message"))
             .and_then(Value::as_str)
             .unwrap_or_default();
-        assert!(
-            message.contains(&format!("operation {operation} is")),
-            "case {operation:?}: expected the 501 to name {operation}, got {message:?}"
+        assert_eq!(
+            message, expected_message,
+            "case {operation:?}: expected the refusal only {operation}'s handler words, got \
+             {message:?}"
         );
     }
 }
