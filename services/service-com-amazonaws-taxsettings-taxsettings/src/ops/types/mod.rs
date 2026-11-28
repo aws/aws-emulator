@@ -19,6 +19,7 @@ pub mod batch_get_tax_exemptions_types;
 pub mod batch_put_tax_registration_types;
 pub mod delete_supplemental_tax_registration_types;
 pub mod delete_tax_registration_types;
+pub mod exception_wire;
 pub mod get_tax_exemption_types_types;
 pub mod get_tax_inheritance_types;
 pub mod get_tax_registration_document_types;
@@ -42,6 +43,8 @@ pub use batch_put_tax_registration_types::*;
 pub use delete_supplemental_tax_registration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_tax_registration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use exception_wire::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_tax_exemption_types_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

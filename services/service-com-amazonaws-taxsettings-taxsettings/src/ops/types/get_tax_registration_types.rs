@@ -34,7 +34,7 @@ pub struct TaxRegistration {
     pub tax_document_metadatas: Option<Vec<TaxDocumentMetadata>>,
     pub certified_email_id: Option<String>,
     pub additional_tax_information: Option<AdditionalInfoResponse>,
-    pub legal_address: Address,
     pub status_reason: Option<TaxRegistrationStatusReason>,
+    pub legal_address: Address,
 }
 

@@ -104,6 +104,24 @@ fn entry(registration_type: &str, country_code: &str, state_or_region: Option<&s
     })
 }
 
+/// An entry held in the United Arab Emirates: the address of [`entry`], plus the
+/// country block that jurisdiction's own documentation requires ("You must
+/// specify the `taxRegistrationNumberType` in the
+/// `unitedArabEmiratesAdditionalInfo` field of the `additionalTaxInformation`
+/// object"), so what its rows vary is the address member alone.
+fn emirates_entry(state_or_region: Option<&str>) -> Value {
+    let mut entry = entry("VAT", "AE", state_or_region);
+    entry.as_object_mut().expect("an object").insert(
+        "additionalTaxInformation".to_string(),
+        json!({
+            "unitedArabEmiratesAdditionalInfo": {
+                "taxRegistrationNumberType": "VATTaxRegistrationNumber",
+            },
+        }),
+    );
+    entry
+}
+
 /// The rows of rule 1.
 ///
 /// The countries that require the member are the ones the member's own
@@ -141,12 +159,12 @@ fn state_or_region_cases() -> Vec<Case> {
         },
         Case {
             name: "the United Arab Emirates with no stateOrRegion",
-            entry: entry("VAT", "AE", None),
+            entry: emirates_entry(None),
             expect: MISSING_STATE_OR_REGION,
         },
         Case {
             name: "the United Arab Emirates with a stateOrRegion",
-            entry: entry("VAT", "AE", Some("Dubai")),
+            entry: emirates_entry(Some("Dubai")),
             expect: Expect::Stored,
         },
         Case {

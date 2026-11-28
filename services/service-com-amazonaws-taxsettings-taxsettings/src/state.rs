@@ -27,11 +27,12 @@ pub mod support_case;
 use crate::ops::types::{
     AccountMetaData, AdditionalInfoRequest, AdditionalInfoResponse, Address, Authority,
     CanadaAdditionalInfo, CaseCreationLimitExceededException, ConflictException,
-    IndonesiaAdditionalInfo, MalaysiaAdditionalInfo,
-    InternalServerException, Jurisdiction, ResourceNotFoundException, SupplementalTaxRegistration,
-    SupplementalTaxRegistrationEntry, TaxDocumentMetadata, TaxExemption, TaxExemptionDetails,
-    TaxExemptionType, TaxRegistration, TaxRegistrationEntry, TaxRegistrationStatusReason,
-    TaxRegistrationWithJurisdiction, ValidationException, ValidationExceptionField,
+    IndonesiaAdditionalInfo, InternalServerException, Jurisdiction, MalaysiaAdditionalInfo,
+    NewZealandAdditionalInfo, NorwayAdditionalInfo, ResourceNotFoundException,
+    SupplementalTaxRegistration, SupplementalTaxRegistrationEntry, TaxDocumentMetadata,
+    TaxExemption, TaxExemptionDetails, TaxExemptionType, TaxRegistration, TaxRegistrationEntry,
+    TaxRegistrationStatusReason, TaxRegistrationWithJurisdiction, UnitedArabEmiratesAdditionalInfo,
+    ValidationException, ValidationExceptionField,
 };
 
 /// The `TaxRegistrationStatus` values, from the model's enum
@@ -100,8 +101,8 @@ impl TrnValidationReason {
     /// `ListTaxRegistrations` report one reason the same way.
     pub fn to_status_reason(self) -> TaxRegistrationStatusReason {
         TaxRegistrationStatusReason {
-            code: self.code().to_string(),
-            message: self.message().to_string(),
+            code: Some(self.code().to_string()),
+            message: Some(self.message().to_string()),
         }
     }
 }
@@ -1887,8 +1888,9 @@ impl StoredTaxExemption {
 /// `AdditionalInfoResponse` (what the reads report), country block by country
 /// block.
 ///
-/// `brazilAdditionalInfo` and `indiaAdditionalInfo` exist only on the response
-/// shape — there is no request member to carry them — so they stay absent.
+/// `brazilAdditionalInfo`, `colombiaAdditionalInfo` and `indiaAdditionalInfo`
+/// exist only on the response shape — there is no request member to carry them —
+/// so they stay absent.
 ///
 /// `malaysiaAdditionalInfo` is the one block with a member that declares a
 /// default, which the projection materialises
@@ -1925,6 +1927,14 @@ fn additional_info_response(request: &AdditionalInfoRequest) -> AdditionalInfoRe
         chile_additional_info: request.chile_additional_info.clone(),
         france_additional_info: request.france_additional_info.clone(),
         monaco_additional_info: request.monaco_additional_info.clone(),
+        germany_additional_info: request.germany_additional_info.clone(),
+        mexico_additional_info: request.mexico_additional_info.clone(),
+        colombia_additional_info: None,
+        united_arab_emirates_additional_info: request
+            .united_arab_emirates_additional_info
+            .clone(),
+        norway_additional_info: request.norway_additional_info.clone(),
+        new_zealand_additional_info: request.new_zealand_additional_info.clone(),
     }
 }
 
@@ -2719,6 +2729,29 @@ pub const SPAIN_REGISTRATION_TYPE_NEEDING_DOCUMENT: &str = "Local";
 /// for which `taxOffice` is therefore not required either.
 pub const TURKEY_SECTOR_WITHOUT_TAX_OFFICE: &str = "Individual";
 
+/// The `Sector` values the model documents as valid for New Zealand ("You can
+/// optionally specify the `sector`. Valid values are `Government` and
+/// `Business`. Non-government customers use `Business`") — a subset of the
+/// `Sector` enum (`Business | Individual | Government`).
+pub const NEW_ZEALAND_SECTORS: &[&str] = &["Government", "Business"];
+
+/// The New Zealand `sector` a registration may carry a `peppolId` for: "If your
+/// `sector` is `Government`, you can optionally specify the `peppolId` in the
+/// `newZealandAdditionalInfo` field of the `additionalTaxInformation` object",
+/// which `NewZealandAdditionalInfo$peppolId` states as "Only accepted when the
+/// `sector` is `Government`".
+pub const NEW_ZEALAND_PEPPOL_SECTOR: &str = "Government";
+
+/// The `NorwayTaxRegistrationNumberType` that registers an Organisation Number
+/// rather than a VAT registration number: "Use `LocalRegistrationNumber` to
+/// register a Norwegian Organisation Number for a business that isn't VAT
+/// registered."
+pub const NORWAY_LOCAL_REGISTRATION_TYPE: &str = "LocalRegistrationNumber";
+
+/// The length of that Organisation Number: "In that case, the `registrationId`
+/// must be the 9-digit Organisation Number."
+pub const NORWAY_ORGANISATION_NUMBER_DIGITS: usize = 9;
+
 /// The Brazilian `TaxRegistrationType` whose address must name a state, region or
 /// province — "Brazil (CPF)" in the documentation of `Address$stateOrRegion`
 /// (see [`COUNTRY_RULES`]). A Brazilian registration of any other type carries
@@ -2913,6 +2946,53 @@ fn turkey_member(
 /// `taxOffice` or a `kepEmailId`.
 fn turkey_sector_is_individual(entry: &TaxRegistrationEntry) -> bool {
     sector(entry).is_some_and(|value| value == TURKEY_SECTOR_WITHOUT_TAX_OFFICE)
+}
+
+/// The entry's `newZealandAdditionalInfo` block, if it carries one.
+fn new_zealand_info(entry: &TaxRegistrationEntry) -> Option<&NewZealandAdditionalInfo> {
+    additional_info(entry).and_then(|info| info.new_zealand_additional_info.as_ref())
+}
+
+/// Whether the entry declares the New Zealand `sector` a `peppolId` is accepted
+/// for ([`NEW_ZEALAND_PEPPOL_SECTOR`]). An entry that declares no sector declares
+/// no government one either, so it takes no `peppolId`.
+fn new_zealand_sector_takes_peppol_id(entry: &TaxRegistrationEntry) -> bool {
+    sector(entry).is_some_and(|value| value == NEW_ZEALAND_PEPPOL_SECTOR)
+}
+
+/// The entry's `norwayAdditionalInfo` block, if it carries one.
+fn norway_info(entry: &TaxRegistrationEntry) -> Option<&NorwayAdditionalInfo> {
+    additional_info(entry).and_then(|info| info.norway_additional_info.as_ref())
+}
+
+/// Whether the entry registers a Norwegian Organisation Number rather than a VAT
+/// registration number — the `taxRegistrationNumberType` the rule about the
+/// submitted number turns on ([`NORWAY_LOCAL_REGISTRATION_TYPE`]). The member is
+/// documented as "Treated as `TaxRegistrationNumber` when absent", so an entry
+/// that carries no type registers no Organisation Number.
+fn norway_registers_an_organisation_number(entry: &TaxRegistrationEntry) -> bool {
+    norway_info(entry).is_some_and(|norway| {
+        norway
+            .tax_registration_number_type
+            .as_deref()
+            .is_some_and(|value| value == NORWAY_LOCAL_REGISTRATION_TYPE)
+    })
+}
+
+/// Whether the submitted number IS that Organisation Number: nine digits, read
+/// in the form a number is written in
+/// ([`registration_number::normalised`]).
+fn registration_id_is_norwegian_organisation_number(entry: &TaxRegistrationEntry) -> bool {
+    let number = registration_number::normalised(&entry.registration_id);
+    number.len() == NORWAY_ORGANISATION_NUMBER_DIGITS
+        && number.chars().all(|character| character.is_ascii_digit())
+}
+
+/// The entry's `unitedArabEmiratesAdditionalInfo` block, if it carries one.
+fn united_arab_emirates_info(
+    entry: &TaxRegistrationEntry,
+) -> Option<&UnitedArabEmiratesAdditionalInfo> {
+    additional_info(entry).and_then(|info| info.united_arab_emirates_additional_info.as_ref())
 }
 
 /// Whether `entry` submitted a legal address of its own.
@@ -3175,6 +3255,45 @@ pub const COUNTRY_RULES: &[CountryRule] = &[
         applies: always,
         satisfied: sector_is_business_or_individual,
     },
+    // New Zealand: "You can optionally specify the sector. Valid values are
+    // Government and Business."
+    CountryRule {
+        country_code: "NZ",
+        member_path: "taxRegistrationEntry.sector",
+        error_code: ERROR_CODE_FIELD_VALIDATION_FAILED,
+        message: "The valid sector values for a tax registration in New Zealand are Government \
+                  and Business.",
+        applies: always,
+        satisfied: |entry: &TaxRegistrationEntry| {
+            sector(entry).is_none_or(|value| NEW_ZEALAND_SECTORS.contains(&value))
+        },
+    },
+    // New Zealand: "If your sector is Government, you can optionally specify the
+    // peppolId in the newZealandAdditionalInfo field of the
+    // additionalTaxInformation object" — which `NewZealandAdditionalInfo$peppolId`
+    // states as "Only accepted when the sector is Government", so an entry of any
+    // other sector carrying one is refused for that member.
+    CountryRule {
+        country_code: "NZ",
+        member_path: "additionalTaxInformation.newZealandAdditionalInfo.peppolId",
+        error_code: ERROR_CODE_FIELD_VALIDATION_FAILED,
+        message: ADDITIONAL_INFO_INVALID,
+        applies: |entry: &TaxRegistrationEntry| {
+            new_zealand_info(entry).is_some_and(|new_zealand| new_zealand.peppol_id.is_some())
+        },
+        satisfied: new_zealand_sector_takes_peppol_id,
+    },
+    // Norway: "Use LocalRegistrationNumber to register a Norwegian Organisation
+    // Number for a business that isn't VAT registered. In that case, the
+    // registrationId must be the 9-digit Organisation Number."
+    CountryRule {
+        country_code: "NO",
+        member_path: "taxRegistrationEntry.registrationId",
+        error_code: ERROR_CODE_FIELD_VALIDATION_FAILED,
+        message: INVALID_TAX_REGISTRATION_NUMBER,
+        applies: norway_registers_an_organisation_number,
+        satisfied: registration_id_is_norwegian_organisation_number,
+    },
     // Saudi Arabia: "For address, you must specify addressLine3." The other
     // half of the member's rule — that the API accepts it ONLY there — is
     // [`ADDRESS_MEMBER_JURISDICTIONS`], because it is about the address rather
@@ -3323,6 +3442,21 @@ pub const COUNTRY_RULES: &[CountryRule] = &[
         applies: always,
         satisfied: sector_is_business_or_individual,
     },
+    // United Arab Emirates: "You must specify the taxRegistrationNumberType in
+    // the unitedArabEmiratesAdditionalInfo field of the additionalTaxInformation
+    // object."
+    CountryRule {
+        country_code: "AE",
+        member_path: "additionalTaxInformation.unitedArabEmiratesAdditionalInfo\
+                      .taxRegistrationNumberType",
+        error_code: ERROR_CODE_MISSING_INPUT,
+        message: ADDITIONAL_INFO_INVALID,
+        applies: always,
+        satisfied: |entry: &TaxRegistrationEntry| {
+            united_arab_emirates_info(entry)
+                .is_some_and(|emirates| emirates.tax_registration_number_type.is_some())
+        },
+    },
     // France: "You must specify the sirenNumber in the franceAdditionalInfo field
     // of the additionalTaxInformation object." (`sirenNumber` is `@required` on
     // `FranceAdditionalInfo`, so carrying the block is carrying the member.)
@@ -3450,9 +3584,10 @@ pub struct AdditionalInfoBlock {
 ///
 /// One row per member of that shape, so counting the blocks an object carries and
 /// placing the one it carries are read off the model rather than off the countries
-/// some rule happens to mention. `brazilAdditionalInfo` and `indiaAdditionalInfo`
-/// are deliberately NOT rows: they exist only on the RESPONSE shape, so no request
-/// can carry either (see [`additional_info_response`]).
+/// some rule happens to mention. The RESPONSE-only blocks are deliberately NOT
+/// rows: `brazilAdditionalInfo`, `colombiaAdditionalInfo` and
+/// `indiaAdditionalInfo` exist only on the RESPONSE shape, so no request can carry
+/// any of them (see [`additional_info_response`]).
 pub const ADDITIONAL_INFO_BLOCKS: &[AdditionalInfoBlock] = &[
     AdditionalInfoBlock {
         member: "malaysiaAdditionalInfo",
@@ -3573,6 +3708,33 @@ pub const ADDITIONAL_INFO_BLOCKS: &[AdditionalInfoBlock] = &[
         member: "monacoAdditionalInfo",
         country_code: "MC",
         submitted: |info: &AdditionalInfoRequest| info.monaco_additional_info.is_some(),
+    },
+    AdditionalInfoBlock {
+        member: "germanyAdditionalInfo",
+        country_code: "DE",
+        submitted: |info: &AdditionalInfoRequest| info.germany_additional_info.is_some(),
+    },
+    AdditionalInfoBlock {
+        member: "mexicoAdditionalInfo",
+        country_code: "MX",
+        submitted: |info: &AdditionalInfoRequest| info.mexico_additional_info.is_some(),
+    },
+    AdditionalInfoBlock {
+        member: "unitedArabEmiratesAdditionalInfo",
+        country_code: "AE",
+        submitted: |info: &AdditionalInfoRequest| {
+            info.united_arab_emirates_additional_info.is_some()
+        },
+    },
+    AdditionalInfoBlock {
+        member: "norwayAdditionalInfo",
+        country_code: "NO",
+        submitted: |info: &AdditionalInfoRequest| info.norway_additional_info.is_some(),
+    },
+    AdditionalInfoBlock {
+        member: "newZealandAdditionalInfo",
+        country_code: "NZ",
+        submitted: |info: &AdditionalInfoRequest| info.new_zealand_additional_info.is_some(),
     },
 ];
 
@@ -4042,7 +4204,8 @@ impl BatchRowErrorCode for RegistrationDeleteRefusal {
 /// the wire already carries that in `x-amzn-errortype` — and this service
 /// publishes no code for a missing resource (`ErrorCode` is a free-form string,
 /// unlike the `ValidationExceptionErrorCode` enum), so the member is left off the
-/// wire rather than filled with the shape name; see `ops/types/shared_types.rs`.
+/// wire rather than filled with the shape name; see
+/// `ops/types/exception_wire.rs`.
 /// The message names no account: the request that asked already names it. It is
 /// the sentence the EXCEPTION carries; the per-account row of the batch delete
 /// carries the class's own token instead
@@ -4051,6 +4214,7 @@ impl BatchRowErrorCode for RegistrationDeleteRefusal {
 pub fn no_tax_registration() -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: "No tax registration found".to_string(),
+        error_code: None,
     }
 }
 
@@ -4116,6 +4280,7 @@ pub fn invalid_registration_number() -> ValidationException {
 pub fn state_unavailable() -> InternalServerException {
     InternalServerException {
         message: "This service's state store is unavailable.".to_string(),
+        error_code: None,
     }
 }
 

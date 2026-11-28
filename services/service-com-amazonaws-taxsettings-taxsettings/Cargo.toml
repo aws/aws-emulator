@@ -39,6 +39,9 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# Declares one module per `tests/all/<name>.rs`, so a suite is picked up by
+# being there rather than by being listed.
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # The objects a download writes are asserted where Amazon S3 holds them, through

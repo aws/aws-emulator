@@ -146,6 +146,23 @@ fn block_catalog() -> Vec<(&'static str, Value)> {
             "monacoAdditionalInfo",
             json!({ "businessNumber": "MC1234567" }),
         ),
+        (
+            "germanyAdditionalInfo",
+            json!({ "economicIdentificationNumber": "DE123456789" }),
+        ),
+        ("mexicoAdditionalInfo", json!({ "taxRegime": "601" })),
+        (
+            "unitedArabEmiratesAdditionalInfo",
+            json!({ "taxRegistrationNumberType": "VATTaxRegistrationNumber" }),
+        ),
+        (
+            "norwayAdditionalInfo",
+            json!({ "taxRegistrationNumberType": "TaxRegistrationNumber" }),
+        ),
+        (
+            "newZealandAdditionalInfo",
+            json!({ "peppolId": "1234567890123" }),
+        ),
     ]
 }
 
@@ -259,7 +276,7 @@ async fn a_block_for_another_jurisdiction_is_refused() {
 /// (its pattern is `^[a-zA-Z]+$`), so these are ordinary jurisdictions whose
 /// registrations simply take no country block.
 const JURISDICTIONS_WITH_NO_BLOCK: &[(&str, &str)] = &[
-    ("DE", "italyAdditionalInfo"),
+    ("GB", "italyAdditionalInfo"),
     ("US", "canadaAdditionalInfo"),
     ("JP", "philippinesAdditionalInfo"),
     ("NP", "indonesiaAdditionalInfo"),

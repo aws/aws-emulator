@@ -929,6 +929,13 @@ fn cases() -> Vec<Case> {
                 "registrationType": "VAT",
                 "legalName": "Example Trading LLC",
                 "legalAddress": { "postalCode": "00000", "countryCode": "AE" },
+                // The TRN type its own documentation requires, so what is left
+                // unsatisfied is the address member this row is about.
+                "additionalTaxInformation": {
+                    "unitedArabEmiratesAdditionalInfo": {
+                        "taxRegistrationNumberType": "VATTaxRegistrationNumber",
+                    },
+                },
             }),
             expect: missing("STATE_OR_REGION"),
         },
@@ -1002,10 +1009,136 @@ fn cases() -> Vec<Case> {
             }),
             expect: Expect::Stored,
         },
-        // A country the documentation states no requirement for: the minimal
-        // entry is stored.
+        // New Zealand: "You can optionally specify the sector. Valid values are
+        // Government and Business."
         Case {
-            name: "Germany, a country with no documented requirement",
+            name: "New Zealand with a sector its documentation does not admit",
+            entry: json!({
+                "registrationId": "123456789",
+                "registrationType": "GST",
+                "legalName": "Example NZ Limited",
+                "sector": "Individual",
+                "legalAddress": { "postalCode": "6011", "countryCode": "NZ" },
+            }),
+            expect: rejected_value("SECTOR"),
+        },
+        Case {
+            name: "New Zealand with one of the two sectors it admits",
+            entry: json!({
+                "registrationId": "123456789",
+                "registrationType": "GST",
+                "legalName": "Example NZ Limited",
+                "sector": "Business",
+                "legalAddress": { "postalCode": "6011", "countryCode": "NZ" },
+            }),
+            expect: Expect::Stored,
+        },
+        // New Zealand: `NewZealandAdditionalInfo$peppolId` is "Only accepted when
+        // the sector is Government".
+        Case {
+            name: "New Zealand submitting a peppolId for a non-government sector",
+            entry: json!({
+                "registrationId": "123456789",
+                "registrationType": "GST",
+                "legalName": "Example NZ Limited",
+                "sector": "Business",
+                "legalAddress": { "postalCode": "6011", "countryCode": "NZ" },
+                "additionalTaxInformation": {
+                    "newZealandAdditionalInfo": { "peppolId": "9429038762371" },
+                },
+            }),
+            expect: rejected_value("PEPPOL_ID"),
+        },
+        Case {
+            name: "New Zealand submitting a peppolId as a government customer",
+            entry: json!({
+                "registrationId": "123456789",
+                "registrationType": "GST",
+                "legalName": "Example NZ Agency",
+                "sector": "Government",
+                "legalAddress": { "postalCode": "6011", "countryCode": "NZ" },
+                "additionalTaxInformation": {
+                    "newZealandAdditionalInfo": { "peppolId": "9429038762371" },
+                },
+            }),
+            expect: Expect::Stored,
+        },
+        // Norway: "Use LocalRegistrationNumber to register a Norwegian
+        // Organisation Number for a business that isn't VAT registered. In that
+        // case, the registrationId must be the 9-digit Organisation Number."
+        Case {
+            name: "Norway registering an Organisation Number that is not nine digits",
+            entry: json!({
+                "registrationId": "NO123456789MVA",
+                "registrationType": "VAT",
+                "legalName": "Eksempel AS",
+                "legalAddress": { "postalCode": "0150", "countryCode": "NO" },
+                "additionalTaxInformation": {
+                    "norwayAdditionalInfo": {
+                        "taxRegistrationNumberType": "LocalRegistrationNumber",
+                    },
+                },
+            }),
+            expect: rejected_value("REGISTRATION_ID"),
+        },
+        Case {
+            name: "Norway registering the nine-digit Organisation Number",
+            entry: json!({
+                "registrationId": "123456789",
+                "registrationType": "VAT",
+                "legalName": "Eksempel AS",
+                "legalAddress": { "postalCode": "0150", "countryCode": "NO" },
+                "additionalTaxInformation": {
+                    "norwayAdditionalInfo": {
+                        "taxRegistrationNumberType": "LocalRegistrationNumber",
+                    },
+                },
+            }),
+            expect: Expect::Stored,
+        },
+        // United Arab Emirates: "You must specify the taxRegistrationNumberType
+        // in the unitedArabEmiratesAdditionalInfo field of the
+        // additionalTaxInformation object."
+        Case {
+            name: "the United Arab Emirates with no taxRegistrationNumberType",
+            entry: json!({
+                "registrationId": "100123456700003",
+                "registrationType": "VAT",
+                "legalName": "Example Trading LLC",
+                "legalAddress": {
+                    "stateOrRegion": "Dubai",
+                    "postalCode": "00000",
+                    "countryCode": "AE",
+                },
+            }),
+            expect: missing("TAX_REGISTRATION_NUMBER_TYPE"),
+        },
+        Case {
+            name: "the United Arab Emirates with the TRN type its documentation requires",
+            entry: json!({
+                "registrationId": "100123456700003",
+                "registrationType": "VAT",
+                "legalName": "Example Trading LLC",
+                "legalAddress": {
+                    "stateOrRegion": "Dubai",
+                    "postalCode": "00000",
+                    "countryCode": "AE",
+                },
+                "additionalTaxInformation": {
+                    "unitedArabEmiratesAdditionalInfo": {
+                        "taxRegistrationNumberType": "LocalTaxRegistrationNumber",
+                    },
+                },
+            }),
+            expect: Expect::Stored,
+        },
+        // Germany: "You must provide at least one of the following: a Tax
+        // Registration Number (TRN) (registrationId), the
+        // economicIdentificationNumber, or the steuernummer." `registrationId` is
+        // `@required` on `TaxRegistrationEntry`, so every entry carries one of
+        // the three and no row can break this rule.
+        Case {
+            name: "Germany with its TRN alone, which its documentation admits",
             entry: json!({
                 "registrationId": "DE136695976",
                 "registrationType": "VAT",

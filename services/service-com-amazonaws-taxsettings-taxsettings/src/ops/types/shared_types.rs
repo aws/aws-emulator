@@ -11,33 +11,11 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-taxsettings-taxsettings.json");
 
-// `errorCode` on this service's exceptions targets `ErrorCode` — a free-form string
-// (length 0..50), NOT the `ValidationExceptionErrorCode` enum — and carries a
-// SERVICE-DEFINED code, never the exception's own shape name, which the wire already
-// carries in `x-amzn-errortype` / `__type`: a client reading `errorCode` to classify a
-// failure would take a shape name for a service code.
-//
-// `InternalServerException` and `ResourceNotFoundException` are therefore rendered with
-// their `message` only — this service publishes no code for a missing resource or an
-// internal fault, and the real service omits the member on those paths rather than
-// inventing one (recorded: a taxsettings 404 answers `{"message": ...}` with no
-// `errorCode`). `ConflictException` and `ValidationException` keep theirs: this service
-// publishes a token for a state conflict and one for each class of field violation, and a
-// recorded 409 of this service carries it.
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#ConflictException")]
 #[derive(Debug, Clone, Default)]
 pub struct ConflictException {
     pub message: String,
     pub error_code: String,
-}
-
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.taxsettings#InternalServerException",
-    unsupported = ["errorCode"]
-)]
-#[derive(Debug, Clone, Default)]
-pub struct InternalServerException {
-    pub message: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#ValidationException")]
@@ -89,15 +67,14 @@ pub struct TaxExemptionType {
     pub applicable_jurisdictions: Option<Vec<Authority>>,
 }
 
-/// Rendered with its `message` only — see the note above `ConflictException`.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.taxsettings#ResourceNotFoundException",
-    unsupported = ["errorCode"]
-)]
-#[derive(Debug, Clone, Default)]
-pub struct ResourceNotFoundException {
-    pub message: String,
-}
+// `com.amazonaws.taxsettings#InternalServerException` and
+// `com.amazonaws.taxsettings#ResourceNotFoundException` are NOT declared here: AWS
+// answers both with FEWER members than this snapshot requires — it marks `errorCode`
+// `@required` and the recorded responses carry none — so they are declared in
+// `exception_wire.rs` from the overlay model `smithy-model/local-additions.json` (see
+// `smithy-model/LOCAL-ADDITIONS.md`). Both are re-exported by `types/mod.rs` like every
+// other shape, so `InternalServerException` and `ResourceNotFoundException` resolve
+// unchanged.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#TaxRegistrationEntry")]
 #[derive(Debug, Clone, Default)]
@@ -152,6 +129,11 @@ pub struct AdditionalInfoRequest {
     pub chile_additional_info: Option<ChileAdditionalInfo>,
     pub france_additional_info: Option<FranceAdditionalInfo>,
     pub monaco_additional_info: Option<MonacoAdditionalInfo>,
+    pub germany_additional_info: Option<GermanyAdditionalInfo>,
+    pub mexico_additional_info: Option<MexicoAdditionalInfo>,
+    pub united_arab_emirates_additional_info: Option<UnitedArabEmiratesAdditionalInfo>,
+    pub norway_additional_info: Option<NorwayAdditionalInfo>,
+    pub new_zealand_additional_info: Option<NewZealandAdditionalInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#MalaysiaAdditionalInfo")]
@@ -270,6 +252,7 @@ pub struct VietnamAdditionalInfo {
     pub electronic_transaction_code_number: Option<String>,
     pub payment_voucher_number: Option<String>,
     pub payment_voucher_number_date: Option<String>,
+    pub vat_credit_method: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#EgyptAdditionalInfo")]
@@ -325,6 +308,43 @@ pub struct MonacoAdditionalInfo {
     pub business_number: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#GermanyAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct GermanyAdditionalInfo {
+    pub economic_identification_number: Option<String>,
+    pub steuernummer: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#MexicoAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct MexicoAdditionalInfo {
+    pub tax_regime: Option<String>,
+    pub tax_regime_full_name: Option<String>,
+    pub cfdi_usage_code: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#UnitedArabEmiratesAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct UnitedArabEmiratesAdditionalInfo {
+    pub tax_registration_number_type: Option<String>,
+    pub peppol_id: Option<String>,
+    pub trade_license_number: Option<String>,
+    pub emirates_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#NorwayAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct NorwayAdditionalInfo {
+    pub tax_registration_number_type: Option<String>,
+    pub peppol_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#NewZealandAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct NewZealandAdditionalInfo {
+    pub peppol_id: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#VerificationDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct VerificationDetails {
@@ -360,17 +380,6 @@ pub struct TaxDocumentMetadata {
     pub tax_document_name: String,
 }
 
-// The reason reported beside a registration's `TaxRegistrationStatus`. Both members
-// are present on every reason this service reports: a reason with no code names no
-// class a client can route on, and one with no message explains nothing — which is
-// why the shape declares both as required.
-#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#TaxRegistrationStatusReason")]
-#[derive(Debug, Clone, Default)]
-pub struct TaxRegistrationStatusReason {
-    pub code: String,
-    pub message: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#AdditionalInfoResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct AdditionalInfoResponse {
@@ -400,6 +409,12 @@ pub struct AdditionalInfoResponse {
     pub chile_additional_info: Option<ChileAdditionalInfo>,
     pub france_additional_info: Option<FranceAdditionalInfo>,
     pub monaco_additional_info: Option<MonacoAdditionalInfo>,
+    pub germany_additional_info: Option<GermanyAdditionalInfo>,
+    pub mexico_additional_info: Option<MexicoAdditionalInfo>,
+    pub colombia_additional_info: Option<ColombiaAdditionalInfo>,
+    pub united_arab_emirates_additional_info: Option<UnitedArabEmiratesAdditionalInfo>,
+    pub norway_additional_info: Option<NorwayAdditionalInfo>,
+    pub new_zealand_additional_info: Option<NewZealandAdditionalInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#BrazilAdditionalInfo")]
@@ -413,6 +428,21 @@ pub struct BrazilAdditionalInfo {
 #[derive(Debug, Clone, Default)]
 pub struct IndiaAdditionalInfo {
     pub pan: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#ColombiaAdditionalInfo")]
+#[derive(Debug, Clone, Default)]
+pub struct ColombiaAdditionalInfo {
+    pub responsibility_codes: Option<Vec<String>>,
+    pub taxpayer_type_code: Option<String>,
+    pub issue_date: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.taxsettings#TaxRegistrationStatusReason")]
+#[derive(Debug, Clone, Default)]
+pub struct TaxRegistrationStatusReason {
+    pub code: Option<String>,
+    pub message: Option<String>,
 }
 
 /// The values `AddressRoleType` accepts on the wire.
@@ -455,6 +485,10 @@ pub const ISRAEL_DEALER_TYPE_VALUES: &[&str] = &["Authorized", "Non-authorized"]
 pub const MALAYSIA_SERVICE_TAX_CODE_VALUES: &[&str] = &["Consultancy", "Digital Service And Electronic Medium", "IT Services", "Training Or Coaching"];
 
 
+/// The values `NorwayTaxRegistrationNumberType` accepts on the wire.
+pub const NORWAY_TAX_REGISTRATION_NUMBER_TYPE_VALUES: &[&str] = &["LocalRegistrationNumber", "TaxRegistrationNumber"];
+
+
 /// The values `PersonType` accepts on the wire.
 pub const PERSON_TYPE_VALUES: &[&str] = &["Business", "Legal Person", "Physical Person"];
 
@@ -488,7 +522,11 @@ pub const TAX_REGISTRATION_STATUS_VALUES: &[&str] = &["Deleted", "Pending", "Rej
 
 
 /// The values `TaxRegistrationType` accepts on the wire.
-pub const TAX_REGISTRATION_TYPE_VALUES: &[&str] = &["CNPJ", "CPF", "GST", "NIP", "NRIC", "PAN", "SST", "TIN", "VAT"];
+pub const TAX_REGISTRATION_TYPE_VALUES: &[&str] = &["CDI", "CI", "CNPJ", "CPF", "CUIT", "GST", "NIE", "NIP", "NRIC", "PAN", "RUT", "SST", "TIN", "VAT"];
+
+
+/// The values `UaeTaxRegistrationNumberType` accepts on the wire.
+pub const UAE_TAX_REGISTRATION_NUMBER_TYPE_VALUES: &[&str] = &["LocalTaxRegistrationNumber", "VATTaxRegistrationNumber"];
 
 
 /// The values `UkraineTrnType` accepts on the wire.

@@ -1,0 +1,50 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.taxsettings#ResourceNotFoundException": {
+      "type": "structure",
+      "members": {
+        "message": {
+          "target": "com.amazonaws.taxsettings#ErrorMessage",
+          "traits": { "smithy.api#required": {} }
+        },
+        "errorCode": { "target": "com.amazonaws.taxsettings#ErrorCode" }
+      },
+      "traits": {
+        "smithy.api#documentation": "<p>The exception thrown when the input doesn't have a resource associated to it.</p>",
+        "smithy.api#error": "client",
+        "smithy.api#httpError": 404
+      }
+    },
+    "com.amazonaws.taxsettings#InternalServerException": {
+      "type": "structure",
+      "members": {
+        "message": {
+          "target": "com.amazonaws.taxsettings#ErrorMessage",
+          "traits": { "smithy.api#required": {} }
+        },
+        "errorCode": { "target": "com.amazonaws.taxsettings#ErrorCode" }
+      },
+      "traits": {
+        "smithy.api#documentation": "<p>The exception thrown when an unexpected error occurs when processing a request.</p>",
+        "smithy.api#error": "server",
+        "smithy.api#httpError": 500
+      }
+    },
+    "com.amazonaws.taxsettings#ErrorMessage": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 1024 },
+        "smithy.api#pattern": "^[\\s\\S]*$",
+        "smithy.api#sensitive": {}
+      }
+    },
+    "com.amazonaws.taxsettings#ErrorCode": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 50 },
+        "smithy.api#pattern": "^[\\s\\S]*$"
+      }
+    }
+  }
+}

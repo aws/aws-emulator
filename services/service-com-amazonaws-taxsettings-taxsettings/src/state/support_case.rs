@@ -66,6 +66,7 @@ pub fn open_exemption_case<Eng: Send + Sync + 'static>(
     let cases = support::service_state(engine).ok_or_else(|| {
         ExemptionCaseNotOpened::Unavailable(InternalServerException {
             message: "The Amazon Web Services Support case store is unavailable.".to_string(),
+            error_code: None,
         })
     })?;
     let (time_created, time_created_instant) = support::now().ok_or_else(|| {
@@ -73,6 +74,7 @@ pub fn open_exemption_case<Eng: Send + Sync + 'static>(
             message: "The time the Amazon Web Services Support case was opened could not be \
                       rendered."
                 .to_string(),
+            error_code: None,
         })
     })?;
 
@@ -121,6 +123,7 @@ pub fn open_exemption_case<Eng: Send + Sync + 'static>(
                 ExemptionCaseNotOpened::Unavailable(InternalServerException {
                     message: "The Amazon Web Services Support case could not be opened."
                         .to_string(),
+                    error_code: None,
                 })
             }
         })
