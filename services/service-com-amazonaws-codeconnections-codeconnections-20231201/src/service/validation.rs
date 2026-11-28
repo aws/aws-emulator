@@ -195,23 +195,24 @@ fn advertised_pattern(path: &str, model_pattern: &str) -> String {
     ::service_common::validation::unanchored(model_pattern)
 }
 
-/// The order this service advertises the members of its `ProviderType` value set in.
+/// The members of its `ProviderType` value set this service ADVERTISES, in the order it
+/// advertises them in.
 ///
 /// The sequence inside the brackets of an enum clause is FIXED TEXT of the refusal, not a
-/// rendering of the model: this service states these members in this order, which is
-/// NOT the order the model declares them in (`smithy_query(query="shape",
+/// rendering of the model: this service states these members, in this order, which is
+/// neither the membership nor the order the model declares (`smithy_query(query="shape",
 /// shape="ProviderType")` gives `Bitbucket, GitHub, GitHubEnterpriseServer, GitLab,
 /// GitLabSelfManaged, AzureDevOps, GitHubEnterpriseCloudDataResidency`). A caller that
 /// reads the bracketed list back to offer a user the values it may send has to be given the
-/// list the service states, so the sequence is stated here beside the message wording
-/// rather than taken from the shape's declaration.
+/// list the service states, so the list is stated here beside the message wording rather
+/// than taken from the shape's declaration.
 ///
-/// The membership is the model's, so a value the shape gains joins the sequence — otherwise
-/// the clause falls back to declaration order and advertises none of this order at all (see
-/// [`advertised_enum_values`] and its tests). The six values the recorded refusals state
-/// keep the order they state them in, and a value those recordings could not have named
-/// (`GitHubEnterpriseCloudDataResidency`, which the shape gained later) is stated after
-/// them.
+/// These are the six providers the recorded refusals of this surface state, in the order
+/// they state them in. A value the shape declares that those refusals do not name
+/// (`GitHubEnterpriseCloudDataResidency`) is not advertised: the clause is the service's
+/// own sentence, not an enumeration of the shape, and a value the service does not state is
+/// not part of it. What the shape declares is still what is ACCEPTED — membership of the
+/// value set is the framework's walk over the model, which this wording does not touch.
 const PROVIDER_TYPE_ADVERTISED_ORDER: &[&str] = &[
     "GitLab",
     "GitHub",
@@ -219,7 +220,6 @@ const PROVIDER_TYPE_ADVERTISED_ORDER: &[&str] = &[
     "AzureDevOps",
     "GitLabSelfManaged",
     "Bitbucket",
-    "GitHubEnterpriseCloudDataResidency",
 ];
 
 /// Every value set this service advertises in an order of its own.
@@ -229,20 +229,22 @@ const PROVIDER_TYPE_ADVERTISED_ORDER: &[&str] = &[
 /// declares one value, so no order of its own can be observed.
 const ADVERTISED_ENUM_ORDERS: &[&[&str]] = &[PROVIDER_TYPE_ADVERTISED_ORDER];
 
-/// `allowed` — the value set the walk reports, in the model's declaration order — in the
-/// order this service advertises that set in.
+/// `allowed` — the value set the walk reports, in the model's declaration order — as this
+/// service advertises that set.
 ///
 /// Matched on the SET and not on the member the violation sits at, so every member of a
 /// type (a `ProviderType`, a `ProviderTypeFilter`, a provider named on any operation of
-/// this service) advertises one sequence, and a type whose declaration gains or loses a
-/// value falls back to the declared order rather than advertising a stale list.
+/// this service) advertises one sequence. A sequence claims a set when the model still
+/// declares every value it states: a type that LOSES one of them falls back to the declared
+/// order rather than advertising a value the service would refuse, while a value the model
+/// declares and the sequence does not name stays unadvertised, because the bracketed list
+/// is the service's own sentence and not an enumeration of the shape.
 fn advertised_enum_values(allowed: &[String]) -> Vec<String> {
     for order in ADVERTISED_ENUM_ORDERS {
-        let same_set = order.len() == allowed.len()
-            && order
-                .iter()
-                .all(|value| allowed.iter().any(|declared| declared == value));
-        if same_set {
+        let every_advertised_value_is_declared = order
+            .iter()
+            .all(|value| allowed.iter().any(|declared| declared == value));
+        if every_advertised_value_is_declared {
             return order.iter().map(|value| (*value).to_string()).collect();
         }
     }
@@ -375,11 +377,13 @@ mod tests {
         );
     }
 
-    /// The advertised sequence of a value set is a PERMUTATION of the set the model
-    /// declares: the order is this service's, the membership is the model's. Rows are the
-    /// sets this service's enums carry, plus a set no entry claims.
+    /// A value set this service advertises in a sequence of its own is stated as that
+    /// sequence, and every other set in the order the walk reports it. Each advertised
+    /// value is one the model declares, so no clause offers a caller a value the same
+    /// request would be refused for. Rows are the sets this service's enums carry, plus a
+    /// set no entry claims.
     #[test]
-    fn an_advertised_value_set_holds_exactly_the_values_the_model_declares() {
+    fn an_advertised_value_set_is_stated_as_this_service_states_it() {
         let rows: [(&str, &[&str], &[&str]); 3] = [
             (
                 "ProviderType, which this service advertises in an order of its own",
@@ -407,24 +411,24 @@ mod tests {
                 "case {case:?}: expected the advertised sequence {expected:?}, got {actual:?}"
             );
 
-            let mut sorted_actual = actual.clone();
-            sorted_actual.sort();
-            let mut sorted_declared = declared.clone();
-            sorted_declared.sort();
-            assert_eq!(
-                sorted_actual, sorted_declared,
-                "case {case:?}: expected exactly the declared values {sorted_declared:?}, \
-                 got {sorted_actual:?}"
-            );
+            for value in &actual {
+                assert!(
+                    declared.contains(value),
+                    "case {case:?}: {value:?} is advertised but the model does not declare \
+                     it, so the clause offers a value the request would be refused for; \
+                     declared {declared:?}"
+                );
+            }
         }
     }
 
-    /// An advertised sequence states the SAME members the model declares for that type: a
-    /// value added to or removed from the shape leaves the sequence stale, and the clause
-    /// would silently fall back to declaration order, so the membership is asserted
-    /// against the model here rather than only through [`advertised_enum_values`].
+    /// Every advertised sequence states values ONE value set of this model declares: a
+    /// value the shape drops leaves the sequence stale, the clause falls back to
+    /// declaration order, and the refusal stops stating this service's own sentence — so
+    /// the sequences are checked against the model here rather than only through
+    /// [`advertised_enum_values`].
     #[test]
-    fn every_advertised_sequence_matches_a_value_set_the_model_declares() {
+    fn every_advertised_sequence_states_values_a_value_set_of_this_model_declares() {
         let declared_sets: [&[&str]; 3] = [
             crate::ops::types::PROVIDER_TYPE_VALUES,
             crate::ops::types::SYNC_CONFIGURATION_TYPE_VALUES,
@@ -432,13 +436,9 @@ mod tests {
         ];
 
         for order in ADVERTISED_ENUM_ORDERS {
-            let mut advertised: Vec<&str> = order.to_vec();
-            advertised.sort_unstable();
-            let matched = declared_sets.iter().any(|declared| {
-                let mut declared: Vec<&str> = declared.to_vec();
-                declared.sort_unstable();
-                declared == advertised
-            });
+            let matched = declared_sets
+                .iter()
+                .any(|declared| order.iter().all(|value| declared.contains(value)));
             assert!(
                 matched,
                 "the advertised sequence {order:?} states values no enum of this model \

@@ -10,9 +10,10 @@
 //! * a value outside a `@length`, `@pattern`, `@range` or `@uniqueItems` constraint is
 //!   reported WITHOUT the value — `Value at '<member>' failed to satisfy constraint: …`;
 //! * a value outside an ENUM's value set IS quoted — `Value '<value>' at '<member>' …`;
-//! * an enum requirement reads `Member must be one of: [ … ]` over the type's values, in
-//!   the order this service advertises that value set in (which for `ProviderType` is not
-//!   the model's declaration order);
+//! * an enum requirement reads `Member must be one of: [ … ]` over the value set this
+//!   service STATES — fixed text of the refusal, in neither the membership nor the order
+//!   the model declares for `ProviderType` — while what the shape declares stays what a
+//!   request is judged against, so a declared value the sentence does not name is accepted;
 //! * an absent `@required` member is reported as the `null` it was;
 //! * a `@pattern` requirement quotes the expression WITHOUT the `^` / `$` anchors the
 //!   model spells it with, so a caller can re-apply exactly what it was advertised;
@@ -59,15 +60,16 @@ const CONNECTION_ARN_EXPRESSION: &str = r"arn:aws(-[\w]+)*:(codestar-connections
 /// The `ProviderType` value set as this service ADVERTISES it, written out as the literal
 /// the recorded service returns.
 ///
-/// The bracketed sequence is fixed text of the refusal: the service states these members in
-/// this order, which is not the order the model declares them in
+/// The bracketed sequence is fixed text of the refusal: the service states these members,
+/// in this order, which is neither the membership nor the order the model declares
 /// (`smithy_query(query="shape", shape="ProviderType")` gives `Bitbucket, GitHub,
 /// GitHubEnterpriseServer, GitLab, GitLabSelfManaged, AzureDevOps,
-/// GitHubEnterpriseCloudDataResidency`), so the order is pinned here rather than derived
-/// from the enum. The membership is the model's: the value the shape gained after those
-/// refusals were recorded (`GitHubEnterpriseCloudDataResidency`) is stated last.
+/// GitHubEnterpriseCloudDataResidency`), so the list is pinned here rather than derived
+/// from the enum. A value the shape declares that the recorded refusals do not name
+/// (`GitHubEnterpriseCloudDataResidency`) is not part of the sentence; what the shape
+/// declares is still what is accepted, which the last two tests of this suite pin.
 const PROVIDER_TYPES: &str = "[GitLab, GitHub, GitHubEnterpriseServer, AzureDevOps, \
-     GitLabSelfManaged, Bitbucket, GitHubEnterpriseCloudDataResidency]";
+     GitLabSelfManaged, Bitbucket]";
 
 /// The `SyncConfigurationType` value set as the model declares it: one value.
 const SYNC_TYPES: &str = "[CFN_STACK_SYNC]";
@@ -809,5 +811,131 @@ async fn an_arn_the_expression_admits_is_resolved_rather_than_refused() {
     assert_eq!(
         read_back["RepositoryLinkInfo"], created["RepositoryLinkInfo"],
         "the created link must read back unchanged, got {read_back}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The value set an enum clause ADVERTISES: this service's own sentence, at every member
+// judged by it — and not the list of values a request may carry.
+// ---------------------------------------------------------------------------
+
+/// A value the SHAPE declares that the advertised sentence does not name. Accepted, because
+/// membership of the value set is what a request is judged against, while the bracketed list
+/// is fixed text of the refusal.
+const DECLARED_BUT_NOT_ADVERTISED: &str = "GitHubEnterpriseCloudDataResidency";
+
+/// The values the rows below reject: a provider that does not exist, a declared member in
+/// the wrong case, one carrying trailing whitespace, and the empty value. None of them is a
+/// member of the shape, so each is judged by the value set rather than by a handler.
+const OUTSIDE_THE_PROVIDER_SET: [&str; 4] = ["NotARealProvider", "github", "GitHub ", ""];
+
+/// One input member judged by this service's provider value set: the operation carrying it,
+/// the member path a clause states it at, and a request that breaks nothing else — every
+/// other member the operation requires is supplied, so the refusal states exactly one
+/// clause.
+struct ProviderMember {
+    operation: &'static str,
+    path: &'static str,
+    body: fn(&str) -> serde_json::Value,
+}
+
+/// The three input members of this service whose target is the provider value set
+/// (`smithy_query(query="operation",operation="CreateConnection,CreateHost,ListConnections")`:
+/// `CreateConnection$ProviderType`, `CreateHost$ProviderType` and
+/// `ListConnections$ProviderTypeFilter`).
+const PROVIDER_MEMBERS: &[ProviderMember] = &[
+    ProviderMember {
+        operation: "CreateConnection",
+        path: "providerType",
+        body: |provider| {
+            serde_json::json!({"ConnectionName": "advertised-set", "ProviderType": provider})
+        },
+    },
+    ProviderMember {
+        operation: "CreateHost",
+        path: "providerType",
+        body: |provider| {
+            serde_json::json!({
+                "Name": "advertised-set-host",
+                "ProviderType": provider,
+                "ProviderEndpoint": "https://git.example.com",
+            })
+        },
+    },
+    ProviderMember {
+        operation: "ListConnections",
+        path: "providerTypeFilter",
+        body: |provider| {
+            serde_json::json!({"MaxResults": 10, "ProviderTypeFilter": provider})
+        },
+    },
+];
+
+/// Every member judged by the provider value set advertises ONE list — the sequence this
+/// service states — whichever operation carries it and whatever the rejected value is.
+#[tokio::test]
+async fn every_member_judged_by_the_provider_set_advertises_the_same_list() {
+    let router = router();
+
+    for member in PROVIDER_MEMBERS {
+        for value in OUTSIDE_THE_PROVIDER_SET {
+            let case = format!("{} with {value:?}", member.operation);
+            let (status, answered) = call(&router, member.operation, (member.body)(value)).await;
+            assert_validation_message(
+                &case,
+                &one_error(&quoted(
+                    value,
+                    member.path,
+                    &enum_requirement(PROVIDER_TYPES),
+                )),
+                status,
+                &answered,
+            );
+        }
+    }
+}
+
+/// A provider the SHAPE declares and the advertised sentence does not name is accepted and
+/// stored: the bracketed list is the service's own wording, not the membership a request is
+/// judged against.
+#[tokio::test]
+async fn a_declared_provider_the_advertised_sentence_does_not_name_is_still_accepted() {
+    let router = router();
+
+    let (status, created) = call(
+        &router,
+        "CreateConnection",
+        serde_json::json!({
+            "ConnectionName": "declared-not-advertised",
+            "ProviderType": DECLARED_BUT_NOT_ADVERTISED,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case the declared provider {DECLARED_BUT_NOT_ADVERTISED:?}: expected 200, got \
+         {status} {created}"
+    );
+    let arn = created["ConnectionArn"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the create reported no ConnectionArn, got {created}"))
+        .to_string();
+
+    let (status, read_back) = call(
+        &router,
+        "GetConnection",
+        serde_json::json!({ "ConnectionArn": arn }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case the read-back of {DECLARED_BUT_NOT_ADVERTISED:?}: expected 200, got {status} \
+         {read_back}"
+    );
+    assert_eq!(
+        read_back["Connection"]["ProviderType"].as_str(),
+        Some(DECLARED_BUT_NOT_ADVERTISED),
+        "case the read-back of {DECLARED_BUT_NOT_ADVERTISED:?}: expected the stored provider, \
+         got {read_back}"
     );
 }
