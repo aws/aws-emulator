@@ -685,6 +685,14 @@ impl ComAmazonawsChimesdkmeetingsChimemeetingssdkserviceState {
     /// in another Region names no meeting here. An ARN of any other Chime resource type is
     /// another family member's, which this store cannot check.
     ///
+    /// Which resource TYPE the ARN's resource field names
+    /// ([`::service_common::arn::resource_type`]) is what decides whose resource it is, so
+    /// EVERY spelling of this service's own type is this store's to resolve: the two
+    /// id-separator forms (`meeting/<id>`, `meeting:<id>`) and the form that carries the
+    /// type alone, which names this type with no id at all. The id is then what the store
+    /// looks the meeting up under, and no id can be the id of a meeting — so one absent
+    /// meeting cannot earn opposite verdicts by being spelled two ways.
+    ///
     /// The two refusals differ because the caller's mistake does: an ARN of THIS service
     /// whose meeting the store does not hold carries an invalid `MeetingId`
     /// ([`TaggingRefusal::InvalidMeetingId`]), while a value that is no family resource ARN
@@ -693,16 +701,18 @@ impl ComAmazonawsChimesdkmeetingsChimemeetingssdkserviceState {
     pub fn tagging_refusal(&self, arn: &str) -> Option<TaggingRefusal> {
         // `Some(true)`/`Some(false)` when the ARN names a MEETING of this family, `None`
         // when it names another member's resource type or is no family ARN at all.
-        let own_resource_exists = ::service_common::arn::is_resource_arn_of(
+        let names_own_resource_type = ::service_common::arn::is_resource_arn_of(
             arn,
             ::service_common::chime_tags::CHIME_ARN_NAMESPACE,
-        )
-        .then(|| ::service_common::arn::resource_id_of_type(arn, MEETING_RESOURCE_TYPE))
-        .flatten()
-        .map(|id| {
-            self.meetings
-                .get(id)
-                .is_some_and(|stored| stored.meeting.meeting_arn.as_deref() == Some(arn))
+        ) && ::service_common::arn::resource_type(arn) == Some(MEETING_RESOURCE_TYPE);
+        let own_resource_exists = names_own_resource_type.then(|| {
+            ::service_common::arn::resource_id_of_type(arn, MEETING_RESOURCE_TYPE).is_some_and(
+                |id| {
+                    self.meetings
+                        .get(id)
+                        .is_some_and(|stored| stored.meeting.meeting_arn.as_deref() == Some(arn))
+                },
+            )
         });
         if ::service_common::chime_tags::addresses_taggable_resource(arn, own_resource_exists) {
             return None;

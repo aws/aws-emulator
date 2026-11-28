@@ -17,7 +17,11 @@
 //! `ListTagsForResource`, `TagResource` and `UntagResource` also answer ONE verdict for one
 //! ARN: whether the call may be served at all, and which refusal it earns when it may not,
 //! is one decision the three routes share, so none of them can refuse an ARN the other two
-//! serve — pinned by `every_tagging_route_answers_one_arn_with_one_verdict`.
+//! serve — pinned by `every_tagging_route_answers_one_arn_with_one_verdict`. That verdict
+//! reads the resource TYPE the ARN's resource field names to decide whose resource it is, so
+//! every spelling of this service's own type is resolved against this store and one absent
+//! meeting cannot earn opposite verdicts by being spelled two ways — pinned by
+//! `every_spelling_of_this_services_resource_type_resolves_against_this_store`.
 //!
 //! The tables span what the rule generalises over: how many pairs one call carries (one,
 //! several, the modelled maximum, one past it), the form of a key and a value (short, an
@@ -186,6 +190,18 @@ impl Emulator {
     async fn list(&self, arn: &str) -> (u16, BTreeMap<String, String>) {
         let (status, body) = self.list_raw(arn).await;
         (status, tag_map(&body))
+    }
+
+    /// The pairs the family's shared ARN-keyed directory holds under `resource_arn`, read
+    /// from the engine this service is mounted on.
+    ///
+    /// The only way to see what a REFUSED call wrote: every route of an ARN the verdict
+    /// refuses answers that refusal, so no response can report the tags stored under it.
+    fn stored_tags(&self, resource_arn: &str) -> Vec<(String, String)> {
+        self.engine
+            .state::<ChimeTagDirectory>()
+            .lock()
+            .tags_of(resource_arn)
     }
 }
 
@@ -780,6 +796,150 @@ async fn every_tagging_route_answers_one_arn_with_one_verdict() {
                      {expected_status} {code} {message:?}, got {status} {body:?}"
                 ),
             }
+        }
+    }
+}
+
+/// RULE: which resource TYPE a tagging ARN's resource field names is what says whose
+/// resource it is, so an ARN of this family carrying the resource type THIS service mints
+/// is resolved against THIS store in every spelling of that field — `<type>/<id>`,
+/// `<type>:<id>` and the type written alone, which carries no id — and a meeting the store
+/// does not hold is refused as an invalid meeting id whichever way its ARN was spelled,
+/// writing nothing. An ARN carrying any OTHER resource type is a sibling member's and is
+/// served, in those same spellings.
+///
+/// The rows differ in the spelling of the resource field: the separator (`/`, `:`, none),
+/// whether an id follows it, how many segments it has, and whether the type is this
+/// service's own — the dimensions the rule generalises over, each with the one verdict the
+/// ARN earns.
+#[tokio::test]
+async fn every_spelling_of_this_services_resource_type_resolves_against_this_store() {
+    let emulator = Emulator::new();
+    let (live_id, live) = emulator.meeting("tok-spelling", "ext-spelling", &[]).await;
+
+    // `arn:aws:chime:<region>:<account>:meeting` — the live meeting's own ARN up to and
+    // including this service's resource type, so every row below is spelled from the ARN
+    // this emulator actually mints rather than from a literal.
+    let bare_type = live
+        .strip_suffix(&format!("/{live_id}"))
+        .unwrap_or_else(|| panic!("the minted ARN {live} must end in /{live_id}"))
+        .to_string();
+    let invalid_meeting_id = || Verdict::Refused {
+        status: 400,
+        code: "BadRequest",
+        message: INVALID_MEETING_ID.to_string(),
+    };
+    let unresolved = |arn: &str| Verdict::Refused {
+        status: 404,
+        code: "NotFound",
+        message: format!("resource {arn} does not exist"),
+    };
+
+    let rows = vec![
+        VerdictCase {
+            case: "the live meeting's own ARN, as the create minted it",
+            arn: live.clone(),
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "this service's resource type written alone, with no id at all",
+            arn: bare_type.clone(),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "this service's resource type with a slash and an empty id",
+            arn: format!("{bare_type}/"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "this service's resource type with a colon and an empty id",
+            arn: format!("{bare_type}:"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "an id no meeting is held under, under the slash separator",
+            arn: format!("{bare_type}/{live_id}x"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "an id no meeting is held under, under the colon separator",
+            arn: format!("{bare_type}:{live_id}x"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "the live meeting's id under the separator its ARN does not carry",
+            arn: format!("{bare_type}:{live_id}"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "a further segment under the live meeting's id",
+            arn: format!("{live}/sub"),
+            verdict: invalid_meeting_id(),
+        },
+        VerdictCase {
+            case: "a resource type that merely begins with this service's, with an id",
+            arn: format!("{bare_type}s/{live_id}"),
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "a sibling member's resource type, with an id",
+            arn: "arn:aws:chime:us-east-1:000000000000:app-instance/ai-spelling".to_string(),
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "a sibling member's resource type written alone",
+            arn: "arn:aws:chime:us-east-1:000000000000:app-instance".to_string(),
+            verdict: Verdict::Served,
+        },
+        VerdictCase {
+            case: "another vendor's ARN carrying this service's resource type alone",
+            arn: "arn:aws:sqs:us-east-1:000000000000:meeting".to_string(),
+            verdict: unresolved("arn:aws:sqs:us-east-1:000000000000:meeting"),
+        },
+    ];
+
+    for row in rows {
+        let VerdictCase { case, arn, verdict } = row;
+        for (route, served_status, status, body) in emulator.tagging_routes(&arn).await {
+            match &verdict {
+                Verdict::Served => assert_eq!(
+                    status, served_status,
+                    "case {case:?} ({route} on {arn}): expected the call served with \
+                     {served_status}, got {status} {body:?}"
+                ),
+                Verdict::Refused {
+                    status: expected_status,
+                    code,
+                    message,
+                } => assert_eq!(
+                    (status, body["Code"].as_str(), body["Message"].as_str()),
+                    (*expected_status, Some(*code), Some(message.as_str())),
+                    "case {case:?} ({route} on {arn}): expected every tagging route to answer \
+                     {expected_status} {code} {message:?}, got {status} {body:?}"
+                ),
+            }
+        }
+
+        if let Verdict::Refused {
+            status: expected_status,
+            ..
+        } = verdict
+        {
+            // A refused call writes nothing: without this, tags would pile up in the
+            // family's shared directory under an ARN no `DeleteMeeting` ever withdraws,
+            // and no route of that ARN could report them.
+            let (status, body) = emulator.tag(&arn, &owned(&[("residue", "none")])).await;
+            let stored = emulator.stored_tags(&arn);
+            assert_eq!(
+                status, expected_status,
+                "case {case:?} (TagResource again on {arn}): expected {expected_status}, got \
+                 {status} {body:?}"
+            );
+            assert!(
+                stored.is_empty(),
+                "case {case:?}: expected the refused TagResource to write nothing under \
+                 {arn}, got {stored:?} stored"
+            );
         }
     }
 }
