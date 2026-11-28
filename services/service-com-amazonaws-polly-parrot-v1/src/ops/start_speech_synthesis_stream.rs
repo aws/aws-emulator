@@ -112,6 +112,11 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's own shapes are HAND-WRITTEN (the generator declines a `@streaming`
+// event-stream operation), so they are reached through the module that declares them
+// rather than through the glob above, which carries only what the model renders.
+#[allow(unused_imports)]
+use crate::service::types_local::*;
 use super::synthesize_speech::{
     audio, billed_characters, default_sample_rate, lexicon, plan, render, resolve_sample_rate,
     valid_sample_rates, DEFAULT_TEXT_TYPE, SYNTHESIS_TIME_BUDGET,
@@ -205,6 +210,14 @@ const REASON_OTHER: &str = "other";
 #[smithy_macros::operation_error("com.amazonaws.polly#StartSpeechSynthesisStream")]
 #[derive(Debug)]
 pub enum StartSpeechSynthesisStreamErrorModeled {
+    // The two errors the model added for CUSTOM voices. Declared because the operation
+    // lists them, and constructed by nothing here: `VoiceId` targets the model's
+    // closed `VoiceId` enum, so a `vc-` id — the id `CreateVoice` mints — is refused by
+    // the request boundary before this handler runs, and no stream of this emulator can
+    // name a custom voice that is missing (`ResourceNotFoundException`) or not yet
+    // active (`ConflictException`).
+    ConflictException(ConflictException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceFailureException(ServiceFailureException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
@@ -230,13 +243,12 @@ impl From<StartSpeechSynthesisStreamErrorModeled> for StartSpeechSynthesisStream
 ///
 /// `name` is the member's path in the envelope's own lowerCamel convention, and
 /// `constraint` states what the member must satisfy; both also travel in the
-/// modelled `fields` list, which is where a client reads WHICH member to fix.
+/// modelled `fields` list, which is where a client reads WHICH member to fix. The
+/// sentence itself comes from the one place this service words a single-member
+/// refusal ([`crate::service::validation::one_member_refusal`]).
 fn field_refusal(name: &str, value: &str, constraint: &str) -> StartSpeechSynthesisStreamError {
     StartSpeechSynthesisStreamErrorModeled::ValidationException(ValidationException {
-        message: format!(
-            "1 validation error detected: Value '{value}' at '{name}' failed to satisfy \
-             constraint: {constraint}"
-        ),
+        message: crate::service::validation::one_member_refusal(name, value, constraint),
         reason: REASON_FIELD_VALIDATION_FAILED.to_string(),
         fields: Some(vec![ValidationExceptionField {
             name: name.to_string(),

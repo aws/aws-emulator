@@ -1,20 +1,33 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeVoices
-//! Reports the voice catalog, narrowed by the query parameters.
+//! Reports the voices this service has, narrowed by the query parameters.
 //!
-//! The catalog is state ([`crate::state::ComAmazonawsPollyParrotV1State::voices`]),
-//! seeded once and never written, so this is a pure read. It carries the voices the
-//! service OFFERS for synthesis — "the list of voices that are available for use when
-//! requesting speech synthesis" — which is narrower than the model's `VoiceId` enum,
-//! the set of ids a REQUEST may name: the voices that enum declares and this catalog
-//! does not offer ([`crate::state::UNLISTED_VOICES`]) are resolved for a synthesis
-//! request but never advertised here. `Engine` keeps only voices
-//! whose `SupportedEngines` carry it; `LanguageCode` keeps only voices that speak it,
-//! counting a bilingual voice's `AdditionalLanguageCodes` only when
-//! `IncludeAdditionalLanguageCodes` is set — the rule that member documents. Both
-//! filters narrow, so a request naming an engine or language no seeded voice has gets
-//! an empty list, not the whole catalog.
+//! TWO sets of voices are reported, which is what the operation documents: "the voices
+//! that Amazon Polly provides and the custom voices in your account". The provided ones
+//! are state seeded once and never written
+//! ([`crate::state::ComAmazonawsPollyParrotV1State::voices`]); the custom ones are the
+//! voices `CreateVoice` made in the Region this call was signed for
+//! ([`crate::state::ComAmazonawsPollyParrotV1State::custom_voices`]), reported "in every
+//! status" and after the status transition the clock already owes them is materialised.
+//! `Origin` is what tells the two apart — "`aws`: a voice that Amazon Polly provides",
+//! "`customer`: a custom voice that you created with `CreateVoice`" — and the one
+//! projection of each kind onto the wire lives with the store
+//! ([`crate::state::provided_voice`], [`crate::state::described_custom_voice`]), so no
+//! two operations report one voice differently.
+//!
+//! The provided catalog carries the voices the service OFFERS for synthesis, which is
+//! narrower than the model's `VoiceId` enum, the set of ids a REQUEST may name: the
+//! voices that enum declares and this catalog does not offer
+//! ([`crate::state::UNLISTED_VOICES`]) are resolved for a synthesis request but never
+//! advertised here. `Engine` keeps only voices whose `SupportedEngines` carry it;
+//! `LanguageCode` keeps only voices that speak it, counting a bilingual voice's
+//! `AdditionalLanguageCodes` only when `IncludeAdditionalLanguageCodes` is set — the
+//! rule that member documents. Both filters narrow, so a request naming an engine or
+//! language no voice has gets an empty list, not the whole catalog, and both "apply to
+//! custom voices in the same way as to voices that Amazon Polly provides" (a custom
+//! voice speaks the one language its recordings were in and is offered on
+//! [`crate::state::CUSTOM_VOICE_ENGINES`]).
 //!
 //! A reported voice carries `AdditionalLanguageCodes` only when it speaks a language
 //! beyond its default one ([`crate::state::reported_list`]): for a monolingual voice
@@ -23,10 +36,16 @@
 //! `Name` is the voice's own name as Amazon Polly spells it, diacritics included, and
 //! `Id` is "the ASCII version of the voice name" this operation's own documentation
 //! describes — so a voice whose name carries diacritics is reported under that
-//! spelling while the id a later `SynthesizeSpeech` names stays ASCII.
-//! `SupportedEngines` is a SET, reported in the service's one engine order
+//! spelling while the id a later `SynthesizeSpeech` names stays ASCII. A custom voice's
+//! `Id` is the one Amazon Polly assigned it and its `Name` is the one the create call
+//! chose. `SupportedEngines` is a SET, reported in the service's one engine order
 //! ([`crate::state::reported_engines`]), so two voices never report the same engines
 //! in different orders.
+//!
+//! For a custom voice this operation reports the SUBSET of `Voice` it documents —
+//! `Origin`, `Id`, `Name`, `Status`, `LanguageCode`, `LanguageName`,
+//! `SupportedEngines` and `CreationTime` — and `GetVoice` is where the other four
+//! members are read.
 //!
 //! The response carries the WHOLE filtered catalog: the model declares no pagination
 //! for this operation (`ListSpeechSynthesisTasks` is the only operation here that
@@ -73,17 +92,25 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-polly-parrot-v1/smithy-model/com-amazonaws-polly-parrot-v1.json")
 //! ```
 //!
-//! Returns the list of voices that are available for use when requesting speech synthesis.
-//! Each voice speaks a specified language, is either male or female, and is identified by
-//! an ID, which is the ASCII version of the voice name. When synthesizing speech (
-//! SynthesizeSpeech ), you provide the voice ID for the voice you want from the list of
-//! voices returned by DescribeVoices. For example, you want your news reader application to
-//! read news in a specific language, but giving a user the option to choose the voice.
-//! Using the DescribeVoices operation you can provide the user with a list of available
-//! voices to select from. You can optionally specify a language code to filter the
-//! available voices. For example, if you specify en-US, the operation returns a list of all
-//! available US English voices. This operation requires permissions to perform the
-//! polly:DescribeVoices action.
+//! Returns the list of voices: the voices that Amazon Polly provides and the custom voices
+//! in your account. Each voice speaks a specified language and is identified by an ID. A
+//! voice that Amazon Polly provides is either male or female, and its ID is the ASCII
+//! version of the voice name. When synthesizing speech ( SynthesizeSpeech ), you provide
+//! the voice ID for the voice you want from the list of voices returned by DescribeVoices.
+//! For example, your news reader application reads news in a specific language, and you
+//! want to give users the option to choose the voice. With the DescribeVoices operation, you
+//! can provide a list of available voices for users to choose from. You can optionally
+//! specify a language code to filter the available voices. For example, if you specify
+//! en-US, the operation returns a list of all available US English voices. The list includes
+//! custom voices in every status. For each voice, Origin indicates whether Amazon Polly
+//! provides the voice or you created it. You can use a custom voice for synthesis only when
+//! its status is active. A voice in failed status stays in the list until you delete it. For
+//! a custom voice, DescribeVoices returns Origin, Id, Name, Status, LanguageCode,
+//! LanguageName, SupportedEngines, and CreationTime. To get Arn, StatusReason,
+//! VoiceCreationData, and CustomerManagedEncryption, use GetVoice. The LanguageCode and
+//! Engine filters apply to custom voices in the same way as to voices that Amazon Polly
+//! provides. This operation requires permissions to perform the polly:DescribeVoices
+//! action.
 //!
 //! ## Input
 //!
@@ -190,7 +217,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // This operation is not paginated, so the service mints no continuation token
         // for it: a non-empty `NextToken` is one it could not have issued, and is
@@ -210,10 +237,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         })?;
 
-        let guard = state.lock();
-        // Every voice the query keeps, in catalog order: the listing is not paged, so
-        // the response is the whole filtered catalog.
-        let voices: Vec<Voice> = guard
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+        let mut guard = state.lock();
+        // Every provided voice the query keeps, in catalog order: the listing is not
+        // paged, so the response is the whole filtered set.
+        let mut voices: Vec<Voice> = guard
             .voices
             .iter()
             .filter(|voice| {
@@ -227,25 +256,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     voice.speaks(language, input.include_additional_language_codes)
                 })
             })
-            .map(|voice| Voice {
-                id: Some(voice.id.to_string()),
-                name: Some(voice.name.to_string()),
-                gender: Some(voice.gender.to_string()),
-                language_code: Some(voice.language_code.to_string()),
-                language_name: Some(voice.language_name.to_string()),
-                // Both list members are reported only when the voice has values for
-                // them: a voice that speaks only its default language carries NO
-                // `AdditionalLanguageCodes` key, rather than an empty array.
-                additional_language_codes: crate::state::reported_list(
-                    voice.additional_language_codes,
-                ),
-                supported_engines: crate::state::reported_engines(voice.supported_engines),
-            })
+            .map(crate::state::provided_voice)
             .collect();
+
+        // Then this Region's custom voices, in id order, narrowed by the same two
+        // filters. They follow the provided ones so the order of the response is
+        // deterministic and a custom voice never displaces a provided one.
+        let custom: Vec<Voice> = guard
+            .settled_custom_voices_in_region(&region, now)
+            .filter(|voice| {
+                input
+                    .engine
+                    .as_deref()
+                    .is_none_or(|engine| voice.supports_engine(engine))
+            })
+            .filter(|voice| {
+                input
+                    .language_code
+                    .as_deref()
+                    .is_none_or(|language| voice.speaks(language))
+            })
+            .map(crate::state::described_custom_voice)
+            .collect();
+        voices.extend(custom);
 
         Ok(DescribeVoicesOutput {
             voices: Some(voices),
-            // The response carries the whole filtered catalog, so it is never truncated
+            // The response carries the whole filtered set, so it is never truncated
             // and no continuation token is owed.
             next_token: None,
         })

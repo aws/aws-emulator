@@ -18,6 +18,9 @@
 //! behind every operation that reports a task, and the creation response cannot drift
 //! from the task reads about any modelled member. Only the extra member is written here.
 //!
+//! This module is HAND-WRITTEN, so it is declared from `src/ops/types_local/mod.rs`
+//! rather than from the `@generated` `types/mod.rs` a model update rewrites.
+//!
 //! The member the model does not declare is appended AFTER the model's own, with its
 //! shape id in a namespace of its own ([`RECORDED_NAMESPACE`]), so it can neither claim
 //! to be modelled nor collide with a member the model may declare later — a model
@@ -38,7 +41,7 @@ use ::aws_smithy_schema::serde::{
 use ::aws_smithy_schema::{Schema, ShapeId, ShapeType};
 use ::aws_smithy_schema_server::DeserializableStruct;
 
-use super::SynthesisTask;
+use crate::ops::types::SynthesisTask;
 
 /// The namespace the member the on-disk model does not declare sits in: NOT this
 /// service's own, so a hand-written member can never be mistaken for a modelled one.

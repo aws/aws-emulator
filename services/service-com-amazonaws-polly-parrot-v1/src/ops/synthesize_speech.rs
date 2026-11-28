@@ -225,6 +225,14 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 #[smithy_macros::operation_error("com.amazonaws.polly#SynthesizeSpeech")]
 #[derive(Debug)]
 pub enum SynthesizeSpeechErrorModeled {
+    // The two errors the model added for CUSTOM voices, declared because the operation
+    // lists them and constructed by nothing here: `VoiceId` targets the model's closed
+    // `VoiceId` enum, so the `vc-` id `CreateVoice` mints is refused by the request
+    // boundary before this handler runs (`crate::service::validation`), and no
+    // synthesis request of this emulator can name a custom voice that is missing or
+    // not yet active.
+    ConflictException(ConflictException),
+    ResourceNotFoundException(ResourceNotFoundException),
     EngineNotSupportedException(EngineNotSupportedException),
     InvalidSampleRateException(InvalidSampleRateException),
     InvalidSsmlException(InvalidSsmlException),

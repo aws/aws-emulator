@@ -27,15 +27,3 @@ pub struct DescribeVoicesOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#Voice")]
-#[derive(Debug, Clone, Default)]
-pub struct Voice {
-    pub gender: Option<String>,
-    pub id: Option<String>,
-    pub language_code: Option<String>,
-    pub language_name: Option<String>,
-    pub name: Option<String>,
-    pub additional_language_codes: Option<Vec<String>>,
-    pub supported_engines: Option<Vec<String>>,
-}
-

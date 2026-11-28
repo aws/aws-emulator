@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 pub struct PutLexiconInput {
     pub name: String,
     pub content: String,
+    pub tags: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.polly#PutLexiconOutput")]

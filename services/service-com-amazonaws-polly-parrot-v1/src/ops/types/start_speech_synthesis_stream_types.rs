@@ -4,11 +4,16 @@
 //!
 //! Hand-authored rather than generated: the op-stub generator declines an operation
 //! carrying a `@streaming` event-stream member (`src/ops/SKIPPED_STUBS.md` records
-//! it), so neither its shapes nor its handler were emitted. Each structure is
-//! declared exactly once across this service's `types/` modules, and `types/mod.rs`
-//! re-exports them all — the error shapes the other operations already declare
-//! (`ServiceFailureException`) are reused from `shared_types` rather than
-//! re-declared here.
+//! it), so neither its shapes nor its handler were emitted. Its DECLARATION therefore
+//! lives in `src/ops/types_local/mod.rs` rather than in the `@generated`
+//! `types/mod.rs`, which a model update rewrites.
+//!
+//! Each structure is declared exactly once across this service's type modules: every
+//! shape this operation shares with another — its error shapes
+//! (`ValidationException` and the two it declares but never constructs) and the
+//! value set of `ValidationExceptionReason` — is RENDERED from the model for those
+//! operations and reached from `crate::ops::types` here, so only the shapes the
+//! model's own rendering does not carry are written out below.
 //!
 //! ## Why the input is split in two
 //!
@@ -35,7 +40,7 @@
 
 #![allow(unused_imports)]
 
-use super::*;
+use crate::ops::types::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 
@@ -87,66 +92,3 @@ pub struct StreamClosedEvent {
     pub request_characters: i32,
 }
 
-/// "The input fails to satisfy the constraints specified by the service" — this
-/// operation's 400, which carries the reason class and the fields that failed.
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#ValidationException")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationException {
-    pub message: String,
-    pub reason: String,
-    pub fields: Option<Vec<ValidationExceptionField>>,
-}
-
-/// "Information about a field that failed validation."
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#ValidationExceptionField")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationExceptionField {
-    pub name: String,
-    pub message: String,
-}
-
-/// "The request would cause a service quota to be exceeded" — this operation's 402.
-///
-/// Declared because the operation lists it, so its error channel must carry a
-/// variant for it; nothing constructs one. Both values of its `QuotaCode`
-/// (smithy_query(query="shape", shape="QuotaCode")) are stream TIMEOUT quotas —
-/// `input-stream-inbound-event-timeout` and `input-stream-timeout` — and this
-/// emulator serves one buffered request per call, so no stream of its is ever left
-/// waiting for an event or left open long enough to pass either.
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#ServiceQuotaExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub message: String,
-    pub quota_code: String,
-    pub service_code: String,
-}
-
-/// "The request was denied because of request throttling" — this operation's other
-/// 400.
-///
-/// Declared for the same reason as [`ServiceQuotaExceededException`] and likewise
-/// never constructed: the emulator rate-limits nobody, so no request of its is
-/// throttled.
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#ThrottlingException")]
-#[derive(Debug, Clone, Default)]
-pub struct ThrottlingException {
-    pub message: Option<String>,
-    pub throttling_reasons: Option<Vec<ThrottlingReason>>,
-}
-
-/// One reason a throttled request was throttled.
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#ThrottlingReason")]
-#[derive(Debug, Clone, Default)]
-pub struct ThrottlingReason {
-    pub reason: Option<String>,
-    pub resource: Option<String>,
-}
-
-/// The values `ValidationExceptionReason` accepts on the wire
-/// (smithy_query(query="shape", shape="ValidationExceptionReason")).
-pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &[
-    "fieldValidationFailed",
-    "invalidInboundEvent",
-    "other",
-    "unsupportedOperation",
-];

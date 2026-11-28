@@ -118,6 +118,36 @@ pub fn stated_envelope(violations: &[Violation]) -> String {
     aws_smithy_schema_server::constraints::envelope(&stated).unwrap_or_default()
 }
 
+/// The sentence a refusal of ONE member carries, for a rule of the SERVICE's own that
+/// the model does not express — a member that must hold a particular value, or a group
+/// of members that cannot all be set at once.
+///
+/// The envelope and the clause are the ones the request boundary words a single
+/// violation with ([`aws_smithy_schema_server::constraints`]), so a caller cannot tell a
+/// rule the service checks from a constraint the model states by the shape of the
+/// sentence: only the REQUIREMENT inside it is the rule's own. `name` is the member's
+/// path in the lowerCamel convention the boundary names members by, `value` is the value
+/// the request carried (echoed, so the caller reads back what it sent) and `constraint`
+/// states what that member must satisfy.
+pub fn one_member_refusal(name: &str, value: &str, constraint: &str) -> String {
+    format!(
+        "1 validation error detected: Value '{value}' at '{name}' failed to satisfy \
+         constraint: {constraint}"
+    )
+}
+
+/// [`one_member_refusal`] for a member whose value must not be echoed.
+///
+/// The form the boundary itself takes for a `@sensitive` member: the path and the
+/// requirement, and no value — which is also the only honest form for a member whose
+/// value is a structure rather than a scalar.
+pub fn one_unechoed_member_refusal(name: &str, constraint: &str) -> String {
+    format!(
+        "1 validation error detected: Value at '{name}' failed to satisfy constraint: \
+         {constraint}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

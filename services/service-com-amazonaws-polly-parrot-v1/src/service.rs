@@ -71,6 +71,12 @@ pub mod wire;
 /// What XML itself admits around a document element, for the operations that read one.
 pub mod xml;
 
+/// The declaration of this service's HAND-AUTHORED type modules, which the `@generated`
+/// `ops/types/mod.rs` cannot carry because a model update rewrites it. Declared here
+/// because this file is emitted once and never regenerated.
+#[path = "ops/types_local/mod.rs"]
+pub mod types_local;
+
 /// The `com-amazonaws-polly-parrot-v1` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -237,6 +243,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 /// request names — the member selects the language of a bilingual voice and states no
 /// requirement on the voice, so no synthesis request reaches a language the service
 /// cannot speak at all. So there is nothing here to construct them with.
+///
+/// THREE more are absent for a reason of their own, and none of them is a fixed
+/// sentence this module could hold:
+///
+/// * `AccessDeniedException` — this emulator evaluates no permission and holds no
+///   Amazon Web Services KMS key, so no call of its is denied one;
+/// * `ThrottlingException` — it rate-limits nobody, so no request of its is throttled;
+/// * `ValidationException` — its message is built FROM THE REQUEST, naming the member
+///   and the value that failed, so it is worded where the refusal is made
+///   ([`crate::service::validation`]) rather than fixed per code here.
 pub mod errors {
     #[allow(unused_imports)]
     use crate::ops::types::*;
@@ -272,6 +288,34 @@ pub mod errors {
     pub const UNSUPPORTED_PLS_LANGUAGE: &str = "Unsupported PLS language";
     /// The model's own sentence for `ServiceFailureException`.
     pub const SERVICE_FAILURE: &str = "An unknown condition has caused a service failure.";
+    /// The model's own sentence for `ConflictException`.
+    pub const CONFLICT: &str = "The request conflicts with the current state of the resource. \
+         For a custom voice, the voice isn't in the status that the operation requires. Check \
+         the status with GetVoice, and then try again.";
+    /// The model's own sentence for `InvalidTagParameterException`.
+    pub const INVALID_TAG_PARAMETER: &str = "The resource ARN or a tag in the request isn't \
+         valid. Specify the ARN of a supported resource in the Amazon Web Services account and \
+         Region of the request. Tag keys can have a maximum length of 128 characters, and tag \
+         values can have a maximum length of 256 characters. Correct the ARN or the tags, and \
+         then try again.";
+    /// The model's own sentence for `ResourceNotFoundException`.
+    pub const RESOURCE_NOT_FOUND: &str = "Amazon Polly can't find the specified resource. \
+         Verify that the resource exists in the Amazon Web Services account and Region of the \
+         request and that its ARN or ID is spelled correctly, and then try again.";
+    /// The model's own sentence for `ServiceQuotaExceededException`.
+    pub const SERVICE_QUOTA_EXCEEDED: &str = "The request would cause a service quota to be \
+         exceeded.";
+    /// The model's own sentence for `TooManyTagsException`.
+    pub const TOO_MANY_TAGS: &str = "The list of tags on the resource is over the limit. The \
+         maximum number of tags that can be applied to a resource is 50. Remove unused tags or \
+         reduce the number of tags in the request, and then try again.";
+
+    /// The `ServiceCode` every quota failure of this service names.
+    pub const SERVICE_CODE: &str = "polly";
+
+    /// The `QuotaCode` of the quota on how many custom voices an account holds in a
+    /// Region, which `CreateVoice` answers with when another voice would pass it.
+    pub const CUSTOM_VOICE_MAX_COUNT_QUOTA: &str = "custom-voice-max-count";
 
     /// Every error code this service answers with, paired with the message it carries
     /// — `None` where Amazon Polly sends the error with no message at all.
@@ -279,10 +323,12 @@ pub mod errors {
     /// This is the table, and the constructors below are its only users, so a test can
     /// walk it and a reader can see the whole error vocabulary in one place.
     pub const CANONICAL_MESSAGES: &[(&str, Option<&str>)] = &[
+        ("ConflictException", Some(CONFLICT)),
         ("InvalidLexiconException", Some(INVALID_LEXICON)),
         ("InvalidNextTokenException", Some(INVALID_NEXT_TOKEN)),
         ("InvalidSampleRateException", Some(INVALID_SAMPLE_RATE)),
         ("InvalidSsmlException", Some(INVALID_SSML)),
+        ("InvalidTagParameterException", Some(INVALID_TAG_PARAMETER)),
         ("LexiconNotFoundException", Some(LEXICON_NOT_FOUND)),
         ("LexiconSizeExceededException", Some(LEXICON_SIZE_EXCEEDED)),
         (
@@ -298,6 +344,12 @@ pub mod errors {
             Some(MAX_LEXICONS_NUMBER_EXCEEDED),
         ),
         ("ServiceFailureException", Some(SERVICE_FAILURE)),
+        ("ResourceNotFoundException", Some(RESOURCE_NOT_FOUND)),
+        (
+            "ServiceQuotaExceededException",
+            Some(SERVICE_QUOTA_EXCEEDED),
+        ),
+        ("TooManyTagsException", Some(TOO_MANY_TAGS)),
         (
             "SsmlMarksNotSupportedForTextTypeException",
             Some(SSML_MARKS_NOT_SUPPORTED_FOR_TEXT_TYPE),
@@ -406,6 +458,56 @@ pub mod errors {
         }
     }
 
+    /// The resource is not in the state the operation needs — a custom voice the caller
+    /// asked to delete while Amazon Polly is still creating it.
+    ///
+    /// The message is the code's own fixed sentence; `resource_id` and `resource_type`
+    /// are the two REQUIRED members the shape carries beside it, and they name the
+    /// resource the request conflicted with, so they come from the request and the
+    /// store rather than from this sentence.
+    pub fn conflict(resource_id: &str, resource_type: &str) -> ConflictException {
+        ConflictException {
+            message: CONFLICT.to_string(),
+            resource_id: resource_id.to_string(),
+            resource_type: resource_type.to_string(),
+        }
+    }
+
+    /// The ARN or a tag in the request is not one this service accepts.
+    pub fn invalid_tag_parameter() -> InvalidTagParameterException {
+        InvalidTagParameterException {
+            message: Some(INVALID_TAG_PARAMETER.to_string()),
+        }
+    }
+
+    /// No resource of this account and Region answers to the identifier the request
+    /// named. The two required members name what was looked for, as for
+    /// [`conflict`].
+    pub fn resource_not_found(resource_id: &str, resource_type: &str) -> ResourceNotFoundException {
+        ResourceNotFoundException {
+            message: RESOURCE_NOT_FOUND.to_string(),
+            resource_id: resource_id.to_string(),
+            resource_type: resource_type.to_string(),
+        }
+    }
+
+    /// The request would pass one of this service's quotas; `quota_code` names which,
+    /// as a value of the model's `QuotaCode` enum.
+    pub fn service_quota_exceeded(quota_code: &str) -> ServiceQuotaExceededException {
+        ServiceQuotaExceededException {
+            message: SERVICE_QUOTA_EXCEEDED.to_string(),
+            quota_code: quota_code.to_string(),
+            service_code: SERVICE_CODE.to_string(),
+        }
+    }
+
+    /// The request would leave a resource holding more tags than one may carry.
+    pub fn too_many_tags() -> TooManyTagsException {
+        TooManyTagsException {
+            message: Some(TOO_MANY_TAGS.to_string()),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -415,10 +517,15 @@ pub mod errors {
         #[test]
         fn every_constructor_carries_its_table_entry() {
             let built: Vec<(&str, Option<String>)> = vec![
+                ("ConflictException", Some(conflict("vc-1", "voice").message)),
                 ("InvalidLexiconException", invalid_lexicon().message),
                 ("InvalidNextTokenException", invalid_next_token().message),
                 ("InvalidSampleRateException", invalid_sample_rate().message),
                 ("InvalidSsmlException", invalid_ssml().message),
+                (
+                    "InvalidTagParameterException",
+                    invalid_tag_parameter().message,
+                ),
                 ("LexiconNotFoundException", lexicon_not_found().message),
                 (
                     "LexiconSizeExceededException",
@@ -437,6 +544,15 @@ pub mod errors {
                     max_lexicons_number_exceeded().message,
                 ),
                 ("ServiceFailureException", service_failure().message),
+                (
+                    "ResourceNotFoundException",
+                    Some(resource_not_found("Colors", "lexicon").message),
+                ),
+                (
+                    "ServiceQuotaExceededException",
+                    Some(service_quota_exceeded(CUSTOM_VOICE_MAX_COUNT_QUOTA).message),
+                ),
+                ("TooManyTagsException", too_many_tags().message),
                 (
                     "SsmlMarksNotSupportedForTextTypeException",
                     ssml_marks_not_supported_for_text_type().message,

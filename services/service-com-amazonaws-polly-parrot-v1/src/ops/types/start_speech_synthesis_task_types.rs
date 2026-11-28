@@ -9,6 +9,11 @@
 
 use super::*;
 
+// The envelope the task-creation response's one member holds: a HAND-WRITTEN type
+// (`types/started_task_wire.rs`), so it is named through the module that declares it
+// rather than through the glob above, which carries only what the model renders.
+use crate::service::types_local::StartedSynthesisTask;
+
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 
 #[smithy_macros::smithy(shape = "com.amazonaws.polly#StartSpeechSynthesisTaskInput")]
@@ -32,9 +37,9 @@ pub struct StartSpeechSynthesisTaskInput {
 #[derive(Debug, Clone, Default)]
 pub struct StartSpeechSynthesisTaskOutput {
     /// The created task. Its wire form carries one member beyond the model's
-    /// `SynthesisTask` — see [`started_task_wire`](super::started_task_wire) — so this
-    /// member holds that envelope; the derived codec writes a structure member through
-    /// the value's own codec, so the member schema is the model's either way.
+    /// `SynthesisTask` — see [`crate::service::types_local::started_task_wire`] — so
+    /// this member holds that envelope; the derived codec writes a structure member
+    /// through the value's own codec, so the member schema is the model's either way.
     pub synthesis_task: Option<StartedSynthesisTask>,
 }
 

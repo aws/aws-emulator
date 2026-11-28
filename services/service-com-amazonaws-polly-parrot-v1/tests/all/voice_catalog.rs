@@ -25,6 +25,17 @@ use crate::lexicons_and_speech::{error_code, ids, json, voices, Polly};
 use crate::support::{fixture_task_id, get_task, seed_task, stored_task};
 use crate::voice_catalog_naming_and_engines::ascii_version_of;
 
+/// The suite for the CUSTOM voices of the same listing, and for the tagging of this
+/// service's resources.
+///
+/// Declared here rather than in `tests/all.rs`: this crate still roots its one test
+/// target at that hand-declared file, which the merge gate refuses any fix to edit, so a
+/// new suite is declared by the suite whose subject it extends. A directory under
+/// `tests/all/` holding no `mod.rs` is not a suite of its own, so this is the one
+/// declaration of these tests.
+#[path = "voice_catalog/custom_voices_and_tags.rs"]
+mod custom_voices_and_tags;
+
 /// RULE: `DescribeVoices` reports every voice the service OFFERS, each exactly once
 /// and each with a modelled gender, default language and non-empty set of supported
 /// engines. The model's `VoiceId` enum is wider than that catalog — it is the set of

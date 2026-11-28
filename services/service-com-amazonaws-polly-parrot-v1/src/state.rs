@@ -11,11 +11,18 @@
 //!   contiguously in name order and `ListLexicons` reads them with a range scan
 //!   without sorting on every call. Reach them through the accessors on the state
 //!   rather than through the map, so no operation can read past its own Region.
-//! * [`ComAmazonawsPollyParrotV1State::voices`] — the voice catalog `DescribeVoices`
-//!   serves. Seeded once from [`VOICE_CATALOG`] when the state is first touched and
-//!   never written at runtime; Amazon Polly models no operation that mutates it. A
-//!   request may name a voice the catalog does not list, so a `VoiceId` is resolved
-//!   through [`ComAmazonawsPollyParrotV1State::voice`] rather than over that field.
+//! * [`ComAmazonawsPollyParrotV1State::voices`] — the catalog of the voices Amazon
+//!   Polly PROVIDES, which `DescribeVoices` serves. Seeded once from [`VOICE_CATALOG`]
+//!   when the state is first touched and never written at runtime; no operation
+//!   mutates a voice the service provides. A request may name a voice the catalog does
+//!   not list, so a `VoiceId` is resolved through
+//!   [`ComAmazonawsPollyParrotV1State::voice`] rather than over that field.
+//! * [`ComAmazonawsPollyParrotV1State::custom_voices`] — the custom voices
+//!   `CreateVoice` makes and `GetVoice`, `DescribeVoices` and `DeleteVoice` read.
+//!   Keyed by [`CustomVoiceKey`] — the Region the voice was created in, then its id —
+//!   for the same reason the lexicons are, and read through
+//!   [`ComAmazonawsPollyParrotV1State::settled_custom_voices`], which materialises the
+//!   status transition the clock already owes each of them ([`custom_voices`]).
 //! * [`ComAmazonawsPollyParrotV1State::synthesis_tasks`] — the asynchronous speech
 //!   synthesis tasks `StartSpeechSynthesisTask` creates and
 //!   `GetSpeechSynthesisTask` and `ListSpeechSynthesisTasks` report. Keyed by
@@ -40,6 +47,24 @@ use std::time::{Duration, Instant, SystemTime};
 /// into the caller's bucket, and the notification it publishes about the terminal status it
 /// reached.
 pub mod task_completion;
+
+/// The custom voices `CreateVoice` makes, and the one projection of a voice onto the
+/// wire.
+pub mod custom_voices;
+
+/// WHICH resource a caller-supplied ARN addresses, and what a tag set has to satisfy.
+pub mod resource_tags;
+
+pub use custom_voices::{
+    described_custom_voice, mint_custom_voice_id, provided_voice, reported_custom_voice,
+    settle_voice_status, CustomVoiceKey, PendingVoiceStatus, StoredCustomVoice, StoredEncryption,
+    StoredRecording, CUSTOM_VOICE_ENGINES, VOICE_ACTIVATION_DELAY, VOICE_ORIGIN_AWS,
+    VOICE_ORIGIN_CUSTOMER, VOICE_STATUS_ACTIVE, VOICE_STATUS_FAILED, VOICE_STATUS_PENDING,
+};
+pub use resource_tags::{
+    addressed_resource, reported_tags, tag_keys_are_settable, tags_after_adding, AddressedResource,
+    MAX_TAGS_PER_RESOURCE, RESERVED_TAG_KEY_PREFIX, RESOURCE_TYPE_LEXICON, RESOURCE_TYPE_VOICE,
+};
 
 /// WHERE a task's output is announced: the address this emulator serves that object at.
 mod output_location;
@@ -103,6 +128,11 @@ pub struct StoredLexicon {
     /// `LexiconAttributes$Size` documents ("Total size of the lexicon, in
     /// characters").
     pub size: i32,
+    /// The tags on this lexicon, in key order: the ones `PutLexicon` stored it with and
+    /// the ones `TagResource` has added since. They live on the lexicon rather than in
+    /// a store beside it, so one read answers both what the lexicon is and how it is
+    /// tagged.
+    pub tags: BTreeMap<String, String>,
 }
 
 /// One entry of the seeded voice catalog `DescribeVoices` serves.
@@ -382,8 +412,12 @@ pub struct ComAmazonawsPollyParrotV1State {
     /// Stored lexicons by Region and name. Ordered, so `ListLexicons` pages one
     /// Region deterministically.
     pub lexicons: BTreeMap<LexiconKey, StoredLexicon>,
-    /// The seeded voice catalog, in [`VOICE_CATALOG`] order.
+    /// The seeded catalog of the voices Amazon Polly provides, in [`VOICE_CATALOG`]
+    /// order.
     pub voices: Vec<StoredVoice>,
+    /// The custom voices `CreateVoice` made, by Region and id. Ordered for the same
+    /// reason as the lexicons: `DescribeVoices` reports one Region's deterministically.
+    pub custom_voices: BTreeMap<CustomVoiceKey, StoredCustomVoice>,
     /// Speech synthesis tasks by `TaskId`. Ordered for the same reason as the
     /// lexicons: `ListSpeechSynthesisTasks` pages deterministically over it.
     pub synthesis_tasks: BTreeMap<String, StoredSynthesisTask>,
@@ -400,11 +434,161 @@ pub struct ComAmazonawsPollyParrotV1State {
 }
 
 impl ComAmazonawsPollyParrotV1State {
+    /// The custom voice `voice_id` of `region`, with whatever the clock already owes it
+    /// materialised first — or `None` when that Region holds no such voice, which is
+    /// what makes a read of another Region's voice the modelled "not found".
+    ///
+    /// `&mut self`, because reporting a voice settles the transition that fell due
+    /// ([`settle_voice_status`]): a write that was owed at `now` whether or not anybody
+    /// called, and the only write a read of this store makes.
+    pub fn settled_custom_voice(
+        &mut self,
+        region: &str,
+        voice_id: &str,
+        now: SystemTime,
+    ) -> Option<&StoredCustomVoice> {
+        let voice = self.custom_voices.get_mut(&CustomVoiceKey::new(region, voice_id))?;
+        settle_voice_status(voice, now);
+        Some(voice)
+    }
+
+    /// Every custom voice `region` holds, in id order, each with what the clock owes it
+    /// materialised.
+    ///
+    /// A range scan bounded by the Region, exactly as the lexicon read is: the keys of
+    /// one Region are contiguous, so this reads that Region's entries and stops at the
+    /// first key belonging to another.
+    pub fn settled_custom_voices_in_region<'a>(
+        &'a mut self,
+        region: &'a str,
+        now: SystemTime,
+    ) -> impl Iterator<Item = &'a StoredCustomVoice> + 'a {
+        // A minted id matches `^vc-[0-9a-f]+$`, so the empty id sorts before every real
+        // one and excluding it excludes nothing.
+        let start = CustomVoiceKey::new(region, "");
+        self.custom_voices
+            .range_mut((Bound::Excluded(start), Bound::Unbounded))
+            .take_while(move |(key, _)| key.region == region)
+            .map(move |(_, stored)| {
+                settle_voice_status(stored, now);
+                &*stored
+            })
+    }
+
+    /// How many custom voices `region` holds — what the custom-voice count quota counts.
+    pub fn custom_voice_count_in_region(&self, region: &str) -> usize {
+        let start = CustomVoiceKey::new(region, "");
+        self.custom_voices
+            .range((Bound::Excluded(start), Bound::Unbounded))
+            .take_while(|(key, _)| key.region == region)
+            .count()
+    }
+
+    /// The voice `region` already created under `client_token`, if any.
+    ///
+    /// What makes `CreateVoice` idempotent: "If you retry a request that succeeded with
+    /// the same client token and the same parameters, Amazon Polly returns the voice
+    /// that the first request created and doesn't create a second voice."
+    pub fn custom_voice_of_client_token(
+        &self,
+        region: &str,
+        client_token: &str,
+    ) -> Option<&StoredCustomVoice> {
+        let start = CustomVoiceKey::new(region, "");
+        self.custom_voices
+            .range((Bound::Excluded(start), Bound::Unbounded))
+            .take_while(|(key, _)| key.region == region)
+            .map(|(_, stored)| stored)
+            .find(|stored| stored.client_token.as_deref() == Some(client_token))
+    }
+
+    /// Store `voice` in `region` under its own id, leaving every other Region untouched.
+    pub fn store_custom_voice(&mut self, region: &str, voice: StoredCustomVoice) {
+        self.custom_voices
+            .insert(CustomVoiceKey::new(region, &voice.voice_id), voice);
+    }
+
+    /// Remove the custom voice `voice_id` of `region`, answering `None` — and deleting
+    /// nothing — when that Region holds no such voice.
+    pub fn remove_custom_voice(
+        &mut self,
+        region: &str,
+        voice_id: &str,
+    ) -> Option<StoredCustomVoice> {
+        self.custom_voices
+            .remove(&CustomVoiceKey::new(region, voice_id))
+    }
+
+    /// Whether `region` already holds a custom voice under `voice_id`.
+    ///
+    /// A read that reports existence alone, so a create can check a freshly minted id
+    /// without taking the voice — or the status the clock owes it — into account.
+    pub fn holds_custom_voice(&self, region: &str, voice_id: &str) -> bool {
+        self.custom_voices
+            .contains_key(&CustomVoiceKey::new(region, voice_id))
+    }
+
+    /// The tags of the resource `resource` addresses in `region`, or `None` when that
+    /// Region holds no such resource.
+    ///
+    /// The ONE place a resource type an ARN names is mapped onto the resource it
+    /// addresses, so the three tagging operations cannot disagree about which resources
+    /// this service tags or about where a resource's tags live — they live ON the
+    /// resource, so a resource that does not exist has no tags to report and a deleted
+    /// one takes its tags with it.
+    pub fn tags_of(
+        &self,
+        resource: &AddressedResource,
+        region: &str,
+    ) -> Option<&BTreeMap<String, String>> {
+        match resource.resource_type {
+            RESOURCE_TYPE_LEXICON => self.lexicon(region, &resource.id).map(|stored| &stored.tags),
+            RESOURCE_TYPE_VOICE => self
+                .custom_voices
+                .get(&CustomVoiceKey::new(region, &resource.id))
+                .map(|stored| &stored.tags),
+            _ => None,
+        }
+    }
+
+    /// The same tags for a WRITE: what `TagResource` and `UntagResource` change.
+    pub fn tags_of_mut(
+        &mut self,
+        resource: &AddressedResource,
+        region: &str,
+    ) -> Option<&mut BTreeMap<String, String>> {
+        match resource.resource_type {
+            RESOURCE_TYPE_LEXICON => self
+                .lexicon_mut(region, &resource.id)
+                .map(|stored| &mut stored.tags),
+            RESOURCE_TYPE_VOICE => self
+                .custom_voice_mut(region, &resource.id)
+                .map(|stored| &mut stored.tags),
+            _ => None,
+        }
+    }
+
     /// The lexicon `name` of `region`, or `None` when that Region stores none under
     /// that name — a lexicon of ANOTHER Region never answers here, which is what
     /// makes a cross-Region read the modelled "not found".
     pub fn lexicon(&self, region: &str, name: &str) -> Option<&StoredLexicon> {
         self.lexicons.get(&LexiconKey::new(region, name))
+    }
+
+    /// The lexicon `name` of `region` for a WRITE — a tag change, which is a change to
+    /// the lexicon itself rather than to a store beside it.
+    pub fn lexicon_mut(&mut self, region: &str, name: &str) -> Option<&mut StoredLexicon> {
+        self.lexicons.get_mut(&LexiconKey::new(region, name))
+    }
+
+    /// The custom voice `voice_id` of `region` for a WRITE, for the same reason.
+    pub fn custom_voice_mut(
+        &mut self,
+        region: &str,
+        voice_id: &str,
+    ) -> Option<&mut StoredCustomVoice> {
+        self.custom_voices
+            .get_mut(&CustomVoiceKey::new(region, voice_id))
     }
 
     /// Every lexicon `region` holds, in name order.
@@ -515,6 +699,8 @@ impl Default for ComAmazonawsPollyParrotV1State {
     fn default() -> Self {
         Self {
             lexicons: BTreeMap::new(),
+            // No custom voice exists until a create call makes one.
+            custom_voices: BTreeMap::new(),
             // No task exists until a start call creates one.
             synthesis_tasks: BTreeMap::new(),
             // Seeded on first touch: `DescribeVoices` reports a catalog, and a
@@ -1277,6 +1463,7 @@ mod tests {
             lexicon_arn: ::engine::emulator_arn("polly", region, &format!("lexicon/{name}")),
             lexemes_count: 1,
             size: 10,
+            tags: BTreeMap::new(),
         };
 
         let mut state = ComAmazonawsPollyParrotV1State::default();

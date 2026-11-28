@@ -40,8 +40,8 @@
 //! modelled members, this response reports the SDK feature toggles the service applied to
 //! the request, as a list serialized whether or not anything is in it. The envelope that
 //! writes it holds the model's own task and adds that member
-//! ([`super::types::StartedSynthesisTask`]); the task READS report the modelled members
-//! alone.
+//! ([`crate::service::types_local::StartedSynthesisTask`]); the task READS report the
+//! modelled members alone.
 //!
 //! ## Shape of an operation
 //!
@@ -180,6 +180,9 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// The hand-written envelope the creation response carries, declared outside the
+// `@generated` type modules (see `crate::service::types_local`).
+use crate::service::types_local::StartedSynthesisTask;
 use super::synthesize_speech::{
     billed_characters, content_type_for, resolve_sample_rate, DEFAULT_ENGINE, DEFAULT_TEXT_TYPE,
 };
@@ -198,6 +201,13 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 #[smithy_macros::operation_error("com.amazonaws.polly#StartSpeechSynthesisTask")]
 #[derive(Debug)]
 pub enum StartSpeechSynthesisTaskErrorModeled {
+    // The two errors the model added for CUSTOM voices, declared because the operation
+    // lists them and constructed by nothing here: `VoiceId` targets the model's closed
+    // `VoiceId` enum, so the `vc-` id `CreateVoice` mints is refused by the request
+    // boundary before this handler runs (`crate::service::validation`), and no task of
+    // this emulator can name a custom voice that is missing or not yet active.
+    ConflictException(ConflictException),
+    ResourceNotFoundException(ResourceNotFoundException),
     EngineNotSupportedException(EngineNotSupportedException),
     InvalidS3BucketException(InvalidS3BucketException),
     InvalidS3KeyException(InvalidS3KeyException),

@@ -11,9 +11,55 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-polly-parrot-v1.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.polly#LexiconNotFoundException")]
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#VoiceCreationData")]
 #[derive(Debug, Clone, Default)]
-pub struct LexiconNotFoundException {
+pub struct VoiceCreationData {
+    pub recordings: Vec<Recording>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#Recording")]
+#[derive(Debug, Clone, Default)]
+pub struct Recording {
+    pub format: String,
+    pub data: RecordingData,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#RecordingData")]
+#[derive(Debug, Clone, Default)]
+pub struct RecordingData {
+    pub s3_url: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#CustomerManagedEncryption")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomerManagedEncryption {
+    pub kms_key_arn: String,
+    pub encryption_context: Option<std::collections::HashMap<String, String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#Voice")]
+#[derive(Debug, Clone, Default)]
+pub struct Voice {
+    pub arn: Option<String>,
+    pub gender: Option<String>,
+    pub id: Option<String>,
+    pub language_code: Option<String>,
+    pub language_name: Option<String>,
+    pub name: Option<String>,
+    pub origin: Option<String>,
+    pub status: Option<String>,
+    pub status_reason: Option<String>,
+    pub additional_language_codes: Option<Vec<String>>,
+    pub supported_engines: Option<Vec<String>>,
+    pub voice_creation_data: Option<VoiceCreationData>,
+    pub customer_managed_encryption: Option<CustomerManagedEncryption>,
+    pub creation_time: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#InvalidTagParameterException")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidTagParameterException {
     pub message: Option<String>,
 }
 
@@ -21,6 +67,63 @@ pub struct LexiconNotFoundException {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceFailureException {
     pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ThrottlingException")]
+#[derive(Debug, Clone, Default)]
+pub struct ThrottlingException {
+    pub message: Option<String>,
+    pub throttling_reasons: Option<Vec<ThrottlingReason>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ThrottlingReason")]
+#[derive(Debug, Clone, Default)]
+pub struct ThrottlingReason {
+    pub reason: Option<String>,
+    pub resource: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#TooManyTagsException")]
+#[derive(Debug, Clone, Default)]
+pub struct TooManyTagsException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: String,
+    pub reason: String,
+    pub fields: Option<Vec<ValidationExceptionField>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ValidationExceptionField")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationExceptionField {
+    pub name: String,
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#LexiconNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct LexiconNotFoundException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: String,
+    pub resource_id: String,
+    pub resource_type: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.polly#ResourceNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceNotFoundException {
+    pub message: String,
+    pub resource_id: String,
+    pub resource_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.polly#InvalidNextTokenException")]
@@ -102,6 +205,14 @@ pub struct TextLengthExceededException {
     pub message: Option<String>,
 }
 
+/// The values `AudioFormat` accepts on the wire.
+pub const AUDIO_FORMAT_VALUES: &[&str] = &["flac", "mp3", "ogg_vorbis", "wav"];
+
+
+/// The values `CustomVoiceLanguageCode` accepts on the wire.
+pub const CUSTOM_VOICE_LANGUAGE_CODE_VALUES: &[&str] = &["de-DE", "en-US", "es-US", "fr-FR", "hi-IN", "it-IT", "pt-BR"];
+
+
 /// The values `Engine` accepts on the wire.
 pub const ENGINE_VALUES: &[&str] = &["generative", "long-form", "neural", "standard"];
 
@@ -118,6 +229,18 @@ pub const LANGUAGE_CODE_VALUES: &[&str] = &["ar-AE", "arb", "ca-ES", "cmn-CN", "
 pub const OUTPUT_FORMAT_VALUES: &[&str] = &["alaw", "json", "mp3", "mulaw", "ogg_opus", "ogg_vorbis", "pcm"];
 
 
+/// The values `QuotaCode` accepts on the wire.
+pub const QUOTA_CODE_VALUES: &[&str] = &["custom-voice-max-count", "input-stream-inbound-event-timeout", "input-stream-timeout"];
+
+
+/// The values `ResourceType` accepts on the wire.
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["lexicon", "voice"];
+
+
+/// The values `ServiceCode` accepts on the wire.
+pub const SERVICE_CODE_VALUES: &[&str] = &["polly"];
+
+
 /// The values `SpeechMarkType` accepts on the wire.
 pub const SPEECH_MARK_TYPE_VALUES: &[&str] = &["sentence", "ssml", "viseme", "word"];
 
@@ -130,7 +253,19 @@ pub const TASK_STATUS_VALUES: &[&str] = &["completed", "failed", "inProgress", "
 pub const TEXT_TYPE_VALUES: &[&str] = &["ssml", "text"];
 
 
+/// The values `ValidationExceptionReason` accepts on the wire.
+pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["fieldValidationFailed", "invalidInboundEvent", "kmsKeyNotFound", "kmsKeyUnusable", "other", "unsupportedOperation"];
+
+
 /// The values `VoiceId` accepts on the wire.
 pub const VOICE_ID_VALUES: &[&str] = &["Aditi", "Adriano", "Ambre", "Amy", "Andres", "Aria", "Arjun", "Arlet", "Arthur", "Astrid", "Ayanda", "Beatrice", "Bianca", "Brian", "Burcu", "Camila", "Carla", "Carlos", "Carmen", "Carolina", "Celine", "Chantal", "Conchita", "Cristiano", "Curtis", "Daniel", "Danielle", "Dora", "Elin", "Emma", "Enrique", "Ewa", "Filiz", "Florian", "Gabrielle", "Geraint", "Giorgio", "Gregory", "Gwyneth", "Hala", "Hannah", "Hans", "Hiujin", "Hyunduk", "Ida", "Ines", "Isabelle", "Ivy", "Jacek", "Jan", "Jasmine", "Jihye", "Jitka", "Joanna", "Joey", "Justin", "Kajal", "Karl", "Kazuha", "Kendra", "Kenneth", "Kevin", "Kiara", "Kimberly", "Laura", "Lea", "Lennart", "Leo", "Liam", "Lisa", "Liv", "Lorenzo", "Lotte", "Lucia", "Lupe", "Mads", "Maja", "Marlene", "Mathieu", "Matthew", "Maxim", "Mia", "Miguel", "Mizuki", "Naja", "Nate", "Niamh", "Nicole", "Ola", "Olivia", "Pedro", "Penelope", "Raveena", "Remi", "Ricardo", "Ruben", "Russell", "Ruth", "Sabrina", "Salli", "Seoyeon", "Sergio", "Sofie", "Stephen", "Suvi", "Takumi", "Tatyana", "Thiago", "Tiffany", "Tina", "Tomoko", "Vicki", "Vitoria", "Zayd", "Zeina", "Zhiyu"];
+
+
+/// The values `VoiceOrigin` accepts on the wire.
+pub const VOICE_ORIGIN_VALUES: &[&str] = &["aws", "customer"];
+
+
+/// The values `VoiceStatus` accepts on the wire.
+pub const VOICE_STATUS_VALUES: &[&str] = &["active", "failed", "pending"];
 
 
