@@ -58,6 +58,7 @@ pub mod import_firewall_domains_types;
 pub mod list_firewall_configs_types;
 pub mod list_firewall_domain_lists_types;
 pub mod list_firewall_domains_types;
+pub mod list_firewall_rule_domains_types;
 pub mod list_firewall_rule_group_associations_types;
 pub mod list_firewall_rule_groups_types;
 pub mod list_firewall_rule_types_types;
@@ -176,6 +177,8 @@ pub use list_firewall_configs_types::*;
 pub use list_firewall_domain_lists_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_firewall_domains_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_firewall_rule_domains_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_firewall_rule_group_associations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

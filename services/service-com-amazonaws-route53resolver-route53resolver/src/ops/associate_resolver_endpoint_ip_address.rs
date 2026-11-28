@@ -91,6 +91,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53resolver-route53
 #[smithy_macros::operation_error("com.amazonaws.route53resolver#AssociateResolverEndpointIpAddress")]
 #[derive(Debug)]
 pub enum AssociateResolverEndpointIpAddressErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServiceErrorException(InternalServiceErrorException),
     InvalidParameterException(InvalidParameterException),
     InvalidRequestException(InvalidRequestException),

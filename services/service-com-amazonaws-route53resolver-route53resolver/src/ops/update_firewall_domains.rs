@@ -265,6 +265,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // The managed domain list of an AutoAllowlist rule takes a different set
+        // of operations from a list the account defined itself: "`DENY` — for an
+        // AutoAllowlist rule's managed domain list ONLY", and "`REPLACE` … not
+        // supported for an AutoAllowlist rule's managed domain list". Each is
+        // refused for the kind of list it is not an operation of, before anything
+        // is written.
+        let auto_allowlist = record.auto_allowlist.is_some();
+        if operation == crate::state::FIREWALL_DOMAIN_OPERATION_DENY && !auto_allowlist {
+            return Err(UpdateFirewallDomainsErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(format!(
+                        "Operation {} applies to the managed domain list of an AutoAllowlist rule \
+                         only",
+                        crate::state::FIREWALL_DOMAIN_OPERATION_DENY
+                    )),
+                },
+            )
+            .into());
+        }
+        if operation == crate::state::FIREWALL_DOMAIN_OPERATION_REPLACE && auto_allowlist {
+            return Err(UpdateFirewallDomainsErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(format!(
+                        "Operation {} is not supported for the managed domain list of an \
+                         AutoAllowlist rule",
+                        crate::state::FIREWALL_DOMAIN_OPERATION_REPLACE
+                    )),
+                },
+            )
+            .into());
+        }
+
         // The requested domains, CANONICALIZED (a fully qualified name, rooted
         // with one trailing dot and case folded —
         // `crate::state::firewall_domain_canonical`),
@@ -284,13 +316,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The domains this request names, kept for the record the managed list of
+        // an AutoAllowlist rule holds beside its domains; a list the account
+        // defined itself holds no such record, so nothing is copied for one.
+        let record_domains: Vec<String> = if auto_allowlist {
+            requested.clone()
+        } else {
+            Vec::new()
+        };
+
         let updated: Vec<String> = match operation {
             // "ADD - Add the domains to the ones that are already in the domain
             // list": the union, with the domains already stored keeping their
             // places, so a caller paging the list only ever sees the new ones
             // appended. Both sides are canonical — the list holds nothing else
             // — so membership is decided on the stored spelling itself.
-            "ADD" => {
+            crate::state::FIREWALL_DOMAIN_OPERATION_ADD => {
                 let stored: ::std::collections::HashSet<&str> =
                     record.domains.iter().map(String::as_str).collect();
                 let added: Vec<String> = requested
@@ -305,7 +346,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "REMOVE - Search the domain list for the domains and remove them
             // from the list": the difference. A requested domain the list does
             // not hold removes nothing.
-            "REMOVE" => record
+            crate::state::FIREWALL_DOMAIN_OPERATION_REMOVE => record
+                .domains
+                .iter()
+                .filter(|domain| !requested_keys.contains(domain.as_str()))
+                .cloned()
+                .collect(),
+            // "DENY — … mark the specified observed domains as denied so that
+            // they're no longer listed for review. If a domain is on the managed
+            // domain list, DENY also removes it from the list": the list loses
+            // them exactly as a REMOVE takes them out, and the denial itself is
+            // recorded below.
+            crate::state::FIREWALL_DOMAIN_OPERATION_DENY => record
                 .domains
                 .iter()
                 .filter(|domain| !requested_keys.contains(domain.as_str()))
@@ -334,6 +386,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The domains an AutoAllowlist rule has on record are bounded the same
+        // way the domains of a list are, and the bound above does not bound
+        // them: a REMOVE shrinks the list and leaves the domain on record. Every
+        // write of such a list asks the bound BEFORE it writes, whatever it was
+        // asked to do, and one that would carry the record past it is refused
+        // with the stored record left exactly as it was.
+        let review = if operation == crate::state::FIREWALL_DOMAIN_OPERATION_DENY {
+            crate::state::AutoAllowlistReview::Denied
+        } else {
+            crate::state::AutoAllowlistReview::Allowed
+        };
+        if auto_allowlist
+            && record.auto_allowlist_record_size_after(&record_domains, review)
+                > crate::state::MAX_DOMAINS_PER_LIST
+        {
+            return Err(UpdateFirewallDomainsErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(format!(
+                        "This emulator keeps at most {} domains on record for one AutoAllowlist \
+                         rule; the rule's record cannot take more",
+                        crate::state::MAX_DOMAINS_PER_LIST
+                    )),
+                    resource_type: Some(
+                        crate::state::RESOURCE_TYPE_FIREWALL_DOMAIN_LIST.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
+
         // The step the list stands in as this update is ACCEPTED, which is what
         // the response states: the recorded acknowledgement of an update names
         // the step the list was in when the request arrived — the creation step
@@ -345,7 +427,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let accepted_status_message = record.status_message_at(now);
 
         record.domains = updated;
-        record.modification_time = timestamp;
+        record.modification_time = timestamp.clone();
+        // The domains an AutoAllowlist rule has on record move with the list
+        // that holds them: "ADD - for an AutoAllowlist rule's managed domain
+        // list, this also marks the observed domains as allowed", and DENY marks
+        // the observed ones denied. A REMOVE records nothing: the domain stays on
+        // record, and the list no longer holding it is what makes it observed
+        // again.
+        if review == crate::state::AutoAllowlistReview::Denied
+            || operation == crate::state::FIREWALL_DOMAIN_OPERATION_ADD
+        {
+            record.record_auto_allowlist_domains(&record_domains, review, &timestamp);
+        }
         // The whole set operation is applied to the stored domains inside this
         // call, so the list is in its settled step by the time the response is
         // built and the clock owes it nothing: the model's `UPDATING` describes

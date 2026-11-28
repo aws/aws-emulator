@@ -21,5 +21,7 @@ pub struct GetFirewallDomainListInput {
 #[derive(Debug, Clone, Default)]
 pub struct GetFirewallDomainListOutput {
     pub firewall_domain_list: Option<FirewallDomainList>,
+    pub firewall_rule_group_id: Option<String>,
+    pub firewall_threat_protection_id: Option<String>,
 }
 

@@ -99,6 +99,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53resolver-route53
 #[smithy_macros::operation_error("com.amazonaws.route53resolver#AssociateResolverRule")]
 #[derive(Debug)]
 pub enum AssociateResolverRuleErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServiceErrorException(InternalServiceErrorException),
     InvalidParameterException(InvalidParameterException),
     InvalidRequestException(InvalidRequestException),

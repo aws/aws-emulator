@@ -171,6 +171,7 @@ pub struct FirewallRuleType {
     pub firewall_advanced_content_category: Option<FirewallAdvancedContentCategoryConfig>,
     pub firewall_advanced_threat_category: Option<FirewallAdvancedThreatCategoryConfig>,
     pub dns_threat_protection: Option<DnsThreatProtectionRuleTypeConfig>,
+    pub auto_allowlist: Option<AutoAllowlistConfig>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.route53resolver#PartnerThreatProtectionConfig")]
@@ -196,6 +197,14 @@ pub struct FirewallAdvancedThreatCategoryConfig {
 pub struct DnsThreatProtectionRuleTypeConfig {
     pub value: String,
     pub confidence_threshold: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.route53resolver#AutoAllowlistConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct AutoAllowlistConfig {
+    pub initial_data_timeframe_hours: i32,
+    pub import_from_firewall_domain_list_id: Option<String>,
+    pub auto_allowlist_firewall_domain_list_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.route53resolver#FirewallRule")]
@@ -400,7 +409,7 @@ pub const DNS_THREAT_PROTECTION_VALUES: &[&str] = &["DGA", "DICTIONARY_DGA", "DN
 
 
 /// The values `DomainListType` accepts on the wire.
-pub const DOMAIN_LIST_TYPE_VALUES: &[&str] = &["CONTENT", "THREAT"];
+pub const DOMAIN_LIST_TYPE_VALUES: &[&str] = &["AUTOALLOWLIST", "CONTENT", "THREAT"];
 
 
 /// The values `FirewallDomainImportOperation` accepts on the wire.
@@ -415,12 +424,28 @@ pub const FIREWALL_DOMAIN_LIST_STATUS_VALUES: &[&str] = &["COMPLETE", "COMPLETE_
 pub const FIREWALL_DOMAIN_REDIRECTION_ACTION_VALUES: &[&str] = &["INSPECT_REDIRECTION_DOMAIN", "TRUST_REDIRECTION_DOMAIN"];
 
 
+/// The values `FirewallDomainStatus` accepts on the wire.
+pub const FIREWALL_DOMAIN_STATUS_VALUES: &[&str] = &["ALLOWED", "DENIED", "OBSERVED", "UNKNOWN"];
+
+
+/// The values `FirewallDomainStatusFilter` accepts on the wire.
+pub const FIREWALL_DOMAIN_STATUS_FILTER_VALUES: &[&str] = &["ALLOWED", "DENIED", "OBSERVED"];
+
+
 /// The values `FirewallDomainUpdateOperation` accepts on the wire.
-pub const FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES: &[&str] = &["ADD", "REMOVE", "REPLACE"];
+pub const FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES: &[&str] = &["ADD", "DENY", "REMOVE", "REPLACE"];
 
 
 /// The values `FirewallFailOpenStatus` accepts on the wire.
 pub const FIREWALL_FAIL_OPEN_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED", "USE_LOCAL_RESOURCE_SETTING"];
+
+
+/// The values `FirewallRuleDomainSortBy` accepts on the wire.
+pub const FIREWALL_RULE_DOMAIN_SORT_BY_VALUES: &[&str] = &["DAILY_TOTAL", "TIME_ADDED", "TOTAL_REQUESTS"];
+
+
+/// The values `FirewallRuleDomainSortOrder` accepts on the wire.
+pub const FIREWALL_RULE_DOMAIN_SORT_ORDER_VALUES: &[&str] = &["ASC", "DESC"];
 
 
 /// The values `FirewallRuleGroupAssociationStatus` accepts on the wire.

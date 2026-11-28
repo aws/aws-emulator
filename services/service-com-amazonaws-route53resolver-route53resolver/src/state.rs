@@ -29,9 +29,11 @@ use ::service_com_amazonaws_ec2_amazonec2::state as ec2;
 use ::service_com_amazonaws_outposts_outpostsolafservice::state as outposts;
 
 use crate::ops::types::{
-    AccessDeniedException, ConflictException, FirewallConfig, FirewallDomainList,
+    AccessDeniedException, AutoAllowlistConfig, ConflictException, FirewallConfig,
+    FirewallDomainList,
     FirewallDomainListMetadata,
-    FirewallRule, FirewallRuleGroup, FirewallRuleGroupAssociation, FirewallRuleGroupMetadata,
+    FirewallRule, FirewallRuleDomain, FirewallRuleGroup, FirewallRuleGroupAssociation,
+    FirewallRuleGroupMetadata,
     FirewallRuleType,
     InvalidNextTokenException, InvalidParameterException,
     InvalidPolicyDocument, InvalidRequestException, IpAddressResponse, IpAddressUpdate,
@@ -49,6 +51,9 @@ use crate::ops::types::{
 /// VPC — its own associations, and the Route 53 Profiles associated with it — and what the
 /// first rule matching the name asked for does to the query. `pub` because the components
 /// that answer in-VPC queries take the view and decide their queries against it.
+/// The domains an AutoAllowlist rule has on record, and the managed domain list DNS Firewall
+/// maintains for such a rule.
+mod auto_allowlist;
 pub mod dns_firewall;
 mod domain_imports;
 mod firewall_associations;
@@ -76,6 +81,7 @@ pub mod vpc_dns_forwarding;
 /// This service's DNS data plane as the components of OTHER crates that CARRY an in-VPC query
 /// reach it: the register they ask, and this service's reading of it.
 pub mod vpc_dns_register;
+pub use auto_allowlist::*;
 pub use dns_firewall::*;
 pub use domain_imports::*;
 pub use firewall_associations::*;
@@ -799,6 +805,24 @@ pub const MAX_DOMAINS_PER_LIST: usize = 100_000;
 /// modelled shape name of the resource, as for
 /// [`RESOURCE_TYPE_RESOLVER_ENDPOINT`].
 pub const RESOURCE_TYPE_FIREWALL_DOMAIN_LIST: &str = "FirewallDomainList";
+
+/// The `FirewallDomainUpdateOperation` that adds the domains a request names to
+/// the ones a list already holds, from the model's enum
+/// (`smithy_query(query="shape",shape="FirewallDomainUpdateOperation")`,
+/// re-exported as [`crate::ops::types::FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES`]).
+pub const FIREWALL_DOMAIN_OPERATION_ADD: &str = "ADD";
+
+/// The `FirewallDomainUpdateOperation` that takes them out again.
+pub const FIREWALL_DOMAIN_OPERATION_REMOVE: &str = "REMOVE";
+
+/// The `FirewallDomainUpdateOperation` that makes a list "exactly match the list
+/// that you are providing", which is "not supported for an AutoAllowlist rule's
+/// managed domain list".
+pub const FIREWALL_DOMAIN_OPERATION_REPLACE: &str = "REPLACE";
+
+/// The `FirewallDomainUpdateOperation` that marks domains denied, "for an
+/// AutoAllowlist rule's managed domain list only".
+pub const FIREWALL_DOMAIN_OPERATION_DENY: &str = "DENY";
 
 /// The most firewall domain lists this store holds, for the same reason as
 /// [`MAX_STORED_ENDPOINTS`]: `CreateFirewallDomainList` admits any new
@@ -2705,6 +2729,14 @@ impl ManagedFirewallDomainList {
             managed_owner_name: Some(MANAGED_FIREWALL_DOMAIN_LIST_OWNER.to_string()),
             managed_list_type: Some(self.managed_list_type.to_string()),
             category: Some(self.category.to_string()),
+            // The owning rule and the lifecycle step the metadata shape carries
+            // are "present only when `ManagedListType` is `AUTOALLOWLIST`": a
+            // list DNS Firewall publishes to every account belongs to no rule
+            // of this account, and its status is read through
+            // `GetFirewallDomainList`.
+            firewall_rule_group_id: None,
+            firewall_threat_protection_id: None,
+            status: None,
         }
     }
 
@@ -2832,6 +2864,14 @@ pub struct FirewallDomainListRecord {
     /// list nobody has written since the create states its creation, and one
     /// whose domains a caller wrote states that the change finished.
     pub change: FirewallChange,
+    /// What this list is for an AutoAllowlist rule, for the ONE list DNS
+    /// Firewall creates and maintains for such a rule
+    /// ([`AutoAllowlistFacts`]), and `None` for every list an account created
+    /// itself — which is what `ManagedListType`, `FirewallRuleGroupId`,
+    /// `FirewallThreatProtectionId` and the `Status` of the metadata shape are
+    /// reported from, since all four are "present only when `ManagedListType`
+    /// is `AUTOALLOWLIST`".
+    pub auto_allowlist: Option<AutoAllowlistFacts>,
 }
 
 impl FirewallDomainListRecord {
@@ -2889,7 +2929,7 @@ impl FirewallDomainListRecord {
             creation_time: Some(self.creation_time.clone()),
             modification_time: Some(self.modification_time.clone()),
             category: None,
-            managed_list_type: None,
+            managed_list_type: self.managed_list_type().map(str::to_string),
         }
     }
 
@@ -2902,19 +2942,37 @@ impl FirewallDomainListRecord {
     /// carries no `DomainCount`, `Status`, `StatusMessage` or timestamps, which
     /// is why the doc says to "call GetFirewallDomainList and
     /// ListFirewallDomains" for the full information.
-    pub fn to_metadata(&self) -> FirewallDomainListMetadata {
+    pub fn to_metadata(&self, now: Instant) -> FirewallDomainListMetadata {
         FirewallDomainListMetadata {
             id: Some(self.id.clone()),
             arn: Some(self.arn.clone()),
             name: Some(self.name.clone()),
             creator_request_id: Some(self.creator_request_id.clone()),
             // `ManagedOwnerName` is "used only for lists that are NOT managed by
-            // you", and `Category`/`ManagedListType` describe such a list, so
-            // all three stay unset for a list this account created — exactly as
-            // in [`Self::to_domain_list`].
+            // you", and `Category` describes such a list, so both stay unset
+            // for a list of this account — exactly as in
+            // [`Self::to_domain_list`]. `ManagedListType` is the one of the
+            // three a list of this account does report, for the list DNS
+            // Firewall maintains for an AutoAllowlist rule of the account.
             managed_owner_name: None,
-            managed_list_type: None,
+            managed_list_type: self.managed_list_type().map(str::to_string),
             category: None,
+            // The owning rule and the lifecycle step are "present only when
+            // `ManagedListType` is `AUTOALLOWLIST`" — for every other list the
+            // metadata shape carries no status and "GetFirewallDomainList" is
+            // where the status is read.
+            firewall_rule_group_id: self
+                .auto_allowlist
+                .as_ref()
+                .map(|facts| facts.firewall_rule_group_id.clone()),
+            firewall_threat_protection_id: self
+                .auto_allowlist
+                .as_ref()
+                .map(|facts| facts.firewall_threat_protection_id.clone()),
+            status: self
+                .auto_allowlist
+                .as_ref()
+                .map(|_| self.status_at(now).to_string()),
         }
     }
 }

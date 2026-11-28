@@ -30,6 +30,7 @@ use service_com_amazonaws_route53resolver_route53resolver::ops::types::{
     FIREWALL_DOMAIN_LIST_STATUS_VALUES, FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES,
     FIREWALL_RULE_GROUP_ASSOCIATION_STATUS_VALUES, FIREWALL_RULE_GROUP_STATUS_VALUES,
 };
+use service_com_amazonaws_route53resolver_route53resolver::state::FIREWALL_DOMAIN_OPERATION_DENY;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::harness::{emulator, expect_error, ok, settled_association, string_member, Emulator};
@@ -195,8 +196,10 @@ async fn read_list(router: &MultiServiceRouter, id: &str) -> Value {
 /// of an update, and the delete — reports the step the list stands in as both
 /// `Status` and `StatusMessage`.
 ///
-/// The update rows are every value the model's `FirewallDomainUpdateOperation`
-/// declares (re-exported as `FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES`), each
+/// The update rows are the values the model's `FirewallDomainUpdateOperation`
+/// declares for a domain list the account defined (re-exported as
+/// `FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES`, less the one its doc restricts to
+/// "an AutoAllowlist rule's managed domain list only"), each
 /// carrying a different number of domains, so the settled step is asserted for
 /// a list that grows, one that shrinks and one that is rewritten.
 #[tokio::test]
@@ -224,7 +227,15 @@ async fn every_domain_list_projection_states_the_step_the_list_stands_in() {
             &format!("{case}: the read"),
         );
 
-        for (index, operation) in FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES.iter().enumerate() {
+        for (index, operation) in FIREWALL_DOMAIN_UPDATE_OPERATION_VALUES
+            .iter()
+            // "DENY - For an AutoAllowlist rule's managed domain list only": the
+            // list this case created is one the account defined, which that
+            // operation is not an operation of, so the rows are the operations
+            // such a list takes.
+            .filter(|operation| **operation != FIREWALL_DOMAIN_OPERATION_DENY)
+            .enumerate()
+        {
             // A different number of domains per row: one, several, and none.
             let domains: Vec<String> = (0..index)
                 .map(|slot| format!("host-{slot}.example.com"))

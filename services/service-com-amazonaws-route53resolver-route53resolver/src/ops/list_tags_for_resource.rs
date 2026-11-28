@@ -94,6 +94,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53resolver-route53
 #[smithy_macros::operation_error("com.amazonaws.route53resolver#ListTagsForResource")]
 #[derive(Debug)]
 pub enum ListTagsForResourceErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServiceErrorException(InternalServiceErrorException),
     InvalidNextTokenException(InvalidNextTokenException),
     InvalidParameterException(InvalidParameterException),

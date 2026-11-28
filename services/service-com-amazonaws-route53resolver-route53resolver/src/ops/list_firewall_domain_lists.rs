@@ -180,6 +180,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the offset, so nothing a later caller sees changes.
         let page = {
             let store = state.lock();
+            let now = ::std::time::Instant::now();
             // The lists DNS Firewall publishes itself are visible to every
             // account in every region, so they are part of what this operation
             // reports, ahead of the account's own records: that keeps them a
@@ -192,7 +193,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     store
                         .firewall_domain_lists_in_creation_order()
                         .into_iter()
-                        .map(|record| record.to_metadata()),
+                        .map(|record| record.to_metadata(now)),
                 )
                 .collect();
             crate::state::paginate(

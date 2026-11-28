@@ -267,6 +267,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // The import's only operation is `REPLACE`
+        // (`ImportFirewallDomains$Operation`), which is "not supported for an
+        // AutoAllowlist rule's managed domain list": that list is DNS Firewall's
+        // own, and what a caller changes on it are the domains the rule allows
+        // (`UpdateFirewallDomains`), so the import is refused and nothing is
+        // written.
+        if record.auto_allowlist.is_some() {
+            return Err(ImportFirewallDomainsErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(format!(
+                        "Operation {} is not supported for the managed domain list of an \
+                         AutoAllowlist rule",
+                        crate::state::FIREWALL_DOMAIN_OPERATION_REPLACE
+                    )),
+                },
+            )
+            .into());
+        }
+
         // `ConflictException` is "the requested state transition isn't valid.
         // For example ... you can't import domains into a domain list that is
         // in the process of being deleted": a list with a change still in

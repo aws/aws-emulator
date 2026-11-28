@@ -35,5 +35,8 @@ pub struct FirewallDomainListMetadata {
     pub managed_owner_name: Option<String>,
     pub managed_list_type: Option<String>,
     pub category: Option<String>,
+    pub firewall_rule_group_id: Option<String>,
+    pub firewall_threat_protection_id: Option<String>,
+    pub status: Option<String>,
 }
 

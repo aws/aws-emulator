@@ -263,6 +263,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Nothing has changed the list yet, so the step it reports is the
             // one this call reached.
             change: crate::state::FirewallChange::Created,
+            // A list a request created is a list of the account and not one DNS
+            // Firewall maintains for an AutoAllowlist rule, so it carries none of
+            // what such a list reports (`ManagedListType`, the owning rule).
+            auto_allowlist: None,
         };
 
         let domain_list = record.to_domain_list(now);

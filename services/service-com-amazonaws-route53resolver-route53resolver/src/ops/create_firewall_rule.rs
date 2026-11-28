@@ -267,6 +267,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // not an ARN-bearing resource of its own, so what this operation takes
         // from `ctx` is the trace its refusals are reported under.
         let trace_root = crate::state::request_trace_root(&ctx.parts().headers);
+        // The region the request was signed for, which the ARN of a managed
+        // domain list an AutoAllowlist rule owns is rooted in.
+        let region = crate::state::request_region(&ctx.parts().headers);
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(CreateFirewallRuleErrorModeled::InternalServiceErrorException(
                 InternalServiceErrorException {
@@ -299,6 +302,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             dns_threat_protection: input.dns_threat_protection.as_deref(),
             confidence_threshold: input.confidence_threshold.as_deref(),
             firewall_rule_type: input.firewall_rule_type.as_ref(),
+            region: &region,
             trace_root: &trace_root,
         };
 

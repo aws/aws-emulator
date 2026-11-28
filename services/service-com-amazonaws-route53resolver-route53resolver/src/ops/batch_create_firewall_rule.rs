@@ -190,6 +190,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = ::std::time::Instant::now();
+        // The region the request was signed for, which the ARN of a managed
+        // domain list an AutoAllowlist entry's rule owns is rooted in.
+        let region = crate::state::request_region(&ctx.parts().headers);
         let mut created_firewall_rules = Vec::new();
         let mut create_errors = Vec::new();
         let mut store = state.lock();
@@ -220,6 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 dns_threat_protection: entry.dns_threat_protection.as_deref(),
                 confidence_threshold: entry.confidence_threshold.as_deref(),
                 firewall_rule_type: entry.firewall_rule_type.as_ref(),
+                region: &region,
                 trace_root: &trace_root,
             };
 

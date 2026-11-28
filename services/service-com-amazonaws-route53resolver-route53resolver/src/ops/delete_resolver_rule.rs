@@ -86,6 +86,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53resolver-route53
 #[smithy_macros::operation_error("com.amazonaws.route53resolver#DeleteResolverRule")]
 #[derive(Debug)]
 pub enum DeleteResolverRuleErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalServiceErrorException(InternalServiceErrorException),
     InvalidParameterException(InvalidParameterException),
     InvalidRequestException(InvalidRequestException),

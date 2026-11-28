@@ -158,14 +158,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Retrieves the specified firewall domain list": a pure read, so the
         // store is only locked for the lookup and nothing is written.
         let now = ::std::time::Instant::now();
-        let stored = state
-            .lock()
-            .firewall_domain_lists
-            .get(&input.firewall_domain_list_id)
-            .map(|record| record.to_domain_list(now));
-        if let Some(domain_list) = stored {
+        let stored = state.lock().firewall_domain_lists.get(&input.firewall_domain_list_id).map(
+            |record| {
+                (
+                    record.to_domain_list(now),
+                    record.auto_allowlist.as_ref().map(|facts| {
+                        (
+                            facts.firewall_rule_group_id.clone(),
+                            facts.firewall_threat_protection_id.clone(),
+                        )
+                    }),
+                )
+            },
+        );
+        if let Some((domain_list, owner)) = stored {
+            let (firewall_rule_group_id, firewall_threat_protection_id) = match owner {
+                Some((group_id, threat_protection_id)) => {
+                    (Some(group_id), Some(threat_protection_id))
+                }
+                None => (None, None),
+            };
             return Ok(GetFirewallDomainListOutput {
                 firewall_domain_list: Some(domain_list),
+                // The rule that owns the list is reported "only when
+                // `ManagedListType` is `AUTOALLOWLIST`": no rule owns a list the
+                // account created itself, so neither member is reported for one.
+                firewall_rule_group_id,
+                firewall_threat_protection_id,
             });
         }
 
@@ -177,6 +196,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let region = crate::state::request_region(&ctx.parts().headers);
             return Ok(GetFirewallDomainListOutput {
                 firewall_domain_list: Some(managed.to_domain_list(&region)),
+                // A list DNS Firewall publishes to every account belongs to no
+                // AutoAllowlist rule of this one.
+                firewall_rule_group_id: None,
+                firewall_threat_protection_id: None,
             });
         }
 

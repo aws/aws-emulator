@@ -72,6 +72,9 @@ pub struct FirewallRuleCreate<'a> {
     pub dns_threat_protection: Option<&'a str>,
     pub confidence_threshold: Option<&'a str>,
     pub firewall_rule_type: Option<&'a FirewallRuleType>,
+    /// The region the request was signed for ([`request_region`]), which the ARN
+    /// of the managed domain list an AutoAllowlist rule owns is rooted in.
+    pub region: &'a str,
     /// The trace of the request this create came in on
     /// ([`request_trace_root`]), which the refusals naming a DNS Firewall
     /// resource it cannot address close with ([`traced_message`]).
@@ -229,6 +232,7 @@ pub struct FirewallRuleSettings<'a> {
     pub firewall_domain_list_id: Option<&'a str>,
     pub dns_threat_protection: Option<&'a str>,
     pub confidence_threshold: Option<&'a str>,
+    pub qtype: Option<&'a str>,
     pub firewall_rule_type: Option<&'a FirewallRuleType>,
 }
 
@@ -236,8 +240,22 @@ impl FirewallRuleSettings<'_> {
     /// Whether these settings describe a DNS Firewall Advanced rule: one whose
     /// match source is a threat detector or one of the Amazon Web
     /// Services-managed categories, rather than a domain list of the account.
+    ///
+    /// An AutoAllowlist rule is NOT one: it "uses the `ALLOW` action", which is
+    /// "not available for DNS Firewall Advanced rules", and its match source is
+    /// the managed domain list DNS Firewall maintains for it.
     pub fn is_advanced(&self) -> bool {
-        self.dns_threat_protection.is_some() || self.firewall_rule_type.is_some()
+        self.dns_threat_protection.is_some()
+            || self
+                .firewall_rule_type
+                .is_some_and(|rule_type| rule_type.auto_allowlist.is_none())
+    }
+
+    /// The `AutoAllowlistConfig` these settings carry, for the one rule type that
+    /// observes the VPCs' DNS traffic rather than matching a source.
+    pub fn auto_allowlist(&self) -> Option<&AutoAllowlistConfig> {
+        self.firewall_rule_type
+            .and_then(|rule_type| rule_type.auto_allowlist.as_ref())
     }
 }
 
@@ -331,6 +349,7 @@ pub fn firewall_rule_settings_fault(
             rule_type.firewall_advanced_content_category.is_some(),
             rule_type.firewall_advanced_threat_category.is_some(),
             rule_type.dns_threat_protection.is_some(),
+            rule_type.auto_allowlist.is_some(),
         ]
         .into_iter()
         .filter(|set| *set)
@@ -340,7 +359,8 @@ pub fn firewall_rule_settings_fault(
                 message: Some(
                     "FirewallRuleType carries exactly one of \
                      PartnerThreatProtection, FirewallAdvancedContentCategory, \
-                     FirewallAdvancedThreatCategory and DnsThreatProtection"
+                     FirewallAdvancedThreatCategory, DnsThreatProtection and \
+                     AutoAllowlist"
                         .to_string(),
                 ),
             });
@@ -364,6 +384,41 @@ pub fn firewall_rule_settings_fault(
                     });
                 }
             }
+        }
+    }
+
+    // "An AutoAllowlist rule uses the `ALLOW` action, applies to all query
+    // types, and always inspects redirection domains. You can't set `Qtype`,
+    // `FirewallDomainRedirectionAction`, `BlockResponse`, or the DNS Firewall
+    // Advanced settings on it." `BlockResponse` and the `BlockOverride*`
+    // settings are already refused for the action it uses
+    // ([`firewall_rule_block_option_fault`]), so what is left to refuse are the
+    // two settings such a rule decides for itself.
+    if settings.auto_allowlist().is_some() {
+        if settings.action != FIREWALL_RULE_ACTION_ALLOW {
+            return Some(ValidationException {
+                message: Some(format!(
+                    "An AutoAllowlist rule uses the {FIREWALL_RULE_ACTION_ALLOW} action"
+                )),
+            });
+        }
+        if let Some(member) = [
+            settings.qtype.map(|_| "Qtype"),
+            settings
+                .firewall_domain_redirection_action
+                .map(|_| "FirewallDomainRedirectionAction"),
+            settings.confidence_threshold.map(|_| "ConfidenceThreshold"),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        {
+            return Some(ValidationException {
+                message: Some(format!(
+                    "{member} cannot be set on an AutoAllowlist rule, which applies to all \
+                     query types and always inspects redirection domains"
+                )),
+            });
         }
     }
 
@@ -674,6 +729,12 @@ pub fn firewall_rule_type_match_source(rule_type: &FirewallRuleType) -> Option<S
     if let Some(config) = &rule_type.dns_threat_protection {
         return Some(format!("DnsThreatProtection={}", config.value));
     }
+    // An AutoAllowlist rule matches the managed domain list DNS Firewall created
+    // for it, which is not something a request states: what identifies the
+    // source is the rule type itself.
+    if rule_type.auto_allowlist.is_some() {
+        return Some("AutoAllowlist".to_string());
+    }
     None
 }
 
@@ -777,13 +838,9 @@ pub fn locate_firewall_rule<'a>(
     named: &FirewallRuleMatchSource<'a>,
 ) -> Result<(usize, (&'static str, &'a str)), FirewallRuleLookupFault> {
     let Some((match_source_member, match_source_id)) = named.match_source() else {
-        return Err(FirewallRuleLookupFault::Validation(ValidationException {
-            message: Some(format!(
-                "Exactly one of FirewallDomainListId and FirewallThreatProtectionId \
-                 names the rule to {}",
-                named.action
-            )),
-        }));
+        return Err(FirewallRuleLookupFault::Validation(
+            firewall_rule_match_source_not_single(named.action),
+        ));
     };
     let by_domain_list = named.firewall_domain_list_id.is_some();
     let candidates: Vec<usize> = group
@@ -846,6 +903,22 @@ pub fn locate_firewall_rule<'a>(
 /// update one stored rule, and for the ones that delete one.
 pub const FIREWALL_RULE_ACTION_WORD_UPDATE: &str = "update";
 pub const FIREWALL_RULE_ACTION_WORD_DELETE: &str = "delete";
+
+/// The `ValidationException` a request that names no single rule is refused
+/// with: a rule is addressed by exactly one of the two members it matches on, so
+/// one that carries both or neither has not said which rule it means.
+///
+/// `action` is what the request asks of the rule ([`FirewallRuleMatchSource::action`]),
+/// so every operation that addresses a stored rule reports this fault in the one
+/// wording, naming what it was asked to do.
+pub fn firewall_rule_match_source_not_single(action: &str) -> ValidationException {
+    ValidationException {
+        message: Some(format!(
+            "Exactly one of FirewallDomainListId and FirewallThreatProtectionId \
+             names the rule to {action}"
+        )),
+    }
+}
 
 /// Why one firewall-rule delete was refused.
 ///
@@ -936,6 +1009,7 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             firewall_domain_list_id: request.firewall_domain_list_id,
             dns_threat_protection: request.dns_threat_protection,
             confidence_threshold: request.confidence_threshold,
+            qtype: request.qtype,
             firewall_rule_type: request.firewall_rule_type,
         };
         if let Some(fault) = firewall_rule_settings_fault(&settings) {
@@ -1017,14 +1091,68 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             }
         }
 
+        // "A rule group can contain one AutoAllowlist rule", and the id of the
+        // managed domain list such a rule owns is DNS Firewall's to mint: "DNS
+        // Firewall returns this value in responses. You can't set it."
+        let auto_allowlist = settings.auto_allowlist();
+        if let Some(config) = auto_allowlist {
+            if config.auto_allowlist_firewall_domain_list_id.is_some() {
+                return Err(FirewallRuleCreateRefusal::Validation(ValidationException {
+                    message: Some(
+                        "AutoAllowlistFirewallDomainListId names the managed domain list DNS \
+                         Firewall creates for the rule and cannot be set on the request"
+                            .to_string(),
+                    ),
+                }));
+            }
+            if group.rules.iter().any(|record| {
+                record
+                    .rule
+                    .firewall_rule_type
+                    .as_ref()
+                    .is_some_and(|rule_type| rule_type.auto_allowlist.is_some())
+            }) {
+                return Err(FirewallRuleCreateRefusal::Validation(ValidationException {
+                    message: Some(format!(
+                        "Firewall rule group \"{}\" already contains an AutoAllowlist rule",
+                        request.firewall_rule_group_id
+                    )),
+                }));
+            }
+        }
+
         // A DNS Firewall Advanced rule carries an id of its own, which
-        // `FirewallRule$FirewallThreatProtectionId` reports; a domain-list rule
-        // is not one and carries none.
-        let firewall_threat_protection_id = if advanced {
+        // `FirewallRule$FirewallThreatProtectionId` reports, and so does an
+        // AutoAllowlist rule — `ListFirewallRuleDomains` identifies the rule by
+        // it; a domain-list rule is neither and carries none.
+        let firewall_threat_protection_id = if advanced || auto_allowlist.is_some() {
             let seq = self.next_seq();
             Some(mint_firewall_threat_protection_id(seq))
         } else {
             None
+        };
+
+        // DNS Firewall "creates and maintains" one managed domain list for an
+        // AutoAllowlist rule, copying the source list the rule names into it, and
+        // the rule reports that list's id back.
+        let auto_allowlist_list_id = match (auto_allowlist, firewall_threat_protection_id.as_deref())
+        {
+            (Some(config), Some(threat_protection_id)) => {
+                Some(self.create_auto_allowlist_domain_list(
+                    AutoAllowlistListCreate {
+                        firewall_rule_group_id: request.firewall_rule_group_id,
+                        firewall_threat_protection_id: threat_protection_id,
+                        rule_name: request.name,
+                        import_from_firewall_domain_list_id: config
+                            .import_from_firewall_domain_list_id
+                            .as_deref(),
+                        region: request.region,
+                        trace_root: request.trace_root,
+                    },
+                    now,
+                )?)
+            }
+            _ => None,
         };
 
         // "Rules created with the PartnerThreatProtection rule type begin in
@@ -1073,7 +1201,18 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             qtype: request.qtype.map(str::to_string),
             dns_threat_protection: request.dns_threat_protection.map(str::to_string),
             confidence_threshold: request.confidence_threshold.map(str::to_string),
-            firewall_rule_type: request.firewall_rule_type.cloned(),
+            firewall_rule_type: request.firewall_rule_type.cloned().map(|mut rule_type| {
+                // The list DNS Firewall created for the rule is part of the rule
+                // it answers with: "the ID of the managed domain list that DNS
+                // Firewall creates and maintains for this AutoAllowlist rule".
+                if let (Some(config), Some(list_id)) = (
+                    rule_type.auto_allowlist.as_mut(),
+                    auto_allowlist_list_id.as_ref(),
+                ) {
+                    config.auto_allowlist_firewall_domain_list_id = Some(list_id.clone());
+                }
+                rule_type
+            }),
             // The lifecycle state is the record's, not the rule's: it is decided
             // from the clock by `FirewallRuleRecord::to_rule`.
             status: None,
@@ -1086,6 +1225,19 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
                 status: Some(FIREWALL_RULE_STATUS_CREATING.to_string()),
                 settled_status: Some(FIREWALL_RULE_STATUS_CREATION_FAILED.to_string()),
                 settled_status_message: Some(partner_subscription_missing(partner)),
+                settled_at: Some(now + PROVISIONING_DELAY),
+            },
+            // "A new AutoAllowlist rule has status CREATING while DNS Firewall
+            // reads the look-back window of each VPC that uses the rule group
+            // … Until the status is COMPLETE, the observed domains and request
+            // counts are partial and UpdateFirewallRule rejects the rule": that
+            // read is what the clock owes such a rule, and it settles in
+            // `COMPLETE`.
+            None if auto_allowlist.is_some() => FirewallRuleRecord {
+                rule,
+                status: Some(FIREWALL_RULE_STATUS_CREATING.to_string()),
+                settled_status: Some(FIREWALL_RULE_STATUS_COMPLETE.to_string()),
+                settled_status_message: None,
                 settled_at: Some(now + PROVISIONING_DELAY),
             },
             // Every other match source is in force the moment the rule exists,
@@ -1205,6 +1357,7 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             confidence_threshold: request
                 .confidence_threshold
                 .or(stored.confidence_threshold.as_deref()),
+            qtype: request.qtype.or(stored.qtype.as_deref()),
             firewall_rule_type: request
                 .firewall_rule_type
                 .or(stored.firewall_rule_type.as_ref()),
@@ -1254,6 +1407,24 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
                 return Err(FirewallRuleUpdateRefusal::Validation(
                     firewall_rule_match_source_is_immutable("FirewallRuleType"),
                 ));
+            }
+            // "`InitialDataTimeframeHours` … You can't change this value after you
+            // create the rule": an entry restating an AutoAllowlist rule's
+            // configuration restates the window it was created with.
+            if let (Some(wanted), Some(held)) = (
+                requested.auto_allowlist.as_ref(),
+                stored
+                    .firewall_rule_type
+                    .as_ref()
+                    .and_then(|rule_type| rule_type.auto_allowlist.as_ref()),
+            ) {
+                if wanted.initial_data_timeframe_hours != held.initial_data_timeframe_hours {
+                    return Err(FirewallRuleUpdateRefusal::Validation(
+                        firewall_rule_match_source_is_immutable(
+                            "FirewallRuleType.AutoAllowlist.InitialDataTimeframeHours",
+                        ),
+                    ));
+                }
             }
         }
 
@@ -1333,9 +1504,19 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             rule.confidence_threshold = Some(value.to_string());
         }
         // The source it matches is the one it already matched — checked above —
-        // so what this carries over is the threshold the detector reads at.
+        // so what this carries over is the threshold the detector reads at. An
+        // AutoAllowlist rule's configuration is DNS Firewall's own — the managed
+        // list it created and the window it read — so a restatement of it leaves
+        // the stored configuration exactly as it is.
         if let Some(value) = request.firewall_rule_type {
-            rule.firewall_rule_type = Some(value.clone());
+            if rule
+                .firewall_rule_type
+                .as_ref()
+                .and_then(|rule_type| rule_type.auto_allowlist.as_ref())
+                .is_none()
+            {
+                rule.firewall_rule_type = Some(value.clone());
+            }
         }
         rule.modification_time = Some(timestamp.clone());
 
@@ -1344,6 +1525,16 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
         // the rules it holds: a group whose rule just changed has changed.
         group.modification_time = timestamp;
         group.change = FirewallChange::Changed;
+
+        // "The list is named `AutoAllowlist - ` followed by the rule name … and is
+        // renamed when you rename the rule": the managed list's name follows the
+        // rule's, so the two cannot drift apart.
+        if let (Some(renamed), Some(list_id)) = (
+            request.name,
+            auto_allowlist_list_id(&reported).map(str::to_string),
+        ) {
+            self.rename_auto_allowlist_domain_list(&list_id, renamed);
+        }
 
         Ok(reported)
     }
@@ -1387,7 +1578,16 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
         // The rule is reported as the group held it at the moment it was
         // deleted, lifecycle state included, so a caller reads back exactly the
         // rule that is now gone.
-        Ok(record.to_rule(now))
+        let reported = record.to_rule(now);
+
+        // The managed domain list of an AutoAllowlist rule exists FOR that rule —
+        // DNS Firewall "creates and maintains" it, no request of the account did
+        // — so nothing of it outlives the rule it belonged to.
+        if let Some(list_id) = auto_allowlist_list_id(&reported).map(str::to_string) {
+            self.remove_auto_allowlist_domain_list(&list_id);
+        }
+
+        Ok(reported)
     }
 
     /// The id of a rule group holding a rule that matches against the domain
@@ -1397,9 +1597,12 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
     /// This is the index `DeleteFirewallDomainList` consults before it takes a
     /// list out ([`firewall_domain_list_in_use_conflict`]): a list a rule
     /// matches against cannot be deleted, so no rule is ever left matching
-    /// against a `FirewallDomainListId` the store no longer holds. The scan is
-    /// over a store bounded by [`MAX_STORED_FIREWALL_RULE_GROUPS`], each group
-    /// by [`MAX_RULES_PER_FIREWALL_RULE_GROUP`].
+    /// against a `FirewallDomainListId` the store no longer holds. The managed
+    /// list of an AutoAllowlist rule is such a list too — the rule allows the
+    /// domains on it — so deleting it is the rule's own deletion and not a call
+    /// of its own. The scan is over a store bounded by
+    /// [`MAX_STORED_FIREWALL_RULE_GROUPS`], each group by
+    /// [`MAX_RULES_PER_FIREWALL_RULE_GROUP`].
     pub fn firewall_rule_group_referencing_domain_list(
         &self,
         firewall_domain_list_id: &str,
@@ -1409,6 +1612,7 @@ impl ComAmazonawsRoute53resolverRoute53resolverState {
             .filter(|group| {
                 group.rules.iter().any(|record| {
                     record.rule.firewall_domain_list_id.as_deref() == Some(firewall_domain_list_id)
+                        || auto_allowlist_list_id(&record.rule) == Some(firewall_domain_list_id)
                 })
             })
             .min_by_key(|group| group.seq)
