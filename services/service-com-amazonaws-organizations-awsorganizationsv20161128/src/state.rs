@@ -632,8 +632,13 @@ pub const ALREADY_IN_ORGANIZATION_MESSAGE: &str =
     "This account is already a member of an organization. An account can belong to only one organization at a time.";
 
 /// The `ParentNotFoundException` message for a `ParentId` that names no root or OU.
+///
+/// The sentence `ParentNotFoundException` itself states in this service's model, word for
+/// word: a `ParentId` names a root or an OU — that is all its modelled pattern
+/// `^(r-[0-9a-z]{4,32})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$` accepts — so the two node
+/// kinds the message names are the two kinds the member can name.
 pub const PARENT_NOT_FOUND_MESSAGE: &str =
-    "We can't find an organizational unit (OU) or Amazon Web Services account with the ParentId that you specified.";
+    "We can't find a root or OU with the ParentId that you specified.";
 
 /// The `OrganizationalUnitNotFoundException` message for an id that names no OU.
 pub const ORGANIZATIONAL_UNIT_NOT_FOUND_MESSAGE: &str =

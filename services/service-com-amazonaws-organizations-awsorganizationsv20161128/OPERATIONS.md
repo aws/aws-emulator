@@ -74,7 +74,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## CreatePolicy
 
-- **Input:** `Content` (string, len 1.., pattern ^[\s\S]*$, required), `Description` (string, len 0..512, pattern ^[\s\S]*$, required), `Name` (string, len 1..128, pattern ^[\s\S]*$, required), `Type` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_POLICY | …, required), `Tags` (list<Tag>)
+- **Input:** `Content` (string, len 1.., pattern ^[\s\S]*$, required), `Description` (string, len 0..512, pattern ^[\s\S]*$, required), `Name` (string, len 1..128, pattern ^[\s\S]*$, required), `Type` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | …, required), `Tags` (list<Tag>)
 - **Output:** `Policy` (Policy)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConcurrentModificationException (HTTP 409)`, `ConstraintViolationException (HTTP 409)`, `DuplicatePolicyException (HTTP 409)`, `InvalidInputException (HTTP 400)`, `MalformedPolicyDocumentException (HTTP 400)`, `PolicyTypeNotAvailableForOrganizationException (HTTP 409)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
@@ -128,7 +128,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## DescribeEffectivePolicy
 
-- **Input:** `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_POLICY | TAG_POLICY | …, required), `TargetId` (string, len 0..100, pattern ^(r-[0-9a-z]{4,32})|(\d{12})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$)
+- **Input:** `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | SECURITYHUB_POLICY | …, required), `TargetId` (string, len 0..100, pattern ^(r-[0-9a-z]{4,32})|(\d{12})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$)
 - **Output:** `EffectivePolicy` (EffectivePolicy)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConstraintViolationException (HTTP 409)`, `EffectivePolicyNotFoundException (HTTP 400)`, `InvalidInputException (HTTP 400)`, `ServiceException (HTTP 500)`, `TargetNotFoundException (HTTP 404)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
@@ -182,7 +182,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## DisablePolicyType
 
-- **Input:** `RootId` (string, len 0..34, pattern ^r-[0-9a-z]{4,32}$, required), `PolicyType` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_POLICY | …, required)
+- **Input:** `RootId` (string, len 0..34, pattern ^r-[0-9a-z]{4,32}$, required), `PolicyType` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | …, required)
 - **Output:** `Root` (Root)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConcurrentModificationException (HTTP 409)`, `ConstraintViolationException (HTTP 409)`, `InvalidInputException (HTTP 400)`, `PolicyChangesInProgressException (HTTP 400)`, `PolicyTypeNotEnabledException (HTTP 409)`, `RootNotFoundException (HTTP 404)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
@@ -200,7 +200,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## EnablePolicyType
 
-- **Input:** `RootId` (string, len 0..34, pattern ^r-[0-9a-z]{4,32}$, required), `PolicyType` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_POLICY | …, required)
+- **Input:** `RootId` (string, len 0..34, pattern ^r-[0-9a-z]{4,32}$, required), `PolicyType` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | …, required)
 - **Output:** `Root` (Root)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConcurrentModificationException (HTTP 409)`, `ConstraintViolationException (HTTP 409)`, `InvalidInputException (HTTP 400)`, `PolicyChangesInProgressException (HTTP 400)`, `PolicyTypeAlreadyEnabledException (HTTP 409)`, `PolicyTypeNotAvailableForOrganizationException (HTTP 409)`, `RootNotFoundException (HTTP 404)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
@@ -239,8 +239,8 @@ contents — read that shape in the model above when you need its own members.
 ## ListAccountsWithInvalidEffectivePolicy
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=Accounts)
-- **Input:** `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_POLICY | TAG_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
-- **Output:** `Accounts` (list<Account>), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_POLICY | TAG_POLICY | …), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$)
+- **Input:** `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | SECURITYHUB_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
+- **Output:** `Accounts` (list<Account>), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | SECURITYHUB_POLICY | …), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConstraintViolationException (HTTP 409)`, `EffectivePolicyNotFoundException (HTTP 400)`, `InvalidInputException (HTTP 400)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
 ## ListAWSServiceAccessForOrganization
@@ -281,8 +281,8 @@ contents — read that shape in the model above when you need its own members.
 ## ListEffectivePolicyValidationErrors
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=EffectivePolicyValidationErrors)
-- **Input:** `AccountId` (string, len 0..12, pattern ^\d{12}$, required), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_POLICY | TAG_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
-- **Output:** `AccountId` (string, len 0..12, pattern ^\d{12}$), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_POLICY | TAG_POLICY | …), `Path` (string, pattern ^(o-[a-z0-9]{10,32}\/r-[0-9a-z]{4,32}(\/ou\-[0-9a-z]{4,32}-[a-z0-9]{8,32})*(\/\d{12})*)\/$), `EvaluationTimestamp` (timestamp), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `EffectivePolicyValidationErrors` (list<EffectivePolicyValidationError>)
+- **Input:** `AccountId` (string, len 0..12, pattern ^\d{12}$, required), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | SECURITYHUB_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
+- **Output:** `AccountId` (string, len 0..12, pattern ^\d{12}$), `PolicyType` (EffectivePolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | SECURITYHUB_POLICY | …), `Path` (string, pattern ^(o-[a-z0-9]{10,32}\/r-[0-9a-z]{4,32}(\/ou\-[0-9a-z]{4,32}-[a-z0-9]{8,32})*(\/\d{12})*)\/$), `EvaluationTimestamp` (timestamp), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `EffectivePolicyValidationErrors` (list<EffectivePolicyValidationError>)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AccountNotFoundException (HTTP 404)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `ConstraintViolationException (HTTP 409)`, `EffectivePolicyNotFoundException (HTTP 400)`, `InvalidInputException (HTTP 400)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
 ## ListHandshakesForAccount
@@ -328,14 +328,14 @@ contents — read that shape in the model above when you need its own members.
 ## ListPolicies
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
-- **Input:** `Filter` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
+- **Input:** `Filter` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
 - **Output:** `Policies` (list<PolicySummary>), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `InvalidInputException (HTTP 400)`, `ServiceException (HTTP 500)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 
 ## ListPoliciesForTarget
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=?)
-- **Input:** `TargetId` (string, len 0..100, pattern ^(r-[0-9a-z]{4,32})|(\d{12})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$, required), `Filter` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
+- **Input:** `TargetId` (string, len 0..100, pattern ^(r-[0-9a-z]{4,32})|(\d{12})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$, required), `Filter` (PolicyType, one of: AISERVICES_OPT_OUT_POLICY | BACKUP_POLICY | BEDROCK_POLICY | CHATBOT_POLICY | DECLARATIVE_POLICY_EC2 | GUARDDUTY_POLICY | INSPECTOR_POLICY | NETWORK_SECURITY_DIRECTOR_POLICY | RESOURCE_CONTROL_POLICY | S3_POLICY | SECURITYHUB_CSPM_POLICY | …, required), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$), `MaxResults` (integer, range 1..20)
 - **Output:** `Policies` (list<PolicySummary>), `NextToken` (string, len 0..100000, pattern ^[\s\S]*$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `AWSOrganizationsNotInUseException (HTTP 404)`, `InvalidInputException (HTTP 400)`, `ServiceException (HTTP 500)`, `TargetNotFoundException (HTTP 404)`, `TooManyRequestsException (HTTP 429)`, `UnsupportedAPIEndpointException (HTTP 403)`
 

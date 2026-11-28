@@ -25,9 +25,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use service_com_amazonaws_organizations_awsorganizationsv20161128::ops::types::ORGANIZATION_FEATURE_SET_VALUES;
+use service_com_amazonaws_organizations_awsorganizationsv20161128::ops::types::{
+    EFFECTIVE_POLICY_TYPE_VALUES, ORGANIZATION_FEATURE_SET_VALUES, POLICY_TYPE_STATUS_VALUES,
+    POLICY_TYPE_VALUES,
+};
 use service_com_amazonaws_organizations_awsorganizationsv20161128::state::{
     MAX_ORGANIZATIONAL_UNIT_DEPTH, MAX_PAGE_SIZE, MAX_TAGS_PER_RESOURCE,
+    PARENT_NOT_FOUND_MESSAGE,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -824,19 +828,51 @@ async fn an_ou_that_still_holds_a_child_cannot_be_deleted() {
 
 #[tokio::test]
 async fn an_unknown_parent_is_refused_by_every_operation_that_takes_one() {
+    // The sentence `ParentNotFoundException` itself states in this service's model. A
+    // `ParentId` names a root or an OU — the only two forms its pattern accepts — so
+    // those are the two node kinds the refusal tells the caller to look for.
+    assert_eq!(
+        PARENT_NOT_FOUND_MESSAGE, "We can't find a root or OU with the ParentId that you specified.",
+        "case ParentNotFoundException: expected the sentence the model states for this \
+         error, got {PARENT_NOT_FOUND_MESSAGE:?}"
+    );
+
     let router = router();
     let root = create_organization(&router, None).await;
     let real = create_ou(&router, &root, "Real").await;
     let real_id = real["Id"].as_str().unwrap_or_default().to_owned();
     let root_suffix = root.strip_prefix("r-").unwrap_or(&root).to_owned();
 
+    // An OU this organization really held, then deleted: afterwards its id is as unknown
+    // to the store as one that was never minted.
+    let transient = create_ou(&router, &root, "Transient").await;
+    let deleted_id = transient["Id"].as_str().unwrap_or_default().to_owned();
+    let removed = call(
+        &router,
+        "DeleteOrganizationalUnit",
+        &json!({ "OrganizationalUnitId": deleted_id }),
+    )
+    .await;
+    assert_eq!(
+        removed.status, 200,
+        "case DeleteOrganizationalUnit({deleted_id}): expected 200, got {} with {:?}",
+        removed.status, removed.body
+    );
+
     // Parent ids that satisfy `ParentId`'s modelled pattern
     // `^(r-[0-9a-z]{4,32})|(ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$` but name no node of
-    // this organization: a root-shaped one, and OU-shaped ones in and out of this root.
+    // this organization, differing along form and along the pattern's length bounds: a
+    // root-shaped one, OU-shaped ones in and out of this root, a shortest and a longest
+    // root-shaped one, an OU-shaped one with both segments at their longest, and the
+    // deleted OU.
     let unknown = [
         "r-zzzz".to_string(),
         format!("ou-{root_suffix}-zzzzzzzz"),
         "ou-wxyz-00000000".to_string(),
+        "r-0000".to_string(),
+        format!("r-{}", "z".repeat(32)),
+        format!("ou-{}-{}", "a".repeat(32), "b".repeat(32)),
+        deleted_id.clone(),
     ];
 
     for parent in &unknown {
@@ -856,6 +892,13 @@ async fn an_unknown_parent_is_refused_by_every_operation_that_takes_one() {
                 answer.is("ParentNotFoundException"),
                 "case {operation}(ParentId={parent:?}): expected ParentNotFoundException, got {:?}",
                 answer.error
+            );
+            assert_eq!(
+                answer.body["Message"].as_str(),
+                Some(PARENT_NOT_FOUND_MESSAGE),
+                "case {operation}(ParentId={parent:?}): expected the error's own sentence, \
+                 got {:?}",
+                answer.body
             );
         }
     }
@@ -1170,6 +1213,124 @@ async fn a_next_token_this_service_did_not_mint_is_refused() {
                 "case {operation}(NextToken={token:?}): expected the reason INVALID_NEXT_TOKEN, got {:?}",
                 answer.body
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_models_policy_type_catalogues_are_what_the_wire_accepts() {
+    // This case is about the VALIDATION layer of the request walk — which `PolicyType` /
+    // `EffectivePolicyType` values reach a handler at all — and not about what any of
+    // the operations below then answers: each of them is still scaffolded, so past
+    // validation they answer the scaffold's 501, which is their own issue.
+    let router = router();
+    let root = create_organization(&router, None).await;
+
+    // Every value of the model's `PolicyType` and `EffectivePolicyType` enums, on each
+    // operation that takes one, read from the generated catalogues rather than written
+    // out here, so a value the model adds or drops is covered by the same assertion.
+    let mut cases: Vec<(&str, Value)> = Vec::new();
+    for policy_type in POLICY_TYPE_VALUES {
+        cases.push((
+            "EnablePolicyType",
+            json!({ "RootId": root, "PolicyType": policy_type }),
+        ));
+        cases.push((
+            "DisablePolicyType",
+            json!({ "RootId": root, "PolicyType": policy_type }),
+        ));
+        cases.push(("ListPolicies", json!({ "Filter": policy_type })));
+    }
+    for policy_type in EFFECTIVE_POLICY_TYPE_VALUES {
+        cases.push((
+            "DescribeEffectivePolicy",
+            json!({ "PolicyType": policy_type }),
+        ));
+    }
+
+    for (operation, body) in &cases {
+        let answer = call(&router, operation, body).await;
+        assert_ne!(
+            answer.status, 400,
+            "case {operation}({body}): a value the model's enum declares must not be \
+             refused as a bad request, got {} with {:?}",
+            answer.status, answer.body
+        );
+    }
+
+    // A value outside the catalogue is refused, differing along form: unknown, wrong
+    // case, empty, and a prefix of a real value.
+    let outside = [
+        "NOT_A_POLICY_TYPE",
+        "service_control_policy",
+        "",
+        "SERVICE_CONTROL",
+    ];
+    for value in outside {
+        for (operation, body) in [
+            (
+                "EnablePolicyType",
+                json!({ "RootId": root, "PolicyType": value }),
+            ),
+            ("DescribeEffectivePolicy", json!({ "PolicyType": value })),
+        ] {
+            let answer = call(&router, operation, &body).await;
+            assert_eq!(
+                answer.status, 400,
+                "case {operation}(PolicyType={value:?}): expected 400 for a value no \
+                 modelled enum declares, got {} with {:?}",
+                answer.status, answer.body
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_enum_typed_member_the_implemented_slice_reports_is_a_modelled_value() {
+    // The model's own `OrganizationFeatureSet` catalogue, plus the request that omits it.
+    let mut cases: Vec<Option<&str>> = vec![None];
+    cases.extend(ORGANIZATION_FEATURE_SET_VALUES.iter().copied().map(Some));
+
+    for requested in cases {
+        let router = router();
+        let case = format!("CreateOrganization(FeatureSet={requested:?})");
+        create_organization(&router, requested).await;
+
+        let organization = call(&router, "DescribeOrganization", &json!({})).await;
+        let roots = call(&router, "ListRoots", &json!({})).await;
+        // Every `PolicyTypeSummary` the slice reports — the root's enabled types and the
+        // organization's deprecated copy of them — carries a `Type` and a `Status` the
+        // model's enums declare. The exact values are asserted by
+        // `an_organization_is_created_persisted_and_described_for_every_feature_set`;
+        // what is asserted here is that no value outside the model's enums can appear in
+        // them, over the whole feature-set catalogue.
+        let reported = [
+            (
+                "ListRoots.Roots[].PolicyTypes",
+                roots.body["Roots"][0]["PolicyTypes"].clone(),
+            ),
+            (
+                "DescribeOrganization.Organization.AvailablePolicyTypes",
+                organization.body["Organization"]["AvailablePolicyTypes"].clone(),
+            ),
+        ];
+        for (member, summaries) in reported {
+            let summaries = summaries.as_array().cloned().unwrap_or_else(|| {
+                panic!("case {member} after {case}: expected a list, got {summaries:?}")
+            });
+            for summary in &summaries {
+                assert!(
+                    POLICY_TYPE_VALUES.contains(&summary["Type"].as_str().unwrap_or_default()),
+                    "case {member} after {case}: Type must be a value the model's \
+                     PolicyType enum declares, got {summary:?}"
+                );
+                assert!(
+                    POLICY_TYPE_STATUS_VALUES
+                        .contains(&summary["Status"].as_str().unwrap_or_default()),
+                    "case {member} after {case}: Status must be a value the model's \
+                     PolicyTypeStatus enum declares, got {summary:?}"
+                );
+            }
         }
     }
 }
