@@ -168,3 +168,32 @@ Model basis: Smithy GetSprites (services/service-com-amazonaws-geomaps-mapsservi
 4. Observe that every entry that should not be 20x20 comes back width=20,height=20 (e.g. shield-AE should be 21x30, shield-BAB width should be 36, shield-CN:expressway-long should be 43x28) and that the x offsets are shifted because the icons are packed on a constant 20px pitch.
 5. Cause 2: replay fixture geo-maps-vector-basemap-style-workflow, step task#3 - the same GetSprites sprite-index fetch reached after the style-descriptor step for a different Style/ColorScheme/Variant. Observe the identical uniform-20x20 collapse and offset drift for that variant's atlas (including shield-CA-TransCanada 24x24 -> 20x20).
 6. Both steps return HTTP 200, so the divergence is only visible by diffing the sprites.json body; a map client consuming it crops the wrong rectangles out of sprites.png.
+
+## Resolution, and what remains
+
+Fixed: a route shield is no longer reported at one family box. The catalog now carries each
+shield's own published plate where the published index reports one — the tall Emirati route
+plate, the two Australian plates narrower than the base box, the Australian tourist plate, the
+German Autobahn plate (under both of its published names), the Brazilian plate, the square
+Trans-Canada plate (under whichever name the sheet publishes) and the Chinese expressway plates
+and Costa Rican plates — and the digit-capacity rule answers only for a shield the index
+reports at no plate of its own. The index's listing order was generalised from the city dots to
+every family the sheet carries (every name one root name is a prefix of, widest plate first), so
+a `-long` number plate is listed before the plate it widens, and the bare country code
+`shield-CA`, which the published index does not carry, was dropped. The sheet's width moved with
+those footprints so the published row break still falls where the index shows it: the first row
+runs through the Korean expressway shields and the second opens with the Korean national shield.
+Every offset this report quotes is reproduced (1386, 1407, 1428, 1447, 1466, 1486, 1507, 1543,
+1565, 1589, 1632, 1662, 1685 and the 1708 that follows them).
+
+Remaining, and declined: the `width`/`height` of the shields this report quotes no value for —
+the Australian state plate's height, and the plates of `shield-HU:national`, `shield-JP:*`,
+`shield-KR:*`, `shield-NL-ring`/`shield-NL:binnenstedelijke_ring`, `shield-PH:E`,
+`shield-PK:*`, `shield-SA:national`, `shield-TR:*`, `shield-TW:*`, `shield-VE:T`,
+`shield-ch:national`, `shield-cy:national` and `shield-md:national` — and the `x`/`y` that
+follow from a width. Those are the pixel sizes of individual pieces of published artwork: the
+model says nothing about the payload, no rule produces them, this report quotes no value for any
+of them, and the replay withholds the recorded values, so they could only be matched by
+transcribing one recording's bytes plate by plate. Everything the record does expose about them
+— the names the sheet publishes, the order the index lists them in, that they share the sheet's
+first row with the symbol iconography and where that row wraps — is implemented.

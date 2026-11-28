@@ -29,8 +29,8 @@ use service_com_amazonaws_geomaps_mapsservice::ops::types::{
 use service_com_amazonaws_geomaps_mapsservice::state::assets;
 use service_com_amazonaws_geomaps_mapsservice::state::vector_tile::Tile;
 use service_com_amazonaws_geomaps_mapsservice::state::{
-    route_shield_width, ColorSchemeKind, Hsla, MapStyleKind, TileFormat, VariantKind, CITY_DOT_BOX,
-    CITY_DOT_FAMILY, CITY_DOT_OPEN_BOX, INCIDENT_ICON_BOX, MARKER_BOX, PLACE_ICON_BOX,
+    route_shield_box, route_shield_width, ColorSchemeKind, Hsla, MapStyleKind, TileFormat,
+    VariantKind, CITY_DOT_BOX, CITY_DOT_OPEN_BOX, INCIDENT_ICON_BOX, MARKER_BOX, PLACE_ICON_BOX,
     RESTRICTION_SHIELD_BOX, SHIELD_BASE_WIDTH, SHIELD_DIGIT_WIDTH, SPRITE_SHEET_WIDTH,
 };
 use service_com_amazonaws_geomaps_mapsservice::{
@@ -1909,7 +1909,7 @@ fn route_shield_boxes_follow_the_digit_capacity_in_the_name() {
     // names the catalog does not carry, because this is the rule and not a
     // lookup of the published list.
     let cases: [(&str, u32); 12] = [
-        ("shield-AE:E-route", two),
+        ("shield-ZZ:national", two),
         ("shield-Emirates routes", two),
         ("shield-US-Hwy-1-2", two),
         ("shield-US-Hwy-3", three),
@@ -1932,9 +1932,10 @@ fn route_shield_boxes_follow_the_digit_capacity_in_the_name() {
     }
 }
 
-/// The published catalog really is laid out by that rule: the index reports each
-/// shield at the width its name states, and every rectangle it reports lies
-/// inside the sheet it is paired with.
+/// The published catalog really is laid out by its footprints: the index
+/// reports each shield at its own published plate — the box the digit-capacity
+/// rule produces where the catalog gives the shield no plate of its own — and
+/// every rectangle it reports lies inside the sheet it is paired with.
 #[tokio::test]
 async fn the_sheet_holds_every_icon_the_index_points_at() {
     let emulator = Emulator::new();
@@ -1987,9 +1988,10 @@ async fn the_sheet_holds_every_icon_the_index_points_at() {
         if let Some(rest) = name.strip_prefix("shield-") {
             if !rest.starts_with("hgv-") {
                 assert_eq!(
-                    w,
-                    route_shield_width(name),
-                    "case {name:?}: a route shield is as wide as its name states, got {w:?}"
+                    (w, h),
+                    route_shield_box(name),
+                    "case {name:?}: a route shield is reported at its own published plate, \
+                     got {w}x{h}"
                 );
             }
         }
@@ -2223,11 +2225,14 @@ async fn the_packing_follows_the_published_listing_order() {
         for scheme in ColorSchemeKind::ALL {
             let case = format!("{}/{}", style.as_wire(), scheme.as_wire());
             let index = sprite_index(&emulator, style, scheme, "sprites.json").await;
-            // The four city dots are the one family the index lists together,
-            // widest ring first, so they are not part of this walk.
+            let names: Vec<String> = index.keys().cloned().collect();
+            // A family — every name one root name is a prefix of, such as the
+            // four city dots or a shield and the plate that widens it — is
+            // listed together, widest plate first, so its members are not part
+            // of this walk by name.
             let mut listed: Vec<(String, u32, u32)> = index
                 .iter()
-                .filter(|(name, _)| !name.starts_with(CITY_DOT_FAMILY))
+                .filter(|(name, _)| !shares_a_family(name, &names))
                 .map(|(name, entry)| {
                     let (x, y, _, _) = entry_rectangle(&case, name, entry);
                     (name.clone(), y, x)
@@ -2451,6 +2456,262 @@ async fn the_first_row_reports_the_published_offsets() {
                         offset * ratio
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Whether another icon of the sheet is in `name`'s family: a family is every
+/// name one root name is a prefix of, which is how the published index lists a
+/// shield together with the plate that widens it.
+///
+/// Derived here from the names the index reports rather than by calling the
+/// catalog's own helper, deliberately: a test that asked the implementation
+/// which icons are a family would assert the packing against itself.
+fn shares_a_family(name: &str, names: &[String]) -> bool {
+    names
+        .iter()
+        .any(|other| other != name && (name.starts_with(other.as_str()) || other.starts_with(name)))
+}
+
+/// The Trans-Canada shield's name on the sheet addressed by `style`/`scheme`:
+/// one sheet publishes it after the route it signs, the others after the
+/// network it belongs to.
+fn transcanada_name(index: &serde_json::Map<String, serde_json::Value>) -> &'static str {
+    if index.contains_key("shield-CA-TransCanada") {
+        "shield-CA-TransCanada"
+    } else {
+        "shield-CA:transcanada"
+    }
+}
+
+/// A published route shield keeps its OWN plate: a published sheet's shields are
+/// drawn art, so a shield is as wide and as tall as the plate it signs with
+/// rather than being reported at one box for the whole family.
+///
+/// Every row is a plate the published index reports; the box a shield with no
+/// published plate of its own falls back to is the rule
+/// `route_shield_boxes_follow_the_digit_capacity_in_the_name` pins, over names
+/// no sheet carries.
+#[tokio::test]
+async fn a_published_route_shield_keeps_its_own_plate() {
+    let emulator = Emulator::new();
+    // Rows: one shield of every plate shape the published index reports — a
+    // tall plate and the same plate under its network name, two plates narrower
+    // than the catalog's base box, a square plate, a wide plate and the same
+    // plate under its network name, the widest plate and the plate it widens,
+    // and two plates of one box under two names. Source: the `sprites.json`
+    // index the Maps asset endpoint publishes for a sheet.
+    let plates: [(&str, u32, u32); 13] = [
+        ("shield-AE", 21, 30),
+        ("shield-AE:E-route", 21, 30),
+        ("shield-AU:MR", 19, 20),
+        ("shield-AU:NH", 19, 20),
+        ("shield-AU:T", 21, 22),
+        ("shield-BAB", 36, 20),
+        ("shield-DE:BAB", 36, 20),
+        ("shield-BR", 22, 27),
+        ("shield-CN:expressway", 30, 28),
+        ("shield-CN:expressway-long", 43, 28),
+        ("shield-CR:CR", 23, 26),
+        ("shield-CR:national", 23, 26),
+        ("shield-hgv-speed_limit", RESTRICTION_SHIELD_BOX, RESTRICTION_SHIELD_BOX),
+    ];
+
+    for style in MapStyleKind::ALL {
+        for scheme in ColorSchemeKind::ALL {
+            // Rows: both pixel ratios the modeled file-name pattern admits, so
+            // a plate scales with the sheet rather than being re-derived.
+            for (file, ratio) in [("sprites.json", 1_u32), ("sprites@2x.json", 2)] {
+                let index = sprite_index(&emulator, style, scheme, file).await;
+                let transcanada = transcanada_name(&index);
+                for (name, width, height) in plates
+                    .into_iter()
+                    .chain([(transcanada, 24, 24)])
+                {
+                    let case = format!("{}/{}/{file}/{name}", style.as_wire(), scheme.as_wire());
+                    let entry = index
+                        .get(name)
+                        .unwrap_or_else(|| panic!("case {case:?}: the index must describe {name}"));
+                    let (_, _, actual_width, actual_height) = entry_rectangle(&case, name, entry);
+                    assert_eq!(
+                        (actual_width, actual_height),
+                        (width * ratio, height * ratio),
+                        "case {case:?}: expected a {}x{} plate, got {actual_width}x{actual_height}",
+                        width * ratio,
+                        height * ratio
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The published offsets of the shields: a shield sits where the plates listed
+/// before it on the row leave it, so its `x` is the previous entry's `x` plus
+/// that entry's OWN plate width rather than a constant cell pitch.
+#[tokio::test]
+async fn the_published_shield_offsets_follow_the_plates_before_them() {
+    let emulator = Emulator::new();
+    // Rows: the `x` the published index reports for the run of shields that
+    // opens the shield iconography — across plates of seven different widths,
+    // including the two plates reported narrower than the base box and the two
+    // widest plates of the run, every later offset of which depends on the
+    // footprints before it. Source: the published `sprites.json` index.
+    let offsets: [(&str, u32); 13] = [
+        ("shield-AE", 1386),
+        ("shield-AE:E-route", 1407),
+        ("shield-AU:MR", 1428),
+        ("shield-AU:NH", 1447),
+        ("shield-AU:S", 1466),
+        ("shield-AU:T", 1486),
+        ("shield-BAB", 1507),
+        ("shield-BR", 1543),
+        ("shield-CN:expressway-long", 1589),
+        ("shield-CN:expressway", 1632),
+        ("shield-CR:CR", 1662),
+        ("shield-CR:national", 1685),
+        ("shield-DE:BAB", 1708),
+    ];
+
+    for style in MapStyleKind::ALL {
+        for scheme in ColorSchemeKind::ALL {
+            for (file, ratio) in [("sprites.json", 1_u32), ("sprites@2x.json", 2)] {
+                let index = sprite_index(&emulator, style, scheme, file).await;
+                // The Trans-Canada plate sits between them, under whichever of
+                // its two names this sheet publishes.
+                let transcanada = transcanada_name(&index);
+                for (name, offset) in offsets.into_iter().chain([(transcanada, 1565)]) {
+                    let case = format!("{}/{}/{file}/{name}", style.as_wire(), scheme.as_wire());
+                    let entry = index
+                        .get(name)
+                        .unwrap_or_else(|| panic!("case {case:?}: the index must describe {name}"));
+                    let (x, y, _, _) = entry_rectangle(&case, name, entry);
+                    assert_eq!(
+                        (x, y),
+                        (offset * ratio, 0),
+                        "case {case:?}: expected the published offset {},0, got {x},{y}",
+                        offset * ratio
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The index lists a FAMILY together, widest plate first: every pair of names
+/// one of which is a prefix of the other sits in that order on the sheet, which
+/// is why the open city ring is listed before the filled dot and a `-long`
+/// number plate before the plate it widens.
+#[tokio::test]
+async fn the_index_lists_a_familys_widest_plate_first() {
+    let emulator = Emulator::new();
+    for style in MapStyleKind::ALL {
+        for scheme in ColorSchemeKind::ALL {
+            let case = format!("{}/{}", style.as_wire(), scheme.as_wire());
+            let index = sprite_index(&emulator, style, scheme, "sprites.json").await;
+            let boxes: Vec<(String, u32, u32, u32)> = index
+                .iter()
+                .map(|(name, entry)| {
+                    let (x, y, width, _) = entry_rectangle(&case, name, entry);
+                    (name.clone(), y, x, width)
+                })
+                .collect();
+            // Every family the sheet carries, found from the names themselves
+            // rather than from a list: the pairs where one name is a prefix of
+            // the other.
+            let mut pairs = 0_usize;
+            for left in &boxes {
+                for right in &boxes {
+                    if left.0 == right.0 || !right.0.starts_with(&left.0) {
+                        continue;
+                    }
+                    pairs += 1;
+                    // The wider plate is listed first; where the two plates are
+                    // the same width the shorter name is.
+                    let (first, second) = if left.3 >= right.3 {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    assert!(
+                        (first.1, first.2) < (second.1, second.2),
+                        "case {case:?}: {} is a {}px plate and {} a {}px one, so {} is listed \
+                         first, got {},{} then {},{}",
+                        first.0,
+                        first.3,
+                        second.0,
+                        second.3,
+                        first.0,
+                        first.2,
+                        first.1,
+                        second.2,
+                        second.1
+                    );
+                }
+            }
+            assert!(
+                pairs > 10,
+                "case {case:?}: the sheet carries families to order, got {pairs} pairs"
+            );
+        }
+    }
+}
+
+/// The published row break: the index runs the symbol iconography and the
+/// shields through the Korean expressway shields on the sheet's first row, and
+/// opens the second row with the Korean national shield, because that is where
+/// the next plate no longer fits the sheet.
+#[tokio::test]
+async fn the_shields_wrap_at_the_published_row_break() {
+    let emulator = Emulator::new();
+    let last_of_the_first_row = "shield-KR:expressway";
+    let first_of_the_second_row = "shield-KR:national";
+    for style in MapStyleKind::ALL {
+        for scheme in ColorSchemeKind::ALL {
+            // Rows: both pixel ratios, so the break scales with the sheet.
+            for (file, ratio) in [("sprites.json", 1_u32), ("sprites@2x.json", 2)] {
+                let case = format!("{}/{}/{file}", style.as_wire(), scheme.as_wire());
+                let index = sprite_index(&emulator, style, scheme, file).await;
+                let rectangle = |name: &str| {
+                    let entry = index
+                        .get(name)
+                        .unwrap_or_else(|| panic!("case {case:?}: the index must describe {name}"));
+                    entry_rectangle(&case, name, entry)
+                };
+
+                let (x, y, width, _) = rectangle(last_of_the_first_row);
+                assert_eq!(
+                    y, 0,
+                    "case {case:?}: {last_of_the_first_row} closes the first row, got y {y}"
+                );
+                assert_eq!(
+                    x + width,
+                    SPRITE_SHEET_WIDTH * ratio,
+                    "case {case:?}: {last_of_the_first_row} ends the first row at the sheet's \
+                     width, got {}",
+                    x + width
+                );
+
+                let row_height = index
+                    .iter()
+                    .map(|(name, entry)| {
+                        let (_, y, _, height) = entry_rectangle(&case, name, entry);
+                        if y == 0 {
+                            height
+                        } else {
+                            0
+                        }
+                    })
+                    .max()
+                    .unwrap_or_default();
+                let (x, y, _, _) = rectangle(first_of_the_second_row);
+                assert_eq!(
+                    (x, y),
+                    (0, row_height),
+                    "case {case:?}: {first_of_the_second_row} opens the row below a \
+                     {row_height}-pixel row, got {x},{y}"
+                );
             }
         }
     }

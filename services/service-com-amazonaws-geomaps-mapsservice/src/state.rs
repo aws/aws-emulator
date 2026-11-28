@@ -1118,10 +1118,11 @@ fn seed_sprite_sheet(
         ));
     }
     for name in shields {
+        let (width, height) = route_shield_box(name);
         icons.push(IconSpec::new(
             name,
-            route_shield_width(name),
-            SHIELD_HEIGHT,
+            width,
+            height,
             IconShape::Square,
             p.building.rgba(),
         ));
@@ -1135,13 +1136,11 @@ fn seed_sprite_sheet(
             p.road.rgba(),
         ));
     }
-    icons.sort_by(|left, right| published_icon_order(left).cmp(&published_icon_order(right)));
-
     SpriteSheetRecord {
         style,
         color_scheme: scheme,
         variant,
-        icons: place_icons_on_sheet(icons),
+        icons: place_icons_on_sheet(in_published_order(icons)),
         cache_control: "max-age=86400".to_string(),
     }
 }
@@ -1177,20 +1176,49 @@ fn place_icons_on_sheet(icons: Vec<IconSpec>) -> Vec<IconSpec> {
     placed
 }
 
-/// Where the published index lists one icon: by name, except that a city dot is
-/// listed at its FAMILY's place — whichever of the four dots it is — widest box
-/// first within that family.
+/// The sheet's icons in the order the published index lists them.
 ///
-/// Every other icon is its own family, so for those the name decides the place
-/// and the width tiebreak never comes into it: the city dots are the one family
-/// the index keeps together.
-fn published_icon_order(icon: &IconSpec) -> (&str, std::cmp::Reverse<u32>, &str) {
-    let family = if icon.name.starts_with(CITY_DOT_FAMILY) {
-        CITY_DOT_FAMILY
-    } else {
-        icon.name.as_str()
-    };
-    (family, std::cmp::Reverse(icon.width), icon.name.as_str())
+/// The index lists an icon FAMILY together — every name the family's own root
+/// name is a prefix of, as `citydot` roots the four city dots and
+/// `shield-CN:expressway` roots the plate that widens it — and lists a family's
+/// members widest plate first, which is why the open city ring is listed before
+/// the filled dot it is drawn around and a `-long` number plate before the
+/// plate it widens. A name no other name is a prefix of is a family of its own,
+/// so for those the name alone decides the place and the width tiebreak never
+/// comes into it.
+fn in_published_order(icons: Vec<IconSpec>) -> Vec<IconSpec> {
+    let names: Vec<String> = icons.iter().map(|icon| icon.name.clone()).collect();
+    let mut keyed: Vec<(usize, std::cmp::Reverse<u32>, IconSpec)> = icons
+        .into_iter()
+        .enumerate()
+        .map(|(own, icon)| {
+            let family = published_icon_family(&icon.name, &names, own);
+            (family, std::cmp::Reverse(icon.width), icon)
+        })
+        .collect();
+    // Every family key is a place in `names`, which those keys were read from.
+    keyed.sort_by(|left, right| {
+        (names[left.0].as_str(), left.1, left.2.name.as_str())
+            .cmp(&(names[right.0].as_str(), right.1, right.2.name.as_str()))
+    });
+    keyed.into_iter().map(|(_, _, icon)| icon).collect()
+}
+
+/// Which name of the sheet is the family the published index lists `name`
+/// under: the shortest name that is a prefix of it. Answered as that name's
+/// place in `names`, so no family key is copied per icon.
+///
+/// `own` is `name`'s own place, which is the answer when no other name is a
+/// prefix of it — a name is a prefix of itself, so the scan finds it anyway, and
+/// passing it in keeps the answer a place of THIS icon rather than of whichever
+/// icon the sheet happens to list first.
+fn published_icon_family(name: &str, names: &[String], own: usize) -> usize {
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| name.starts_with(candidate.as_str()))
+        .min_by_key(|(_, candidate)| candidate.len())
+        .map_or(own, |(index, _)| index)
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,14 +1233,15 @@ fn published_icon_order(icon: &IconSpec) -> (&str, std::cmp::Reverse<u32>, &str)
 /// catalog `GetSprites`' own model documentation points at ("Style iconography
 /// with sprites" in the Amazon Location Service Developer Guide). The index
 /// reports the symbol iconography and the route shields through the Korean
-/// expressway shields on the first row, and the rest of the shields on the
-/// next, so the sheet is this wide and not as wide as its whole iconography.
+/// expressway shields on the first row, and the rest of the shields from the
+/// Korean national shield on, so the sheet is as wide as that first row and not
+/// as wide as its whole iconography.
 ///
-/// Where a row ENDS follows from this width AND from the footprints before it,
-/// so this constant and the footprints in this section are one piece of catalog
-/// data: a footprint corrected here moves the wrap, and the two are read from
-/// the published index together.
-pub const SPRITE_SHEET_WIDTH: u32 = 1920;
+/// The NUMBER therefore follows from that row break and from the footprints
+/// this section carries, which is why the two are one piece of catalog data: it
+/// is the first row's own width, so a footprint corrected in this section moves
+/// it, and the index's row break is what says where it has to land.
+pub const SPRITE_SHEET_WIDTH: u32 = 1958;
 
 /// The box most place (point-of-interest) icons occupy at `pixelRatio` 1: the
 /// published index reports this square for every place icon that does not
@@ -1267,9 +1296,11 @@ pub const CITY_DOT_OPEN_BOX: u32 = 6;
 /// icon.
 pub const MARKER_BOX: u32 = 21;
 
-/// A route shield's height, and the width of the box that holds a two-digit
-/// route number. A shield grows by [`SHIELD_DIGIT_WIDTH`] for every digit
-/// beyond [`SHIELD_BASE_DIGITS`] it must hold.
+/// The height of a route shield the published index reports at no footprint of
+/// its own, and the width of the box that holds a two-digit route number. Such
+/// a shield grows by [`SHIELD_DIGIT_WIDTH`] for every digit beyond
+/// [`SHIELD_BASE_DIGITS`] it must hold; a shield [`ROUTE_SHIELD_BOXES`] gives
+/// its own plate keeps that plate's box instead.
 pub const SHIELD_HEIGHT: u32 = 20;
 pub const SHIELD_BASE_WIDTH: u32 = 20;
 pub const SHIELD_BASE_DIGITS: u32 = 2;
@@ -1281,21 +1312,74 @@ pub const SHIELD_MAX_DIGITS: u32 = 4;
 /// a regulatory sign, square and larger than a route shield.
 pub const RESTRICTION_SHIELD_BOX: u32 = 24;
 
-/// The city-dot box for one dot name: the open ring is the wider one.
+/// The city-dot box for one dot name: the open ring is the wider one. A dot's
+/// RANK suffix does not change its box.
 fn city_dot_box(name: &str) -> u32 {
-    if name.starts_with("citydot-open") {
+    let is_open = name
+        .strip_prefix(CITY_DOT_FAMILY)
+        .is_some_and(|rest| rest.starts_with("-open"));
+    if is_open {
         CITY_DOT_OPEN_BOX
     } else {
         CITY_DOT_BOX
     }
 }
 
-/// How wide the box of the route shield `name` is.
+/// The route shields the published index reports at a footprint of their own
+/// rather than at the box the digit-capacity rule below produces.
 ///
-/// A shield is as wide as the longest route number it has to hold, which its
-/// own name states: either as a width word (`-long`, `-xlong`, `-wide`) or as a
-/// trailing digit-capacity suffix (`-3`, `-1-2`, `-3-4`). Everything else holds
-/// the catalog's base of [`SHIELD_BASE_DIGITS`] digits.
+/// A published sheet's shields are drawn plates, so a shield is as wide and as
+/// tall as its own artwork: a plate that carries its number above a route word
+/// is taller than the digits it holds, a plate drawn around a long network word
+/// is wider, and a plate drawn as a square is both. That footprint is catalog
+/// data per shield, which is why it is read here per name instead of being
+/// derived; where a network's plate is carried under a second, short name as
+/// well (`shield-BAB` beside `shield-DE:BAB`, `shield-AE` beside
+/// `shield-AE:E-route`) both names describe the same plate and so report the
+/// same box.
+///
+/// Source for every footprint here, as for the names and the offsets in this
+/// section: the `sprites.json` index the Maps asset endpoint serves for a sheet
+/// — the icon catalog `GetSprites`' own model documentation points at ("Style
+/// iconography with sprites" in the Amazon Location Service Developer Guide).
+/// A shield this list does not name is reported at the box its name's digit
+/// capacity produces.
+const ROUTE_SHIELD_BOXES: &[(&str, u32, u32)] = &[
+    ("shield-AE", 21, 30),
+    ("shield-AE:E-route", 21, 30),
+    ("shield-AU:MR", 19, 20),
+    ("shield-AU:NH", 19, 20),
+    ("shield-AU:T", 21, 22),
+    ("shield-BAB", 36, 20),
+    ("shield-BR", 22, 27),
+    ("shield-CA-TransCanada", 24, 24),
+    ("shield-CA:transcanada", 24, 24),
+    ("shield-CN:expressway", 30, 28),
+    ("shield-CN:expressway-long", 43, 28),
+    ("shield-CR:CR", 23, 26),
+    ("shield-CR:national", 23, 26),
+    ("shield-DE:BAB", 36, 20),
+];
+
+/// The box the route shield `name` occupies at `pixelRatio` 1: its own
+/// published footprint where [`ROUTE_SHIELD_BOXES`] gives it one, otherwise the
+/// width its name's digit capacity states at the family's [`SHIELD_HEIGHT`].
+pub fn route_shield_box(name: &str) -> (u32, u32) {
+    ROUTE_SHIELD_BOXES
+        .iter()
+        .find(|(icon, _, _)| *icon == name)
+        .map_or((route_shield_width(name), SHIELD_HEIGHT), |(_, width, height)| {
+            (*width, *height)
+        })
+}
+
+/// How wide the box of a route shield `name` with no published footprint of its
+/// own is.
+///
+/// Such a shield is as wide as the longest route number it has to hold, which
+/// its own name states: either as a width word (`-long`, `-xlong`, `-wide`) or
+/// as a trailing digit-capacity suffix (`-3`, `-1-2`, `-3-4`). Everything else
+/// holds the catalog's base of [`SHIELD_BASE_DIGITS`] digits.
 pub fn route_shield_width(name: &str) -> u32 {
     SHIELD_BASE_WIDTH + (route_shield_digits(name) - SHIELD_BASE_DIGITS) * SHIELD_DIGIT_WIDTH
 }
@@ -1420,6 +1504,10 @@ const MARKER_ICONS: &[&str] = &[
 /// not. A few networks are carried under a SECOND, short name as well — the
 /// route or the local word for it (`shield-AE`, `shield-BAB`,
 /// `shield-NL-ring`) — so a style layer that asks for either name resolves.
+/// WHICH networks those are is read from the published index rather than derived
+/// from a shape of name: the country codes of the other networked shields
+/// (`shield-AU`, `shield-CA`, `shield-DE`, `shield-JP`) are no icon's name at
+/// all, so those networks resolve under their own namespaced identifier only.
 const ROUTE_SHIELD_ICONS: &[&str] = &[
     "shield-AE",
     "shield-AE:E-route",
@@ -1429,7 +1517,6 @@ const ROUTE_SHIELD_ICONS: &[&str] = &[
     "shield-AU:T",
     "shield-BAB",
     "shield-BR",
-    "shield-CA",
     "shield-CN:expressway",
     "shield-CN:expressway-long",
     "shield-CR:CR",
