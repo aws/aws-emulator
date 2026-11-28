@@ -11,21 +11,15 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-rtbfabric-rtbfabric.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#InternalServerException")]
-#[derive(Debug, Clone, Default)]
-pub struct InternalServerException {
-    pub message: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#ValidationException")]
-#[derive(Debug, Clone, Default)]
-pub struct ValidationException {
-    pub message: String,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#InternalServerException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalServerException {
     pub message: String,
 }
 
@@ -38,6 +32,12 @@ pub struct ResourceNotFoundException {
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#ThrottlingException")]
 #[derive(Debug, Clone, Default)]
 pub struct ThrottlingException {
+    pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
     pub message: String,
 }
 
@@ -151,6 +151,14 @@ pub struct RateLimiterModuleParameters {
     pub tps: Option<f32>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#ErrorDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct ErrorDetail {
+    pub code: String,
+    pub message: String,
+    pub resource_ids: Option<Vec<String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#ConflictException")]
 #[derive(Debug, Clone, Default)]
 pub struct ConflictException {
@@ -161,6 +169,50 @@ pub struct ConflictException {
 #[derive(Debug, Clone, Default)]
 pub struct ServiceQuotaExceededException {
     pub message: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#Flow")]
+#[derive(Debug, Clone)]
+pub struct Flow {
+    pub name: String,
+    pub pipeline: FlowPipeline,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.rtbfabric#FlowPipeline")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FlowPipeline {
+    Sequential(SequentialPipeline),
+    Phased(PhasedPipeline),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#SequentialPipeline")]
+#[derive(Debug, Clone, Default)]
+pub struct SequentialPipeline {
+    pub modules: Vec<FlowModule>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#FlowModule")]
+#[derive(Debug, Clone, Default)]
+pub struct FlowModule {
+    pub name: String,
+    pub module_version_arn: String,
+    pub selected_actions: Option<Vec<String>>,
+    pub failure_mode: Option<String>,
+    pub activation_percentage: Option<f32>,
+    pub configuration_values: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#PhasedPipeline")]
+#[derive(Debug, Clone, Default)]
+pub struct PhasedPipeline {
+    pub phases: Vec<FlowPhase>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#FlowPhase")]
+#[derive(Debug, Clone, Default)]
+pub struct FlowPhase {
+    pub modules: Vec<FlowModule>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#RuleCondition")]
@@ -241,8 +293,20 @@ pub const CERTIFICATE_ASSOCIATION_STATUS_VALUES: &[&str] = &["ASSOCIATED", "DISA
 pub const CLIENT_ROUTING_POLICY_VALUES: &[&str] = &["ANY_AVAILABILITY_ZONE", "AVAILABILITY_ZONE_AFFINITY"];
 
 
+/// The values `ConfigurableAction` accepts on the wire.
+pub const CONFIGURABLE_ACTION_VALUES: &[&str] = &["ENRICH_REQUEST_EXT", "ENRICH_REQUEST_HEADERS", "FILTER", "OBSERVE"];
+
+
 /// The values `ConnectivityType` accepts on the wire.
 pub const CONNECTIVITY_TYPE_VALUES: &[&str] = &["DEFAULT", "EXTERNAL_INBOUND", "PUBLIC_EGRESS", "PUBLIC_INGRESS"];
+
+
+/// The values `ErrorCode` accepts on the wire.
+pub const ERROR_CODE_VALUES: &[&str] = &["EC2_SECURITY_GROUP_NOT_FOUND", "EC2_SUBNET_IP_EXHAUSTION", "EC2_SUBNET_NOT_FOUND", "IAM_ASSUME_ROLE_ACCESS_DENIED", "INTERNAL_ERROR", "VPC_NOT_FOUND"];
+
+
+/// The values `FailureMode` accepts on the wire.
+pub const FAILURE_MODE_VALUES: &[&str] = &["CLOSED", "OPEN"];
 
 
 /// The values `FilterType` accepts on the wire.
@@ -258,7 +322,15 @@ pub const LINK_DIRECTION_VALUES: &[&str] = &["REQUEST", "RESPONSE"];
 
 
 /// The values `LinkStatus` accepts on the wire.
-pub const LINK_STATUS_VALUES: &[&str] = &["ACCEPTED", "ACTIVE", "DELETED", "FAILED", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_REQUEST", "PENDING_RESTORATION", "PENDING_UPDATE", "REJECTED", "REQUESTED"];
+pub const LINK_STATUS_VALUES: &[&str] = &["ACCEPTED", "ACTIVE", "CREATE_FAILED", "DELETED", "DELETE_FAILED", "FAILED", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_REQUEST", "PENDING_RESTORATION", "PENDING_UPDATE", "REJECTED", "REQUESTED"];
+
+
+/// The values `ModulePermission` accepts on the wire.
+pub const MODULE_PERMISSION_VALUES: &[&str] = &["ENRICH_REQUEST_EXT", "ENRICH_REQUEST_HEADERS", "FILTER", "MUTATE_REQUEST_BODY", "READ_REQUEST_BODY", "READ_REQUEST_HEADERS"];
+
+
+/// The values `ModuleVersionStatus` accepts on the wire.
+pub const MODULE_VERSION_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATING", "DEPRECATED"];
 
 
 /// The values `Protocol` accepts on the wire.
@@ -266,7 +338,7 @@ pub const PROTOCOL_VALUES: &[&str] = &["HTTP", "HTTPS"];
 
 
 /// The values `RequesterGatewayStatus` accepts on the wire.
-pub const REQUESTER_GATEWAY_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "ERROR", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_RESTORATION", "PENDING_UPDATE"];
+pub const REQUESTER_GATEWAY_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "DELETED", "DELETE_FAILED", "ERROR", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_RESTORATION", "PENDING_UPDATE"];
 
 
 /// The values `ResponderErrorMaskingAction` accepts on the wire.
@@ -278,10 +350,26 @@ pub const RESPONDER_ERROR_MASKING_LOGGING_TYPE_VALUES: &[&str] = &["METRIC", "NO
 
 
 /// The values `ResponderGatewayStatus` accepts on the wire.
-pub const RESPONDER_GATEWAY_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "ERROR", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_RESTORATION", "PENDING_UPDATE"];
+pub const RESPONDER_GATEWAY_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "DELETED", "DELETE_FAILED", "ERROR", "ISOLATED", "PENDING_CREATION", "PENDING_DELETION", "PENDING_ISOLATION", "PENDING_RESTORATION", "PENDING_UPDATE"];
 
 
 /// The values `RuleStatus` accepts on the wire.
-pub const RULE_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATION_IN_PROGRESS", "DELETED", "DELETION_IN_PROGRESS", "FAILED", "UPDATE_IN_PROGRESS"];
+pub const RULE_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATION_IN_PROGRESS", "DELETED", "DELETE_FAILED", "DELETION_IN_PROGRESS", "FAILED", "UPDATE_IN_PROGRESS"];
+
+
+/// The values `SubscriptionStatus` accepts on the wire.
+pub const SUBSCRIPTION_STATUS_VALUES: &[&str] = &["ACTIVE", "EXPIRED"];
+
+
+/// The values `SubscriptionType` accepts on the wire.
+pub const SUBSCRIPTION_TYPE_VALUES: &[&str] = &["AWS_BUILT_IN", "MARKETPLACE", "PRIVATE"];
+
+
+/// The values `UpdateStatus` accepts on the wire.
+pub const UPDATE_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "SUCCESSFUL"];
+
+
+/// The values `UpdateType` accepts on the wire.
+pub const UPDATE_TYPE_VALUES: &[&str] = &["GATEWAY_CONFIG_UPDATE", "LINK_CONFIG_UPDATE", "LINK_FLOW_UPDATE", "ROUTING_RULE_UPDATE"];
 
 

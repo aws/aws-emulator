@@ -245,23 +245,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.client_routing_policy,
             input.description,
         ));
-        let key = crate::state::idempotency_key(Self::NAME, &input.client_token);
+        let key = crate::state::update_token_key(Self::NAME, &input.gateway_id, &input.client_token);
 
-        let Some(gateway) = store.responder_gateways.get_mut(&input.gateway_id) else {
-            return Err(UpdateResponderGatewayErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
-                },
-            )
-            .into());
-        };
-
-        // The records of the changes this gateway has taken live on the gateway
-        // itself, so a retry is answered from the resource it addressed. EVERY
-        // token it still retains is recognised, not only the one it took last: a
-        // retry of an earlier call must not apply its change over a later one.
-        match gateway.accepted_updates.classify(&key, &fingerprint) {
-            crate::state::Retry::Mismatch => {
+        // This call mints an update id, so the record of the token lives in the
+        // gateway's ledger beside that id: a retry has to report the update the
+        // first call started rather than a second one. EVERY token the ledger
+        // still retains is recognised, not only the one accepted last: a retry of
+        // an earlier call must not apply its change over a later one.
+        match store.classify_update(Some(&key), &fingerprint) {
+            crate::state::UpdateRetry::Mismatch => {
                 return Err(UpdateResponderGatewayErrorModeled::ValidationException(
                     ValidationException {
                         message: crate::state::token_mismatch_message(
@@ -272,17 +264,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            crate::state::Retry::Replay => {
+            crate::state::UpdateRetry::Replay(update_id) => {
                 // The same change under the same token: report the record that
-                // change left rather than apply it a second time.
+                // change left, and the update it started, rather than applying it
+                // a second time.
+                let Some(gateway) = store.responder_gateways.get(&input.gateway_id) else {
+                    return Err(UpdateResponderGatewayErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+                        },
+                    )
+                    .into());
+                };
                 return Ok(UpdateResponderGatewayOutput {
                     gateway_id: gateway.gateway_id.clone(),
                     status: gateway.status.clone(),
                     client_routing_policy: gateway.client_routing_policy.clone(),
+                    update_id,
                 });
             }
-            crate::state::Retry::Fresh => {}
+            crate::state::UpdateRetry::Fresh => {}
         }
+
+        let Some(gateway) = store.responder_gateways.get_mut(&input.gateway_id) else {
+            return Err(UpdateResponderGatewayErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+                },
+            )
+            .into());
+        };
 
         if !gateway.in_service() {
             // The gateway is moving through a lifecycle of its own, so it has no
@@ -348,7 +359,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The token records the call this gateway served, not the change it
         // carried, so a retry of it is recognised either way — and the same
         // token restating other parameters is still refused rather than applied.
-        gateway.accepted_updates.accept(key, fingerprint);
         if configured {
             gateway.updated_at = now;
             // The gateway is in service, so the change is applied to a live
@@ -362,11 +372,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A call that stated no member this operation applies asked for no
         // change, so the record keeps its configuration, its status and its
         // `updatedAt`, and the status reported below is the one it stands in.
+        let gateway_id = gateway.gateway_id.clone();
+        let status = gateway.status.clone();
+        let client_routing_policy = gateway.client_routing_policy.clone();
+
+        // The call was accepted, so it started an update: the id it answers with
+        // is the one this gateway's ledger minted for it, which `ListUpdates`
+        // then reports and a retry under the same token is answered with. The
+        // append states the maximum number of records that gateway's ledger may
+        // hold afterwards, so it cannot grow the store past it: `record_update`
+        // lets go of that gateway's oldest records first.
+        let update_id = store.record_update(
+            &input.gateway_id,
+            crate::state::UPDATE_TYPE_GATEWAY_CONFIG,
+            crate::state::Change {
+                token: Some(key),
+                fingerprint: Some(fingerprint),
+                ..crate::state::Change::default()
+            },
+            crate::state::UPDATES_RETAINED_PER_GATEWAY,
+            now,
+        );
 
         Ok(UpdateResponderGatewayOutput {
-            gateway_id: gateway.gateway_id.clone(),
-            status: gateway.status.clone(),
-            client_routing_policy: gateway.client_routing_policy.clone(),
+            gateway_id,
+            status,
+            client_routing_policy,
+            update_id,
         })
     }
 }

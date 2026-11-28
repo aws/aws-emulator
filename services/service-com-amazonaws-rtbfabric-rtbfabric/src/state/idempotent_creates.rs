@@ -152,7 +152,10 @@ pub fn parameter_fingerprint(rendering: &str) -> [u8; 32] {
 
 /// SHA-256 over `parts`, each length-prefixed so two different splits of the
 /// same bytes cannot collide.
-fn digest(parts: &[&[u8]]) -> [u8; 32] {
+///
+/// `pub(super)` so the sibling modules that key a record or a precondition by a
+/// digest reach THIS one rather than spelling a second hash of their own.
+pub(super) fn digest(parts: &[&[u8]]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();

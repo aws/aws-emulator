@@ -40,6 +40,7 @@ pub struct ListLinksResponseStructure {
     pub attributes: Option<LinkAttributes>,
     pub log_settings: Option<LinkLogSettings>,
     pub connectivity_type: Option<String>,
+    pub error_details: Option<Vec<ErrorDetail>>,
     pub link_id: String,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub public_endpoint: Option<String>,

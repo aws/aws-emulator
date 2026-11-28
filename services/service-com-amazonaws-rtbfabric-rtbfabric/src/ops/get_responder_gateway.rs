@@ -228,6 +228,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             gateway_type: gateway.gateway_type.clone(),
             external_inbound_endpoint: gateway.external_inbound_endpoint.clone(),
             client_routing_policy: gateway.client_routing_policy.clone(),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
         })
     }
 }

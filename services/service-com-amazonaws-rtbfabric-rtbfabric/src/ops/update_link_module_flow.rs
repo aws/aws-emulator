@@ -193,15 +193,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.settle_all(now);
 
         // `clientToken` is an `@idempotencyToken`: a retry of a change the link has
-        // taken is answered with that link rather than applied to it again, and the
-        // same token carrying DIFFERENT modules is refused rather than silently
-        // answering for a flow the caller did not send. The model declares no
-        // `IdempotentParameterMismatch`, so that refusal is this operation's
-        // `ValidationException` (400), exactly as the sibling updates and creates
-        // of this service refuse it.
+        // taken is answered with the update that change started rather than
+        // applied to it again, and the same token carrying DIFFERENT modules is
+        // refused rather than silently answering for a flow the caller did not
+        // send. The model declares no `IdempotentParameterMismatch`, so that
+        // refusal is this operation's `ValidationException` (400), exactly as the
+        // sibling updates and creates of this service refuse it.
         let fingerprint =
             crate::state::parameter_fingerprint(&format!("modules={:?}", input.modules));
-        let key = crate::state::idempotency_key(Self::NAME, &input.client_token);
+        let key = crate::state::update_token_key(Self::NAME, &input.link_id, &input.client_token);
+
+        // This call mints an update id, so the record of the token lives in the
+        // ledger beside that id: a retry has to report the update it started.
+        match store.classify_update(Some(&key), &fingerprint) {
+            crate::state::UpdateRetry::Mismatch => {
+                return Err(UpdateLinkModuleFlowErrorModeled::ValidationException(
+                    ValidationException {
+                        message: crate::state::token_mismatch_message(
+                            Self::NAME,
+                            &input.client_token,
+                        ),
+                    },
+                )
+                .into());
+            }
+            crate::state::UpdateRetry::Replay(update_id) => {
+                // The same flow under the same token: report the record that
+                // change left, and the update it started, rather than applying it
+                // a second time.
+                let Some(link) = store.find_link(&input.gateway_id, &input.link_id) else {
+                    return Err(UpdateLinkModuleFlowErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+                        },
+                    )
+                    .into());
+                };
+                return Ok(UpdateLinkModuleFlowOutput {
+                    gateway_id: input.gateway_id.clone(),
+                    link_id: link.link_id.clone(),
+                    status: link.status.clone(),
+                    update_id,
+                });
+            }
+            crate::state::UpdateRetry::Fresh => {}
+        }
 
         let Some(link) = store.find_link_mut(&input.gateway_id, &input.link_id) else {
             return Err(UpdateLinkModuleFlowErrorModeled::ResourceNotFoundException(
@@ -213,32 +249,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-
-        // The records of the changes this link has taken live on the link itself,
-        // so a retry is answered from the resource it addressed.
-        match link.accepted_updates.classify(&key, &fingerprint) {
-            crate::state::Retry::Mismatch => {
-                return Err(UpdateLinkModuleFlowErrorModeled::ValidationException(
-                    ValidationException {
-                        message: crate::state::token_mismatch_message(
-                            Self::NAME,
-                            &input.client_token,
-                        ),
-                    },
-                )
-                .into());
-            }
-            crate::state::Retry::Replay => {
-                // The same flow under the same token: report the record that
-                // change left rather than apply it a second time.
-                return Ok(UpdateLinkModuleFlowOutput {
-                    gateway_id: input.gateway_id.clone(),
-                    link_id: link.link_id.clone(),
-                    status: link.status.clone(),
-                });
-            }
-            crate::state::Retry::Fresh => {}
-        }
 
         if link.terminal() {
             // Nothing moves a link out of these statuses, so it has no flow left
@@ -275,10 +285,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // actually running beside the one coming.
         link.pending_module_flow = Some(input.modules);
         link.updated_at = now;
-        // The token records the call this link served, so a retry of it is
-        // recognised — and the same token restating other modules is still
-        // refused rather than applied.
-        link.accepted_updates.accept(key, fingerprint);
+        // A change to the link has been accepted, so the concurrency precondition
+        // a caller read before this call goes stale.
+        link.accept_change();
         if link.is_up() {
             // The link is carrying traffic, so the flow is being changed under
             // live traffic: this call reports the update as pending, and the clock
@@ -288,11 +297,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // A link that is not up yet keeps the status its own lifecycle owes it;
         // the flow it has just taken comes into service with the link.
+        let link_id = link.link_id.clone();
+        let status = link.status.clone();
+
+        // The change is recorded in the gateway's ledger, which is what mints the
+        // update id this call answers with and what a retry under the same token
+        // is answered from. The append states the maximum number of records that
+        // gateway's ledger may hold afterwards, so it cannot grow the store past
+        // it: `record_update` lets go of that gateway's oldest records first.
+        let update_id = store.record_update(
+            &input.gateway_id,
+            crate::state::UPDATE_TYPE_LINK_FLOW,
+            crate::state::Change {
+                link_id: Some(link_id.clone()),
+                token: Some(key),
+                fingerprint: Some(fingerprint),
+                ..crate::state::Change::default()
+            },
+            crate::state::UPDATES_RETAINED_PER_GATEWAY,
+            now,
+        );
 
         Ok(UpdateLinkModuleFlowOutput {
             gateway_id: input.gateway_id.clone(),
-            link_id: link.link_id.clone(),
-            status: link.status.clone(),
+            link_id,
+            status,
+            update_id,
         })
     }
 }

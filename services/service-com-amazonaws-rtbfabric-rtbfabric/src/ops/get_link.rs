@@ -219,6 +219,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags: (!link.tags.is_empty()).then(|| link.tags.clone()),
             http_responder_allowed: link.http_responder_allowed,
             timeout_in_millis: link.timeout_in_millis,
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
+            // The concurrency precondition a change to this link presents back,
+            // computed from the record: this reading hands out the token of the
+            // state it reports, and a change accepted by any operation makes it
+            // stale.
+            lock_token: Some(link.lock_token()),
+            // The flows the link SERVES, read exactly as the other link readers
+            // read them. A configuration it has taken and not yet put in service
+            // is not what it serves, so it is not reported here until it commits.
+            flows: link.flows.reported(),
         })
     }
 }

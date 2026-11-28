@@ -26,5 +26,6 @@ pub struct UpdateLinkModuleFlowOutput {
     pub gateway_id: String,
     pub link_id: String,
     pub status: String,
+    pub update_id: String,
 }
 

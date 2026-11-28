@@ -284,6 +284,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // none is awaiting the link either.
             flow_modules: Vec::new(),
             pending_module_flow: None,
+            // No flow configuration is in service on a fresh link either, and
+            // nothing is awaiting it: `PutLinkFlows` is what puts one there.
+            flows: crate::state::Flows::default(),
+            // The link's first revision, which is what its concurrency
+            // precondition names until a change to it is accepted.
+            revision: 0,
             tags: input.tags.unwrap_or_default(),
             created_at: now,
             updated_at: now,
@@ -303,6 +309,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             log_settings: Some(link.log_settings.clone()),
             connectivity_type: Some(link.connectivity_type.clone()),
             link_id: link.link_id.clone(),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
             // The caller's own id for the link travels in `attributes`.
             customer_provided_id: link
                 .attributes

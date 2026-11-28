@@ -31,5 +31,6 @@ pub struct GetLinkRoutingRuleOutput {
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: ::aws_smithy_types::DateTime,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub error_details: Option<Vec<ErrorDetail>>,
 }
 

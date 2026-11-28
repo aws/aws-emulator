@@ -196,6 +196,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             status: association.status.clone(),
             associated_at: Some(crate::state::timestamp(association.associated_at)),
             updated_at: Some(crate::state::timestamp(association.updated_at)),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
         })
     }
 }

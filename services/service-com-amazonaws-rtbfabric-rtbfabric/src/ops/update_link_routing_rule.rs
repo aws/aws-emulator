@@ -174,6 +174,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.settle_all(now);
 
+        // `clientToken` is an `@idempotencyToken`: a retry of a change the rule
+        // has taken is answered with the update that change started rather than
+        // applied again, and the same token stating DIFFERENT parameters is
+        // refused on this operation's `ValidationException` (400), which is where
+        // every `@idempotencyToken` mismatch of this service travels.
+        let fingerprint = crate::state::parameter_fingerprint(&format!(
+            "priority={:?};conditions={:?}",
+            input.priority, input.conditions
+        ));
+        let key = input
+            .client_token
+            .as_deref()
+            .map(|token| crate::state::update_token_key(Self::NAME, &input.rule_id, token));
+        match store.classify_update(key.as_ref(), &fingerprint) {
+            crate::state::UpdateRetry::Mismatch => {
+                return Err(UpdateLinkRoutingRuleErrorModeled::ValidationException(
+                    ValidationException {
+                        message: crate::state::token_mismatch_message(
+                            Self::NAME,
+                            input.client_token.as_deref().unwrap_or_default(),
+                        ),
+                    },
+                )
+                .into());
+            }
+            crate::state::UpdateRetry::Replay(update_id) => {
+                let Some(rule) =
+                    store.find_routing_rule(&input.gateway_id, &input.link_id, &input.rule_id)
+                else {
+                    return Err(UpdateLinkRoutingRuleErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+                        },
+                    )
+                    .into());
+                };
+                return Ok(UpdateLinkRoutingRuleOutput {
+                    rule_id: rule.rule_id.clone(),
+                    status: rule.status.clone(),
+                    updated_at: crate::state::timestamp(rule.updated_at),
+                    update_id,
+                });
+            }
+            crate::state::UpdateRetry::Fresh => {}
+        }
+
         // Which of the link's OTHER rules already holds the priority this call asks
         // for, read before the record this call changes is taken for writing. A
         // priority orders one link's rules against each other, so the number a rule
@@ -238,11 +284,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reported below is where that leaves the rule — a rule that was routing
         // reports the change as pending, and the clock owes it `ACTIVE` again.
         rule.take_update(input.priority, input.conditions, now);
+        let rule_id = rule.rule_id.clone();
+        let status = rule.status.clone();
+        let updated_at = crate::state::timestamp(rule.updated_at);
+
+        // The change is recorded in the gateway's ledger, which mints the update
+        // id this call answers with and is what a retry under the same token is
+        // answered from. The append states the maximum number of records that
+        // gateway's ledger may hold afterwards, so it cannot grow the store past
+        // it: `record_update` lets go of that gateway's oldest records first.
+        let update_id = store.record_update(
+            &input.gateway_id,
+            crate::state::UPDATE_TYPE_ROUTING_RULE,
+            crate::state::Change {
+                link_id: Some(input.link_id.clone()),
+                rule_id: Some(rule_id.clone()),
+                token: key,
+                fingerprint: Some(fingerprint),
+            },
+            crate::state::UPDATES_RETAINED_PER_GATEWAY,
+            now,
+        );
 
         Ok(UpdateLinkRoutingRuleOutput {
-            rule_id: rule.rule_id.clone(),
-            status: rule.status.clone(),
-            updated_at: crate::state::timestamp(rule.updated_at),
+            rule_id,
+            status,
+            updated_at,
+            update_id,
         })
     }
 }

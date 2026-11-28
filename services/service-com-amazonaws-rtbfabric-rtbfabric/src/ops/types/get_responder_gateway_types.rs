@@ -27,6 +27,7 @@ pub struct GetResponderGatewayOutput {
     pub description: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub error_details: Option<Vec<ErrorDetail>>,
     pub domain_name: Option<String>,
     pub port: i32,
     pub protocol: String,

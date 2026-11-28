@@ -227,6 +227,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if input.timeout_in_millis.is_some() {
                 link.timeout_in_millis = input.timeout_in_millis;
             }
+            // A change to the link has been accepted, so the concurrency
+            // precondition a caller read before this call goes stale.
+            link.accept_change();
         } else if !link.request_accepted() {
             // Anything other than an outstanding request, or the acceptance this
             // operation already recorded, is a status this call cannot move.
@@ -251,6 +254,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             log_settings: Some(link.log_settings.clone()),
             connectivity_type: Some(link.connectivity_type.clone()),
             link_id: link.link_id.clone(),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
         })
     }
 }

@@ -18,6 +18,7 @@ pub struct UpdateLinkInput {
     pub link_id: String,
     pub log_settings: Option<LinkLogSettings>,
     pub timeout_in_millis: Option<i64>,
+    pub client_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#UpdateLinkResponse")]
@@ -25,5 +26,6 @@ pub struct UpdateLinkInput {
 pub struct UpdateLinkOutput {
     pub link_id: String,
     pub status: String,
+    pub update_id: String,
 }
 

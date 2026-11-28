@@ -287,5 +287,8 @@ fn described(link: &crate::state::Link, gateway_id: &str) -> ListLinksResponseSt
         // `CreateOutboundExternalLink` mints; no link this store holds has one, so
         // nothing is reported for it rather than a synthesised address.
         public_endpoint: None,
+        // Nothing has failed: a resource this emulator stores reaches no failed
+        // status, so there is no cause of a failure to report.
+        error_details: None,
     }
 }

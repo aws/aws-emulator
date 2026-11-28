@@ -26,5 +26,6 @@ pub struct GetCertificateAssociationOutput {
     pub status: String,
     pub associated_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub error_details: Option<Vec<ErrorDetail>>,
 }
 

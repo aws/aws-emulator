@@ -205,6 +205,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             log_settings: Some(link.log_settings.clone()),
             connectivity_type: Some(link.connectivity_type.clone()),
             tags: (!link.tags.is_empty()).then(|| link.tags.clone()),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
+            // The concurrency precondition a change to this link presents back,
+            // computed from the record exactly as a link between two gateways'
+            // is: this reading hands out the token of the state it reports.
+            lock_token: Some(link.lock_token()),
+            // The flows the link SERVES; a configuration it has taken and not yet
+            // put in service is not reported here until it commits.
+            flows: link.flows.reported(),
         })
     }
 }

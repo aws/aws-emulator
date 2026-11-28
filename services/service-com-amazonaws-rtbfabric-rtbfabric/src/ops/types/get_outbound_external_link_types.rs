@@ -33,5 +33,8 @@ pub struct GetOutboundExternalLinkOutput {
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub log_settings: Option<LinkLogSettings>,
     pub connectivity_type: Option<String>,
+    pub error_details: Option<Vec<ErrorDetail>>,
+    pub lock_token: Option<String>,
+    pub flows: Option<Vec<Flow>>,
 }
 

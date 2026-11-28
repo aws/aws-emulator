@@ -25,6 +25,7 @@ pub struct GetRequesterGatewayOutput {
     pub description: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub error_details: Option<Vec<ErrorDetail>>,
     pub vpc_id: String,
     pub subnet_ids: Vec<String>,
     pub security_group_ids: Vec<String>,

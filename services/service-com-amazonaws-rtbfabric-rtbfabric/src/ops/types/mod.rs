@@ -29,6 +29,8 @@ pub mod delete_outbound_external_link_types;
 pub mod delete_requester_gateway_types;
 pub mod delete_responder_gateway_types;
 pub mod disassociate_certificate_types;
+pub mod get_available_module_types;
+pub mod get_available_module_version_types;
 pub mod get_certificate_association_types;
 pub mod get_inbound_external_link_types;
 pub mod get_link_routing_rule_types;
@@ -36,12 +38,16 @@ pub mod get_link_types;
 pub mod get_outbound_external_link_types;
 pub mod get_requester_gateway_types;
 pub mod get_responder_gateway_types;
+pub mod list_available_module_versions_types;
+pub mod list_available_modules_types;
 pub mod list_certificate_associations_types;
 pub mod list_link_routing_rules_types;
 pub mod list_links_types;
 pub mod list_requester_gateways_types;
 pub mod list_responder_gateways_types;
 pub mod list_tags_for_resource_types;
+pub mod list_updates_types;
+pub mod put_link_flows_types;
 pub mod reject_link_types;
 pub mod shared_types;
 pub mod tag_resource_types;
@@ -83,6 +89,10 @@ pub use delete_responder_gateway_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_certificate_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_available_module_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_available_module_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_certificate_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_inbound_external_link_types::*;
@@ -97,6 +107,10 @@ pub use get_requester_gateway_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_responder_gateway_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_available_module_versions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_available_modules_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_certificate_associations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_link_routing_rules_types::*;
@@ -108,6 +122,10 @@ pub use list_requester_gateways_types::*;
 pub use list_responder_gateways_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_updates_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_link_flows_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use reject_link_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

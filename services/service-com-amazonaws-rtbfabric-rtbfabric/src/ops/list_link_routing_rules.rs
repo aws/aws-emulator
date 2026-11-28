@@ -274,5 +274,8 @@ fn summarised(rule: &crate::state::LinkRoutingRule) -> LinkRoutingRuleSummary {
         status: rule.status.clone(),
         created_at: crate::state::timestamp(rule.created_at),
         updated_at: crate::state::timestamp(rule.updated_at),
+        // Nothing has failed: a resource this emulator stores reaches no failed
+        // status, so there is no cause of a failure to report.
+        error_details: None,
     }
 }

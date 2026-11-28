@@ -19,6 +19,7 @@ pub struct UpdateLinkRoutingRuleInput {
     pub rule_id: String,
     pub priority: i32,
     pub conditions: RuleCondition,
+    pub client_token: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rtbfabric#UpdateLinkRoutingRuleResponse")]
@@ -27,5 +28,6 @@ pub struct UpdateLinkRoutingRuleOutput {
     pub rule_id: String,
     pub status: String,
     pub updated_at: ::aws_smithy_types::DateTime,
+    pub update_id: String,
 }
 

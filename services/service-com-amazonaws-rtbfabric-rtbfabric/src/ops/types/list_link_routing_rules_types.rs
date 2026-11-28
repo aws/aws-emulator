@@ -36,5 +36,6 @@ pub struct LinkRoutingRuleSummary {
     pub status: String,
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: ::aws_smithy_types::DateTime,
+    pub error_details: Option<Vec<ErrorDetail>>,
 }
 

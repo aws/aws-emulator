@@ -32,9 +32,12 @@ pub struct GetLinkOutput {
     pub attributes: Option<LinkAttributes>,
     pub log_settings: Option<LinkLogSettings>,
     pub connectivity_type: Option<String>,
+    pub error_details: Option<Vec<ErrorDetail>>,
     pub link_id: String,
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub http_responder_allowed: Option<bool>,
     pub timeout_in_millis: Option<i64>,
+    pub lock_token: Option<String>,
+    pub flows: Option<Vec<Flow>>,
 }
 

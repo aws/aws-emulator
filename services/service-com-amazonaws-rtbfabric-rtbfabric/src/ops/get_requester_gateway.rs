@@ -198,6 +198,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Derived, never stored: the links this gateway is an end of.
             active_links_count: Some(counts.active),
             total_links_count: Some(counts.total),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
         })
     }
 }

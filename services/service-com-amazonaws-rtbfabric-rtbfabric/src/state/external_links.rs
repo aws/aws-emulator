@@ -23,6 +23,8 @@ use std::time::SystemTime;
 
 use crate::ops::types::{LinkAttributes, LinkLogSettings, ModuleConfiguration};
 
+use super::Flows;
+
 /// `ConnectivityType` member: the traffic leaves the fabric for a public endpoint,
 /// which is what an OUTBOUND external link carries
 /// (`smithy_query(query="shape", shape="ConnectivityType")`).
@@ -65,23 +67,35 @@ pub fn inbound_external_link_domain_name(
     )
 }
 
-/// Materialise the `PENDING_CREATION` -> `ACTIVE` transition the clock has already
-/// made due on an external link of either direction, dated at the instant it was
-/// owed rather than now, so the record does not depend on when it was next read.
+/// Materialise the transition the clock has already made due on an external link
+/// of either direction — the created link coming up, or a change it has taken
+/// reaching service — dated at the instant it was owed rather than now, so the
+/// record does not depend on when it was next read.
 ///
-/// One statement of the transition for both records: nothing accepts or rejects a
+/// One statement of the transitions for both records: nothing accepts or rejects a
 /// link with one end outside the fabric, so an external link of either direction
-/// starts at `PENDING_CREATION` and is owed `ACTIVE`.
+/// starts at `PENDING_CREATION` and is owed `ACTIVE`, and a change accepted on a
+/// link that is up leaves `PENDING_UPDATE`, which is owed `ACTIVE` again. A flow
+/// configuration the link has taken commits as the link reaches service, exactly
+/// as it does on a link between two gateways
+/// ([`Link::settle`](super::Link::settle)): a link serves its prior flows until
+/// the change commits.
 fn settle_pending_creation(
     status: &mut String,
     settles_at: &mut Option<SystemTime>,
     updated_at: &mut SystemTime,
+    flows: &mut Flows,
     now: SystemTime,
 ) {
     if let Some(due) = settles_at.filter(|due| *due <= now) {
-        if status == super::LINK_STATUS_PENDING_CREATION {
+        if status == super::LINK_STATUS_PENDING_CREATION
+            || status == super::LINK_STATUS_PENDING_UPDATE
+        {
             *status = super::LINK_STATUS_ACTIVE.to_string();
             *updated_at = due;
+        }
+        if super::link_status_is_up(status) {
+            flows.commit();
         }
         *settles_at = None;
     }
@@ -112,6 +126,12 @@ pub struct InboundExternalLink {
     pub log_settings: LinkLogSettings,
     pub flow_modules: Vec<ModuleConfiguration>,
     pub pending_flow_modules: Vec<ModuleConfiguration>,
+    /// The flows this link runs, and the one it has taken and not yet put in
+    /// service.
+    pub flows: Flows,
+    /// How many changes this link has accepted, which is what its concurrency
+    /// precondition is computed from ([`super::lock_token`]).
+    pub revision: u64,
     pub tags: HashMap<String, String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -124,8 +144,20 @@ impl InboundExternalLink {
             &mut self.status,
             &mut self.settles_at,
             &mut self.updated_at,
+            &mut self.flows,
             now,
         );
+    }
+
+    /// This link's concurrency precondition, as its read hands the token out.
+    pub fn lock_token(&self) -> String {
+        super::lock_token(&self.link_id, self.revision)
+    }
+
+    /// Record that a change to this link has been accepted: the precondition a
+    /// caller read before it goes stale.
+    pub fn accept_change(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 }
 
@@ -154,6 +186,12 @@ pub struct OutboundExternalLink {
     pub log_settings: LinkLogSettings,
     pub flow_modules: Vec<ModuleConfiguration>,
     pub pending_flow_modules: Vec<ModuleConfiguration>,
+    /// The flows this link runs, and the one it has taken and not yet put in
+    /// service.
+    pub flows: Flows,
+    /// How many changes this link has accepted, which is what its concurrency
+    /// precondition is computed from ([`super::lock_token`]).
+    pub revision: u64,
     pub tags: HashMap<String, String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -166,7 +204,19 @@ impl OutboundExternalLink {
             &mut self.status,
             &mut self.settles_at,
             &mut self.updated_at,
+            &mut self.flows,
             now,
         );
+    }
+
+    /// This link's concurrency precondition, as its read hands the token out.
+    pub fn lock_token(&self) -> String {
+        super::lock_token(&self.link_id, self.revision)
+    }
+
+    /// Record that a change to this link has been accepted: the precondition a
+    /// caller read before it goes stale.
+    pub fn accept_change(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 }

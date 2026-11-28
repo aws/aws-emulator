@@ -20,8 +20,20 @@ mod certificates;
 /// The two external-link surfaces' records: the outbound links a requester gateway
 /// opens and the inbound links a responder gateway takes.
 mod external_links;
+/// The flow configuration a link runs, shared by every kind of link this store
+/// holds.
+mod flows;
 /// The ONE replay decision this service's creates take on an `@idempotencyToken`.
 mod idempotent_creates;
+/// The one application of a flow-configuration change to a link, whichever kind
+/// of link it is addressed to.
+mod link_flows;
+/// The concurrency precondition a link read hands out and a conditional write
+/// presents back.
+mod lock_tokens;
+/// The catalog of modules a flow can attach, which the four module reads answer
+/// from.
+mod modules;
 /// The one encoding this service's paginated reads state a page boundary in.
 mod page_tokens;
 /// The one page walk this service's paginated reads take over their records.
@@ -31,6 +43,8 @@ mod routing_rules;
 /// The `/tags/{resourceArn}` surface's one reading of a caller-supplied ARN and of
 /// the record it addresses.
 mod tagging;
+/// The ledger of the changes this service has accepted on a gateway.
+mod updates;
 // Named rather than glob, so this module's public surface stays explicit, and every
 // path a handler uses (`crate::state::…`) keeps resolving.
 pub use accepted_updates::{AcceptedUpdates, Retry, ACCEPTED_UPDATES_RETAINED};
@@ -45,9 +59,17 @@ pub use external_links::{
     CONNECTIVITY_TYPE_EXTERNAL_INBOUND, CONNECTIVITY_TYPE_PUBLIC_EGRESS,
     INBOUND_EXTERNAL_LINK_EXTERNAL_ONLY_MESSAGE,
 };
+pub use flows::Flows;
 pub use idempotent_creates::{
     canonical_tags, client_token_quota_refusal, idempotency_key, parameter_fingerprint,
     token_mismatch_message, ClientToken, CreateRetry, IdempotentCreate,
+};
+pub use link_flows::{FlowsAccepted, FlowsRefused};
+pub use lock_tokens::lock_token;
+pub use modules::{
+    find_available_module, listed_modules, AvailableModule, AvailableModuleVersion,
+    MODULE_VERSION_STATUS_ACTIVE, MODULE_VERSION_STATUS_DEPRECATED, SUBSCRIPTION_STATUS_ACTIVE,
+    SUBSCRIPTION_TYPE_AWS_BUILT_IN,
 };
 pub use page_tokens::{
     decode_next_token, encode_next_token, token_refusal, PageTokenKey, TokenRefusal, Walk,
@@ -58,6 +80,12 @@ pub use routing_rules::{
     conditions_stated, priority_conflict_message, LinkRoutingRule, ROUTING_RULE_QUOTA,
     RULE_CONDITIONS_EMPTY_MESSAGE, RULE_STATUS_ACTIVE, RULE_STATUS_CREATION_IN_PROGRESS,
     RULE_STATUS_DELETED, RULE_STATUS_DELETION_IN_PROGRESS, RULE_STATUS_UPDATE_IN_PROGRESS,
+};
+pub use updates::{
+    update_token_key, Change, Update, UpdateRetry, UPDATES_RETAINED_PER_GATEWAY,
+    UPDATE_STATUS_FAILED, UPDATE_STATUS_IN_PROGRESS, UPDATE_STATUS_SUCCESSFUL,
+    UPDATE_TYPE_GATEWAY_CONFIG, UPDATE_TYPE_LINK_CONFIG, UPDATE_TYPE_LINK_FLOW,
+    UPDATE_TYPE_ROUTING_RULE,
 };
 pub use tagging::{
     created_tags_within_quota, resource_tags, resource_tags_mut, tag_count_within_quota,
@@ -190,6 +218,31 @@ pub const LINK_STATUS_DELETED: &str = "DELETED";
 /// nothing has to repeat the status list to answer the same question.
 pub fn link_status_is_up(status: &str) -> bool {
     status == LINK_STATUS_ACTIVE || status == LINK_STATUS_PENDING_UPDATE
+}
+
+/// Whether a link in `status` has stopped where nothing moves it from: the peer
+/// declined the request, the link could not be established, or the link is gone.
+/// Stated for every kind of link this store holds, exactly as
+/// [`link_status_is_up`] states the other question, so a link with one end
+/// outside the fabric and a link between two gateways refuse a change for the
+/// same reasons ([`Link::terminal`]).
+pub fn link_status_terminal(status: &str) -> bool {
+    status == LINK_STATUS_REJECTED || status == LINK_STATUS_FAILED || status == LINK_STATUS_DELETED
+}
+
+/// What a `ConflictException` says when a link's current status does not admit
+/// the transition a call asks for: the link and the gateway the call addressed,
+/// from the request, and the status that refuses it, from the record.
+///
+/// Stated once for every kind of link this store holds, so a refusal says the
+/// same thing whichever kind of link was addressed ([`Link::status_conflict_message`]).
+pub fn link_status_conflict_message(
+    link_id: &str,
+    gateway_id: &str,
+    status: &str,
+    transition: &str,
+) -> String {
+    format!("link {link_id} on gateway {gateway_id} is {status} and cannot be {transition}")
 }
 
 /// `LinkDirection` member: the link was opened by a requester gateway.
@@ -376,6 +429,15 @@ pub struct Link {
     /// service. `Some(Vec::new())` is a flow of no modules, a change of its own:
     /// it is what clears the flow in service.
     pub pending_module_flow: Option<Vec<ModuleConfiguration>>,
+    /// The flows this link runs, and the configuration it has taken and not yet
+    /// put in service — held exactly as a link with one end outside the fabric
+    /// holds them ([`Flows`]).
+    pub flows: Flows,
+    /// How many changes this link has accepted, which is what its concurrency
+    /// precondition is computed from ([`lock_token`]): the token a read hands out
+    /// goes stale exactly when a change is accepted, by whichever operation
+    /// accepted it.
+    pub revision: u64,
     pub tags: HashMap<String, String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -417,6 +479,9 @@ impl Link {
                     if let Some(taken) = self.pending_module_flow.take() {
                         self.flow_modules = taken;
                     }
+                    // The flow configuration awaiting the link commits with it,
+                    // at the same instant and for the same reason.
+                    self.flows.commit();
                 }
             }
             self.settles_at = None;
@@ -428,6 +493,21 @@ impl Link {
     /// when nothing is awaiting it.
     pub fn pending_flow_modules(&self) -> Vec<ModuleConfiguration> {
         self.pending_module_flow.clone().unwrap_or_default()
+    }
+
+    /// This link's concurrency precondition, as every read of it hands the token
+    /// out: computed from the record, so two reads between which no change was
+    /// accepted hand out the same token. See [`lock_token`].
+    pub fn lock_token(&self) -> String {
+        lock_token(&self.link_id, self.revision)
+    }
+
+    /// Record that a change to this link has been accepted, which is what makes
+    /// the precondition a caller read before it go stale. Called by EVERY
+    /// operation that accepts a change on a link, because the modelled
+    /// `LockToken` goes stale on a change accepted by any of them.
+    pub fn accept_change(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// Whether `gateway_id` is one of this link's two ends — either end may read
@@ -493,9 +573,7 @@ impl Link {
     /// Whether this link has reached a status nothing moves it out of: the peer
     /// declined the request, the link could not be established, or it is gone.
     pub fn terminal(&self) -> bool {
-        self.status == LINK_STATUS_REJECTED
-            || self.status == LINK_STATUS_FAILED
-            || self.status == LINK_STATUS_DELETED
+        link_status_terminal(&self.status)
     }
 
     /// The message this service's `ConflictException` carries when the link's
@@ -503,10 +581,7 @@ impl Link {
     /// and the gateway the call addressed, from the request, and the status that
     /// refuses it, from the record.
     pub fn status_conflict_message(&self, gateway_id: &str, transition: &str) -> String {
-        format!(
-            "link {} on gateway {} is {} and cannot be {}",
-            self.link_id, gateway_id, self.status, transition
-        )
+        link_status_conflict_message(&self.link_id, gateway_id, &self.status, transition)
     }
 
     /// The message this service's `ConflictException` carries when the end the
@@ -583,6 +658,12 @@ pub struct ComAmazonawsRtbfabricRtbfabricState {
     /// it was presented to. Bounded by [`IDEMPOTENCY_QUOTA`], and written only by
     /// a create that stored a resource.
     pub idempotency: HashMap<[u8; 32], IdempotentCreate>,
+    /// The changes this service has accepted, oldest first — which is the order
+    /// their ids were minted in. Bounded per gateway by
+    /// [`UPDATES_RETAINED_PER_GATEWAY`]; released with the gateway the change was
+    /// accepted on
+    /// ([`release_gateway_updates`](Self::release_gateway_updates)).
+    pub updates: Vec<Update>,
     /// Monotonic source of the id suffixes this emulator instance mints, so no
     /// two gateways or links ever share an id.
     pub next_id: u64,
@@ -658,6 +739,11 @@ impl ComAmazonawsRtbfabricRtbfabricState {
         }
         for association in self.certificate_associations.values_mut() {
             association.settle(now);
+        }
+        // An accepted change commits at the instant the clock made it due,
+        // whether or not anybody listed the updates.
+        for update in &mut self.updates {
+            update.settle(now);
         }
     }
 
@@ -940,6 +1026,7 @@ impl ComAmazonawsRtbfabricRtbfabricState {
             .retain(|(rule_link_id, _), _| !orphaned.contains(rule_link_id.as_str()));
         self.certificate_associations
             .retain(|(association_gateway_id, _), _| association_gateway_id != gateway_id);
+        self.release_gateway_updates(gateway_id);
         self.forget_released_client_tokens();
     }
 

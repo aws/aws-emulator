@@ -176,6 +176,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.settle_all(now);
 
+        // `clientToken` is an `@idempotencyToken`: a retry of a change the link
+        // has taken is answered with the update that change started rather than
+        // applied again, and the same token stating a DIFFERENT configuration is
+        // refused rather than answering for one the caller did not send. The model
+        // declares no `IdempotentParameterMismatch`, so that refusal travels on
+        // this operation's `ValidationException` (400).
+        let fingerprint = crate::state::parameter_fingerprint(&format!(
+            "logSettings={:?};timeoutInMillis={:?}",
+            input.log_settings, input.timeout_in_millis
+        ));
+        let key = input
+            .client_token
+            .as_deref()
+            .map(|token| crate::state::update_token_key(Self::NAME, &input.link_id, token));
+        match store.classify_update(key.as_ref(), &fingerprint) {
+            crate::state::UpdateRetry::Mismatch => {
+                return Err(UpdateLinkErrorModeled::ValidationException(ValidationException {
+                    message: crate::state::token_mismatch_message(
+                        Self::NAME,
+                        input.client_token.as_deref().unwrap_or_default(),
+                    ),
+                })
+                .into());
+            }
+            crate::state::UpdateRetry::Replay(update_id) => {
+                let Some(link) = store.find_link(&input.gateway_id, &input.link_id) else {
+                    return Err(UpdateLinkErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+                        },
+                    )
+                    .into());
+                };
+                return Ok(UpdateLinkOutput {
+                    link_id: link.link_id.clone(),
+                    status: link.status.clone(),
+                    update_id,
+                });
+            }
+            crate::state::UpdateRetry::Fresh => {}
+        }
+
         let Some(link) = store.find_link_mut(&input.gateway_id, &input.link_id) else {
             return Err(UpdateLinkErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
@@ -209,6 +251,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         if configured {
             link.updated_at = now;
+            // A change to the link has been accepted, so the concurrency
+            // precondition a caller read before this call goes stale.
+            link.accept_change();
             if link.is_up() {
                 // The link is carrying traffic, so the change is applied to a
                 // live link: this call reports the update as pending, and the
@@ -220,10 +265,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A call that stated no configuration member asked for no change, so
         // the record keeps the configuration, the status and the `updatedAt` it
         // already had, and the status reported below is the one it stands in.
+        let link_id = link.link_id.clone();
+        let status = link.status.clone();
+
+        // The call was accepted, so it started an update: the id it answers with
+        // is the one the gateway's ledger minted for it, which `ListUpdates`
+        // then reports and a retry under the same token is answered with. The
+        // append states the maximum number of records that gateway's ledger may
+        // hold afterwards, so it cannot grow the store past it: `record_update`
+        // lets go of that gateway's oldest records first.
+        let update_id = store.record_update(
+            &input.gateway_id,
+            crate::state::UPDATE_TYPE_LINK_CONFIG,
+            crate::state::Change {
+                link_id: Some(link_id.clone()),
+                token: key,
+                fingerprint: Some(fingerprint),
+                ..crate::state::Change::default()
+            },
+            crate::state::UPDATES_RETAINED_PER_GATEWAY,
+            now,
+        );
 
         Ok(UpdateLinkOutput {
-            link_id: link.link_id.clone(),
-            status: link.status.clone(),
+            link_id,
+            status,
+            update_id,
         })
     }
 }

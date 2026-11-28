@@ -32,5 +32,6 @@ pub struct UpdateResponderGatewayOutput {
     pub gateway_id: String,
     pub status: String,
     pub client_routing_policy: Option<String>,
+    pub update_id: String,
 }
 

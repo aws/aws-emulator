@@ -212,6 +212,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             link.status = crate::state::LINK_STATUS_REJECTED.to_string();
             link.settles_at = None;
             link.updated_at = now;
+            // A change to the link has been accepted, so the concurrency
+            // precondition a caller read before this call goes stale.
+            link.accept_change();
         } else if link.status != crate::state::LINK_STATUS_REJECTED {
             // Anything other than an outstanding request, or the rejection this
             // operation already recorded, is a status this call cannot move.
@@ -236,6 +239,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             log_settings: Some(link.log_settings.clone()),
             connectivity_type: Some(link.connectivity_type.clone()),
             link_id: link.link_id.clone(),
+            // Nothing has failed: a resource this emulator stores reaches no
+            // failed status, so there is no cause of a failure to report.
+            error_details: None,
         })
     }
 }
