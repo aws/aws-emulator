@@ -177,6 +177,68 @@ impl SerializableStruct for ValidationException {
     }
 }
 
+/// The `message` member of the synthetic `UnsupportedMediaType` error shape.
+static UNSUPPORTED_MEDIA_TYPE_MESSAGE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "smithy.framework#UnsupportedMediaType$message",
+        "smithy.framework",
+        "message",
+    ),
+    ShapeType::String,
+    "message",
+    0,
+)
+.with_xml_name("Message");
+
+/// Schema for the synthetic `UnsupportedMediaType` error shape.
+///
+/// In the `smithy.framework` namespace for the same reason as `NotImplemented` and
+/// `ValidationException`: the shape is not in any service's model. THIS service's model
+/// declares no 415 error shape at all while documenting the refusal — "The Global
+/// Inference Gateway rejects other content types with a 415 error" — so the content-type
+/// refusal is answered on this synthetic shape, named after the status's own condition,
+/// rather than on a modelled shape that would carry the wrong status to a client.
+pub static UNSUPPORTED_MEDIA_TYPE_SCHEMA: Schema = Schema::new_struct(
+    ShapeId::from_static(
+        "smithy.framework#UnsupportedMediaType",
+        "smithy.framework",
+        "UnsupportedMediaType",
+    ),
+    ShapeType::Structure,
+    &[&UNSUPPORTED_MEDIA_TYPE_MESSAGE],
+);
+
+/// The payload of an `UnsupportedMediaType`: which content type was refused, and what to
+/// send instead.
+#[derive(Debug, Clone)]
+pub struct UnsupportedMediaType {
+    pub message: String,
+}
+
+impl UnsupportedMediaType {
+    /// An `UnsupportedMediaType` carrying `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for UnsupportedMediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UnsupportedMediaType: {}", self.message)
+    }
+}
+
+impl std::error::Error for UnsupportedMediaType {}
+
+impl SerializableStruct for UnsupportedMediaType {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        s.write_string(&UNSUPPORTED_MEDIA_TYPE_MESSAGE, self.message.as_str())?;
+        Ok(())
+    }
+}
+
 /// An operation's error channel: either the synthetic scaffold signal, or one of the
 /// operation's own modeled errors.
 #[derive(Debug)]
@@ -185,6 +247,12 @@ pub enum Scaffolded<E> {
     NotImplemented(NotImplemented),
     /// A modeled error the operation declares. Renders with the model's own status.
     Modeled(E),
+    /// The request declared a content type this service does not read. Renders as HTTP
+    /// 415 with the error code `UnsupportedMediaType`.
+    ///
+    /// Here rather than on the model's own error list because the model declares no 415
+    /// shape while documenting the 415 answer; see [`UNSUPPORTED_MEDIA_TYPE_SCHEMA`].
+    UnsupportedMediaType(UnsupportedMediaType),
     /// The request was refused as invalid. Renders as HTTP 400 with the error code
     /// `ValidationException`.
     ///
@@ -221,6 +289,14 @@ impl<E> Scaffolded<E> {
     pub fn validation(message: impl Into<String>) -> Self {
         Self::ValidationException(ValidationException::new(message))
     }
+
+    /// Refuse the request's content type, with HTTP 415 `UnsupportedMediaType`.
+    ///
+    /// For the refusal this service's model documents and declares no shape for: a body
+    /// announced as a media type the service does not read.
+    pub fn unsupported_media_type(message: impl Into<String>) -> Self {
+        Self::UnsupportedMediaType(UnsupportedMediaType::new(message))
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
@@ -229,6 +305,7 @@ impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
             Self::NotImplemented(e) => write!(f, "{e}"),
             Self::Modeled(e) => write!(f, "{e}"),
             Self::ValidationException(e) => write!(f, "{e}"),
+            Self::UnsupportedMediaType(e) => write!(f, "{e}"),
         }
     }
 }
@@ -241,6 +318,7 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
             Self::NotImplemented(e) => e.source(),
             Self::Modeled(e) => e.source(),
             Self::ValidationException(e) => e.source(),
+            Self::UnsupportedMediaType(e) => e.source(),
         }
     }
 }
@@ -255,6 +333,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::NotImplemented(e) => e,
             Self::Modeled(e) => e.as_serializable(),
             Self::ValidationException(e) => e,
+            Self::UnsupportedMediaType(e) => e,
         }
     }
 
@@ -263,6 +342,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::NotImplemented(_) => &NOT_IMPLEMENTED_SCHEMA,
             Self::Modeled(e) => e.variant_schema(),
             Self::ValidationException(_) => &VALIDATION_EXCEPTION_SCHEMA,
+            Self::UnsupportedMediaType(_) => &UNSUPPORTED_MEDIA_TYPE_SCHEMA,
         }
     }
 
@@ -275,6 +355,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::NotImplemented(_) => "NotImplemented",
             Self::Modeled(e) => e.shape_name(),
             Self::ValidationException(_) => "ValidationException",
+            Self::UnsupportedMediaType(_) => "UnsupportedMediaType",
         }
     }
 
@@ -287,6 +368,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::NotImplemented(_) => 501,
             Self::Modeled(e) => e.http_status(),
             Self::ValidationException(_) => 400,
+            Self::UnsupportedMediaType(_) => 415,
         }
     }
 
@@ -299,6 +381,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::Modeled(e) => e.query_error_code(),
             // Same reason: the synthetic shape carries no `awsQueryError` trait.
             Self::ValidationException(_) => None,
+            Self::UnsupportedMediaType(_) => None,
         }
     }
 }

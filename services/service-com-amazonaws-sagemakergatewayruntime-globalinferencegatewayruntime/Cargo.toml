@@ -7,6 +7,10 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+# The shared request-claim rule for the SigV4 signing name every SageMaker-family
+# service shares, and the `vnd.amazon.eventstream` framing seam the streaming
+# operation is served through.
+service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
@@ -19,8 +23,18 @@ aws-smithy-types = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Parses the `Content-Type` a request declares as the media type it is, so the
+# documented gate ("application/json", parameters such as `charset=utf-8` allowed)
+# is applied by a maintained media-type implementation rather than by string surgery.
+mime = "0.3"
+# The byte-pair tokenizer the token counts a completion reports are measured with
+# (`state::completion`): it ships the published `cl100k_base` vocabulary, so a prompt
+# is counted at the granularity a model's own tokenizer counts it at instead of by a
+# character heuristic.
+tiktoken-rs = "0.12"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -29,6 +43,9 @@ emulator-core-build-support = { workspace = true }
 automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# Decodes one `application/vnd.amazon.eventstream` frame, so the streaming suite reads
+# the frames the response carries exactly as a client's own decoder does.
+aws-smithy-eventstream = "0.60"
 
 [lints]
 workspace = true
