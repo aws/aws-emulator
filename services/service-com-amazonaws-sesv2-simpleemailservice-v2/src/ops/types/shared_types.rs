@@ -48,6 +48,7 @@ pub struct DeliveryOptions {
     pub tls_policy: Option<String>,
     pub sending_pool_name: Option<String>,
     pub max_delivery_seconds: Option<i64>,
+    pub shared_pool_delivery_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.sesv2#ReputationOptions")]
@@ -575,6 +576,10 @@ pub struct TrackingConfigurationOverrides {
     pub click_tracking_enabled: Option<String>,
 }
 
+/// The values `AccountSharedPoolDeliveryMode` accepts on the wire.
+pub const ACCOUNT_SHARED_POOL_DELIVERY_MODE_VALUES: &[&str] = &["GLOBAL", "REGIONAL"];
+
+
 /// The values `AttachmentContentDisposition` accepts on the wire.
 pub const ATTACHMENT_CONTENT_DISPOSITION_VALUES: &[&str] = &["ATTACHMENT", "INLINE"];
 
@@ -761,6 +766,10 @@ pub const SCALING_MODE_VALUES: &[&str] = &["MANAGED", "STANDARD"];
 
 /// The values `SendingStatus` accepts on the wire.
 pub const SENDING_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED", "REINSTATED"];
+
+
+/// The values `SharedPoolDeliveryMode` accepts on the wire.
+pub const SHARED_POOL_DELIVERY_MODE_VALUES: &[&str] = &["ACCOUNT", "GLOBAL", "REGIONAL"];
 
 
 /// The values `SignatureFormat` accepts on the wire.

@@ -92,6 +92,7 @@ pub mod list_tags_for_resource_types;
 pub mod list_tenant_resources_types;
 pub mod list_tenants_types;
 pub mod put_account_dedicated_ip_warmup_attributes_types;
+pub mod put_account_delivery_attributes_types;
 pub mod put_account_details_types;
 pub mod put_account_pricing_attributes_types;
 pub mod put_account_sending_attributes_types;
@@ -288,6 +289,8 @@ pub use list_tenant_resources_types::*;
 pub use list_tenants_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_account_dedicated_ip_warmup_attributes_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_account_delivery_attributes_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_account_details_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

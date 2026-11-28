@@ -3,7 +3,7 @@
 //! @op GetAccount
 //! Reports the persisted account-level attributes of this account in this Region:
 //! the sending and dedicated-IP switches, the reputation status, the account
-//! details, and the suppression, VDM and pricing attributes, together with the
+//! details, and the suppression, VDM, pricing and delivery attributes, together with the
 //! sending limits and the recipients charged against them over the trailing
 //! window. This is the ONLY file to touch for this operation.
 //!
@@ -53,6 +53,8 @@
 //! * `DedicatedIpAutoWarmupEnabled` (Enabled, default false) **required** — Indicates whether
 //!   or not the automatic warm-up feature is enabled for dedicated IP addresses that are
 //!   associated with your account.
+//! * `DeliveryAttributes` (DeliveryAttributes) — The delivery attributes that apply to your
+//!   Amazon SES account in the current Amazon Web Services Region.
 //! * `Details` (AccountDetails) — An object that defines your account details.
 //! * `EnforcementStatus` (GeneralEnforcementStatus) — The reputation status of your Amazon
 //!   SES account. The status can be one of the following: HEALTHY – There are no
@@ -189,6 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             suppression_attributes: Some(account.suppression_attributes()),
             vdm_attributes: Some(account.vdm_attributes()),
             pricing_attributes: Some(account.pricing_attributes()),
+            delivery_attributes: Some(account.delivery_attributes()),
             // `Details` reports what the account supplied about its sending; an
             // account that has supplied none has no details to report.
             details: account.details.clone(),

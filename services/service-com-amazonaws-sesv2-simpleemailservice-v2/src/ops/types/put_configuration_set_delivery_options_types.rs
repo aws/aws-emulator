@@ -18,6 +18,7 @@ pub struct PutConfigurationSetDeliveryOptionsInput {
     pub tls_policy: Option<String>,
     pub sending_pool_name: Option<String>,
     pub max_delivery_seconds: Option<i64>,
+    pub shared_pool_delivery_mode: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.sesv2#PutConfigurationSetDeliveryOptionsResponse")]

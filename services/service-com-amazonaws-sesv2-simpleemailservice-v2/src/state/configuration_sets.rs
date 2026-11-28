@@ -205,6 +205,7 @@ impl ::service_common::ses_configuration_sets::AccountConfigurationSetRecord
                 tls_policy: Some(tls_policy),
                 sending_pool_name: None,
                 max_delivery_seconds: None,
+                shared_pool_delivery_mode: None,
             }),
             // The account's set has no TLS policy. This surface's own members of the
             // structure are not the shared one, so they stay — and a structure left with no
@@ -215,8 +216,10 @@ impl ::service_common::ses_configuration_sets::AccountConfigurationSetRecord
                     tls_policy: None,
                     ..held
                 };
-                (cleared.sending_pool_name.is_some() || cleared.max_delivery_seconds.is_some())
-                    .then_some(cleared)
+                (cleared.sending_pool_name.is_some()
+                    || cleared.max_delivery_seconds.is_some()
+                    || cleared.shared_pool_delivery_mode.is_some())
+                .then_some(cleared)
             }
             (None, None) => None,
         };
@@ -598,8 +601,9 @@ pub fn event_destination_does_not_exist(
 /// the caller configured and a send through a set that configured nothing is delivered
 /// under SES's own opportunistic policy; a request that states NO member at all leaves the
 /// set carrying no delivery configuration — `Ok(None)` — so a read reports no member
-/// rather than an object a caller configured nothing in. `TlsPolicy` carries its value as
-/// a plain string, so its value set is enforced here with the service's shared wording
+/// rather than an object a caller configured nothing in. Each enum-valued member —
+/// `TlsPolicy` and `SharedPoolDeliveryMode` — carries its value as a plain string, so its
+/// value set is enforced here with the service's shared wording
 /// ([`modelled_enum_value`]).
 pub fn configuration_set_delivery_options(
     options: crate::ops::types::DeliveryOptions,
@@ -612,16 +616,29 @@ pub fn configuration_set_delivery_options(
         )?),
         None => None,
     };
+    let shared_pool_delivery_mode = match options.shared_pool_delivery_mode {
+        Some(mode) => Some(modelled_enum_value(
+            "SharedPoolDeliveryMode",
+            mode,
+            crate::ops::types::SHARED_POOL_DELIVERY_MODE_VALUES,
+        )?),
+        None => None,
+    };
     let configured = crate::ops::types::DeliveryOptions {
         tls_policy,
         sending_pool_name: options.sending_pool_name,
         // The modelled range (300..=50400 seconds) is refused on the request boundary,
         // so a value that reaches here is one SES would attempt delivery for.
         max_delivery_seconds: options.max_delivery_seconds,
+        // The set's own shared-pool delivery mode, which the set's model spells with one
+        // value more than the account's: a set that states none is delivered under
+        // whatever mode the account holds, which is what storing it absent says.
+        shared_pool_delivery_mode,
     };
     let states_a_member = configured.tls_policy.is_some()
         || configured.sending_pool_name.is_some()
-        || configured.max_delivery_seconds.is_some();
+        || configured.max_delivery_seconds.is_some()
+        || configured.shared_pool_delivery_mode.is_some();
     Ok(states_a_member.then_some(configured))
 }
 

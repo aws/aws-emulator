@@ -45,6 +45,15 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+/// The host-style endpoint this service answers on, from the model's own
+/// `aws.api#service` trait (`smithy_query(query="service_info")`: `endpointPrefix`
+/// `elb-proxy`).
+///
+/// A request that carries no credential scope is routed by its `Host` label instead, which
+/// is that prefix rather than the signing name this endpoint shares with its peer, so both
+/// routing keys name this service.
+const ENDPOINT_PREFIX: &str = "elb-proxy";
+
 /// The `com-amazonaws-elbproxy-elbproxy` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -91,12 +100,21 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // path, so `claims_request` claims a request only when the service that path NAMES
         // is this one — while the shared key's awsQuery traffic (`POST /` with an `Action`
         // form field) stays the Elastic Load Balancing front door's.
-        service_common::claims_request(
-            parts,
-            self.entry.identity().signing_name(),
-            crate::ROUTE_PATH_SEGMENTS,
-            Some(self.entry.identity().shape_id()),
-        )
+        //
+        // The routing key may name the shared signing name or this service's OWN endpoint
+        // prefix ([`ENDPOINT_PREFIX`]), which is what a request carrying no credential
+        // scope at all resolves to from its `Host` — without it such a request would reach
+        // nobody, for the very endpoint this service answers on.
+        [self.entry.identity().signing_name(), ENDPOINT_PREFIX]
+            .iter()
+            .any(|route_key| {
+                service_common::claims_request(
+                    parts,
+                    route_key,
+                    crate::ROUTE_PATH_SEGMENTS,
+                    Some(self.entry.identity().shape_id()),
+                )
+            })
     }
 
     fn override_operation(

@@ -58,6 +58,11 @@
 //!   to 50400 seconds (840 minutes).
 //! * `SendingPoolName` (SendingPoolName) — The name of the dedicated IP pool to associate
 //!   with the configuration set.
+//! * `SharedPoolDeliveryMode` (SharedPoolDeliveryMode, one of: GLOBAL | REGIONAL | ACCOUNT)
+//!   — The shared pool delivery mode for email that you send with the configuration set
+//!   from shared IP addresses. This setting overrides the shared pool delivery mode of your
+//!   account. If you don't specify a value, the configuration set uses the shared pool
+//!   delivery mode of your account.
 //! * `TlsPolicy` (TlsPolicy, one of: OPTIONAL | REQUIRE) — Specifies whether messages that
 //!   use the configuration set are required to use Transport Layer Security (TLS). If the
 //!   value is Require, messages are only delivered if a TLS connection can be established. If
@@ -173,6 +178,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tls_policy: input.tls_policy,
             sending_pool_name: input.sending_pool_name,
             max_delivery_seconds: input.max_delivery_seconds,
+            shared_pool_delivery_mode: input.shared_pool_delivery_mode,
         })
         .map_err(bad_request)?;
 

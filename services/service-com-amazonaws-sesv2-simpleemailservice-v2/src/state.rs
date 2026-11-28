@@ -3693,6 +3693,25 @@ pub const FEATURE_DISABLED: &str = "DISABLED";
 /// `PutAccountPricingAttributesRequest$Plan` documents.
 pub const PRICING_PLAN_NONE: &str = "NONE";
 
+/// `AccountSharedPoolDeliveryMode`'s value for delivery that may also leave shared IP
+/// addresses of other Regions of the same partition, as the model spells it (see
+/// `crate::ops::types::ACCOUNT_SHARED_POOL_DELIVERY_MODE_VALUES`).
+///
+/// It is the mode an account nothing has configured delivers under:
+/// `DeliveryAttributes$SharedPoolDeliveryMode` documents that "Accounts that start
+/// sending in a Region on or after the launch of Global Shared Delivery use
+/// `GLOBAL` in that Region", and an account this emulator starts holds no earlier
+/// sending history.
+pub const SHARED_POOL_DELIVERY_MODE_GLOBAL: &str = "GLOBAL";
+
+/// `AccountSharedPoolDeliveryMode`'s value for delivery from shared IP addresses of
+/// the sending Region only.
+pub const SHARED_POOL_DELIVERY_MODE_REGIONAL: &str = "REGIONAL";
+
+/// `SharedPoolDeliveryMode`'s extra value, which only a CONFIGURATION SET's delivery
+/// configuration can carry: the set defers to whatever mode the account holds.
+pub const SHARED_POOL_DELIVERY_MODE_ACCOUNT: &str = "ACCOUNT";
+
 /// The account-level attributes of one SES account in one Region.
 ///
 /// A single record rather than a table: every member of it is per account and
@@ -3729,6 +3748,10 @@ pub struct AccountState {
     /// `NextPlan` "is empty when no scheduled change is pending", so it is absent
     /// until a change is scheduled.
     pub next_pricing_plan: Option<String>,
+    /// `DeliveryAttributes$SharedPoolDeliveryMode`: the shared-pool delivery mode the
+    /// account's own email is delivered under, which
+    /// `PutAccountDeliveryAttributes` is what writes.
+    pub shared_pool_delivery_mode: String,
     /// `Details`: the account details a request supplied, absent until one does.
     pub details: Option<crate::ops::types::AccountDetails>,
     /// When the decision on a production-access request that is still under review
@@ -3768,6 +3791,7 @@ impl Default for AccountState {
             vdm_guardian_attributes: None,
             pricing_plan: PRICING_PLAN_NONE.to_string(),
             next_pricing_plan: None,
+            shared_pool_delivery_mode: SHARED_POOL_DELIVERY_MODE_GLOBAL.to_string(),
             details: None,
             production_access_review_due_at: None,
             review_case_sequence: 0,
@@ -3805,6 +3829,16 @@ impl AccountState {
         crate::ops::types::PricingAttributes {
             current_plan: Some(self.pricing_plan.clone()),
             next_plan: self.next_pricing_plan.clone(),
+        }
+    }
+
+    /// The modelled `DeliveryAttributes` view of this record.
+    ///
+    /// One projection shared by every operation that reports the account's delivery
+    /// attributes, so a write and the read after it cannot disagree.
+    pub fn delivery_attributes(&self) -> crate::ops::types::DeliveryAttributes {
+        crate::ops::types::DeliveryAttributes {
+            shared_pool_delivery_mode: Some(self.shared_pool_delivery_mode.clone()),
         }
     }
 

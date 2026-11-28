@@ -28,6 +28,7 @@ pub struct GetAccountOutput {
     pub details: Option<AccountDetails>,
     pub vdm_attributes: Option<VdmAttributes>,
     pub pricing_attributes: Option<PricingAttributes>,
+    pub delivery_attributes: Option<DeliveryAttributes>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.sesv2#SendQuota")]
@@ -68,5 +69,11 @@ pub struct ReviewDetails {
 pub struct PricingAttributes {
     pub current_plan: Option<String>,
     pub next_plan: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.sesv2#DeliveryAttributes")]
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryAttributes {
+    pub shared_pool_delivery_mode: Option<String>,
 }
 
