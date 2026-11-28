@@ -62,11 +62,11 @@
 //! `services/service-com-amazonaws-codebuild-codebuild-20161006/src/service/unreadable_body.rs`
 //! separates a deserialization refusal from a constraint one.
 //!
-//! The body's own TOP level is read, and then the members of each ITEM of a batch, which is
-//! as deep as this service's inputs nest: a member `Schema` carries its target's KIND but
-//! not its target's schema, so the one pairing of a list member to its item shape is stated
-//! here ([`item_schema`]) rather than walked generically, and anything nested deeper is left
-//! to the codec.
+//! The body's own TOP level is read, then this layer's own item bound above is applied, and
+//! only then the members of each ITEM of a batch, which is as deep as this service's inputs
+//! nest: a member `Schema` carries its target's KIND but not its target's schema, so the one
+//! pairing of a list member to its item shape is stated here ([`item_schema`]) rather than
+//! walked generically, and anything nested deeper is left to the codec.
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
@@ -348,13 +348,20 @@ fn refusal(definition: &dyn ErasedServiceDefinition, req: &RtRequest) -> Option<
     let input = super::input_schema(key)?;
     let members = submitted_members(req)?;
     // A value that never became a value comes first: a member of the wrong JSON type is
-    // not a member carrying nothing.
-    if let Some(unreadable) = unreadable_member(input, &members) {
+    // not a member carrying nothing. The body's own top level is all this pass reads, so
+    // the bound below is still decided before any ITEM of a batch is looked at.
+    if let Some(unreadable) = unreadable_top_level_member(input, &members) {
         return Some(unreadable);
     }
-    // Then the work one call may ask for, before any item of it is read.
+    // Then the work one call may ask for, before any item of it is read: the count of a
+    // batch member is read off the member, not out of its items.
     if asks_for_more_items_than_served(input, &members) {
         return Some(Refusal::UnhandledInternalFailure);
+    }
+    // Only then the items themselves, which is work this call has been admitted to ask
+    // for: a batch past the bound above is never walked.
+    if let Some(unreadable) = unreadable_item_member(input, &members) {
+        return Some(unreadable);
     }
     unset_member_refusal(input, &members)
 }
@@ -465,17 +472,36 @@ fn instant_format(member: &Schema) -> Format {
     }
 }
 
-/// The first value of the body the member it is bound to cannot be read from, as the refusal
-/// it earns.
+/// The first value of the body's own TOP level the member it is bound to cannot be read
+/// from, as the refusal it earns.
 ///
-/// The body's own top level is read first, then the members of each ITEM of a batch, which
-/// is as deep as this service's inputs nest. A key naming no member of the shape it is read
-/// against is ignored, exactly as the codec ignores it.
-fn unreadable_member(input: &Schema, members: &serde_json::Map<String, Value>) -> Option<Refusal> {
+/// One of the two unreadable passes, and the one that reads nothing inside a batch: it
+/// judges each member of the body against the member's own shape, which is what the item
+/// bound ([`asks_for_more_items_than_served`]) needs decided before it reads a batch's
+/// length. A key naming no member of the shape it is read against is ignored, exactly as
+/// the codec ignores it.
+fn unreadable_top_level_member(
+    input: &Schema,
+    members: &serde_json::Map<String, Value>,
+) -> Option<Refusal> {
     declared_members(input, members).find_map(|(member, held)| {
-        if !reads_into(member, held) {
-            return Some(Refusal::Unreadable(unexpected_json_type(held)));
-        }
+        (!reads_into(member, held)).then(|| Refusal::Unreadable(unexpected_json_type(held)))
+    })
+}
+
+/// The first value carried by an ITEM of a batch that the member it is bound to cannot be
+/// read from, as the refusal it earns.
+///
+/// The second unreadable pass, run only for a request this layer has already admitted:
+/// the members of each item of a batch are as deep as this service's inputs nest, and
+/// walking them is per-item work, so it is done after the bound on how much of that work
+/// one call may ask for. A key naming no member of the item shape is ignored, exactly as
+/// the codec ignores it.
+fn unreadable_item_member(
+    input: &Schema,
+    members: &serde_json::Map<String, Value>,
+) -> Option<Refusal> {
+    declared_members(input, members).find_map(|(member, held)| {
         let item = item_schema(member.member_name()?)?;
         let Value::Array(elements) = held else {
             return None;
@@ -595,6 +621,18 @@ impl ErasedOperation for RefusedEnvelope {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Both unreadable passes in the order [`refusal`] runs them, which is the order the
+    /// rows below read: the body's own top level, then the items of a batch. The item bound
+    /// [`refusal`] applies between the two is pinned on the wire, by the precedence suite in
+    /// this crate's integration tests.
+    fn unreadable_member(
+        input: &Schema,
+        members: &serde_json::Map<String, Value>,
+    ) -> Option<Refusal> {
+        unreadable_top_level_member(input, members)
+            .or_else(|| unreadable_item_member(input, members))
+    }
 
     /// RULE: a member earns its refusal when the request carries no value for it, and a
     /// value of any other class is a value.

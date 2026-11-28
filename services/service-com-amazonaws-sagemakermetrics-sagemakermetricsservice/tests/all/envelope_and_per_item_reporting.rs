@@ -1098,3 +1098,221 @@ async fn a_points_instant_reads_from_text_only_in_the_format_bound_to_the_member
         }
     }
 }
+
+/// RULE: a bound on the WORK one call may ask for is decided from the request at the level
+/// it is stated — the COUNT of a batch member — and refuses the call before any ITEM of that
+/// batch is read, so a batch past `MAX_ITEMS_PER_REQUEST` is refused for its size whatever
+/// its items carry, while the per-item deserialization refusal is reached only for a batch
+/// this service would serve. The body's own top level is read first, so the bound hides no
+/// unreadable member of the envelope itself.
+///
+/// The rows span both operations, both batch members, the unreadable value at the first, a
+/// middle and the last index, each class of unreadable value (a number, text, an item that is
+/// no object at all), and the batch size at the bound, one past it and far past it — the
+/// recorded case is the single row "one query past the bound, the unreadable query first".
+#[tokio::test]
+async fn the_item_bound_is_decided_before_any_item_of_the_batch_is_read() {
+    use service_com_amazonaws_sagemakermetrics_sagemakermetricsservice::state::MAX_ITEMS_PER_REQUEST;
+
+    let router = emulator();
+    let component = "tc-precedence";
+    let bound = MAX_ITEMS_PER_REQUEST;
+
+    // The two refusals whose precedence this pins, each with the status, body member and
+    // constant sentence it carries.
+    let over_sized = Refusal {
+        status: 500,
+        detail: Some(("message", "Unhandled internal failure")),
+    };
+    let unreadable = |sentence: &'static str| Refusal {
+        status: 400,
+        detail: Some(("Message", sentence)),
+    };
+    // The two sentences the unreadable rows below earn, each naming the CLASS of JSON that
+    // arrived where a readable value was modelled.
+    let number_arrived = "NUMBER_VALUE is not an expected Json type";
+    let text_arrived = "STRING_VALUE is not an expected Json type";
+    let served = Refusal {
+        status: 200,
+        detail: None,
+    };
+
+    // A batch of `items` well-formed points, the one at `bad` carrying a measurement that is
+    // not a number — a value its member cannot be read from.
+    let points = |items: usize, bad: Option<usize>| -> Value {
+        let data: Vec<Value> = (0..items)
+            .map(|step| {
+                let mut datum = point("precedence", i32::try_from(step).expect("a small step"), 1.0);
+                if bad == Some(step) {
+                    datum["Value"] = json!("not-a-number");
+                }
+                datum
+            })
+            .collect();
+        Value::Array(data)
+    };
+    // A batch of `items` well-formed queries, the one at `bad` naming its series with a
+    // number.
+    let queries = |items: usize, bad: Option<usize>| -> Value {
+        let batch: Vec<Value> = (0..items)
+            .map(|index| {
+                let mut one = query("precedence", component, ITERATION_NUMBER, ITERATION_NUMBER);
+                if bad == Some(index) {
+                    one["MetricName"] = json!(7);
+                }
+                one
+            })
+            .collect();
+        Value::Array(batch)
+    };
+    let get = |batch: Value| json!({"MetricQueries": batch});
+    let put = |batch: Value| json!({"TrialComponentName": component, "MetricData": batch});
+
+    // case, method, path, body as sent, the answer it earns.
+    let rows: Vec<(&str, &str, &str, Value, Refusal)> = vec![
+        (
+            "a get at the bound, every query readable",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound, None)),
+            served,
+        ),
+        (
+            "a get at the bound with an unreadable query",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound, Some(0))),
+            unreadable(number_arrived),
+        ),
+        (
+            "a get one query past the bound, every query readable",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound + 1, None)),
+            over_sized,
+        ),
+        (
+            "a get one query past the bound, the unreadable query first",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound + 1, Some(0))),
+            over_sized,
+        ),
+        (
+            "a get one query past the bound, the unreadable query last",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound + 1, Some(bound))),
+            over_sized,
+        ),
+        (
+            "a get far past the bound, the unreadable query in the middle",
+            "POST",
+            "/BatchGetMetrics",
+            get(queries(bound * 3, Some(bound * 3 / 2))),
+            over_sized,
+        ),
+        (
+            "a get past the bound whose batch member is no list at all",
+            "POST",
+            "/BatchGetMetrics",
+            get(json!("STRING_VALUE")),
+            unreadable(text_arrived),
+        ),
+        (
+            "a put at the bound with an unreadable point in the middle",
+            "PUT",
+            "/BatchPutMetrics",
+            put(points(bound, Some(bound / 2))),
+            unreadable(text_arrived),
+        ),
+        (
+            "a put one point past the bound, the unreadable point last",
+            "PUT",
+            "/BatchPutMetrics",
+            put(points(bound + 1, Some(bound))),
+            over_sized,
+        ),
+        (
+            "a put far past the bound, the unreadable point first",
+            "PUT",
+            "/BatchPutMetrics",
+            put(points(bound * 3, Some(0))),
+            over_sized,
+        ),
+        (
+            "a put past the bound whose items are no objects at all",
+            "PUT",
+            "/BatchPutMetrics",
+            put(Value::Array(vec![json!(7); bound + 1])),
+            over_sized,
+        ),
+        (
+            // The top level is read before the count, so the envelope's own unreadable
+            // member still wins over the size of the batch beside it.
+            "a put past the bound that also names its component with a number",
+            "PUT",
+            "/BatchPutMetrics",
+            json!({"TrialComponentName": 7, "MetricData": points(bound + 1, None)}),
+            unreadable(number_arrived),
+        ),
+    ];
+
+    for (case, method, path, body, expected) in rows {
+        let answer = send(&router, method, path, &body).await;
+        assert_eq!(
+            answer.status, expected.status,
+            "case {case:?}: expected status {}, got {} ({:?})",
+            expected.status, answer.status, answer.body
+        );
+        match expected.detail {
+            Some((member, sentence)) => {
+                assert_eq!(
+                    answer.member(member),
+                    Some(sentence),
+                    "case {case:?}: expected {member} {sentence:?}, got {:?}",
+                    answer.body
+                );
+                let other = if member == "Message" {
+                    "message"
+                } else {
+                    "Message"
+                };
+                assert_eq!(
+                    answer.member(other),
+                    None,
+                    "case {case:?}: this refusal states nothing under {other}, got {:?}",
+                    answer.body
+                );
+            }
+            None => {
+                for member in ["message", "Message"] {
+                    assert_eq!(
+                        answer.member(member),
+                        None,
+                        "case {case:?}: a served call states no refusal sentence, got {:?}",
+                        answer.body
+                    );
+                }
+            }
+        }
+    }
+
+    // Every refusal above is an envelope refusal, so no handler ran for it and nothing it
+    // carried was ingested: the series holds only what the one well-formed batch wrote.
+    let written = send(&router, "PUT", "/BatchPutMetrics", &put(points(bound, None))).await;
+    assert_eq!(
+        written.status, 200,
+        "a batch at the bound is served, got {} ({:?})",
+        written.status, written.body
+    );
+    let read = send(&router, "POST", "/BatchGetMetrics", &get(queries(1, None))).await;
+    assert_eq!(
+        read.body["MetricQueryResults"][0]["MetricValues"]
+            .as_array()
+            .map(Vec::len),
+        Some(bound),
+        "only the served batch stored anything, got {:?}",
+        read.body["MetricQueryResults"][0]
+    );
+}
