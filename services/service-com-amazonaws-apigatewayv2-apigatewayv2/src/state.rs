@@ -4662,11 +4662,18 @@ pub fn serves_execute_api_zone(zone: &str) -> bool {
 ///   [`execute_api_host`] builds, which the data plane claims host-style, in the form
 ///   `Api$ApiEndpoint` documents ([`execute_api_endpoint`]).
 ///
-/// The value is settled by the operation that MINTS the api and stored on it
-/// ([`Api::api_endpoint`]), so one api announces one endpoint however its later callers
+/// The value a caller is ANNOUNCED is settled by the operation that MINTS the api and stored
+/// on it ([`Api::api_endpoint`]), so one api announces one endpoint however its later callers
 /// address this emulator. A WEBSOCKET api announces something else again: its data plane is
 /// a socket of its own (`crate::state::websocket_transport::announced_endpoint`), and that
 /// socket's address is the only one an RFC 6455 client can complete a handshake against.
+///
+/// The reading is ALSO applied per request, without storing anything, where what a call has to
+/// state is the address the api is served at FOR THE CALLER BEING ANSWERED rather than the one
+/// the api announces: the address a portal page reports for the REST endpoint it documents
+/// ([`rest_endpoint_invoke_url`]) and the one Server Object of an exported definition
+/// (`crate::ops::export_api::server_object`, which says why). Both are addresses this emulator
+/// serves that api's data plane at; which of them a member carries is the member's own reading.
 pub fn emulator_served_api_endpoint(
     api_id: &str,
     region: &str,

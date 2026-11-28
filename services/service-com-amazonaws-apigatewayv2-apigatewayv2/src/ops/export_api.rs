@@ -15,7 +15,9 @@
 //!
 //! The document is the INVERSE of the definition this service already reads
 //! ([`super::import_api::parse_definition`]): `info` carries the api's name, description
-//! and version, `servers` the one address the configuration is called at, `paths` one
+//! and version, `servers` the one address the configuration is called at — the address this
+//! emulator serves the api at for the client that asked for the document ([`server_object`]) —
+//! `paths` one
 //! operation per route, and — unless `IncludeExtensions` turns them off — the API Gateway
 //! extensions that describe what no standard OpenAPI member can (the integration behind
 //! each route, the api's CORS configuration, its endpoint configuration, its tag set and
@@ -167,7 +169,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         // What the request asks for is resolved against the three catalogs this
         // operation's own members document, BEFORE the store is read: a request naming a
         // specification, an output type or an export version this service does not serve
@@ -249,7 +250,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => (&api.routes, &api.integrations, None),
         };
 
-        let document = exported_document(api, routes, integrations, stage_name, include_extensions);
+        // The address the exported document advertises: the one THIS EMULATOR serves this
+        // api's data plane at for the client that asked for the document, which is what a
+        // reader of a Server Object dials ([`server_object`]).
+        let served_endpoint = crate::state::emulator_served_api_endpoint(
+            &api.api_id,
+            &api.region,
+            &api.protocol_type,
+            ctx.parts(),
+            ctx.endpoint().as_str(),
+        );
+        let document = exported_document(
+            api,
+            routes,
+            integrations,
+            &served_endpoint,
+            stage_name,
+            include_extensions,
+        );
         // "Represents an exported definition of an API in a particular output format, for
         // example, YAML" (`ExportedApi`): the one document, spelled as the request asked
         // for it.
@@ -395,6 +413,7 @@ fn exported_document(
     api: &crate::state::Api,
     routes: &::std::collections::BTreeMap<String, crate::state::Route>,
     integrations: &::std::collections::BTreeMap<String, crate::state::Integration>,
+    served_endpoint: &str,
     stage_name: Option<&str>,
     include_extensions: bool,
 ) -> Value {
@@ -406,7 +425,10 @@ fn exported_document(
     document.insert("info".to_string(), info_object(api));
     document.insert(
         "servers".to_string(),
-        Value::Array(vec![Value::Object(server_object(api, stage_name))]),
+        Value::Array(vec![Value::Object(server_object(
+            served_endpoint,
+            stage_name,
+        ))]),
     );
     if include_extensions {
         // The algorithm this document was written by, which every exported definition
@@ -510,18 +532,41 @@ const EXPORTED_VERSION_ZONE: &str = "UTC";
 /// The document's one Server Object: the address the exported configuration is CALLED at,
 /// templated by the base path it is served under.
 ///
-/// The url is the api's DEFAULT execute-api address in the form the member that reports it
-/// documents — "The URI of the API, of the form `{api-id}.execute-api.{region}.amazonaws.com`"
-/// (`Api$ApiEndpoint`) — built by [`crate::state::execute_api_endpoint`] from the api's own id
-/// and Region, followed by the [`BASE_PATH_VARIABLE`] template. An exported definition is a
-/// PORTABLE SPECIFICATION ARTIFACT rather than a link minted for the caller that fetched it:
-/// it is handed to codegen, to validators and to importers, which read the api id out of the
-/// authority's first label and the Region out of the label behind `execute-api`, so the
-/// document states the address the api is served at in the form those readers parse — never
-/// the authority of the listener this one export request happened to arrive on, under which
-/// the api id is no DNS label at all. This emulator answers for that same host on every front
-/// door it serves the plane on (`crate::service::invoke`,
-/// `crate::service::invoke_plane_socket`), so a reader that resolves it reaches the api here.
+/// The url is the address THIS EMULATOR SERVES the api's data plane at FOR THE CLIENT THAT
+/// ASKED FOR THE DOCUMENT ([`crate::state::emulator_served_api_endpoint`], the one reading every
+/// address this service announces follows), followed by the [`BASE_PATH_VARIABLE`] template. A
+/// Server Object is an address a reader DIALS: an exported definition is handed to codegen, to
+/// importers and to mock servers, and every client, re-import and generated SDK built from it
+/// calls the url the document states, so the authority stated is one this emulator answers on.
+/// That is the endpoint the export request itself reached, with the api named behind the
+/// reserved data-plane path this emulator serves it at (`crate::service::invoke`), the address
+/// this process is served at for a request minted by another service in process, or the
+/// `{api-id}.execute-api.{region}.amazonaws.com` host `Api$ApiEndpoint` documents for a caller
+/// that resolves AWS's own hostnames, which this emulator's front doors claim host-style
+/// (`crate::service::invoke`, `crate::service::invoke_plane_socket`). It is never a fixed
+/// `execute-api.{region}.amazonaws.com` template handed to a client that reaches no such name:
+/// a document advertising an address nothing here answers sends every client generated from it
+/// out of the emulated environment.
+///
+/// Whichever of those it is, the api is NAMED in the address — in the host's leading label of
+/// the documented form, in the reserved data-plane path of an address of this emulator — so a
+/// reader of the document still recovers which api it describes, and dialling the address
+/// reaches that api's own data plane.
+///
+/// Resolved PER REQUEST rather than read off [`crate::state::Api::api_endpoint`], the address
+/// the api announces, which the operation that minted the api settled once for the client that
+/// minted it: an exported definition is handed to the client that ASKED for it, and the two
+/// clients need not be the same one — a document fetched through this emulator's own endpoint
+/// states that endpoint even for an api minted by an in-process caller of another service, and
+/// one fetched by a caller that resolves AWS's own hostnames states the documented host even
+/// for an api minted locally. Both are addresses this emulator serves the api at, which is what
+/// the Server Object has to state; the address the api ANNOUNCES is the api's own value and is
+/// left exactly as every reader of the api reports it. The socket an HTTP api's plane may ALSO
+/// be published on (`crate::state::invoke_plane_transport`) is not named here for the same
+/// reason: an api's routes are served at the reserved data-plane path on this emulator's own
+/// endpoint as well (`crate::service::invoke`), so the endpoint the asking client already
+/// reached serves the exported configuration, and a document fetched there states an address
+/// that client holds rather than a second port it would have to be told about.
 ///
 /// That variable's default is the base path THIS export is of: "The stage name is typically
 /// appended to this URI to form a complete path to a deployed API stage"
@@ -530,7 +575,7 @@ const EXPORTED_VERSION_ZONE: &str = "UTC";
 /// configuration — which no stage name selects — are reached with no stage segment at all
 /// and carry an empty one. Substituting the variable therefore yields the address the
 /// exported configuration answers on, whichever of the two it describes.
-fn server_object(api: &crate::state::Api, stage_name: Option<&str>) -> Map<String, Value> {
+fn server_object(served_endpoint: &str, stage_name: Option<&str>) -> Map<String, Value> {
     let base_path = match stage_name {
         Some(stage_name) if stage_name != crate::state::DEFAULT_STAGE_NAME => stage_name,
         _ => "",
@@ -545,10 +590,7 @@ fn server_object(api: &crate::state::Api, stage_name: Option<&str>) -> Map<Strin
     let mut server = Map::new();
     server.insert(
         "url".to_string(),
-        Value::String(format!(
-            "{}/{{{BASE_PATH_VARIABLE}}}",
-            crate::state::execute_api_endpoint(&api.api_id, &api.region, &api.protocol_type)
-        )),
+        Value::String(format!("{served_endpoint}/{{{BASE_PATH_VARIABLE}}}")),
     );
     server.insert("variables".to_string(), Value::Object(variables));
     server

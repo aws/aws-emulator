@@ -15,8 +15,17 @@
 //! > `FAILED` for one whose identifier names an api the account has in another control plane
 //! > — an HTTP or WebSocket API of this service, which has no REST API documentation to
 //! > generate from. A `FAILED` page carries `StatusException` with both members populated,
-//! > naming the lookup that did not resolve; every other status carries none. A read never
-//! > moves a page, and a patch starts the generation over and settles it the same way.
+//! > explaining the page's OWN unresolved endpoint reference; every other status carries none.
+//! > A read never moves a page, and a patch starts the generation over and settles it the same
+//! > way.
+//!
+//! WHAT those two members say is `product_rest_endpoint_page_status_exception`'s subject; this
+//! suite asserts WHICH status a page settles on and that the exception travels with — and only
+//! with — the status that says the page could not be assembled. This suite therefore no longer
+//! asserts that the message NAMES the identifier's `restApiId`: the sentence this service states
+//! for a `RestEndpointIdentifier` that identifies no REST endpoint has no variable parts — API
+//! Gateway names neither the API nor the stage in it — so a page reporting that failure cannot
+//! carry the id, and the member's content is asserted in the suite that owns it.
 //!
 //! The rows differ along what the rule generalises over: which control plane holds the api the
 //! identifier names (the REST one, and this service's own for each protocol type it serves),
@@ -195,10 +204,9 @@ async fn settled(emulator: &MultiServiceRouter, case: &str, uri: &str) -> Value 
 }
 
 /// Assert `page` reports `expected` and carries exactly the `StatusException` that status
-/// takes: both members populated and within the modelled bounds for the failing status,
-/// nothing at all for any other, and — for a failure — a message that names the identifier
-/// whose lookup did not resolve, so a client can tell WHICH reference failed.
-fn assert_status(case: &str, what: &str, page: &Value, expected: &str, rest_api_id: &str) {
+/// takes: both members populated and within the modelled bounds for the failing status, and
+/// nothing at all for any other.
+fn assert_status(case: &str, what: &str, page: &Value, expected: &str) {
     let reported = as_str(page, "status");
     assert_eq!(
         reported, expected,
@@ -231,11 +239,6 @@ fn assert_status(case: &str, what: &str, page: &Value, expected: &str, rest_api_
         (message_min..=message_max).contains(&message.chars().count()),
         "case {case:?}: expected {what} to populate statusException.message within \
          {MESSAGE_BOUNDS:?}, got {message:?} in {page}"
-    );
-    assert!(
-        message.contains(rest_api_id),
-        "case {case:?}: expected {what} to say which reference did not resolve by naming \
-         {rest_api_id:?}, got {message:?} in {page}"
     );
 }
 
@@ -277,19 +280,12 @@ async fn a_page_settles_on_what_the_documentation_it_is_generated_from_allows() 
             "CreateProductRestEndpointPage",
             &created,
             IN_PROGRESS,
-            &rest_api_id,
         );
 
         // Then the page settles on what its documentation allows, and reports the exception
         // that says why when it could not be generated.
         let read = settled(&emulator, case, &uri).await;
-        assert_status(
-            case,
-            "GetProductRestEndpointPage",
-            &read,
-            row.settles,
-            &rest_api_id,
-        );
+        assert_status(case, "GetProductRestEndpointPage", &read, row.settles);
 
         // A read REPORTS: a second read of a settled page answers the same record, so neither
         // the status nor its exception is produced by being read.
@@ -318,16 +314,9 @@ async fn a_page_settles_on_what_the_documentation_it_is_generated_from_allows() 
             "UpdateProductRestEndpointPage",
             &patched,
             IN_PROGRESS,
-            &rest_api_id,
         );
         let resettled = settled(&emulator, case, &uri).await;
-        assert_status(
-            case,
-            "the patched page",
-            &resettled,
-            row.settles,
-            &rest_api_id,
-        );
+        assert_status(case, "the patched page", &resettled, row.settles);
     }
 }
 
@@ -397,7 +386,6 @@ async fn the_raw_content_reader_reports_the_same_settled_status() {
             "GetProductRestEndpointPage(includeRawDisplayContent)",
             &read,
             expected,
-            &api_id,
         );
     }
 }

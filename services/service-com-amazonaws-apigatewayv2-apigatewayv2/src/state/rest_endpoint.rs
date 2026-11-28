@@ -80,13 +80,17 @@ pub fn unresolved_rest_endpoint<Eng: ::std::marker::Send + ::std::marker::Sync +
 }
 
 /// The `exception` a page's `StatusException` names when its content could not be generated:
-/// the exception API Gateway raises for an address that resolves to no record, which is what
-/// the generation hits when the endpoint the page documents is not there to read.
+/// the class API Gateway raises for a `RestEndpointIdentifier` that identifies no REST endpoint
+/// to document — the PAGE'S OWN validation failure, which is the same class a write carrying
+/// such an identifier is refused with (`BadRequestException`, "The request is not valid, for
+/// example, the input is incomplete or incorrect").
 ///
 /// `StatusException$Exception` is "The exception" (`__stringMin1Max256`), so the member names
 /// the failure rather than describing it; the sentence goes in `Message` ("The error
-/// message").
-pub const NOT_FOUND_EXCEPTION: &str = "NotFoundException";
+/// message"). What it names is the failure of THIS page: the exception of a lookup this
+/// service made inside another component's store is that component's, and it describes an
+/// object the caller never addressed.
+pub const BAD_REQUEST_EXCEPTION: &str = "BadRequestException";
 
 /// `Some(the StatusException to report)` when the content a page is generated FROM cannot be
 /// generated for the REST endpoint `parts` identify, and `None` when it can.
@@ -103,10 +107,14 @@ pub const NOT_FOUND_EXCEPTION: &str = "NotFoundException";
 /// a page, which is the state the modelled `Status`/`StatusException` pair reports
 /// ([`super::ProductRestEndpointPage::reported_status`]).
 ///
-/// The message is the sentence API Gateway answers that very lookup with, taken from the
-/// service that owns the record, so what a page reports as not found is worded as a read of it
-/// would word it, and the part that did not resolve is the part named: the API, or its stage.
-/// The identifier's `Method` and `Path` select WHICH endpoint of that API the page documents
+/// What it REPORTS is the page's own failure: the identifier the page carries identifies no
+/// REST endpoint whose documentation can be generated, so the exception named is the class of
+/// that validation failure and the message is this service's one sentence for it
+/// ([`generation_failure`], [`UNRESOLVED_REST_ENDPOINT_MESSAGE`]). The internal lookup this
+/// function makes in the store that owns REST APIs has refusals of its own, which name a REST
+/// API identifier and interpolate the account that store answers for; those explain a read of
+/// THAT record and not this page, so none of them is carried into the page's `StatusException`.
+/// The identifier's `Method` and `Path` select WHICH endpoint of the API the page documents
 /// rather than where its documentation lives, so they take no part here either — the same
 /// reading [`super::rest_endpoint_invoke_url`] applies to them.
 ///
@@ -126,7 +134,7 @@ pub fn rest_endpoint_generation_failure<
     let owner = rest::service_state(engine)?;
     let rest_apis = owner.lock();
     let Some(rest_api) = rest_apis.rest_apis.get(&parts.rest_api_id) else {
-        return Some(generation_failure(rest::no_such_rest_api(&parts.rest_api_id)));
+        return Some(generation_failure());
     };
     // The documentation generated is of the ENDPOINT OF ONE STAGE, so a REST API the account
     // has under a name it has no such stage for leaves nothing to generate either. The write
@@ -134,17 +142,33 @@ pub fn rest_endpoint_generation_failure<
     // api of that id in BOTH control planes and only the OTHER one carries the stage — the two
     // stores mint ids from sequences of their own, so one id can name a record in each.
     if !rest_api.stages.contains_key(&parts.stage) {
-        return Some(generation_failure(rest::NO_SUCH_STAGE.to_string()));
+        return Some(generation_failure());
     }
     ::std::option::Option::None
 }
 
-/// The `StatusException` a failed generation reports: the exception it hit, and that
-/// exception's own sentence.
-fn generation_failure(message: String) -> wire::StatusException {
+/// The `StatusException` a failed generation reports: the class of the page's own failure
+/// ([`BAD_REQUEST_EXCEPTION`]) and the one sentence this service states for a
+/// `RestEndpointIdentifier` that identifies no REST endpoint to document
+/// ([`UNRESOLVED_REST_ENDPOINT_MESSAGE`]).
+///
+/// It is the PAGE'S failure that is reported, and the page failed on its own
+/// `RestEndpointIdentifier`: that is the same fact a write carrying such an identifier is
+/// refused with, so it is stated in the same words rather than in words of this emulator's own
+/// composition — API Gateway's sentence for that fact is the one attested here, and it has no
+/// variable parts (it names neither the API nor the stage). A page's `StatusException` may well
+/// read differently on AWS than that refusal does, but the text of the one the recording carries
+/// is withheld from this checkout, and a sentence invented to fill the gap would be wording no
+/// client could rely on; this one is at least the wording API Gateway is known to state for the
+/// failure the page hit.
+///
+/// What it never carries is a refusal of the internal lookup this module made inside the store
+/// that owns REST APIs: that one names a REST API identifier the caller never addressed and
+/// interpolates the account that store answers for.
+fn generation_failure() -> wire::StatusException {
     wire::StatusException {
-        exception: Some(NOT_FOUND_EXCEPTION.to_string()),
-        message: Some(message),
+        exception: Some(BAD_REQUEST_EXCEPTION.to_string()),
+        message: Some(UNRESOLVED_REST_ENDPOINT_MESSAGE.to_string()),
     }
 }
 
@@ -205,18 +229,18 @@ mod tests {
         }
     }
 
-    /// RULE: the generation reads the REST API the identifier names out of the service that
-    /// OWNS REST APIs, under the stage it names, and reports the exception that lookup hit —
-    /// the API's own refusal for an id it holds no REST API under, the stage's for an API it
-    /// holds no such stage of — while an endpoint it does hold is generated with nothing to
-    /// explain.
+    /// RULE: a generation that has no REST endpoint to read reports the PAGE'S OWN failure —
+    /// the class of the page's `RestEndpointIdentifier` validation failure and this service's
+    /// one sentence for it — whichever part of the identifier did not resolve, and never a
+    /// refusal of the internal lookup it made in the store that owns REST APIs; an endpoint
+    /// that store does hold is generated with nothing to explain.
     ///
     /// Driven over the helper rather than over the wire because the STAGE branch is reached
     /// only where the account holds an api of one id in BOTH control planes (the admission the
     /// write is served on resolves the pair against either store), which no single request can
     /// arrange: the two stores mint ids from sequences of their own.
     #[test]
-    fn a_generation_names_the_part_of_the_endpoint_that_did_not_resolve() {
+    fn a_generation_reports_the_pages_own_unresolved_identifier() {
         let engine = ::engine::InMemoryEngine::new();
         let held = "aaaa000001";
         {
@@ -235,35 +259,57 @@ mod tests {
         }
 
         // The rows span what the reading generalises over: the stage that service holds, a
-        // stage name it holds none of, and an id it holds no REST API under at all.
-        let cases: &[(&str, &str, &str, Option<String>)] = &[
-            ("the stage the REST API carries", held, "prod", None),
+        // stage name it holds none of, and an id it holds no REST API under at all. Both
+        // failing rows report ONE exception — the page's own — rather than the sentence the
+        // lookup inside the other store answers for its missing api or its missing stage.
+        let cases: &[(&str, &str, &str, bool)] = &[
+            ("the stage the REST API carries", held, "prod", false),
             (
                 "a stage name that REST API has none of",
                 held,
                 "beta",
-                Some(rest::NO_SUCH_STAGE.to_string()),
+                true,
             ),
             (
                 "an id no REST API of the account carries",
                 "zzzz000009",
                 "prod",
-                Some(rest::no_such_rest_api("zzzz000009")),
+                true,
             ),
         ];
-        for (case, rest_api_id, stage, expected) in cases {
+        for (case, rest_api_id, stage, fails) in cases {
             let answered =
                 rest_endpoint_generation_failure(&engine, &identified(rest_api_id, stage));
             let reported = answered
                 .as_ref()
                 .map(|failure| (failure.exception.clone(), failure.message.clone()));
-            let wanted = expected
-                .as_ref()
-                .map(|message| (Some(NOT_FOUND_EXCEPTION.to_string()), Some(message.clone())));
+            let wanted = fails.then(|| {
+                (
+                    Some(BAD_REQUEST_EXCEPTION.to_string()),
+                    Some(UNRESOLVED_REST_ENDPOINT_MESSAGE.to_string()),
+                )
+            });
             assert_eq!(
                 reported, wanted,
                 "case {case:?}: expected {wanted:?}, got {reported:?}"
             );
+            // And nothing of the other store's own refusals travels in it: neither the
+            // sentence it answers an unknown REST API identifier with — which interpolates the
+            // account it answers for — nor the one it answers an unknown stage with.
+            let message = reported
+                .as_ref()
+                .and_then(|(_exception, message)| message.clone())
+                .unwrap_or_default();
+            for internal in [
+                rest::no_such_rest_api(rest_api_id),
+                rest::NO_SUCH_STAGE.to_string(),
+            ] {
+                assert_ne!(
+                    message, internal,
+                    "case {case:?}: the page's exception must not carry the internal lookup's \
+                     own refusal, got {message:?}"
+                );
+            }
         }
     }
 }

@@ -132,7 +132,11 @@ fn expected_endpoint(row: &Row, rest_api_id: &str) -> String {
 
 /// The published endpoint split into the authority a client dials and the path it carries —
 /// empty for an endpoint that is a bare host.
-fn dialed_parts(endpoint: &str) -> (String, String) {
+///
+/// `pub(crate)` because it is the one split every suite that DIALS an address this service
+/// published needs, the exported definition's one Server Object among them
+/// (`crate::api_export_published_server`).
+pub(crate) fn dialed_parts(endpoint: &str) -> (String, String) {
     let without_scheme = endpoint
         .split_once("://")
         .map_or(endpoint, |(_scheme, rest)| rest);
