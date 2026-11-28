@@ -2,25 +2,25 @@
 
 //! Reading back a datapoint published at the CURRENT instant, end to end over the wire.
 //!
-//! ONE rule, asserted over a table: **a read is answered from every datapoint of its range at the
-//! granularity that datapoint is STORED at, straight away — it never withholds a datapoint
-//! because the period asked for is finer than the span the datapoint is stored in. "For metrics
-//! with regular resolution, a period can be as short as one minute (60 seconds) and must be a
-//! multiple of 60. For high-resolution metrics that are collected at intervals of less than one
-//! minute, the period can be 1, 5, 10, 20, 30, 60, or any multiple of 60. High-resolution metrics
-//! are those metrics stored by a `PutMetricData` call that includes a `StorageResolution` of 1
-//! second."
+//! ONE rule, asserted over a table: **a read is answered from every datapoint of its range whose
+//! own storage resolution divides the period asked for, at the granularity that datapoint is
+//! STORED at, straight away — no wait is needed for a datapoint to become readable, and a period
+//! finer than the span a datapoint is stored in retrieves it not at all. "For metrics with regular
+//! resolution, a period can be as short as one minute (60 seconds) and must be a multiple of 60.
+//! For high-resolution metrics that are collected at intervals of less than one minute, the period
+//! can be 1, 5, 10, 20, 30, 60, or any multiple of 60. High-resolution metrics are those metrics
+//! stored by a `PutMetricData` call that includes a `StorageResolution` of 1 second."
 //! (`smithy_query(query="doc",shape="GetMetricStatisticsInput",member="Period")`) — so a
 //! regular-resolution datapoint ("CloudWatch stores at 1-minute resolution",
-//! `MetricDatum$StorageResolution`) published now is read back now at every one of the
-//! divisions of a minute a read's windows are laid on (5, 10, 20 and 30 seconds, and the minute
-//! itself), reported at the minute it is stored in, while its high-resolution twin is reported at
-//! the window of the second it was published at.**
+//! `MetricDatum$StorageResolution`) published now is read back now at the minute it is stored in,
+//! reported at that minute, and is answered with NO datapoint at any of the sub-minute divisions a
+//! read's windows are laid on, while its high-resolution twin is reported at the window of the
+//! second it was published at, at every one of those periods.**
 //!
-//! The ONE period that resolves detail a regular-resolution series holds none of is the one-second
-//! period, and it too is answered with the whole-minute aggregate the series holds, at that
-//! minute's own boundary, whether or not the clock has left the minute — the half of the rule
-//! `metric_open_span_reads` tables over spans the clock has and has not left.
+//! What a period the series is not stored at answers with is nothing, not a refusal: "you must
+//! specify the period as follows or no data points in that time range is returned" (the same
+//! member) — both reads are 200, and only the storage class decides which answers with a
+//! datapoint.
 //!
 //! The rows differ along what the rule generalises over: the period the read asks for (every
 //! sub-minute value `MetricStat$Period` admits, plus the minute itself), and the storage
@@ -44,15 +44,19 @@ const NAMESPACE: &str = "MyApp/LiveReadBack";
 /// `Sum` as well as by its instant.
 const VALUE: f64 = 42.0;
 
-/// The periods a read of a live datapoint is answered at whatever granularity the series is
-/// stored at: the divisions of a minute a read's windows are laid on — "If you set Period to 5,
-/// 10, 20, or 30, the start time of your request is rounded down to the nearest time that
-/// corresponds to even 5-, 10-, 20-, or 30-second divisions of a minute."
-/// (`GetMetricStatisticsInput$StartTime`) — the minute itself, the period a regular-resolution
-/// series is stored at, and the one period below those divisions, which resolves the per-second
-/// detail only high-resolution storage keeps (`MetricDatum$StorageResolution`) and is answered
-/// from a regular-resolution series at the minute it is stored at all the same.
+/// The periods a read of a live datapoint asks for: the divisions of a minute a read's windows
+/// are laid on — "If you set Period to 5, 10, 20, or 30, the start time of your request is
+/// rounded down to the nearest time that corresponds to even 5-, 10-, 20-, or 30-second divisions
+/// of a minute." (`GetMetricStatisticsInput$StartTime`) — the minute itself, the period a
+/// regular-resolution series IS stored at, and the one period below those divisions, which
+/// resolves the per-second detail only high-resolution storage keeps
+/// (`MetricDatum$StorageResolution`).
 const SERVED_PERIODS: [i64; 6] = [1, 5, 10, 20, 30, 60];
+
+/// The one period of [`SERVED_PERIODS`] a regular-resolution series IS retrievable at: "a period
+/// can be as short as one minute (60 seconds) and must be a multiple of 60"
+/// (`GetMetricStatisticsInput$Period`).
+const MINUTE_PERIOD: i64 = 60;
 
 /// The two spellings of regular resolution, which "if you omit this, the default of 60 is used"
 /// makes one class: `StorageResolution` 60, and the member left out.
@@ -196,6 +200,14 @@ async fn a_datapoint_published_now_is_read_back_now_at_every_served_period() {
         let (start, end) = (published_at - 2.0 * MINUTE, published_at + 2.0 * MINUTE);
 
         for period in SERVED_PERIODS {
+            // A regular-resolution series holds one aggregate per minute and is retrievable only
+            // at the multiples of that minute: the minute period reports it at the minute it is
+            // stored in, and every finer period is answered with no datapoint at all.
+            let expected = if period % MINUTE_PERIOD == 0 {
+                vec![(minute, VALUE)]
+            } else {
+                Vec::new()
+            };
             for (reader, got) in [
                 (
                     "GetMetricStatistics",
@@ -206,13 +218,10 @@ async fn a_datapoint_published_now_is_read_back_now_at_every_served_period() {
                     metric_data(&router, &metric, start, end, period).await,
                 ),
             ] {
-                // A regular-resolution series holds one aggregate per minute, so every period
-                // here reports it at the minute it is stored in, with the published value.
                 assert_eq!(
-                    got,
-                    vec![(minute, VALUE)],
+                    got, expected,
                     "case {case:?} at Period {period}: a datapoint published at {published_at} is \
-                     stored in the minute {minute} and must be answered by {reader} as it stands, \
+                     stored in the minute {minute}, so {reader} must answer with {expected:?}, \
                      got {got:?}"
                 );
             }

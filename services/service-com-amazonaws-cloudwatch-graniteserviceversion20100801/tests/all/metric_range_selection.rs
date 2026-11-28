@@ -4,26 +4,26 @@
 //! under, end to end over the wire.
 //!
 //! ONE rule, asserted over a table: **a read selects every datapoint whose STORED SPAN reaches
-//! into the requested range — "The value specified is inclusive; results include data points
-//! with the specified time stamp" (`GetMetricStatisticsInput$StartTime`) against "The value
-//! specified is exclusive" (`$EndTime`) — where a datapoint's stored span is the one its own
-//! `StorageResolution` aggregates it into: its own second for a high-resolution datapoint
-//! ("Setting this to 1 specifies this metric as a high-resolution metric, so that CloudWatch
-//! stores the metric with sub-minute resolution down to one second") and the whole minute it was
-//! published in for a regular-resolution one ("Setting this to 60 specifies this metric as
-//! regular resolution, which CloudWatch stores at 1-minute resolution",
-//! `smithy_query(query="doc",shape="MetricDatum",member="StorageResolution")`). Each selected
-//! datapoint is reported under the period window that span BEGINS in — so a regular-resolution
-//! datapoint is reported under its whole minute however short a period the read asked for, even
-//! where that minute began before the range did, that minute having no other instant to be
-//! reported at.**
+//! into the requested range AND whose storage resolution divides the requested period — "The
+//! value specified is inclusive; results include data points with the specified time stamp"
+//! (`GetMetricStatisticsInput$StartTime`) against "The value specified is exclusive" (`$EndTime`)
+//! — where a datapoint's stored span is the one its own `StorageResolution` aggregates it into:
+//! its own second for a high-resolution datapoint ("Setting this to 1 specifies this metric as a
+//! high-resolution metric, so that CloudWatch stores the metric with sub-minute resolution down to
+//! one second") and the whole minute it was published in for a regular-resolution one ("Setting
+//! this to 60 specifies this metric as regular resolution, which CloudWatch stores at 1-minute
+//! resolution", `smithy_query(query="doc",shape="MetricDatum",member="StorageResolution")`). Each
+//! selected datapoint is reported under the period window that span BEGINS in — so a
+//! regular-resolution datapoint is reported under its whole minute even where that minute began
+//! before the range did, that minute having no other instant to be reported at.**
 //!
-//! So the storage granularity decides what a range is judged against and the bucket a selected
-//! datapoint is reported at: a regular-resolution datapoint stands for the minute it is stored
-//! in, not for the instant inside that minute it happened to be published at, so a read asking
-//! for a period finer than that minute is still served it — bucketed by the minute (the
-//! `metric_storage_resolution` suite holds that half of the rule, and
-//! `per_second_period_selection` the one-second period's own).
+//! So the storage granularity decides what a range is judged against, which periods can retrieve
+//! the datapoint at all and the bucket a selected one is reported at: a regular-resolution
+//! datapoint stands for the minute it is stored in, not for the instant inside that minute it
+//! happened to be published at, and a read asking for a period finer than that minute is answered
+//! with no datapoint for it — "you must specify the period as follows or no data points in that
+//! time range is returned" (`GetMetricStatisticsInput$Period`), the half of the rule the
+//! `metric_storage_resolution` and `per_second_period_selection` suites table over.
 //!
 //! The rows differ along what the rule generalises over: where inside its minute the observation
 //! is published (the first second, the middle, and the last second — the phase that decides
@@ -222,16 +222,18 @@ async fn a_read_selects_by_the_publish_instant_and_reports_at_the_stored_bucket(
 
         // The bucket the rule puts the observation in: the period window of its own publish
         // instant where the sub-minute detail is stored, and the whole minute it was published
-        // in otherwise — whatever period the read asks for, since the series holds no finer
-        // detail to report (`crate::state::windows_by_unit`, and the
-        // `per_second_period_selection` suite). Every period here divides a minute, so the two
-        // agree at one minute.
+        // in otherwise — and nothing at all where the period asked for is finer than the minute
+        // that observation is stored at, no such period being one it can be retrieved at
+        // (`crate::state::windows_by_unit`, and the `per_second_period_selection` suite). Every
+        // period here divides a minute, so the two agree at one minute.
         let expected: Vec<(f64, f64)> = if resolution == Some(1) {
             #[allow(clippy::cast_precision_loss)]
             let span = period as f64;
             vec![((stamp / span).floor() * span, VALUE)]
-        } else {
+        } else if period % 60 == 0 {
             vec![(base, VALUE)]
+        } else {
+            Vec::new()
         };
 
         for (reader, got) in [
@@ -273,13 +275,14 @@ async fn a_range_the_stored_span_does_not_reach_selects_nothing() {
     // instant: a range that closes before a high-resolution observation was published selects
     // nothing, because the second it is stored in lies outside that range — while the same
     // range over a regular-resolution series selects the observation, because the MINUTE it is
-    // stored in reaches into the range, and reports it under that minute.
+    // stored in reaches into the range, and reports it under that minute at the periods that
+    // minute can be retrieved at.
     let router = build_router();
     let base = base_minute();
 
     // (case, the StorageResolution published, whether the span it is stored as reaches the
     // range) — the span that reaches it holds the observation, and reports it under that
-    // span's own start, at every period the read may ask for.
+    // span's own start at every period its own resolution divides.
     let rows: [(&str, Option<i64>, bool); 3] = [
         ("high resolution", Some(1), false),
         ("regular resolution", Some(60), true),
@@ -294,7 +297,7 @@ async fn a_range_the_stored_span_does_not_reach_selects_nothing() {
             // minute: the minute the observation is stored in reaches into the range; the
             // second it is stored in does not.
             publish(&router, &metric, resolution, base + 50.0).await;
-            let expected: Vec<(f64, f64)> = if reaches {
+            let expected: Vec<(f64, f64)> = if reaches && period % 60 == 0 {
                 vec![(base, VALUE)]
             } else {
                 Vec::new()

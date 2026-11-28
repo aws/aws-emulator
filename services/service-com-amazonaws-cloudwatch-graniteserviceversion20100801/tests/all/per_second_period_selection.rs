@@ -3,11 +3,11 @@
 //! WHICH data a one-second `Period` selects, and where each of them is reported, end to end over
 //! the wire.
 //!
-//! ONE rule, asserted over a table: **a read is answered from every datum its range holds, at the
-//! span the datum's own storage class stores it in, whatever period it asked for — "Setting this to
-//! 1 specifies this metric as a high-resolution metric, so that CloudWatch stores the metric with
-//! sub-minute resolution down to one second. Setting this to 60 specifies this metric as a
-//! regular-resolution metric, which CloudWatch stores at 1-minute resolution… This field is
+//! ONE rule, asserted over a table: **a read is answered from every datum of its range whose own
+//! storage class DIVIDES the period asked for, each at the span that class stores it in — "Setting
+//! this to 1 specifies this metric as a high-resolution metric, so that CloudWatch stores the
+//! metric with sub-minute resolution down to one second. Setting this to 60 specifies this metric
+//! as a regular-resolution metric, which CloudWatch stores at 1-minute resolution… This field is
 //! optional, if you do not specify it the default of 60 is used."
 //! (`smithy_query(query="doc",shape="MetricDatum",member="StorageResolution")`) against "For
 //! metrics with regular resolution, a period can be as short as one minute (60 seconds) and must be
@@ -15,15 +15,15 @@
 //! minute, the period can be 1, 5, 10, 20, 30, 60, or any multiple of 60."
 //! (`smithy_query(query="doc",shape="GetMetricStatisticsInput",member="Period")`). A read at the
 //! one-second period resolves per-second detail, which only high-resolution storage keeps, so that
-//! class is reported at the second it was published in while a regular-resolution datum is reported
-//! at the whole minute it is stored in — the aggregate the store actually holds for it. The
-//! one-second period selects NEITHER class out of the answer: a caller cannot tell a range with no
-//! data from one answered at a granularity coarser than it asked for.**
+//! class is reported at the second it was published in while a regular-resolution datum is not
+//! answered at all — "you must specify the period as follows or no data points in that time range
+//! is returned" (the same member). Neither read is an error: the sub-minute read of a
+//! regular-resolution datum is a 200 carrying an empty series.**
 //!
-//! So the storage class a datum was published with decides WHERE a sub-second-resolving read
-//! reports it, and it is a property of the DATUM rather than of the series or of the call: two data
-//! published by one `PutMetricData` are reported at different instants by one read, which is the
-//! recorded shape this suite opens with.
+//! So the storage class a datum was published with decides WHICH periods answer from it, and it is
+//! a property of the DATUM rather than of the series or of the call: two data published by one
+//! `PutMetricData` are answered differently by one read, which is the recorded shape this suite
+//! opens with.
 //!
 //! The rows differ along what the rule generalises over: the storage class published (1, 60, and
 //! the omitted member that is documented to read as 60), the period the read asks for (every
@@ -203,8 +203,9 @@ async fn metric_data_points(
     points
 }
 
-/// RULE: every period answers from every storage class, each datum reported at the span its own
-/// class stores it in — the second for high resolution, the whole minute for regular resolution.
+/// RULE: a period answers from the storage classes it is a multiple of, each datum at the span its
+/// own class stores it in — the second for high resolution, the whole minute for regular
+/// resolution, and nothing at all for a regular-resolution datum read below the minute.
 #[tokio::test]
 async fn a_per_second_read_answers_from_either_class_at_the_span_it_stores_it_in() {
     let router = build_router();
@@ -240,10 +241,15 @@ async fn a_per_second_read_answers_from_either_class_at_the_span_it_stores_it_in
                 window_of(stamped, MINUTE)
             };
             for period in PERIODS {
-                // Every period is answered from the datum, in the window of that period the span
-                // it is stored in begins in.
+                // A period the datum's own storage class divides is answered from it, in the
+                // window of that period the span it is stored in begins in; a finer period is
+                // answered with no datapoint at all.
                 #[allow(clippy::cast_precision_loss)]
-                let expected = vec![(window_of(stored_at, period as f64), VALUE)];
+                let expected = if high_resolution || period % 60 == 0 {
+                    vec![(window_of(stored_at, period as f64), VALUE)]
+                } else {
+                    Vec::new()
+                };
                 let case = format!("{class} {phase}, read at Period {period}");
                 for (reader, got) in [
                     (
@@ -290,7 +296,7 @@ async fn a_per_second_read_answers_from_either_class_at_the_span_it_stores_it_in
 /// by the call: the recorded shape, read at the one period that tells them apart and at the period
 /// a regular-resolution series is stored at.
 #[tokio::test]
-async fn one_call_can_publish_data_of_both_classes_and_a_per_second_read_sees_both() {
+async fn one_call_can_publish_data_of_both_classes_and_a_per_second_read_sees_only_the_high_one() {
     let router = build_router();
     let stamped = now_secs();
     let prefix = "Pair";
@@ -302,9 +308,9 @@ async fn one_call_can_publish_data_of_both_classes_and_a_per_second_read_sees_bo
     let defaulted = metric_name(prefix, None);
 
     // At the per-second period the high-resolution datum of that call is reported at the second it
-    // was published in, and the regular-resolution ones at the minute they are stored in — the one
-    // read tells the two classes apart by the instant each is answered at, not by answering one of
-    // them with nothing.
+    // was published in, and the regular-resolution ones not at all — the one read tells the two
+    // classes apart, and the minute period below shows the series the empty answer belongs to does
+    // hold the datum.
     assert_eq!(
         statistics_points(&router, &high, start, end, PER_SECOND_PERIOD).await,
         vec![(window_of(stamped, 1.0), VALUE)],
@@ -313,12 +319,10 @@ async fn one_call_can_publish_data_of_both_classes_and_a_per_second_read_sees_bo
     );
     for metric in [&regular, &defaulted] {
         let got = statistics_points(&router, metric, start, end, PER_SECOND_PERIOD).await;
-        assert_eq!(
-            got,
-            vec![(window_of(stamped, MINUTE), VALUE)],
+        assert!(
+            got.is_empty(),
             "case {metric:?}: a regular-resolution datum of the same call keeps no per-second \
-             detail, so a per-second read is answered with the whole minute it is stored in, got \
-             {got:?}"
+             detail, so a per-second read is answered with no datapoint at all, got {got:?}"
         );
     }
 

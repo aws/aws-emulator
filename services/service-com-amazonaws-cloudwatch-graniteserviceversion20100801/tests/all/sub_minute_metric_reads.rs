@@ -3,26 +3,26 @@
 //! What a SUB-MINUTE read answers with over a series stored at a coarser granularity, end to end
 //! over the wire.
 //!
-//! ONE rule, asserted over a table: **a read is answered from every datapoint its range holds, at
-//! the granularity that datapoint is STORED at, whatever period it asked for — "For metrics with
+//! ONE rule, asserted over a table: **a read is answered from every datapoint its range holds
+//! whose own storage resolution divides the period it asked for, at the granularity that datapoint
+//! is STORED at, and from no datapoint stored coarser than that period — "For metrics with
 //! regular resolution, a period can be as short as one minute (60 seconds) and must be a multiple
 //! of 60. For high-resolution metrics that are collected at intervals of less than one minute, the
 //! period can be 1, 5, 10, 20, 30, 60, or any multiple of 60."
 //! (`smithy_query(query="doc",shape="GetMetricStatisticsInput",member="Period")`) with "Setting
 //! this to 60 specifies this metric as regular resolution, which CloudWatch stores at 1-minute
 //! resolution" (`MetricDatum$StorageResolution`). A series stored at 1-minute resolution holds one
-//! aggregate per whole minute, so a read of it at ANY period finer than a minute answers with that
-//! one aggregate, stamped on the minute's own boundary — never with nothing. No period a read may
-//! ask for withholds an observation the store holds: a caller cannot tell a window with no data
-//! from a window answered at a granularity the store aggregates coarser than the request.**
+//! aggregate per whole minute and no sub-minute detail at all, so a read of it at ANY period finer
+//! than a minute answers with an empty series — "you must specify the period as follows or no data
+//! points in that time range is returned" (the same member) — while the same observations
+//! published at one-second resolution answer with the sub-minute buckets that series does hold.**
 //!
-//! The INVARIANT each row asserts is that: whatever period a read asks for, the observations it
-//! answers over are all of them — the `SampleCount` and `Sum` summed across the datapoints of a
-//! sub-minute read equal those of the same range read at the minute the series is stored at, and
-//! every instant answered lies inside the minute the observations were published in. For a
-//! regular-resolution series the answer is exactly ONE datapoint carrying the whole minute's
-//! aggregate; for a high-resolution twin of the same observations it is the sub-minute buckets that
-//! series does hold.
+//! The INVARIANT each row asserts is that: the observations a read answers over are exactly those
+//! the period RETRIEVES — for a high-resolution series the `SampleCount` and `Sum` summed across
+//! the datapoints of a sub-minute read equal those of the same range read at the minute, and every
+//! instant answered lies inside the minute the observations were published in; for a
+//! regular-resolution series, which holds one aggregate for the whole minute, a sub-minute read
+//! answers with nothing while the minute's own period answers with that one aggregate.
 //!
 //! The rows differ along what the rule generalises over: the storage resolution published (1, 60
 //! and the omitted member, which "if you omit this, the default of 60 is used"), how many
@@ -300,7 +300,7 @@ fn totals(buckets: &[Bucket]) -> (f64, f64) {
 }
 
 #[tokio::test]
-async fn a_sub_minute_read_answers_over_every_observation_the_minute_holds() {
+async fn a_sub_minute_read_answers_only_from_a_series_stored_at_that_granularity() {
     let router = build_router();
 
     for (placement, minutes_away) in PLACEMENTS {
@@ -358,26 +358,26 @@ async fn a_sub_minute_read_answers_over_every_observation_the_minute_holds() {
                             metric_data_buckets(&router, &case, &metric, period, start, end).await,
                         ),
                     ] {
-                        // The invariant: a finer period answers over the SAME observations, so
-                        // nothing the minute holds is selected out of the result.
-                        assert_eq!(
-                            totals(&got),
-                            (expected_samples, expected_sum),
-                            "case {case:?} at Period {period}: {reader} must answer over every \
-                             observation the minute holds ({expected_samples} of them, summing to \
-                             {expected_sum}), got {got:?}"
-                        );
-                        assert!(
-                            got.iter()
-                                .all(|bucket| bucket.at >= minute && bucket.at < minute + MINUTE),
-                            "case {case:?} at Period {period}: every instant {reader} answers \
-                             with lies inside the minute the observations were published in \
-                             ({minute}), got {got:?}"
-                        );
                         if resolution == Some(1) {
                             // Only a high-resolution series stores the sub-minute detail a finer
-                            // period resolves, so only it is answered as more than one window:
-                            // the observations lie one second apart from the minute's start, so
+                            // period resolves, and there the invariant holds: a finer period
+                            // answers over the SAME observations, so nothing the minute holds is
+                            // selected out of the result.
+                            assert_eq!(
+                                totals(&got),
+                                (expected_samples, expected_sum),
+                                "case {case:?} at Period {period}: {reader} must answer over \
+                                 every observation the minute holds ({expected_samples} of them, \
+                                 summing to {expected_sum}), got {got:?}"
+                            );
+                            assert!(
+                                got.iter().all(|bucket| bucket.at >= minute
+                                    && bucket.at < minute + MINUTE),
+                                "case {case:?} at Period {period}: every instant {reader} answers \
+                                 with lies inside the minute the observations were published in \
+                                 ({minute}), got {got:?}"
+                            );
+                            // The observations lie one second apart from the minute's start, so
                             // the windows they fall in are the `period`-wide ones that span them.
                             let span = usize::try_from(period).expect("a positive period");
                             let expected_windows = (count - 1) / span + 1;
@@ -389,12 +389,13 @@ async fn a_sub_minute_read_answers_over_every_observation_the_minute_holds() {
                                  in, expected {expected_windows}, got {got:?}"
                             );
                         } else {
-                            assert_eq!(
-                                got, reference,
-                                "case {case:?} at Period {period}: a regular-resolution series \
-                                 holds one aggregate per minute, so {reader} must answer with \
-                                 exactly the window it answers at Period {MINUTE_PERIOD}, got \
-                                 {got:?}"
+                            // A regular-resolution series holds one aggregate for the whole
+                            // minute and nothing finer, so no sub-minute period retrieves it.
+                            assert!(
+                                got.is_empty(),
+                                "case {case:?} at Period {period}: a regular-resolution series is \
+                                 retrievable only at multiples of the minute it is stored at, so \
+                                 {reader} must answer with no datapoint, got {got:?}"
                             );
                         }
                     }

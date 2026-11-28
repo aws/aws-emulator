@@ -1,30 +1,34 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Reading a series at a period FINER than the span its datapoints are stored in, including while
-//! the clock is still INSIDE that span, end to end over the wire.
+//! Reading a series whose datapoints are stored in a span the clock has NOT left yet, at the
+//! period that span is stored at and at periods finer than it, end to end over the wire.
 //!
-//! ONE rule, asserted over a table: **a read at a period finer than the span a datapoint is
-//! stored in is answered with that WHOLE span's aggregate, at the start of the span the datapoint
-//! is stored in — "For metrics with regular resolution, a period can be as short as one minute (60
-//! seconds) and must be a multiple of 60. For high-resolution metrics that are collected at
-//! intervals of less than one minute, the period can be 1, 5, 10, 20, 30, 60, or any multiple of
-//! 60. High-resolution metrics are those metrics stored by a `PutMetricData` call that includes a
-//! `StorageResolution` of 1 second."
-//! (`smithy_query(query="doc",shape="GetMetricStatisticsInput",member="Period")`) against "Setting
-//! this to 60 specifies this metric as regular resolution, which CloudWatch stores at 1-minute
-//! resolution" (`MetricDatum$StorageResolution`). A series stored at 1-minute resolution holds one
-//! aggregate per whole minute, so EVERY period a read may ask for — the one-second period
-//! included, and whether or not the clock has left the minute the datapoint is stored in — is
-//! answered with that aggregate, stamped on the minute's own boundary. A read is never answered
-//! with nothing for having asked at a granularity the series does not keep, because a caller
-//! cannot tell that from a series with no data in the window at all.**
+//! ONE rule, asserted over a table: **whether the clock has left the span a datapoint is stored in
+//! decides nothing about a read: the aggregate the store holds for that span is answered as it
+//! stands at the period the span IS stored at, and the periods a datapoint can be retrieved at are
+//! the multiples of its own storage resolution and no finer ones — "For metrics with regular
+//! resolution, a period can be as short as one minute (60 seconds) and must be a multiple of 60.
+//! For high-resolution metrics that are collected at intervals of less than one minute, the period
+//! can be 1, 5, 10, 20, 30, 60, or any multiple of 60. High-resolution metrics are those metrics
+//! stored by a `PutMetricData` call that includes a `StorageResolution` of 1 second."
+//! (`smithy_query(query="doc",shape="GetMetricStatisticsInput",member="Period")`) with "you must
+//! specify the period as follows or no data points in that time range is returned" (the same
+//! member) against "Setting this to 60 specifies this metric as regular resolution, which
+//! CloudWatch stores at 1-minute resolution" (`MetricDatum$StorageResolution`). So a
+//! regular-resolution datapoint is answered at the minute it is stored in and at multiples of it,
+//! whether or not the clock has left that minute, and a sub-minute read of it answers with no
+//! datapoint at all — a 200 with an empty series, not a refusal.**
+//!
+//! What a sub-minute read answers with is therefore decided by the STORAGE CLASS and not by the
+//! clock: the high-resolution twin of the very same instant, in the very same open minute, is
+//! answered at every sub-minute period, in the window of the second it was published in. That twin
+//! is the control on every row, so no row can pass by answering nothing at all.
 //!
 //! The rows differ along what the rule generalises over: the period the read asks for (every
 //! sub-minute value `MetricStat$Period` admits, the minute itself and a multiple of it), the
 //! storage resolution the datapoint was published at (1, 60 and omitted — "if you omit this, the
 //! default of 60 is used"), and whether the span the datapoint is stored in is one the clock has
-//! left. A high-resolution datapoint of the same instant is the control on every row: its span is
-//! its own second, so it is reported in the window of that second instead of at the minute.
+//! left.
 //!
 //! Nothing here waits on the clock and no row's outcome depends on how fast the host runs: every
 //! instant a row asserts is computed from the time stamp its publish carried, and the open span
@@ -56,15 +60,15 @@ const SPAN_DISTANCE_MINUTES: f64 = 10.0;
 
 /// Every period a read may ask for below a minute — the high-resolution set
 /// `GetMetricStatisticsInput$Period` lists — each one finer than a regular-resolution
-/// datapoint's own span.
+/// datapoint's own span, and so none of the granularities such a datapoint is retrievable at.
 const SUB_MINUTE_PERIODS: [i64; 5] = [1, 5, 10, 20, 30];
 
 /// The one sub-minute period below the divisions of a minute a read's own windows are laid on:
 /// the period that resolves the per-second detail only high-resolution storage keeps.
 const PER_SECOND_PERIOD: i64 = 1;
 
-/// The periods a regular-resolution datapoint's span is NOT finer than: the minute it is stored
-/// at and a multiple of it.
+/// The periods a regular-resolution datapoint IS retrievable at: the minute it is stored at and a
+/// multiple of it.
 const MINUTE_OR_MORE_PERIODS: [i64; 2] = [60, 300];
 
 /// The first of [`MINUTE_OR_MORE_PERIODS`]: the minute a regular-resolution datapoint is stored
@@ -207,7 +211,7 @@ async fn metric_data(
 }
 
 #[tokio::test]
-async fn a_sub_minute_read_of_an_open_minute_reports_the_regular_resolution_datapoint() {
+async fn a_sub_minute_read_of_an_open_minute_answers_from_the_class_that_stores_it() {
     let router = build_router();
     // A minute the clock has NOT left, by a margin no host can run through.
     let minute = this_minute() + SPAN_DISTANCE_MINUTES * MINUTE;
@@ -219,14 +223,13 @@ async fn a_sub_minute_read_of_an_open_minute_reports_the_regular_resolution_data
     for (case, resolution) in REGULAR_RESOLUTIONS {
         let metric = format!("Open{}", resolution.unwrap_or_default());
         publish(&router, &metric, stamped, resolution).await;
-        // The control published at the SAME instant, whose span is its own second: the two
-        // differ only in where each is reported.
+        // The control published at the SAME instant into the SAME open minute, whose span is its
+        // own second: the two differ only in the class each was stored at.
         let control = format!("{metric}HighRes");
         publish(&router, &control, stamped, Some(1)).await;
 
-        // Every period finer than the minute the series is stored at is answered with that
-        // minute's aggregate, at the minute's own boundary — a minute the clock has not left
-        // included, since the store holds one aggregate for it either way.
+        // No period finer than the minute the series is stored at retrieves it, whether or not
+        // the clock has left that minute: such a read is answered with an empty series.
         for period in SUB_MINUTE_PERIODS {
             for (reader, got) in [
                 (
@@ -238,16 +241,15 @@ async fn a_sub_minute_read_of_an_open_minute_reports_the_regular_resolution_data
                     metric_data(&router, &metric, start, end, period).await,
                 ),
             ] {
-                assert_eq!(
-                    got,
-                    vec![(minute, VALUE)],
-                    "case {case:?} at Period {period}: the datapoint of a running minute is \
-                     reported at the minute it is stored in, so {reader} must answer with it, got \
-                     {got:?}"
+                assert!(
+                    got.is_empty(),
+                    "case {case:?} at Period {period}: a datapoint stored at 1-minute resolution \
+                     is retrievable only at multiples of a minute, so {reader} must answer with \
+                     no datapoint, got {got:?}"
                 );
             }
             // The high-resolution twin stores the second it was published in, so that second's
-            // own window is where it is reported.
+            // own window is where it is reported — in the same open minute, at the same period.
             #[allow(clippy::cast_precision_loss)]
             let expected = window_of(window_of(stamped, 1.0), period as f64);
             for (reader, got) in [
@@ -313,7 +315,7 @@ async fn a_sub_minute_read_of_an_open_minute_reports_the_regular_resolution_data
 }
 
 #[tokio::test]
-async fn a_sub_minute_read_of_a_closed_minute_reports_the_regular_resolution_datapoint() {
+async fn a_sub_minute_read_of_a_closed_minute_answers_from_the_class_that_stores_it() {
     let router = build_router();
     // A minute that closed well before this run, and recent enough to sit inside the tier a
     // sub-minute period is served from ("Data points with a period of less than 60 seconds are
@@ -326,6 +328,9 @@ async fn a_sub_minute_read_of_a_closed_minute_reports_the_regular_resolution_dat
         let metric = format!("Closed{}", resolution.unwrap_or_default());
         publish(&router, &metric, stamped, resolution).await;
 
+        // A closed minute's aggregate is complete, and still retrievable only at the multiples
+        // of the minute it is stored at: so the sub-minute reads answer with nothing and the
+        // minute's own period answers with that whole aggregate.
         for period in SUB_MINUTE_PERIODS {
             for (reader, got) in [
                 (
@@ -337,13 +342,30 @@ async fn a_sub_minute_read_of_a_closed_minute_reports_the_regular_resolution_dat
                     metric_data(&router, &metric, start, end, period).await,
                 ),
             ] {
-                assert_eq!(
-                    got,
-                    vec![(closed, VALUE)],
-                    "case {case:?} at Period {period}: a closed minute's aggregate is complete, \
-                     so {reader} must answer with it at that minute's own boundary, got {got:?}"
+                assert!(
+                    got.is_empty(),
+                    "case {case:?} at Period {period}: a closed minute's aggregate is stored at \
+                     1-minute resolution, so a finer period retrieves nothing and {reader} must \
+                     answer with no datapoint, got {got:?}"
                 );
             }
+        }
+        for (reader, got) in [
+            (
+                "GetMetricStatistics",
+                datapoints(&router, &metric, start, end, MINUTE_PERIOD).await,
+            ),
+            (
+                "GetMetricData",
+                metric_data(&router, &metric, start, end, MINUTE_PERIOD).await,
+            ),
+        ] {
+            assert_eq!(
+                got,
+                vec![(closed, VALUE)],
+                "case {case:?} at Period {MINUTE_PERIOD}: the aggregate of the closed minute is \
+                 answered at that minute's own boundary, so {reader} must report it, got {got:?}"
+            );
         }
     }
 }
@@ -351,15 +373,15 @@ async fn a_sub_minute_read_of_a_closed_minute_reports_the_regular_resolution_dat
 /// The RECORDED shape of the one-second half of the rule: a datum published at the CURRENT
 /// instant, read at the per-second period straight afterwards.
 ///
-/// The minute the publish falls in is the minute now running, and the read is answered with the
-/// one aggregate that minute holds, stamped on the minute's own boundary — the series has data in
-/// the window, so a read at a period the series is not stored at reports it rather than looking
-/// like no traffic. The high-resolution twin of the same instant is the control that keeps the row
-/// from passing vacuously. Which instant each expectation names comes from the time stamp the
-/// publish carried, so nothing here depends on how fast the host runs or on whether the minute
-/// closes between the publish and the read.
+/// The minute the publish falls in is the minute now running, and a regular-resolution datum of it
+/// is not retrievable at a period finer than that minute, so the read is answered with an empty
+/// series while the minute's own period answers with the aggregate it holds. The high-resolution
+/// twin of the same instant is the control that keeps the row from passing vacuously. Which
+/// instant each expectation names comes from the time stamp the publish carried, so nothing here
+/// depends on how fast the host runs or on whether the minute closes between the publish and the
+/// read.
 #[tokio::test]
-async fn a_one_second_read_of_the_running_minute_reports_the_regular_resolution_datapoint() {
+async fn a_one_second_read_of_the_running_minute_answers_only_the_high_resolution_class() {
     let router = build_router();
 
     for (case, resolution) in REGULAR_RESOLUTIONS {
@@ -383,14 +405,22 @@ async fn a_one_second_read_of_the_running_minute_reports_the_regular_resolution_
                 metric_data(&router, &metric, start, end, PER_SECOND_PERIOD).await,
             ),
         ] {
-            assert_eq!(
-                got,
-                vec![(minute, VALUE)],
-                "case {case:?} at Period {PER_SECOND_PERIOD}: the aggregate the minute {minute} \
-                 holds is what a read of the per-second detail it keeps none of is answered with, \
-                 so {reader} must report it at that minute's boundary, got {got:?}"
+            assert!(
+                got.is_empty(),
+                "case {case:?} at Period {PER_SECOND_PERIOD}: the minute {minute} holds its \
+                 aggregate at 1-minute resolution, which no per-second read retrieves, so \
+                 {reader} must answer with no datapoint, got {got:?}"
             );
         }
+        // The same datum IS answered at the minute it is stored at, so what the per-second read
+        // reports nothing about is the granularity and not the series.
+        let at_the_minute = datapoints(&router, &metric, start, end, MINUTE_PERIOD).await;
+        assert_eq!(
+            at_the_minute,
+            vec![(minute, VALUE)],
+            "case {case:?}: the datum of the running minute is answered at Period \
+             {MINUTE_PERIOD}, got {at_the_minute:?}"
+        );
 
         // The high-resolution twin stores exactly the detail that period asks for, so it is
         // reported at the second it was published in.

@@ -3,25 +3,25 @@
 //! What `GetMetricData` answers for a series holding BOTH storage resolutions, at every period a
 //! query may ask for and under every statistic one window is folded by, end to end over the wire.
 //!
-//! ONE rule, asserted over a table: **`GetMetricData` answers a query from EVERY datum of the
-//! series its range holds, each reported at the start of the span that datum's own
-//! `StorageResolution` stores it in — "Setting this to 1 specifies this metric as a
-//! high-resolution metric, so that CloudWatch stores the metric with sub-minute resolution down to
-//! one second. Setting this to 60 specifies this metric as regular resolution, which CloudWatch
-//! stores at 1-minute resolution… This field is optional, if you do not specify it the default of
-//! 60 is used."
+//! ONE rule, asserted over a table: **`GetMetricData` answers a query from every datum of the
+//! series its range holds whose own storage resolution DIVIDES the requested `Period`, each
+//! reported at the start of the span that resolution stores it in — "Setting this to 1 specifies
+//! this metric as a high-resolution metric, so that CloudWatch stores the metric with sub-minute
+//! resolution down to one second. Setting this to 60 specifies this metric as regular resolution,
+//! which CloudWatch stores at 1-minute resolution… This field is optional, if you do not specify
+//! it the default of 60 is used."
 //! (`smithy_query(query="doc",shape="MetricDatum",member="StorageResolution")`) — and the data
 //! sharing one window of the requested `Period` are folded into one value by the query's `Stat`.**
 //!
-//! So a sub-minute `Period` — which only high-resolution storage keeps detail for, "For metrics
-//! with regular resolution, a period can be as short as one minute (60 seconds) and must be a
-//! multiple of 60. For high-resolution metrics … the period can be 1, 5, 10, 20, 30, 60, or any
-//! multiple of 60" (`smithy_query(query="doc",shape="MetricStat",member="Period")`) — reports the
-//! regular-resolution datum at the MINUTE it is stored in, beside the high-resolution one at its
-//! own second: a query asking for a granularity the series does not hold is answered at the
-//! granularity it does hold rather than with a series missing points. At a period of a minute or
-//! more the two share one window, so the `Sum` of that window counts both observations and its
-//! `SampleCount` is 2 — the totals of one series agree across the periods it is read at.
+//! So a sub-minute `Period` — a granularity only high-resolution storage keeps, "For metrics with
+//! regular resolution, a period can be as short as one minute (60 seconds) and must be a multiple
+//! of 60. For high-resolution metrics … the period can be 1, 5, 10, 20, 30, 60, or any multiple of
+//! 60" (`smithy_query(query="doc",shape="MetricStat",member="Period")`) — answers from the
+//! high-resolution datum at its own second and from the regular-resolution one NOT AT ALL, that
+//! period being none of the granularities a datum stored at one-minute resolution is retrievable
+//! at: "you must specify the period as follows or no data points in that time range is returned"
+//! (the same member). At a period of a minute or more the two share one window, so the `Sum` of
+//! that window counts both observations and its `SampleCount` is 2.
 //!
 //! The rows differ along what the rule generalises over: the `Period` asked for (every sub-minute
 //! value `MetricStat$Period` admits, the minute itself, and a multiple of it), the `Stat` the
@@ -281,6 +281,9 @@ fn expected_points(data: &[Datum; 2], period: i32, stat: &str) -> Vec<(f64, f64)
     let span = f64::from(period);
     let mut windows: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
     for datum in data {
+        if !readable_at(datum, period) {
+            continue;
+        }
         #[allow(clippy::cast_possible_truncation)]
         let index = (datum.stored_offset() / span).floor() as i64;
         windows.entry(index).or_default().push(datum.value);
@@ -293,6 +296,21 @@ fn expected_points(data: &[Datum; 2], period: i32, stat: &str) -> Vec<(f64, f64)
             (offset, folded(&observations, stat))
         })
         .collect()
+}
+
+/// Whether a read at `period`-wide windows is answered from `datum` at all.
+///
+/// The granularities a datum can be retrieved at are the multiples of the resolution it was
+/// STORED at — every period for a high-resolution datum, and only the multiples of a minute for a
+/// regular-resolution one ("For metrics with regular resolution, a period can be as short as one
+/// minute (60 seconds) and must be a multiple of 60", `MetricStat$Period`) — and a query at a
+/// finer granularity than a datum's own resolution is answered with no point for it: "you must
+/// specify the period as follows or no data points in that time range is returned" (the same
+/// member).
+fn readable_at(datum: &Datum, period: i32) -> bool {
+    #[allow(clippy::cast_possible_truncation)]
+    let resolution = datum.storage_span() as i32;
+    period >= resolution && period % resolution == 0
 }
 
 /// The value `stat` folds one window's observations into.
@@ -337,9 +355,10 @@ async fn get_metric_data_reports_each_datum_in_the_span_its_resolution_stores_it
     }
 }
 
-/// The SUM of a mixed-resolution series is the same whatever period it is read at, and its
-/// `SampleCount` counts both observations: the totals of one series agree across the granularities
-/// a client reads it at, which is what a client validating its own publishing path reads back.
+/// The SUM a period answers with totals exactly the data that period RETRIEVES, and its
+/// `SampleCount` counts exactly those observations: a period of a minute or more totals both data
+/// of the pair, and a sub-minute period totals the high-resolution one alone — which is what a
+/// client validating its own publishing path reads back.
 #[tokio::test]
 async fn the_totals_of_a_mixed_resolution_series_agree_across_the_periods_it_is_read_at() {
     let router = build_router();
@@ -349,11 +368,18 @@ async fn the_totals_of_a_mixed_resolution_series_agree_across_the_periods_it_is_
     }
 
     for series in series() {
-        let published_sum: f64 = series.data.iter().map(|datum| datum.value).sum();
-        #[allow(clippy::cast_precision_loss)]
-        let published_count = series.data.len() as f64;
         for period in PERIODS {
-            for (stat, total) in [("Sum", published_sum), ("SampleCount", published_count)] {
+            // The data this period retrieves: the whole pair at a multiple of a minute, and the
+            // high-resolution datum alone below it.
+            let retrieved: Vec<&Datum> = series
+                .data
+                .iter()
+                .filter(|datum| readable_at(datum, period))
+                .collect();
+            let retrieved_sum: f64 = retrieved.iter().map(|datum| datum.value).sum();
+            #[allow(clippy::cast_precision_loss)]
+            let retrieved_count = retrieved.len() as f64;
+            for (stat, total) in [("Sum", retrieved_sum), ("SampleCount", retrieved_count)] {
                 let got = metric_data_points(
                     &router,
                     base,
