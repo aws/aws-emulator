@@ -485,9 +485,12 @@ async fn a_resume_token_that_is_no_key_of_the_schema_states_one_sentence_with_no
     // key element of another TYPE than the schema declares (the defect that used to be
     // diagnosed further), an element the schema declares no key for, an element left out,
     // a spare element beside the key, and no element at all. An element of an INDEX's own
-    // key schema stated in another type is NOT one of them: that element is the index key
-    // it names, so it earns the typed parameter sentence instead (see
-    // [`an_index_cursor_states_a_typed_mismatch_for_an_index_key_element`]).
+    // key schema stated in another type is NOT one of them on the table WALK: that element
+    // is a key of the order being paged, so the walk states the typed parameter sentence for
+    // it instead — and so it does for a key attribute of the TABLE that an index cursor
+    // carries beside it (see
+    // [`an_index_cursor_states_a_typed_mismatch_for_an_index_key_element`], which also drives
+    // the `Query` that states this sentence for them).
     let rows: Vec<(&str, Option<&str>, Value)> = vec![
         (
             "the table's partition key as a number",
@@ -503,12 +506,6 @@ async fn a_resume_token_that_is_no_key_of_the_schema_states_one_sentence_with_no
             "the table's partition key as a string set",
             None,
             json!({"pk": {"SS": ["p"]}, "sk": {"S": "s"}}),
-        ),
-        (
-            "a table key attribute of an index cursor, typed against the schema",
-            Some(BY_G),
-            json!({"gpk": {"S": "g"}, "gsk": {"S": "g2"},
-                   "pk": {"N": "1"}, "sk": {"S": "s"}}),
         ),
         (
             "an attribute the schema declares no key for",
@@ -561,9 +558,11 @@ async fn an_index_cursor_states_a_typed_mismatch_for_an_index_key_element() {
     let router = emulator();
     cursor_table(&router).await;
 
-    // The rows span WHICH element of the index's key schema carries the wrong type and
-    // WHICH type it carries: the sort key of the composite index as a number and as a
-    // string set, and the partition key of the binary index as a string.
+    // The rows span WHICH element of the cursor carries the wrong type and WHICH type it
+    // carries: the sort key of the composite index as a number and as a string set, the
+    // partition key of the binary index as a string, and a key attribute of the TABLE that an
+    // index cursor carries beside the index key — which the walk reports under the index this
+    // read was pointed at, like the rest.
     let rows: Vec<(&str, &str, Value, String)> = vec![
         (
             "an index's own sort key as a number",
@@ -585,10 +584,23 @@ async fn an_index_cursor_states_a_typed_mismatch_for_an_index_key_element() {
             json!({"bpk": {"S": "a"}, "pk": {"S": "p"}, "sk": {"S": "s"}}),
             index_key_type_mismatch("bpk", "B", "S", BY_B),
         ),
+        (
+            "the table's partition key, in an index cursor, as a number",
+            BY_G,
+            json!({"gpk": {"S": "g"}, "gsk": {"S": "g2"},
+                   "pk": {"N": "1"}, "sk": {"S": "s"}}),
+            index_key_type_mismatch("pk", "S", "N", BY_G),
+        ),
     ];
 
-    for (case, index, token, expected) in rows {
-        for operation in ["Query", "Scan"] {
+    for (case, index, token, detailed) in rows {
+        // The table WALK details the element; a `Query` states the one invalid-token
+        // sentence for every token it cannot place in the schema it pages, that element
+        // included, so the same cursor earns the two sentences on the two reads.
+        for (operation, expected) in [
+            ("Query", START_KEY_INVALID.to_string()),
+            ("Scan", detailed.clone()),
+        ] {
             let case = format!("{case} on {operation}");
             let stated = refused(
                 &router,

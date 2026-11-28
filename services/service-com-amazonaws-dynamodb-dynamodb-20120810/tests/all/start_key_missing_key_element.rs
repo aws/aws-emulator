@@ -10,9 +10,10 @@
 //! of the TABLE's in another TYPE than the schema declares is no key of it either and earns
 //! that same sentence. The sentence is fixed text: it names neither the missing
 //! attribute nor the schema, and echoes nothing the request sent. An INDEX key attribute of
-//! an index cursor stated in another type is the one element told further: it names the
-//! index key it is, so it earns the typed parameter-value sentence
-//! ([`index_key_type_mismatch`]).
+//! an index cursor stated in another type is the one element told further, by the read that
+//! DETAILS it: the table walk names the index key it is, so it earns the typed
+//! parameter-value sentence ([`index_key_type_mismatch`]), while a `Query` states the fixed
+//! invalid-token sentence for that element too ([`Row::stated_by`]).
 //!
 //! The rows span what the rule generalises over: WHICH schema is being paged (a composite
 //! base table, a global secondary index whose own key is composite, and a local one), WHICH
@@ -41,6 +42,11 @@ const START_KEY_INVALID: &str = "The provided starting key is invalid";
 /// against the schema earns: the same statement, since such a token is no key of that schema
 /// either.
 const START_KEY_TYPE_MISMATCH: &str = START_KEY_INVALID;
+
+/// How that typed sentence opens, which is what tells a row the table walk DETAILS from a
+/// row both reads state alike.
+const TYPED_PREFIX: &str = "One or more parameter values were invalid: Type mismatch for Index \
+                           Key";
 
 /// The sentence an INDEX key element of an index cursor stated in another type than the
 /// table's `AttributeDefinitions` declare for it earns, written out here as a literal for the
@@ -122,7 +128,21 @@ struct Row {
     /// The partition a `Query`'s key condition selects, named for the schema being paged.
     partition: (&'static str, Value),
     token: Value,
+    /// The sentence the table WALK states for this token.
     stated: String,
+}
+
+impl Row {
+    /// The sentence `operation` states for this token: the table walk's own, except that a
+    /// `Query` states the fixed invalid-token sentence for the one element that walk details
+    /// (the module doc states the rule).
+    fn stated_by(&self, operation: &str) -> &str {
+        if operation == "Query" && self.stated.starts_with(TYPED_PREFIX) {
+            START_KEY_INVALID
+        } else {
+            &self.stated
+        }
+    }
 }
 
 fn rows() -> Vec<Row> {
@@ -240,16 +260,16 @@ async fn a_resume_token_short_of_a_declared_key_element_is_an_invalid_token() {
                 }
                 let (status, body) = call(&router, operation, request).await;
                 let answered = message(&body);
+                let expected = row.stated_by(operation);
                 assert_eq!(
                     (status, error_code(&body).as_str(), answered.as_str()),
-                    (400, "ValidationException", row.stated.as_str()),
-                    "case {case:?}: expected the refusal {:?}, got {status} with {body}",
-                    row.stated
+                    (400, "ValidationException", expected),
+                    "case {case:?}: expected the refusal {expected:?}, got {status} with {body}"
                 );
                 // The invalid-token sentence is fixed text, so nothing the token named
                 // reaches it. The typed index-key sentence names its own key, type and
                 // index, which the expectation above already holds it to.
-                if row.stated == START_KEY_INVALID {
+                if expected == START_KEY_INVALID {
                     for named in ["pk", "sk", "tenant", "rank", GLOBAL_INDEX, LOCAL_INDEX] {
                         assert!(
                             !answered.contains(named),

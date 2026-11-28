@@ -1486,6 +1486,11 @@ fn validation_envelope(violations: &[Violation]) -> Option<String> {
             return Some(crate::state::missing_parameter_message(&absent));
         }
     }
+    // A request whose table-name member states no name at all names no table to address,
+    // and that one clause is the whole refusal ([`unusable_table_name_clause`]).
+    if let Some(clause) = unusable_table_name_clause(violations) {
+        return crate::state::validation_message([clause]);
+    }
     // A violated idempotency token is stated alone ([`MASKING_MEMBERS`]).
     if let Some(masking) = masking_violation(violations) {
         return crate::state::validation_message([violation_clause(
@@ -1735,6 +1740,43 @@ fn at_in(order: &[&str], violation: &Violation) -> Option<usize> {
 /// `tests/all/required_member_refusals.rs` pins the groups side by side so the
 /// difference is visible rather than silent.
 const SERVICE_REQUIRED_MEMBERS: &[&str] = &[crate::state::TABLE_NAME_MEMBER_PATH];
+
+/// The clause a request that NAMES NO TABLE is refused with, and the only clause such a
+/// refusal states — or `None` when the request's table-name member carries a value long
+/// enough to name one, carries no value at all, or stands in a request the reader could not
+/// build.
+///
+/// The table name is the whole SELECTOR a request addresses a table by, so a value too short
+/// for the member to name one leaves the request pointed at nothing: this service's own check
+/// of that selector answers for it, with the member named as the model spells it on the wire
+/// and NOTHING echoed — the words that check states, whichever operation was served, exactly
+/// as the created table's own name form ([`TABLE_NAME_FORM_OPERATIONS`]) and the enums this
+/// service checks itself ([`SERVICE_CHECKED_ENUMS`]) keep their own words. And no other
+/// member's violation is reported beside it: the remaining field checks are not reached at
+/// all once the request names no table.
+///
+/// A request the reader could not BUILD is a different refusal: a member the input requires
+/// and the body omits stops that reading, and what is reported is the reading's own account
+/// of every bound the body broke, the absent member among them (see the merge in
+/// [`validation_envelope`]) — so this check answers only for a request whose every required
+/// member carries a value.
+fn unusable_table_name_clause(violations: &[Violation]) -> Option<String> {
+    if violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ViolationKind::MissingRequiredMember))
+    {
+        return None;
+    }
+    let violation = violations.iter().find(|violation| {
+        violation.path == crate::state::TABLE_NAME_MEMBER_PATH
+            && matches!(violation.kind, ViolationKind::MinLength(_))
+    })?;
+    Some(crate::state::constraint_clause(
+        &wire_member_path(&violation.path),
+        None,
+        &requirement(&violation.kind)?,
+    ))
+}
 
 /// The member of [`SERVICE_REQUIRED_MEMBERS`] this refusal found absent, named as the
 /// model spells it on the wire, or `None` when the refusal is about anything else.

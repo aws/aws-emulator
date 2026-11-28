@@ -137,17 +137,20 @@ fn transact_items_clauses(document: &Value) -> Vec<String> {
 // WALK reports, so the request is refused before the handler that has the decoded list in
 // hand runs, and the clause states what every other violation of a declared bound states:
 // the member path and the bound, in the form the served operation states its clauses in
-// (`super`'s "Which form a constraint clause takes"). Nothing of the rejected list belongs
-// in it — the clause a transactional list past its 100-action cap earns names
-// `TransactItems` and the bound and echoes NOTHING, exactly as the same member's EMPTY case
-// does (`tests/all/collection_cap_constraint_reports.rs` pins both, and
+// (`super`'s "Which form a constraint clause takes"). For most such members nothing of the
+// rejected list belongs in it — the clause a transactional READ's list past its 100-action
+// cap earns names `TransactItems` and the bound and echoes NOTHING, exactly as the same
+// member's EMPTY case does (`tests/all/collection_cap_constraint_reports.rs` pins both, and
 // `tests/all/transact_items_cap_refusal.rs` drives the maximum over the two transaction
 // operations).
 //
-// ONE recorded refusal of such a list states the REJECTED LIST instead: the PartiQL
-// transaction's `TransactStatements`, quoted as
-// `Value '[ParameterizedStatement(statement=…, …)]' at 'transactStatements' …` — the same
-// object rendering a refused `BatchWriteItem` request map is quoted in. The walk hands
+// The recorded refusals of the two lists a WRITE states its actions in state the REJECTED
+// LIST instead: the PartiQL transaction's `TransactStatements`, quoted as
+// `Value '[ParameterizedStatement(statement=…, …)]' at 'transactStatements' …`, and the
+// transactional write's `TransactItems`, quoted as
+// `Value '[TransactWriteItem(conditionCheck=null, put=Put(item={…}, …), delete=null,
+// update=null), …]' at 'TransactItems' …` — the same object rendering a refused
+// `BatchWriteItem` request map is quoted in. The walk hands
 // [`super::EmulatedService::override_refusal`] its own summary of the collection (`<n>
 // items`) rather than the collection, so there is nothing there to render from.
 //
@@ -159,9 +162,9 @@ fn transact_items_clauses(document: &Value) -> Vec<String> {
 // generated input schema the walk reads it off, never off a second transcription of the
 // model.
 //
-// Only a list past the MAXIMUM is stated this way, which is the class that recorded refusal
-// carries. A list below the member's minimum is the empty list, whose recorded refusal
-// states the member and the bound alone, so it keeps the walk's own clause.
+// Only a list past the MAXIMUM is stated this way, which is the class those recorded
+// refusals carry. A list below the member's minimum is the empty list, whose recorded
+// refusal states the member and the bound alone, so it keeps the walk's own clause.
 // =============================================================================
 
 /// The PartiQL transaction, whose own statement list is quoted back that way.
@@ -208,11 +211,31 @@ pub fn capped_list_clause(
                 requirement,
             )
         }
+        // The transactional WRITE's own action list, quoted the same way: the service's
+        // object rendering of the actions the request carried
+        // ([`crate::state::rendered_transact_write_items`]), under the path the walk reports
+        // that member of this operation under — which is the one the served operation states
+        // its members by ([`super::CLAUSE_FORMS`] gives this surface the wire spelling).
+        TRANSACT_WRITE_ITEMS => {
+            let schema = crate::ops::types::TRANSACT_WRITE_ITEMS_INPUT_SCHEMA;
+            let input: crate::ops::types::TransactWriteItemsInput = decoded(protocol, req, schema)?;
+            let requirement =
+                past_declared_maximum(schema, TRANSACT_ITEMS_MEMBER, input.transact_items.len())?;
+            (
+                crate::state::TRANSACT_ITEMS_MEMBER_PATH,
+                crate::state::rendered_transact_write_items(&input.transact_items),
+                requirement,
+            )
+        }
         _ => return None,
     };
+    // The member is NAMED the way the served operation names its members
+    // ([`super::ClauseForms`]) — the same path the walk's own clause about it would state —
+    // and what this seam adds is the VALUE half, which that form has nothing to render from.
+    let stated = super::clause_forms(operation).of(path).stated_path(path);
     Some(CappedListClause {
         path,
-        clause: crate::state::constraint_clause(path, Some(&rendered), &requirement),
+        clause: crate::state::constraint_clause(&stated, Some(&rendered), &requirement),
     })
 }
 

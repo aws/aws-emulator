@@ -604,17 +604,41 @@ pub enum EmptyStartKeyElement<'i> {
     NamesTheIndexKey(&'i str),
 }
 
+/// Which sentence a paged read states for an element of the `ExclusiveStartKey` it was
+/// handed that carries another type than the table's `AttributeDefinitions` declare for that
+/// key attribute, where the read pages a secondary INDEX.
+///
+/// Like the empty element above, this is one rule stated in two wordings, and which of them
+/// a token earns follows the READ it was handed to rather than the token: a table WALK
+/// DETAILS what it found — the index being walked beside the attribute and the two types —
+/// while a QUERY states the one fixed invalid-token sentence for every token it cannot place
+/// in the schema it pages, that element included. So each reader names its own
+/// ([`resume_from`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MistypedStartKeyElement {
+    /// The fixed invalid-token sentence ([`crate::state::START_KEY_INVALID_MESSAGE`]): what
+    /// `Query` states, whichever schema it pages.
+    InvalidToken,
+    /// The sentence that details the element: what `Scan` states.
+    NamesTheMismatch,
+}
+
 /// The place an `ExclusiveStartKey` resumes a read from, read back through the schema
 /// that read walks.
 ///
 /// "The data type for ExclusiveStartKey must be String, Number or Binary. No set data
 /// types are allowed" — and for an index read the token is the index's key together with
 /// the table's, because that pair is what addresses one entry of an index.
+///
+/// `empty_element` and `mistyped` are the two wordings the READERS differ in, each named by
+/// the reader that was handed the token ([`EmptyStartKeyElement`],
+/// [`MistypedStartKeyElement`]).
 pub fn resume_from(
     table: &Table,
     index: Option<&SecondaryIndex<'_>>,
     start: Option<&Item>,
     empty_element: EmptyStartKeyElement<'_>,
+    mistyped: MistypedStartKeyElement,
 ) -> Result<Option<ReadResume>, RequestError> {
     match (start, index) {
         (None, _) => Ok(None),
@@ -622,7 +646,7 @@ pub fn resume_from(
             table.key_of_start_key(start, empty_element)?,
         ))),
         (Some(start), Some(index)) => Ok(Some(ReadResume::Index(
-            table.index_key_of_start_key(index, start, empty_element)?,
+            table.index_key_of_start_key(index, start, empty_element, mistyped)?,
         ))),
     }
 }

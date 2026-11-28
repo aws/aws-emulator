@@ -15,7 +15,10 @@ use super::*;
 // The shape of one `BatchGetItem` `RequestItems` entry, which the rendering of that
 // member walks ([`rendered_batch_get_request_items`]); `super` reaches only the shapes it
 // names itself.
-use crate::ops::types::{KeysAndAttributes, ParameterizedStatement, WriteRequest};
+use crate::ops::types::{
+    ConditionCheck, Delete, KeysAndAttributes, ParameterizedStatement, Put, TransactWriteItem,
+    Update, WriteRequest,
+};
 
 /// How many put-or-delete operations one `BatchWriteItem` may carry: "up to 25 item
 /// put or delete operations" (the `BatchWriteItem` doc), which is also the length the
@@ -676,6 +679,205 @@ fn push_rendered_text(out: &mut BoundedText, field: &str, value: Option<&str>) {
     out.push("=");
     match value {
         Some(text) => out.push(text),
+        None => out.push(NULL_FIELD),
+    }
+}
+
+/// A `TransactWriteItems`' `TransactItems` list as the refusal of that member quotes it.
+///
+/// The same OBJECT rendering [`rendered_batch_write_request_items`] states a refused
+/// structure value in, over the actions this operation carries —
+/// `[TransactWriteItem(conditionCheck=null, put=Put(item={<attribute>=AttributeValue(…)},
+/// tableName=<the table the action named>, conditionExpression=null,
+/// expressionAttributeNames=null, expressionAttributeValues=null,
+/// returnValuesOnConditionCheckFailure=null, workloadProfileName=null), delete=null,
+/// update=null), …]`. Every value in it comes from the request; the field names and their
+/// order are the model's own (`smithy_query(query="shape",
+/// shape="com.amazonaws.dynamodb#TransactWriteItem")` gives `ConditionCheck Put Delete
+/// Update`, and the four action structures each declare their own members in the order
+/// written below), a member the request left out renders as the unset field it is, and each
+/// action carries the workload-profile field the service's own request objects have and this
+/// model does not declare ([`TRAILING_REQUEST_FIELDS`]).
+///
+/// The transactional READ's own list is NOT quoted this way: its refusal states the member
+/// and the bound alone (`tests/all/transact_items_cap_refusal.rs` holds the two side by
+/// side), exactly as the batched read's request map is quoted differently from the batched
+/// write's.
+///
+/// Bounded exactly as those renderings are: every byte goes through one [`BoundedText`], so
+/// what the clause quotes is clamped before it is produced rather than clipped afterwards.
+pub fn rendered_transact_write_items(items: &[TransactWriteItem]) -> String {
+    let mut out = BoundedText::default();
+    out.push("[");
+    for (at, item) in items.iter().enumerate() {
+        if !out.has_room() {
+            break;
+        }
+        if at > 0 {
+            out.push(", ");
+        }
+        out.push("TransactWriteItem(conditionCheck=");
+        push_condition_check(&mut out, item.condition_check.as_ref());
+        out.push(", put=");
+        push_put(&mut out, item.put.as_ref());
+        out.push(", delete=");
+        push_delete(&mut out, item.delete.as_ref());
+        out.push(", update=");
+        push_update(&mut out, item.update.as_ref());
+        out.push(")");
+    }
+    out.push("]");
+    out.into_text()
+}
+
+/// One `ConditionCheck` action of that list, or the unset field for an element that states
+/// another action.
+fn push_condition_check(out: &mut BoundedText, check: Option<&ConditionCheck>) {
+    let Some(check) = check else {
+        out.push(NULL_FIELD);
+        return;
+    };
+    out.push("ConditionCheck(key=");
+    push_coral_item(out, &check.key);
+    push_rendered_text(out, "tableName", Some(&check.table_name));
+    push_rendered_text(
+        out,
+        "conditionExpression",
+        Some(&check.condition_expression),
+    );
+    push_expression_fields(
+        out,
+        check.expression_attribute_names.as_ref(),
+        check.expression_attribute_values.as_ref(),
+        check.return_values_on_condition_check_failure.as_deref(),
+    );
+}
+
+/// One `Put` action of that list, or the unset field.
+fn push_put(out: &mut BoundedText, put: Option<&Put>) {
+    let Some(put) = put else {
+        out.push(NULL_FIELD);
+        return;
+    };
+    out.push("Put(item=");
+    push_coral_item(out, &put.item);
+    push_rendered_text(out, "tableName", Some(&put.table_name));
+    push_rendered_text(out, "conditionExpression", put.condition_expression.as_deref());
+    push_expression_fields(
+        out,
+        put.expression_attribute_names.as_ref(),
+        put.expression_attribute_values.as_ref(),
+        put.return_values_on_condition_check_failure.as_deref(),
+    );
+}
+
+/// One `Delete` action of that list, or the unset field.
+fn push_delete(out: &mut BoundedText, delete: Option<&Delete>) {
+    let Some(delete) = delete else {
+        out.push(NULL_FIELD);
+        return;
+    };
+    out.push("Delete(key=");
+    push_coral_item(out, &delete.key);
+    push_rendered_text(out, "tableName", Some(&delete.table_name));
+    push_rendered_text(
+        out,
+        "conditionExpression",
+        delete.condition_expression.as_deref(),
+    );
+    push_expression_fields(
+        out,
+        delete.expression_attribute_names.as_ref(),
+        delete.expression_attribute_values.as_ref(),
+        delete.return_values_on_condition_check_failure.as_deref(),
+    );
+}
+
+/// One `Update` action of that list, or the unset field.
+fn push_update(out: &mut BoundedText, update: Option<&Update>) {
+    let Some(update) = update else {
+        out.push(NULL_FIELD);
+        return;
+    };
+    out.push("Update(key=");
+    push_coral_item(out, &update.key);
+    push_rendered_text(out, "updateExpression", Some(&update.update_expression));
+    push_rendered_text(out, "tableName", Some(&update.table_name));
+    push_rendered_text(
+        out,
+        "conditionExpression",
+        update.condition_expression.as_deref(),
+    );
+    push_expression_fields(
+        out,
+        update.expression_attribute_names.as_ref(),
+        update.expression_attribute_values.as_ref(),
+        update.return_values_on_condition_check_failure.as_deref(),
+    );
+}
+
+/// The fields every one of those four actions ends with: the two substitution tables, what
+/// it asks for on a failed condition, the workload-profile field no request can set, and the
+/// closing bracket.
+fn push_expression_fields(
+    out: &mut BoundedText,
+    names: Option<&HashMap<String, String>>,
+    values: Option<&Item>,
+    return_values: Option<&str>,
+) {
+    push_rendered_name_map(out, "expressionAttributeNames", names);
+    push_rendered_value_map(out, "expressionAttributeValues", values);
+    push_rendered_text(out, "returnValuesOnConditionCheckFailure", return_values);
+    out.push(", ");
+    out.push(TRAILING_REQUEST_FIELDS);
+    out.push(")");
+}
+
+/// One field carrying a substitution table of NAMES: `, <field>={<token>=<attribute name>}`,
+/// and the unset field for a member the request left out. The entries are written in KEY
+/// order, for the reason every map in these renderings is
+/// ([`rendered_batch_write_request_items`]).
+fn push_rendered_name_map(
+    out: &mut BoundedText,
+    field: &str,
+    entries: Option<&HashMap<String, String>>,
+) {
+    out.push(", ");
+    out.push(field);
+    out.push("=");
+    let Some(entries) = entries else {
+        out.push(NULL_FIELD);
+        return;
+    };
+    out.push("{");
+    for (at, (token, name)) in entries
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .enumerate()
+    {
+        if !out.has_room() {
+            break;
+        }
+        if at > 0 {
+            out.push(", ");
+        }
+        out.push(token);
+        out.push("=");
+        out.push(name);
+    }
+    out.push("}");
+}
+
+/// One field carrying a substitution table of VALUES, each value in the attribute-value
+/// frame every value of these renderings is written in — and the unset field for a member the
+/// request left out.
+fn push_rendered_value_map(out: &mut BoundedText, field: &str, entries: Option<&Item>) {
+    out.push(", ");
+    out.push(field);
+    out.push("=");
+    match entries {
+        Some(entries) => push_coral_item(out, entries),
         None => out.push(NULL_FIELD),
     }
 }

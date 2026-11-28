@@ -12,13 +12,14 @@
 //! That one sentence is what every such token earns, on the BASE table and on an INDEX
 //! cursor alike, since an index cursor carries both schemas' key attributes.
 //!
-//! The one element of an index cursor stated further is an INDEX KEY attribute of a GLOBAL
-//! secondary index carrying another type than the table's `AttributeDefinitions` declare for
-//! it: that element names a key of the index's OWN key space, in a type that space cannot
-//! hold, so it earns the typed parameter-value sentence naming the key, the declared type,
-//! the supplied type and the index ([`index_key_type_mismatch`]). A LOCAL index has no key
-//! space of its own — its partition key is the table's — so a mistyped element of its cursor
-//! is no key of the space being paged and states the invalid-token sentence like the rest.
+//! The one element of an index cursor stated further is a key attribute the KEY SCHEMA of the
+//! index being paged declares, carrying another type than the table's `AttributeDefinitions`
+//! declare for it, on the read that DETAILS it: the table walk states the typed
+//! parameter-value sentence naming the key, the declared type, the supplied type and the index
+//! ([`index_key_type_mismatch`]), because that element names a key of the order that index
+//! holds its entries in, in a type it cannot hold. The two reads differ there and nowhere
+//! else: a `Query` states the one invalid-token sentence for every token it cannot place in
+//! the schema it pages, that element included ([`Row::stated_by`]).
 //!
 //! The rows differ along HOW the token fails to be that key, along the SCHEMA being paged
 //! (a single-attribute table, a composite one, a global secondary index and a local one),
@@ -41,6 +42,11 @@ const INVALID: &str = "The provided starting key is invalid";
 /// element of another type is no key of that schema either, so it is the same sentence, with
 /// the schema reason NOT appended to it.
 const TYPE_MISMATCH: &str = INVALID;
+
+/// How that typed sentence opens, which is what tells a row the table walk DETAILS from a
+/// row both reads state alike.
+const TYPED_PREFIX: &str = "One or more parameter values were invalid: Type mismatch for Index \
+                           Key";
 
 /// AWS's sentence for an INDEX key element of an index cursor stated in another type than
 /// the table's `AttributeDefinitions` declare for that attribute.
@@ -142,7 +148,21 @@ struct Row {
     /// The partition value a `Query`'s key condition selects, named for the schema paged.
     partition: (&'static str, Value),
     token: Value,
+    /// The sentence the table WALK states for this token.
     stated: String,
+}
+
+impl Row {
+    /// The sentence `operation` states for this token: the table walk's own, except that a
+    /// `Query` states the fixed invalid-token sentence for the one element that walk details
+    /// (the module doc states the rule).
+    fn stated_by(&self, operation: &str) -> &str {
+        if operation == "Query" && self.stated.starts_with(TYPED_PREFIX) {
+            INVALID
+        } else {
+            &self.stated
+        }
+    }
 }
 
 fn rows() -> Vec<Row> {
@@ -257,7 +277,7 @@ fn rows() -> Vec<Row> {
             index: Some(LOCAL_INDEX),
             partition: one,
             token: json!({"pk": {"S": "one"}, "rank": {"S": "2"}, "sk": {"N": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("rank", "N", "S", LOCAL_INDEX),
         },
     ]
 }
@@ -282,12 +302,12 @@ async fn a_resume_token_that_is_no_key_of_the_schema_states_its_own_sentence() {
                 request["KeyConditionExpression"] = json!(format!("{attribute} = :p"));
                 request["ExpressionAttributeValues"] = json!({":p": value.clone()});
             }
+            let expected = row.stated_by(operation);
             let (status, body) = call(&router, operation, request).await;
             assert_eq!(
                 (status, error_code(&body).as_str(), message(&body).as_str()),
-                (400, "ValidationException", row.stated.as_str()),
-                "case {case:?}: expected the refusal {:?}, got {status} with {body}",
-                row.stated
+                (400, "ValidationException", expected),
+                "case {case:?}: expected the refusal {expected:?}, got {status} with {body}"
             );
         }
     }

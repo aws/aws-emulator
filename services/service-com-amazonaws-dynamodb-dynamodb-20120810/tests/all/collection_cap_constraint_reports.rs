@@ -8,12 +8,15 @@
 //! collection input member whose element or entry count falls outside its
 //! modelled `@length` bound is refused with HTTP 400 `ValidationException`
 //! whose message is the `<N> validation error(s) detected: ` envelope over one
-//! clause per violated member, and that clause states exactly three facts — the
-//! member's dotted input path as the model spells it on the wire, that the
-//! member failed a constraint, and the BOUND it broke. It states nothing the
-//! emulator computed about the request: not the element count, not a byte
-//! total, not the operation that refused it. At the bound the request is not
-//! refused as a constraint violation at all.
+//! clause per violated member, and that clause states the member's dotted input
+//! path as the operation that was served names it, that the member failed a
+//! constraint, and the BOUND it broke. It states nothing the emulator computed
+//! about the request: not the element count, not a byte total, not the operation
+//! that refused it. The members a WRITE states its actions in are quoted BESIDE
+//! that — the object rendering this service states a refused structure value in,
+//! built from the request itself — which is what the batched write's own map and
+//! the transactional write's action list carry here. At the bound the request is
+//! not refused as a constraint violation at all.
 //!
 //! The rows differ along what the rule generalises over: the operation
 //! (transactional read, transactional write, batched read, batched write), the
@@ -66,6 +69,57 @@ fn report(path: &str, requirement: &str) -> String {
         "1 validation error detected: Value at '{path}' failed to satisfy constraint: \
          {requirement}"
     )
+}
+
+/// The same message for a member whose refusal QUOTES the collection the request carried.
+fn quoting_report(path: &str, quoted: &str, requirement: &str) -> String {
+    format!(
+        "1 validation error detected: Value '{quoted}' at '{path}' failed to satisfy \
+         constraint: {requirement}"
+    )
+}
+
+/// The fields of the attribute-value object this service's own request validator renders a
+/// value with, in the order it states them — written out here rather than read off the crate
+/// under test, so the RENDERING is what these rows are held to.
+const CORAL_FIELDS: [&str; 16] = [
+    "s", "n", "b", "iNT", "dECIMAL", "dOUBLE", "sS", "nS", "bS", "iNTSET", "dECIMALSET",
+    "dOUBLESET", "m", "l", "nULL", "bOOL",
+];
+
+/// One value in that frame: the field it carries filled from the request, every other field
+/// rendered unset.
+fn attribute_value(field: &str, value: &str) -> String {
+    let fields: Vec<String> = CORAL_FIELDS
+        .iter()
+        .map(|declared| {
+            if *declared == field {
+                format!("{declared}={value}")
+            } else {
+                format!("{declared}=null")
+            }
+        })
+        .collect();
+    format!("AttributeValue({})", fields.join(", "))
+}
+
+/// How a refused `TransactWriteItems` list of `count` puts is quoted: one element per action,
+/// every member of the action structures spelled out and every member the request left out
+/// rendered unset.
+fn quoted_transact_puts(count: usize) -> String {
+    let elements: Vec<String> = (0..count)
+        .map(|index| {
+            format!(
+                "TransactWriteItem(conditionCheck=null, put=Put(item={{Artist={}}}, \
+                 tableName={TABLE}, conditionExpression=null, expressionAttributeNames=null, \
+                 expressionAttributeValues=null, \
+                 returnValuesOnConditionCheckFailure=null, workloadProfileName=null), \
+                 delete=null, update=null)",
+                attribute_value("s", &format!("a{index}"))
+            )
+        })
+        .collect();
+    format!("[{}]", elements.join(", "))
 }
 
 /// `count` `TransactGetItems` entries, each a `Get` of a distinct primary key.
@@ -152,7 +206,11 @@ async fn a_collection_outside_its_modelled_length_bound_is_reported_against_that
             "a transactional write one past the same cap",
             "TransactWriteItems",
             json!({"TransactItems": transact_puts(101)}),
-            report("TransactItems", &at_most(100)),
+            quoting_report(
+                "TransactItems",
+                &quoted_transact_puts(101),
+                &at_most(100),
+            ),
         ),
         (
             "an empty transactional read, one below the same member's minimum",

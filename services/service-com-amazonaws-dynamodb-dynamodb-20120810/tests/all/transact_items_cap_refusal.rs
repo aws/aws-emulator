@@ -5,22 +5,31 @@
 //!
 //! RULE under test: a list member carrying more elements than the `@length` maximum the
 //! model declares for it is refused 400 `ValidationException` whose message is the
-//! framework's constraint envelope over ONE clause that states exactly two things — the
-//! member path, as the operation that was served names it, and the bound that was broken —
-//! and echoes nothing of the rejected list. Both transaction operations declare that bound
-//! on the same member (`smithy_query(query="operation",
+//! framework's constraint envelope over ONE clause that states the member path, as the
+//! operation that was served names it, and the bound that was broken. The transactional
+//! READ's clause echoes nothing of the rejected list; the transactional WRITE's QUOTES the
+//! actions it was sent, in the object rendering this service states a refused structure
+//! value in (`[TransactWriteItem(conditionCheck=null, put=Put(item={<attribute>=
+//! AttributeValue(…)}, tableName=<table>, …), delete=null, update=null), …]`) — every
+//! structure member spelled out, every member the request left out rendered unset, and every
+//! value in it the request's own. Both transaction operations declare that bound on the same
+//! member (`smithy_query(query="operation",
 //! operation="TransactGetItems,TransactWriteItems")`: `TransactItems` is `@required`, and
 //! `smithy_query(query="shape", shape="com.amazonaws.dynamodb#TransactGetItemList")` and
-//! `TransactWriteItemList` are both `@length{min:1,max:100}`), so both state the same
-//! sentence, and neither writes anything.
+//! `TransactWriteItemList` are both `@length{min:1,max:100}`), so both state the same member
+//! and the same bound, and neither writes anything.
 //!
 //! The rows differ along what the rule generalises over: the operation (the transactional
 //! read and the transactional write), the ACTION its elements state (`Get`, `Put`,
 //! `Delete`, `Update`, `ConditionCheck`, and a list mixing two of them), how far past the
 //! bound the list went (one past it, half again as many, and twice the bound), how many
 //! tables the actions name, and what the items carry (a bare key, and attributes of
-//! several datatypes) — because none of that belongs in the message. The bound itself is
-//! driven AT the bound, where the call is served, and one past it.
+//! several datatypes). The bound itself is driven AT the bound, where the call is served,
+//! and one past it.
+//!
+//! Every call goes over the wire (`POST /` with
+//! `X-Amz-Target: DynamoDB_20120810.<Operation>`) through the same `MultiServiceRouter` the
+//! emulator's front doors use.
 //!
 //! Every call goes over the wire (`POST /` with
 //! `X-Amz-Target: DynamoDB_20120810.<Operation>`) through the same `MultiServiceRouter` the
@@ -43,7 +52,8 @@ const KEY: &str = "pk";
 /// The cap both transactional lists declare.
 const CAP: usize = 100;
 
-/// The whole message a `TransactItems` list past that cap earns.
+/// The whole message a `TransactItems` list past that cap earns on the transactional READ,
+/// whose clause echoes nothing of the list.
 fn expected_message() -> String {
     format!(
         "1 validation error detected: Value at 'TransactItems' failed to satisfy constraint: \
@@ -51,7 +61,79 @@ fn expected_message() -> String {
     )
 }
 
-/// The key of element `index`, as a `Key` map.
+/// How the WRITE's clause ends: the member and the bound, after the quoted list.
+fn write_clause_tail() -> String {
+    format!(
+        "' at 'TransactItems' failed to satisfy constraint: Member must have length less than \
+         or equal to {CAP}"
+    )
+}
+
+/// How the WRITE's clause opens, with the first TWO actions quoted: the envelope, the open
+/// list, the rendering of element 0 and of element 1 — so the separator between elements and
+/// the per-element values are both what the rows are held to.
+fn write_clause_head(action: Action) -> String {
+    format!(
+        "1 validation error detected: Value '[{}, {}",
+        action.quoted(0),
+        action.quoted(1)
+    )
+}
+
+/// The fields of the attribute-value object this service's own request validator renders a
+/// value with, in the order it states them — written out here rather than read off the crate
+/// under test, so the RENDERING is what these rows are held to.
+const CORAL_FIELDS: [&str; 16] = [
+    "s", "n", "b", "iNT", "dECIMAL", "dOUBLE", "sS", "nS", "bS", "iNTSET", "dECIMALSET",
+    "dOUBLESET", "m", "l", "nULL", "bOOL",
+];
+
+/// One value in that frame: the field it carries filled from the request, every other field
+/// rendered unset.
+fn attribute_value(field: &str, value: &str) -> String {
+    let fields: Vec<String> = CORAL_FIELDS
+        .iter()
+        .map(|declared| {
+            if *declared == field {
+                format!("{declared}={value}")
+            } else {
+                format!("{declared}=null")
+            }
+        })
+        .collect();
+    format!("AttributeValue({})", fields.join(", "))
+}
+
+/// The fields every quoted action ends with: the two substitution tables, what it asks for on
+/// a failed condition, and the workload-profile field no request can set.
+const TRAILING_FIELDS: &str = "expressionAttributeNames=null, expressionAttributeValues=null, \
+                               returnValuesOnConditionCheckFailure=null, \
+                               workloadProfileName=null";
+
+/// The key of element `index` as the rendering quotes it.
+fn quoted_key(index: usize) -> String {
+    format!(
+        "{{{KEY}={}}}",
+        attribute_value("s", &format!("k{index}"))
+    )
+}
+
+/// The item of element `index` as the rendering quotes it: the attributes in NAME order,
+/// each in the attribute-value frame, the nested map's own value in that frame too.
+fn quoted_item(index: usize) -> String {
+    let flag = if index.is_multiple_of(2) { "true" } else { "false" };
+    format!(
+        "{{doc={}, flag={}, note={}, {KEY}={}, tags={}, tally={}}}",
+        attribute_value("m", &format!("{{leaf={}}}", attribute_value("s", "deep"))),
+        attribute_value("bOOL", flag),
+        attribute_value("s", &format!("note {index}")),
+        attribute_value("s", &format!("k{index}")),
+        attribute_value("sS", "[a, b]"),
+        attribute_value("n", &index.to_string()),
+    )
+}
+
+/// The key of element `index` of this row's table, as a `Key` map.
 fn key(index: usize) -> Value {
     json!({KEY: {"S": format!("k{index}")}})
 }
@@ -124,6 +206,68 @@ impl Action {
     fn list(self, count: usize) -> Value {
         Value::Array((0..count).map(|index| self.element(index)).collect())
     }
+
+    /// Element `index` as the WRITE's refusal quotes it: the four action members of one
+    /// `TransactWriteItem`, the one this element states rendered and the other three unset.
+    fn quoted(self, index: usize) -> String {
+        let table = table_of(index);
+        let (check, put, delete, update) = match self {
+            // A `Get` belongs to the transactional READ, whose clause quotes nothing.
+            Self::Get => return String::new(),
+            Self::Put => (
+                "null".to_string(),
+                format!(
+                    "Put(item={}, tableName={table}, conditionExpression=null, {TRAILING_FIELDS})",
+                    quoted_item(index)
+                ),
+                "null".to_string(),
+                "null".to_string(),
+            ),
+            Self::Delete => (
+                "null".to_string(),
+                "null".to_string(),
+                format!(
+                    "Delete(key={}, tableName={table}, conditionExpression=null, \
+                     {TRAILING_FIELDS})",
+                    quoted_key(index)
+                ),
+                "null".to_string(),
+            ),
+            Self::Update => (
+                "null".to_string(),
+                "null".to_string(),
+                "null".to_string(),
+                format!(
+                    "Update(key={}, updateExpression=SET tally = :n, tableName={table}, \
+                     conditionExpression=null, expressionAttributeNames=null, \
+                     expressionAttributeValues={{:n={}}}, \
+                     returnValuesOnConditionCheckFailure=null, workloadProfileName=null)",
+                    quoted_key(index),
+                    attribute_value("n", &index.to_string())
+                ),
+            ),
+            Self::ConditionCheck => (
+                format!(
+                    "ConditionCheck(key={}, tableName={table}, \
+                     conditionExpression=attribute_not_exists(note), {TRAILING_FIELDS})",
+                    quoted_key(index)
+                ),
+                "null".to_string(),
+                "null".to_string(),
+                "null".to_string(),
+            ),
+            Self::PutAndDelete => {
+                if index.is_multiple_of(2) {
+                    return Self::Put.quoted(index);
+                }
+                return Self::Delete.quoted(index);
+            }
+        };
+        format!(
+            "TransactWriteItem(conditionCheck={check}, put={put}, delete={delete}, \
+             update={update})"
+        )
+    }
 }
 
 /// The operation a list of actions of this kind belongs to.
@@ -162,7 +306,6 @@ async fn a_transaction_past_the_action_cap_is_refused_with_the_member_and_the_bo
         create_active_table(&router, table, &[(KEY, "HASH", "S")]).await;
     }
 
-    let expected = expected_message();
     for (case, action, count) in rows() {
         let operation = operation_for(action);
         let (status, answered) = call(
@@ -177,29 +320,57 @@ async fn a_transaction_past_the_action_cap_is_refused_with_the_member_and_the_bo
             "case {case:?} ({operation}): expected 400 ValidationException, got {status} with \
              {answered}"
         );
-        assert_eq!(
-            message(&answered),
-            expected,
-            "case {case:?} ({operation}): expected the member and the bound alone, got {:?}",
-            message(&answered)
+        let stated = message(&answered);
+        if operation == "TransactGetItems" {
+            let expected = expected_message();
+            assert_eq!(
+                stated, expected,
+                "case {case:?} ({operation}): expected the member and the bound alone, got \
+                 {stated:?}"
+            );
+            continue;
+        }
+        // The WRITE's clause quotes the actions it was sent: the open list with the first
+        // actions rendered in full, and the member and the bound after it. What comes between
+        // is the rest of the submitted list, which a very long one is clamped to a ceiling
+        // of its own rather than let amplify the response
+        // (`crate::transact_write_items_cap_quotes_its_actions` reads a whole such clause
+        // back, over a list the ceiling does not reach).
+        let head = write_clause_head(action);
+        let tail = write_clause_tail();
+        assert!(
+            stated.starts_with(&head),
+            "case {case:?} ({operation}): expected the clause to quote the submitted actions \
+             from {head:?}, got {stated:?}"
+        );
+        assert!(
+            stated.ends_with(&tail),
+            "case {case:?} ({operation}): expected the clause to end in {tail:?}, got {stated:?}"
         );
     }
 }
 
 #[tokio::test]
-async fn the_refusal_states_nothing_of_the_list_it_rejected() {
+async fn the_refusal_states_nothing_the_emulator_computed_about_the_list() {
     let router = emulator();
     for table in [TABLE, OTHER] {
         create_active_table(&router, table, &[(KEY, "HASH", "S")]).await;
     }
 
-    // Nothing a caller sent, and nothing the emulator computed about the request, may reach
-    // the message: not a key, an attribute name, a table name or an expression the list
-    // carried, not the count of elements, and not the object rendering of a request
-    // structure.
-    let forbidden = [
-        "k0", "note", "tally", "TransactCap", "AttributeValue", "TransactGetItem",
-        "TransactWriteItem", "workloadProfileName", "101 items", "attribute_not_exists",
+    // Nothing the emulator computed about the request may reach the message: not the count
+    // of elements, not a byte total, and not the operation that refused it. The transactional
+    // READ states nothing of the list at all, so for that one not a key, an attribute name, a
+    // table name or an expression either.
+    let computed = ["101 items", "150 items", " bytes", "emulator", "TransactGetItems"];
+    let nothing_of_the_list = [
+        "k0",
+        "note",
+        "tally",
+        "TransactCap",
+        "AttributeValue",
+        "TransactGetItem(",
+        "workloadProfileName",
+        "attribute_not_exists",
     ];
     for (case, action, count) in rows() {
         let operation = operation_for(action);
@@ -210,6 +381,15 @@ async fn the_refusal_states_nothing_of_the_list_it_rejected() {
         )
         .await;
         let stated = message(&answered);
+        let forbidden: Vec<&str> = if operation == "TransactGetItems" {
+            computed
+                .iter()
+                .chain(nothing_of_the_list.iter())
+                .copied()
+                .collect()
+        } else {
+            computed.to_vec()
+        };
         for leaked in forbidden {
             assert!(
                 !stated.contains(leaked),

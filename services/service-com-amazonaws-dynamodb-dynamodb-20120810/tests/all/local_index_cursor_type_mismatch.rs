@@ -5,23 +5,25 @@
 //!
 //! THE RULE: the typed parameter-value sentence — "One or more parameter values were invalid:
 //! Type mismatch for Index Key <key> Expected: <declared> Actual: <supplied> IndexName:
-//! <index>" — is stated for a key space a GLOBAL secondary index has of its OWN. The base
-//! table's key space and a LOCAL secondary index's are one space: a local index "has the same
-//! partition key as the table" (`LocalSecondaryIndex$KeySchema`, and
-//! `smithy_query(query="shape", shape="LocalSecondaryIndex")`), so its cursor is a key of the
-//! table's space with one more of the table's own attributes beside it, and an element of it
-//! stated in another type is no key of the space being paged — the invalid TOKEN the base
-//! table's own cursor states, "The provided starting key is invalid", with nothing appended.
+//! <index>" — is stated by the table WALK for every element of an INDEX cursor: the index's
+//! own key attributes and the key attributes of the TABLE the cursor carries beside them
+//! alike, because that cursor is a key of the index's order as a whole and the sentence names
+//! the index the request addressed. The BASE table's own cursor has no index for such a
+//! sentence to name, so an element of one stated in another type is the invalid TOKEN it is,
+//! "The provided starting key is invalid", with nothing appended.
 //!
-//! The rows differ along what the rule generalises over: WHICH key space the mistyped element
-//! belongs to (the base table's, a local index's own sort key, a global index's partition key
-//! and its sort key), WHICH type the element carries instead of the declared one (a number for
-//! a string, a string for a number, a set, a map and a boolean), WHICH element of a local
-//! index's cursor is mistyped (the index's sort key and each of the table's own key
-//! attributes), and the paged read that carries the token (`Query` and `Scan`), because a
-//! token is read through the schema being paged whichever read reports it. The control rows
-//! page instead of refusing, so the refusals above are about the token's types and not about
-//! the request.
+//! A `Query` states that invalid-token sentence for EVERY token it cannot place in the schema
+//! it pages, the mistyped index cursor element included: the two reads differ in this one
+//! wording, which is why every row below is driven through both of them ([`Row::stated_by`]).
+//!
+//! The rows differ along what the rule generalises over: WHICH key schema declares the
+//! mistyped element (the base table's, a local index's own, a global index's, and the table's
+//! inside an index cursor), WHICH role that schema gives it (its partition key and its sort
+//! key), WHICH type the element carries instead of the declared one (a number for a string, a
+//! string for a number, a set, a map and a boolean), and the paged read that carries the token
+//! (`Query` and `Scan`), because a token is read through the schema being paged whichever read
+//! reports it. The control rows page instead of refusing, so the refusals above are about the
+//! token's types and not about the request.
 //!
 //! Every call goes over the wire through the same `MultiServiceRouter` the emulator's front
 //! doors use, from `crate::emulator`.
@@ -33,6 +35,11 @@ use crate::emulator::{call, describe_when_active, emulator, error_code, message,
 
 /// AWS's sentence for a token that is no key of the schema being paged.
 const INVALID: &str = "The provided starting key is invalid";
+
+/// How that typed sentence opens, which is what tells a row the table walk DETAILS from a
+/// row both reads state alike.
+const TYPED_PREFIX: &str = "One or more parameter values were invalid: Type mismatch for Index \
+                           Key";
 
 /// AWS's sentence for a GLOBAL index key element stated in another type than the table's
 /// `AttributeDefinitions` declare for that attribute, written out as a literal so the WORDING
@@ -115,7 +122,21 @@ struct Row {
     index: Option<&'static str>,
     partition: (&'static str, Value),
     token: Value,
+    /// The sentence the table WALK states for this token.
     stated: String,
+}
+
+impl Row {
+    /// The sentence `operation` states for this token: the table walk's own, except that a
+    /// `Query` states the fixed invalid-token sentence for the one element that walk details
+    /// (the module doc states the rule).
+    fn stated_by(&self, operation: &str) -> &str {
+        if operation == "Query" && self.stated.starts_with(TYPED_PREFIX) {
+            INVALID
+        } else {
+            &self.stated
+        }
+    }
 }
 
 fn rows() -> Vec<Row> {
@@ -137,45 +158,47 @@ fn rows() -> Vec<Row> {
             token: json!({"pk": {"N": "1"}, "sk": {"N": "1"}}),
             stated: INVALID.to_string(),
         },
-        // The LOCAL index: the same one space, so the same sentence — for its own sort key
-        // and for each of the table's key attributes its cursor carries.
+        // The LOCAL index, whose OWN key schema declares the table's partition key beside its
+        // sort key — so an element of either earns the typed sentence, naming that index.
         Row {
             case: "a local index, its own sort key declared N carried as a string",
             index: Some(LOCAL_INDEX),
             partition: table_partition.clone(),
             token: json!({"pk": {"S": "one"}, "lsk": {"S": "3"}, "sk": {"N": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("lsk", "N", "S", LOCAL_INDEX),
         },
         Row {
             case: "a local index, its own sort key carried as a number set",
             index: Some(LOCAL_INDEX),
             partition: table_partition.clone(),
             token: json!({"pk": {"S": "one"}, "lsk": {"NS": ["3"]}, "sk": {"N": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("lsk", "N", "NS", LOCAL_INDEX),
         },
         Row {
             case: "a local index, its own sort key carried as a boolean",
             index: Some(LOCAL_INDEX),
             partition: table_partition.clone(),
             token: json!({"pk": {"S": "one"}, "lsk": {"BOOL": true}, "sk": {"N": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("lsk", "N", "BOOL", LOCAL_INDEX),
         },
         Row {
-            case: "a local index, the table's partition key carried as a number",
+            case: "a local index, the partition key its own schema declares, as a number",
             index: Some(LOCAL_INDEX),
             partition: table_partition.clone(),
             token: json!({"pk": {"N": "1"}, "lsk": {"N": "3"}, "sk": {"N": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("pk", "S", "N", LOCAL_INDEX),
         },
+        // The table's SORT key, which that index's schema does not declare, is still a key
+        // attribute of the order being paged, so the walk reports it under that index too.
         Row {
             case: "a local index, the table's sort key carried as a map",
             index: Some(LOCAL_INDEX),
             partition: table_partition.clone(),
             token: json!({"pk": {"S": "one"}, "lsk": {"N": "3"},
                           "sk": {"M": {"a": {"S": "b"}}}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("sk", "N", "M", LOCAL_INDEX),
         },
-        // The GLOBAL index, whose own key space is reported by the typed sentence.
+        // The GLOBAL index, whose own key schema is reported the same way.
         Row {
             case: "a global index, its own sort key declared N carried as a string",
             index: Some(GLOBAL_INDEX),
@@ -201,14 +224,14 @@ fn rows() -> Vec<Row> {
             stated: index_key_type_mismatch("gpk", "S", "N", GLOBAL_INDEX),
         },
         // A global index cursor carrying one of the TABLE's key attributes in another type is
-        // not about the index's own space, so it is the invalid token like the rest.
+        // reported under the index this read was pointed at, like the rest.
         Row {
             case: "a global index, the table's sort key carried as a string",
             index: Some(GLOBAL_INDEX),
             partition: global_partition,
             token: json!({"gpk": {"S": "OPEN"}, "gsk": {"N": "2"},
                           "pk": {"S": "one"}, "sk": {"S": "1"}}),
-            stated: INVALID.to_string(),
+            stated: index_key_type_mismatch("sk", "N", "S", GLOBAL_INDEX),
         },
     ]
 }
@@ -228,18 +251,18 @@ fn paged_read(operation: &str, row: &Row) -> Value {
 }
 
 #[tokio::test]
-async fn only_a_global_indexs_own_key_space_states_the_typed_cursor_mismatch() {
+async fn only_an_index_key_its_schema_declares_states_the_typed_cursor_mismatch() {
     let router = seeded().await;
 
     for row in rows() {
         for operation in ["Query", "Scan"] {
             let case = format!("{} on {operation}", row.case);
+            let expected = row.stated_by(operation);
             let (status, body) = call(&router, operation, paged_read(operation, &row)).await;
             assert_eq!(
                 (status, error_code(&body).as_str(), message(&body).as_str()),
-                (400, "ValidationException", row.stated.as_str()),
-                "case {case:?}: expected the refusal {:?}, got {status} with {body}",
-                row.stated
+                (400, "ValidationException", expected),
+                "case {case:?}: expected the refusal {expected:?}, got {status} with {body}"
             );
         }
     }

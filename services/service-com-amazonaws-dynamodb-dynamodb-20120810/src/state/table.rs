@@ -567,6 +567,11 @@ impl Table {
     /// declares ([`START_KEY_INVALID_MESSAGE`]), with nothing appended to it in any of
     /// those cases.
     ///
+    /// A cursor read through a secondary INDEX tells that last case further, on the read that
+    /// details it ([`Self::index_key_of_start_key`]): the element is a key of the order that
+    /// index holds its entries in, and the sentence names that index. The table's own order
+    /// has no index to name, so a cursor of it keeps the one sentence.
+    ///
     /// A clause about a VALUE the token carried is stated BARE, out of the
     /// `<N> validation error(s) detected: ` envelope: a resume token is a member only a
     /// paged READ carries, and a read states a clause about a value it was handed as the
@@ -1109,18 +1114,12 @@ impl Table {
     /// is ([`Self::key_of_start_key`]). An index cursor carries both schemas' key
     /// attributes, so one it does not carry in full is not that cursor at all.
     ///
-    /// A token that DOES name this cursor's key attributes while carrying one of them in
-    /// another type than the table declares for it is a different defect WHERE the index has
-    /// a key space of its own: the element is the index key it names, stated in a type that
-    /// index cannot hold, so a GLOBAL index's cursor is refused as the invalid parameter
-    /// value it is — naming the key attribute, the type the table's `AttributeDefinitions`
-    /// declare for it, the type the token supplied and the index being read
-    /// ([`index_key_type_mismatch`]), which is the one wording this service states that
-    /// mismatch in wherever a request carries a global index key value. A LOCAL index has no
-    /// key space of its own — its partition key IS the table's, and its cursor is a key of
-    /// the table's space with one more of the table's attributes beside it — so a mistyped
-    /// element of one is no key of the space being paged and earns the invalid-TOKEN
-    /// sentence, exactly as the base table's own cursor does.
+    /// A token that names one of the INDEX's own key attributes in another type than the
+    /// table declares for it is a different defect, and it is decided BEFORE the shape above:
+    /// that element is the index key it names, stated in a type the index cannot hold,
+    /// whatever else the token carries ([`Self::mistyped_index_key_element`], which states
+    /// which cursors and which READS word it as the mismatch they found and which state the
+    /// invalid-TOKEN sentence for it).
     ///
     /// Those sentences are about the token's SHAPE. Each element it does carry is then
     /// held to the rules every key attribute's value is held to — the documented numeric
@@ -1139,8 +1138,9 @@ impl Table {
         index: &SecondaryIndex<'_>,
         key: &Item,
         empty_element: EmptyStartKeyElement<'_>,
+        mistyped: MistypedStartKeyElement,
     ) -> Result<IndexItemKey, RequestError> {
-        self.index_cursor(index, key, empty_element)
+        self.index_cursor(index, key, empty_element, mistyped)
             .map_err(unenveloped)
     }
 
@@ -1151,7 +1151,17 @@ impl Table {
         index: &SecondaryIndex<'_>,
         key: &Item,
         empty_element: EmptyStartKeyElement<'_>,
+        mistyped: MistypedStartKeyElement,
     ) -> Result<IndexItemKey, RequestError> {
+        // The TYPE of each element the token carries is read before the token is held to the
+        // shape of the schema being paged: a value stated in a type the order being paged
+        // cannot hold is that invalid parameter value whether or not the rest of the token
+        // addresses an entry, so the element and the types are what the caller is told about
+        // ([`Self::mistyped_index_key_element`]) rather than the token being no cursor of
+        // this index.
+        if let Some(refusal) = self.mistyped_index_key_element(index, key, mistyped) {
+            return Err(refusal);
+        }
         let named: BTreeSet<&str> = Self::index_key_elements(index.key_schema)
             .chain(self.key_schema.iter())
             .map(|element| element.attribute_name.as_str())
@@ -1170,22 +1180,6 @@ impl Table {
         for element in Self::index_key_elements(index.key_schema) {
             let name = element.attribute_name.as_str();
             let value = key.get(name).ok_or_else(|| KeySource::StartKey.mismatch())?;
-            let actual = attribute_value_type(value);
-            if let Some(declared) = self.declared_type(name).filter(|declared| *declared != actual)
-            {
-                // The typed parameter-value sentence is stated for the key space a GLOBAL
-                // secondary index has of its OWN ([`index_key_type_mismatch`]). A LOCAL
-                // index has none — its partition key IS this table's, so its cursor is a
-                // key of the table's own space with one more of the table's attributes
-                // beside it — and a mistyped element of one is therefore no key of the
-                // space being paged, which is the invalid TOKEN the base table's own
-                // cursor states ([`START_KEY_INVALID_MESSAGE`], and
-                // [`Self::key_of_start_key`] states it for the table).
-                if !index.global {
-                    return Err(KeySource::StartKey.mismatch());
-                }
-                return Err(index_key_type_mismatch(name, declared, actual, index.name));
-            }
             values.push(self.key_value_worded(name, value, empty_element)?);
         }
         // The table's own half of the token is read through the one walk every
@@ -1195,6 +1189,81 @@ impl Table {
             index: values,
             table,
         })
+    }
+
+    /// How a cursor of `index` that carries an attribute in another type than this table's
+    /// `AttributeDefinitions` declare for it is refused — or `None` when every element of the
+    /// token carries its declared type.
+    ///
+    /// Such an element is a key attribute stated in a type the order being paged cannot hold,
+    /// so it is refused as the invalid parameter value it is: the attribute, the declared
+    /// type, the type the token supplied and the INDEX this read was pointed at
+    /// ([`index_key_type_mismatch`]) — the one wording this service states that mismatch in
+    /// wherever a request carries a secondary index key value. Every KEY attribute of the
+    /// token is held to its declared type that way, the index's own and the table's that the
+    /// cursor carries beside them alike, because the cursor is a key of the index's order as a
+    /// whole and the refusal names the index the request addressed.
+    ///
+    /// WHICH of the two sentences a mistyped element earns follows the READ the token was
+    /// handed to ([`MistypedStartKeyElement`]): the table walk details it, and a QUERY states
+    /// the invalid-token sentence for every token it cannot place. A base-table cursor states
+    /// that sentence too, whichever read carries it, since there is no index for such a
+    /// sentence to name ([`Self::key_of_start_key`]).
+    ///
+    /// The elements are read in the order the index orders its entries by, then the table's
+    /// own key, so a token with two mistyped elements earns one sentence rather than one that
+    /// depends on the order a map happened to be walked in. An attribute no `AttributeDefinition`
+    /// declares has no declared type to differ from, and an element whose value breaks one of
+    /// the documented rules for the SETS it holds is left to that rule, which is stated for a
+    /// value this service accepts nowhere whatever schema it was stated against
+    /// ([`check_collection_rules`], run over the whole token by the caller).
+    fn mistyped_index_key_element(
+        &self,
+        index: &SecondaryIndex<'_>,
+        key: &Item,
+        mistyped: MistypedStartKeyElement,
+    ) -> Option<RequestError> {
+        for name in self.cursor_elements_in_order(index) {
+            let Some(value) = key.get(name) else {
+                continue;
+            };
+            if check_collection_rules(value).is_err() {
+                continue;
+            }
+            let actual = attribute_value_type(value);
+            let Some(declared) = self
+                .declared_type(name)
+                .filter(|declared| *declared != actual)
+            else {
+                continue;
+            };
+            if mistyped == MistypedStartKeyElement::InvalidToken {
+                return Some(KeySource::StartKey.mismatch());
+            }
+            return Some(index_key_type_mismatch(name, declared, actual, index.name));
+        }
+        None
+    }
+
+    /// The attributes of an index cursor in the ONE order its elements are read in: the
+    /// index's own key schema, then this table's. Each attribute once, however many of those
+    /// schemas declare it.
+    ///
+    /// Only those: an attribute NEITHER schema declares as a key is no key of the order being
+    /// paged — the token carrying one is the shape its caller holds the token to
+    /// ([`Self::index_cursor`]) — so the type a cursor states it in is not this sentence's
+    /// business.
+    fn cursor_elements_in_order<'k>(&'k self, index: &SecondaryIndex<'k>) -> Vec<&'k str> {
+        let mut ordered: Vec<&str> = Vec::new();
+        for name in Self::index_key_elements(index.key_schema)
+            .chain(self.key_schema.iter())
+            .map(|element| element.attribute_name.as_str())
+        {
+            if !ordered.contains(&name) {
+                ordered.push(name);
+            }
+        }
+        ordered
     }
 
     /// The number of items stored right now.

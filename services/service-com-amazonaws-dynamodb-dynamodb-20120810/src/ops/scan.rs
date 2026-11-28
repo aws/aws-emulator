@@ -632,6 +632,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             index.as_ref(),
             input.exclusive_start_key.as_ref(),
             empty_element,
+            // A token element that names one of the index's own key attributes in another
+            // type than the table declares for it is detailed by this reader: the element,
+            // the two types and the index being walked
+            // ([`crate::state::MistypedStartKeyElement`]).
+            crate::state::MistypedStartKeyElement::NamesTheMismatch,
         )
         .map_err(lift)?;
         // Where the token resumes from sits in the same space the walk below is ordered

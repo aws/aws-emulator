@@ -740,6 +740,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 index.as_ref(),
                 Some(start),
                 crate::state::EmptyStartKeyElement::NamesTheKey,
+                // And a token element stated in another type than the schema declares for
+                // it is no key of the schema being paged either, so it earns that same
+                // invalid-token sentence from this reader — the table walk is the reader
+                // that details such an element
+                // ([`crate::state::MistypedStartKeyElement`]).
+                crate::state::MistypedStartKeyElement::InvalidToken,
             )
             .map_err(lift)?;
             // A page resumes at a key the condition SELECTS — "The primary key of the
