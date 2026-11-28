@@ -1291,6 +1291,14 @@ pub(super) const ADDON_PUBLISHER_FIPS_REBUILDS: &str = "Chainguard";
 /// name, owned by [`ADDON_OWNER_MARKETPLACE`] and carrying the
 /// `marketplaceInformation` of its own listing (see
 /// [`ADDON_MARKETPLACE_LISTINGS`]).
+///
+/// What a rebuild does NOT take from the add-on it rebuilds is the Kubernetes
+/// versions that add-on has been offered on: a published build history belongs to
+/// the add-on that publishes it, and a vendor's listing starts when the vendor
+/// lists it, so a rebuild's builds start at the window the catalog's newer add-ons
+/// share ([`ADDON_CATALOG_FIRST_CLUSTER_VERSION`]) rather than at the row Amazon
+/// EKS first offered the rebuilt add-on on — at the release the rebuilt
+/// software's line had reached by that row (see [`published_addon_seeds`]).
 /// Writing the rebuilt add-on's name here rather than repeating its row is what
 /// keeps the two from publishing different surfaces for one piece of software.
 pub(super) const ADDON_FIPS_REBUILDS: &[(&str, &str)] = &[
@@ -1542,7 +1550,8 @@ fn calendar_row(addon_name: &str, cluster_version: &str) -> usize {
 /// Every add-on this service publishes, in add-on NAME order — the order the
 /// catalog is published in: the rows [`ADDON_CATALOG`] writes out, and the
 /// Marketplace rebuilds [`ADDON_FIPS_REBUILDS`] names, each taking the published
-/// surface of the add-on it rebuilds under its vendor's name.
+/// surface of the add-on it rebuilds under its vendor's name, and publishing its
+/// own builds from its own listing's window rather than from the rebuilt add-on's.
 ///
 /// A rebuild of a name the catalog does not publish is a typo in the table,
 /// which is why it panics here — at seed time, with both names — rather than
@@ -1559,10 +1568,29 @@ fn published_addon_seeds() -> Vec<AddonCatalogSeed> {
                      which it does not publish"
                 )
             });
+        // The build HISTORY is the REBUILD's own: a vendor's listing publishes
+        // builds from the window that listing covers, so a rebuild has no build
+        // for a Kubernetes version older than the window the catalog's newer
+        // add-ons share — it does NOT inherit the first version Amazon EKS has
+        // offered the REBUILT add-on on, which for an add-on published since the
+        // beginning of the calendar reaches back years before the vendor's
+        // listing existed. A rebuild of an add-on Amazon EKS itself began
+        // offering later keeps that later start: the software was not offered
+        // before it either.
+        let rebuilt_first = first_published_row(published);
+        let window = calendar_row(addon_name, ADDON_CATALOG_FIRST_CLUSTER_VERSION);
+        let first = rebuilt_first.max(window);
+        // A rebuild is the SAME software, so the build it publishes for a
+        // Kubernetes version is of the release the software's line has reached by
+        // that version: its line starts where that line stood at the rebuild's
+        // first row, not at the beginning of the line.
+        let reached = (first - rebuilt_first).min(published.releases.len().saturating_sub(1));
         seeds.push(AddonCatalogSeed {
             addon_name,
             owner: ADDON_OWNER_MARKETPLACE,
             publisher: ADDON_PUBLISHER_FIPS_REBUILDS,
+            first_cluster_version: Some(VERSION_CALENDAR[first].0),
+            releases: &published.releases[reached..],
             ..*published
         });
     }
@@ -2884,12 +2912,10 @@ pub(super) const ADDON_MARKETPLACE_LISTINGS: &[(&str, &str, MarketplaceProductPa
         "prod-zd93lpmkcqrvh",
         MarketplaceProductPage::Uncited,
     ),
-    // The Chainguard FIPS EFS CSI driver listing, published as the stock-keeping
-    // unit it is sold under: the form `.../marketplace/pp?sku=<sku>` addresses.
     (
         "chainguard_aws-efs-csi-driver-fips",
         "prod-butapz3xfcrww",
-        MarketplaceProductPage::StockKeepingUnit("ev1rr6qr2ftfm4qjeljc5och7"),
+        MarketplaceProductPage::Uncited,
     ),
     (
         "chainguard_cert-manager-fips",

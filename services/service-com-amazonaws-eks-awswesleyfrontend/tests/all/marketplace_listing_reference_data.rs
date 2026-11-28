@@ -617,24 +617,22 @@ async fn each_listing_reports_the_product_page_the_catalog_carries_for_it() {
     let router = emulator();
 
     // The rows name, per add-on, the page the catalog carries for its listing, each
-    // in the form AWS Marketplace publishes that product page under. They span both
-    // published forms, two sellers and a vendor's rebuild of an Amazon EKS-managed
-    // add-on. A listing the catalog cites no page for reports no member at all,
-    // which the suites above read over the whole catalog rather than per name, so
-    // citing a page for one of them is never a failure here.
-    let cases: Vec<(&str, &str)> = vec![
+    // in the form AWS Marketplace publishes that product page under — and, for a
+    // listing whose published page the catalog cannot CITE, no page at all: the
+    // member is then absent rather than carrying an address nobody published. They
+    // span both published forms, three sellers and a vendor's rebuild of an Amazon
+    // EKS-managed add-on.
+    let cases: Vec<(&str, Option<&str>)> = vec![
         (
             "accuknox_kubearmor",
-            "https://aws.amazon.com/marketplace/pp/prodview-5npox4ixz64qk",
-        ),
-        (
-            "chainguard_aws-efs-csi-driver-fips",
-            "https://aws.amazon.com/marketplace/pp?sku=ev1rr6qr2ftfm4qjeljc5och7",
+            Some("https://aws.amazon.com/marketplace/pp/prodview-5npox4ixz64qk"),
         ),
         (
             "netapp_trident-operator",
-            "https://aws.amazon.com/marketplace/pp?sku=3anbrahbid63isddiigf6j5qy",
+            Some("https://aws.amazon.com/marketplace/pp?sku=3anbrahbid63isddiigf6j5qy"),
         ),
+        ("chainguard_aws-efs-csi-driver-fips", None),
+        ("datadog_operator", None),
     ];
 
     for (case, expected) in cases {
@@ -651,8 +649,7 @@ async fn each_listing_reports_the_product_page_the_catalog_carries_for_it() {
             .get("productUrl")
             .and_then(serde_json::Value::as_str);
         assert_eq!(
-            product_url,
-            Some(expected),
+            product_url, expected,
             "case {case}: expected the product page the catalog carries, {expected:?}, got {:?}",
             listing["productUrl"]
         );
@@ -676,8 +673,8 @@ fn a_published_product_page_is_addressed_in_one_of_the_marketplace_forms() {
         ),
         (
             "the stock-keeping-unit form",
-            MarketplaceProductPage::StockKeepingUnit("ev1rr6qr2ftfm4qjeljc5och7"),
-            Some("https://aws.amazon.com/marketplace/pp?sku=ev1rr6qr2ftfm4qjeljc5och7"),
+            MarketplaceProductPage::StockKeepingUnit("3anbrahbid63isddiigf6j5qy"),
+            Some("https://aws.amazon.com/marketplace/pp?sku=3anbrahbid63isddiigf6j5qy"),
         ),
         (
             "a listing whose page the catalog cannot cite",
