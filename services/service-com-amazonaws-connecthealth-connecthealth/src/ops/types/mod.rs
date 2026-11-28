@@ -13,32 +13,35 @@
 //! `pub mod <operation>;` per operation and glob-re-exports both, so a submodule
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
-//!
-//! One module is not a per-shape split but a per-CONCERN one: `exception_wire` holds every
-//! exception shape this service declares, because what an error body of this service looks
-//! like on the wire is one rule for all of them.
 
 pub mod activate_subscription_types;
+pub mod create_dataset_types;
 pub mod create_domain_types;
 pub mod create_subscription_types;
 pub mod deactivate_subscription_types;
+pub mod delete_dataset_types;
 pub mod delete_domain_types;
-pub mod exception_wire;
+pub mod get_dataset_types;
 pub mod get_domain_types;
+pub mod get_medical_coding_job_types;
 pub mod get_medical_scribe_listening_session_types;
 pub mod get_patient_insights_job_types;
 pub mod get_subscription_types;
+pub mod list_datasets_types;
 pub mod list_domains_types;
 pub mod list_subscriptions_types;
 pub mod list_tags_for_resource_types;
 pub mod shared_types;
-pub mod start_medical_scribe_listening_session_types;
+pub mod start_medical_coding_job_types;
 pub mod start_patient_insights_job_types;
+pub mod submit_feedback_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use activate_subscription_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_dataset_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_domain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -46,17 +49,23 @@ pub use create_subscription_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use deactivate_subscription_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_dataset_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_domain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use exception_wire::*;
+pub use get_dataset_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_domain_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_medical_coding_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_medical_scribe_listening_session_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_patient_insights_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_subscription_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_datasets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_domains_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -66,9 +75,11 @@ pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use start_medical_scribe_listening_session_types::*;
+pub use start_medical_coding_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_patient_insights_job_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use submit_feedback_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

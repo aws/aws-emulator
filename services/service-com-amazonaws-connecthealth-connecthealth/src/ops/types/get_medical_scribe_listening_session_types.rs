@@ -38,6 +38,7 @@ pub struct MedicalScribeListeningSessionDetails {
     pub post_stream_action_settings: Option<MedicalScribePostStreamActionSettingsResponse>,
     pub post_stream_action_result: Option<MedicalScribePostStreamActionsResult>,
     pub encounter_context_provided: Option<bool>,
+    pub medical_coding_context_provided: Option<bool>,
     pub stream_status: Option<String>,
     pub stream_creation_time: Option<::aws_smithy_types::DateTime>,
     pub stream_end_time: Option<::aws_smithy_types::DateTime>,
@@ -55,6 +56,7 @@ pub struct MedicalScribeChannelDefinition {
 pub struct MedicalScribePostStreamActionSettingsResponse {
     pub output_s3_uri: String,
     pub clinical_note_generation_settings: ClinicalNoteGenerationSettingsResponse,
+    pub medical_code_generation_settings: Option<MedicalCodeGenerationSettingsResponse>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ClinicalNoteGenerationSettingsResponse")]
@@ -83,10 +85,17 @@ pub struct CustomTemplateResponse {
     pub template_type: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodeGenerationSettingsResponse")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodeGenerationSettingsResponse {
+    pub enabled: Option<bool>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalScribePostStreamActionsResult")]
 #[derive(Debug, Clone, Default)]
 pub struct MedicalScribePostStreamActionsResult {
     pub clinical_note_generation_result: Option<ClinicalNoteGenerationResult>,
+    pub medical_code_generation_result: Option<MedicalCodeGenerationResult>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ClinicalNoteGenerationResult")]
@@ -103,5 +112,12 @@ pub struct ArtifactDetails {
     pub output_location: Option<String>,
     pub status: Option<String>,
     pub failure_reason: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodeGenerationResult")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodeGenerationResult {
+    pub medical_codes_result: Option<ArtifactDetails>,
+    pub job_id: Option<String>,
 }
 

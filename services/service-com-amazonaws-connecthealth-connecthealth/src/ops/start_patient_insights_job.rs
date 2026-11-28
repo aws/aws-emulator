@@ -138,6 +138,20 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{
+    AccessDeniedException, ConflictException, InternalServerException, ResourceNotFoundException,
+    ThrottlingException, ValidationException,
+};
+// This operation's REQUEST and RESPONSE shapes, named explicitly so they shadow the derived
+// copies `types` re-exports: the request's output-location member is judged by this handler
+// rather than at the boundary (`crate::state::runtime_input_wire`), and the response's
+// `creationTime` carries the `@timestampFormat("date-time")` the derive drops
+// (`crate::state::timestamp_wire`).
+use crate::state::{StartPatientInsightsJobInput, StartPatientInsightsJobOutput};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -203,8 +217,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     type Error = StartPatientInsightsJobError;
 
     const NAME: &'static str = "StartPatientInsightsJob";
-    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::START_PATIENT_INSIGHTS_JOB_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::START_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA;
+    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = crate::state::START_PATIENT_INSIGHTS_JOB_INPUT_SCHEMA;
+    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = crate::state::START_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(
@@ -344,7 +358,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             encounter_context: input.encounter_context,
             user_context: input.user_context,
             input_data_config: input.input_data_config,
-            output_data_config: input.output_data_config,
+            // The one member this endpoint reads through its own shape is stored as the
+            // MODELLED one every reader of a job projects.
+            output_data_config: input.output_data_config.as_modelled(),
         };
 
         let mut store = state.lock();

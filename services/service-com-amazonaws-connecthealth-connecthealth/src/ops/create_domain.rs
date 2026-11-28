@@ -118,6 +118,13 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{
+    InternalServerException, ServiceQuotaExceededException, ValidationException,
+};
 
 /// The member `accountId` is written under, beside the modelled members.
 ///
@@ -461,8 +468,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             creation_fingerprint: fingerprint,
             created_at: now,
             subscriptions: ::std::collections::BTreeMap::new(),
-            // A freshly created domain has had no patient insights job started in it.
+            // A freshly created domain holds none of the records a later call puts in it:
+            // no job of either kind has been started, no dataset created and no feedback
+            // submitted.
             patient_insights_jobs: ::std::collections::BTreeMap::new(),
+            medical_coding_jobs: ::std::collections::BTreeMap::new(),
+            datasets: ::std::collections::BTreeMap::new(),
+            feedback: ::std::collections::BTreeMap::new(),
         };
 
         // Tags go to the one ARN-keyed tag store, so `GetDomain` and

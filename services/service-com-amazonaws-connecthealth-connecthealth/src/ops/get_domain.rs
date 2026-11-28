@@ -84,6 +84,11 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{InternalServerException, ResourceNotFoundException};
 
 /// The member `accountId` is written under, beside the modelled members.
 ///

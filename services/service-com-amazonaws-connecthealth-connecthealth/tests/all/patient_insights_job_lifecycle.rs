@@ -883,8 +883,10 @@ async fn a_domain_at_the_job_ceiling_refuses_a_further_start() {
 /// none reports none — which is what makes the codec write a string for the first kind and
 /// the protocol's own epoch number for the rest.
 ///
-/// This also pins the two hand-written output schemas (see the note in
-/// `src/ops/types/start_patient_insights_job_types.rs`) against the model: every member's
+/// This also pins the two hand-written output schemas — `GetPatientInsightsJobOutput` in
+/// `src/ops/types/get_patient_insights_job_types.rs` and `StartPatientInsightsJobOutput` in
+/// `src/state/timestamp_wire.rs`, each written out because the shape derive drops
+/// `@timestampFormat` — against the model: every member's
 /// wire name and index, in the order
 /// `smithy_query(query="operation",operation="StartPatientInsightsJob,GetPatientInsightsJob")`
 /// lists them. The members that are not timestamps are the control rows: they must report
@@ -892,9 +894,8 @@ async fn a_domain_at_the_job_ceiling_refuses_a_further_start() {
 #[test]
 fn the_job_pairs_output_schemas_match_the_model_member_for_member() {
     use ::aws_smithy_schema::traits::TimestampFormat;
-    use service_com_amazonaws_connecthealth_connecthealth::ops::types::{
-        GET_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA, START_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA,
-    };
+    use service_com_amazonaws_connecthealth_connecthealth::ops::types::GET_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA;
+    use service_com_amazonaws_connecthealth_connecthealth::state::START_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA;
 
     // (wire name, whether the model marks the member @timestampFormat("date-time")).
     let start: &[(&str, bool)] = &[("jobArn", false), ("jobId", false), ("creationTime", true)];

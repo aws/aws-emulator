@@ -24,108 +24,11 @@ pub struct StartPatientInsightsJobInput {
     pub client_token: Option<String>,
 }
 
-/// `StartPatientInsightsJobResponse`, with its schema written out instead of derived.
-///
-/// WHY it is not `#[smithy_macros::smithy(shape = ...)]` like the input beside it:
-/// `creationTime` carries `@timestampFormat("date-time")`
-/// (`smithy_query(query="operation",operation="StartPatientInsightsJob",model_path="services/service-com-amazonaws-connecthealth-connecthealth/smithy-model/com-amazonaws-connecthealth-connecthealth.json")`
-/// reports `"timestampFormat": "date-time"` on it), and the derive does not carry that
-/// trait onto the member schemas it emits (grep `vendor/smithy-macros`: it emits no
-/// `with_timestamp_format`). The JSON codec reads a timestamp's wire form off the MEMBER
-/// schema (`vendor/smithy-schema-server/src/json.rs`, `write_timestamp`) and otherwise
-/// falls back to the restJson1 default of epoch seconds — so the creation instant would go
-/// out as the number `1794244298.42841` where the model, and every SDK deserializer
-/// generated for a `date-time` member, requires an RFC 3339 string.
-///
-/// Only the two patient-insights job responses of this service carry a `date-time` member:
-/// every other timestamp of this model (a `Domain`'s `createdAt`, a `Subscription`'s four
-/// instants, a listening session's two) declares no format and so keeps the protocol's own
-/// epoch-seconds rendering, which is why the correction is per-member here rather than the
-/// whole-protocol one in `service_common::date_time_json`.
-///
-/// The member schemas below are the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types, plus the `date-time` format the model declares. The
-/// constraint traits the derive also captures are deliberately NOT reproduced: the
-/// framework's validating walk runs against `Operation::INPUT_SCHEMA` only, so nothing
-/// reads them on an output shape. The derive's `DeserializableStruct` impl is not
-/// reproduced either: this shape is an operation OUTPUT, which the server only ever
-/// serializes.
-///
-/// This is a PER-SHAPE workaround and has to be kept in step with the model by hand; the
-/// real fix is in the read-only `vendor/smithy-macros` codegen. `tests/all` pins the wire
-/// form, so it fails if this block drifts from the model.
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#StartPatientInsightsJobResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct StartPatientInsightsJobOutput {
     pub job_arn: String,
     pub job_id: String,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
 }
-
-impl StartPatientInsightsJobOutput {
-    const M_JOB_ARN: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.connecthealth#StartPatientInsightsJobResponse$jobArn",
-            "com.amazonaws.connecthealth",
-            "jobArn",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "jobArn",
-        0,
-    );
-
-    const M_JOB_ID: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.connecthealth#StartPatientInsightsJobResponse$jobId",
-            "com.amazonaws.connecthealth",
-            "jobId",
-        ),
-        ::aws_smithy_schema::ShapeType::String,
-        "jobId",
-        1,
-    );
-
-    const M_CREATION_TIME: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.connecthealth#StartPatientInsightsJobResponse$creationTime",
-            "com.amazonaws.connecthealth",
-            "creationTime",
-        ),
-        ::aws_smithy_schema::ShapeType::Timestamp,
-        "creationTime",
-        2,
-    )
-    // The one chain call the vendored codegen omits; see the note above.
-    .with_timestamp_format(::aws_smithy_schema::traits::TimestampFormat::DateTime);
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.connecthealth#StartPatientInsightsJobResponse",
-            "com.amazonaws.connecthealth",
-            "StartPatientInsightsJobResponse",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_JOB_ARN, &Self::M_JOB_ID, &Self::M_CREATION_TIME],
-    );
-}
-
-pub static START_PATIENT_INSIGHTS_JOB_OUTPUT_SCHEMA: &::aws_smithy_schema::Schema =
-    &StartPatientInsightsJobOutput::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for StartPatientInsightsJobOutput {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        serializer.write_string(&Self::M_JOB_ARN, self.job_arn.as_str())?;
-        serializer.write_string(&Self::M_JOB_ID, self.job_id.as_str())?;
-        if let Some(value) = self.creation_time.as_ref() {
-            serializer.write_timestamp(&Self::M_CREATION_TIME, value)?;
-        }
-        Ok(())
-    }
-}
-
-// `ConflictException` is declared in `super::exception_wire`, with every other exception
-// shape of this service, because the key its detail text travels under is decided by the
-// plane that answers rather than by the model's member name.
 

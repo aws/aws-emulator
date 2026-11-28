@@ -24,13 +24,61 @@ pub struct SubscriptionDescription {
     pub deactivated_at: Option<::aws_smithy_types::DateTime>,
 }
 
-// Every exception shape this service declares — `AccessDeniedException`,
-// `InternalServerException`, `ResourceNotFoundException`, `ValidationException`,
-// `ServiceQuotaExceededException`, `ThrottlingException` and `ConflictException` — is
-// declared in `super::exception_wire` instead of being expanded from the model here: the
-// key its detail text travels under is decided by the PLANE that answers and the expansion
-// derives every member's wire name from the model. See that module for why, and for what
-// it emits.
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#AccessDeniedException")]
+#[derive(Debug, Clone, Default)]
+pub struct AccessDeniedException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#InternalServerException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalServerException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ResourceNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceNotFoundException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.connecthealth#DatasetConfig")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum DatasetConfig {
+    medicalCoding(MedicalCodingDatasetConfig),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodingDatasetConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodingDatasetConfig {
+    pub s3_input_path: String,
+    pub s3_output_path: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ConflictException")]
+#[derive(Debug, Clone, Default)]
+pub struct ConflictException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ThrottlingException")]
+#[derive(Debug, Clone, Default)]
+pub struct ThrottlingException {
+    pub message: Option<String>,
+}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#EncryptionContext")]
 #[derive(Debug, Clone, Default)]
@@ -45,6 +93,31 @@ pub struct WebAppConfiguration {
     pub ehr_role: String,
     pub idc_application_id: String,
     pub idc_region: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodesPatientContext")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodesPatientContext {
+    pub sex: Option<String>,
+    pub status: Option<String>,
+    pub date_of_birth: Option<String>,
+    pub insurance: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodesEncounterContext")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodesEncounterContext {
+    pub encounter_type: Option<String>,
+    pub encounter_reason: Option<String>,
+    pub after_hours: Option<bool>,
+    pub encounter_date: Option<String>,
+    pub encounter_duration_minutes: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodingOutputDataConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodingOutputDataConfig {
+    pub s3_output_path: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#PatientInsightsPatientContext")]
@@ -95,19 +168,7 @@ pub struct S3Source {
     pub uri: String,
 }
 
-// `skip_validation = ["s3OutputPath"]`: `StartPatientInsightsJob` is served by the
-// patient-insights RUNTIME endpoint, which states a refusal of the request itself with ONE
-// fixed sentence (`crate::service::error_detail::REQUEST_VALIDATION_FAILED_MESSAGE`) rather
-// than with the per-member constraint clause the boundary walk renders. The boundary check
-// would pre-empt that sentence for every output location outside the shape, so the member's
-// modelled `@length`/`@pattern` are judged by the handler instead
-// (`crate::state::output_location_within_shape`, which carries the same bound and the same
-// pattern source). `skip_validation` drops only this member's constraint traits: it is
-// still `@required` and still read into the same field.
-#[smithy_macros::smithy(
-    shape = "com.amazonaws.connecthealth#OutputDataConfig",
-    skip_validation = ["s3OutputPath"]
-)]
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#OutputDataConfig")]
 #[derive(Debug, Clone, Default)]
 pub struct OutputDataConfig {
     pub s3_output_path: String,
@@ -117,12 +178,28 @@ pub struct OutputDataConfig {
 pub const CUSTOM_TEMPLATE_BASE_VALUES: &[&str] = &["BEHAVIORAL_SOAP", "BIRP", "DAP", "GIRPP", "HISTORY_AND_PHYSICAL", "SIRP"];
 
 
+/// The values `DatasetStatus` accepts on the wire.
+pub const DATASET_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATE_FAILED", "CREATING", "DELETED", "DELETE_FAILED", "DELETING"];
+
+
+/// The values `DatasetType` accepts on the wire.
+pub const DATASET_TYPE_VALUES: &[&str] = &["MEDICAL_CODING"];
+
+
 /// The values `DomainStatus` accepts on the wire.
 pub const DOMAIN_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "DELETING"];
 
 
+/// The values `EncounterType` accepts on the wire.
+pub const ENCOUNTER_TYPE_VALUES: &[&str] = &["IN_PERSON", "TELEHEALTH"];
+
+
 /// The values `EncryptionType` accepts on the wire.
 pub const ENCRYPTION_TYPE_VALUES: &[&str] = &["AWS_OWNED_KEY", "CUSTOMER_MANAGED_KEY"];
+
+
+/// The values `FeedbackArtifactType` accepts on the wire.
+pub const FEEDBACK_ARTIFACT_TYPE_VALUES: &[&str] = &["CLINICAL_DOC", "MEDICAL_CODES"];
 
 
 /// The values `InsightsType` accepts on the wire.
@@ -153,8 +230,12 @@ pub const MEDICAL_SCRIBE_PARTICIPANT_ROLE_VALUES: &[&str] = &["CLINICIAN", "PATI
 pub const MEDICAL_SCRIBE_STREAM_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "PAUSED"];
 
 
+/// The values `PatientStatus` accepts on the wire.
+pub const PATIENT_STATUS_VALUES: &[&str] = &["ESTABLISHED", "NEW"];
+
+
 /// The values `PostStreamArtifactGenerationStatus` accepts on the wire.
-pub const POST_STREAM_ARTIFACT_GENERATION_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS"];
+pub const POST_STREAM_ARTIFACT_GENERATION_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "PENDING", "SKIPPED"];
 
 
 /// The values `Pronouns` accepts on the wire.
@@ -163,6 +244,10 @@ pub const PRONOUNS_VALUES: &[&str] = &["HE_HIM", "SHE_HER", "THEY_THEM"];
 
 /// The values `ProviderRole` accepts on the wire.
 pub const PROVIDER_ROLE_VALUES: &[&str] = &["CLINICIAN"];
+
+
+/// The values `Sex` accepts on the wire.
+pub const SEX_VALUES: &[&str] = &["FEMALE", "MALE", "NON_BINARY", "UNKNOWN"];
 
 
 /// The values `Specialty` accepts on the wire.

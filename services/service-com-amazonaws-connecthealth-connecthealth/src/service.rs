@@ -60,6 +60,18 @@ pub mod error_detail;
 pub mod required_query_route;
 pub mod tag_bounds;
 
+/// The exception shapes of this service and the WIRE KEY each plane of it carries their
+/// detail text under ([`exception_wire`]) — the other half of how this service words a
+/// refusal, beside the sentences [`error_detail`] builds.
+///
+/// Declared HERE, from this never-regenerated file, although the source sits beside the
+/// generated shapes it replaces: `src/ops/types/mod.rs` is rendered from the model by the
+/// scaffold generator and rewritten by every model update, so a declaration added there
+/// does not survive one. The `#[path]` is what keeps the file where the module it belongs
+/// to can still find it while the declaration lives where it cannot be overwritten.
+#[path = "ops/types/exception_wire.rs"]
+pub mod exception_wire;
+
 use crate::ops::start_medical_scribe_listening_session::{
     self, StartMedicalScribeListeningSession,
 };

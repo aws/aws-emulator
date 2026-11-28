@@ -33,15 +33,49 @@ pub use insights_run::*;
 mod insights_sections;
 pub use insights_sections::*;
 
+/// The response shapes whose timestamp members declare `@timestampFormat("date-time")`,
+/// which the shape derive drops — written out there so those members travel in the form
+/// the model declares.
+mod timestamp_wire;
+pub use timestamp_wire::*;
+
+/// The request shape whose one output-location member the patient-insights runtime
+/// endpoint's own handler judges, so that endpoint states its fixed sentence rather than
+/// the boundary walk's per-member clause.
+mod runtime_input_wire;
+pub use runtime_input_wire::*;
+
+/// The `Dataset` records of this service, and the lifecycle the clock moves one through.
+mod dataset;
+pub use dataset::*;
+
+/// The medical coding jobs of this service: their lifecycle and the codes document a
+/// completed one leaves at the location the start configured.
+mod medical_coding_run;
+pub use medical_coding_run::*;
+
+/// The feedback a `SubmitFeedback` records against one artifact this service generated.
+mod feedback;
+pub use feedback::*;
+
+/// The one place this crate writes into a caller's object store, shared by the two kinds of
+/// job that leave a work product behind.
+mod object_store_write;
+
 use crate::ops::types::{
     CreateSubscriptionOutput, CreateSubscriptionRecord, CreateWebAppConfiguration,
     EncryptionContext, InputDataConfig, InsightsContext, InsightsOutput,
-    InternalServerException, MedicalScribeChannelDefinition,
+    MedicalScribeChannelDefinition,
     MedicalScribeListeningSessionDetails, MedicalScribePostStreamActionSettingsResponse,
     MedicalScribePostStreamActionsResult, OutputDataConfig, PatientInsightsEncounterContext,
-    PatientInsightsPatientContext, SubscriptionDescription, UserContext, ValidationException,
+    PatientInsightsPatientContext, SubscriptionDescription, UserContext,
     WebAppConfiguration,
 };
+// The two exception shapes this module BUILDS come from the hand-written set, as they do
+// in every handler that answers with one: the shape carries which plane is answering, and
+// so which wire key its detail text travels under
+// (`crate::service::exception_wire`).
+use crate::service::exception_wire::{InternalServerException, ValidationException};
 
 /// The region an emulated ARN carries when the request names none.
 const DEFAULT_REGION: &str = "us-east-1";
@@ -173,7 +207,7 @@ pub const MAX_S3_URI_LEN: usize = 1024;
 /// and an optional key path after the separator.
 ///
 /// Stated here because `OutputDataConfig$s3OutputPath` is judged by the handler rather
-/// than by the boundary walk (`skip_validation` in `crate::ops::types::shared_types`), so
+/// than by the boundary walk (`skip_validation` in [`crate::state::runtime_input_wire`]), so
 /// the rule the boundary would have applied is applied here instead — the pattern SOURCE
 /// verbatim, run by the same regex engine the framework's own `@pattern` check uses, so
 /// the two cannot judge one value differently.
@@ -413,6 +447,17 @@ pub struct Domain {
     /// than in a map beside the registry, so a job is scoped to its own domain and goes
     /// away with it.
     pub patient_insights_jobs: BTreeMap<String, PatientInsightsJob>,
+    /// The medical coding jobs started in this domain, by `jobId`, scoped to it exactly as
+    /// the patient insights jobs above are.
+    pub medical_coding_jobs: BTreeMap<String, MedicalCodingJob>,
+    /// The datasets created in this domain, by `datasetId`, scoped to it exactly as the
+    /// jobs above are — `CreateDataset` creates one IN a Domain, and `GetDataset` /
+    /// `ListDatasets` reach one only through that domain.
+    pub datasets: BTreeMap<String, Dataset>,
+    /// The feedback submitted in this domain, by the id this service minted for each
+    /// submission. No operation of this model reads it back, so it is recorded rather than
+    /// reported; bounded by [`MAX_FEEDBACK_PER_DOMAIN`].
+    pub feedback: BTreeMap<String, Feedback>,
 }
 
 impl Domain {
@@ -797,6 +842,11 @@ pub struct ScribeSession {
     pub post_stream_action_settings: Option<MedicalScribePostStreamActionSettingsResponse>,
     pub post_stream_action_result: Option<MedicalScribePostStreamActionsResult>,
     pub encounter_context_provided: bool,
+    /// Whether the configuration carried the STRUCTURED medical-coding context inside its
+    /// encounter context. The context itself is `@sensitive` and the model declares no
+    /// member that reports it, so only this flag is kept — exactly as
+    /// [`Self::encounter_context_provided`] is kept for the context around it.
+    pub medical_coding_context_provided: bool,
     pub stream_status: ScribeStreamStatus,
     pub stream_creation_time: SystemTime,
     /// When the stream ENDED; `None` while it is still running, so a session in a
@@ -818,6 +868,7 @@ impl ScribeSession {
             post_stream_action_settings: self.post_stream_action_settings.clone(),
             post_stream_action_result: self.post_stream_action_result.clone(),
             encounter_context_provided: Some(self.encounter_context_provided),
+            medical_coding_context_provided: Some(self.medical_coding_context_provided),
             stream_status: Some(self.stream_status.as_wire().to_string()),
             stream_creation_time: Some(to_timestamp(self.stream_creation_time)),
             stream_end_time: self.stream_end_time.map(to_timestamp),
@@ -1153,6 +1204,61 @@ impl ComAmazonawsConnecthealthConnecthealthState {
         mint_uuid(seq)
     }
 
+    /// Mint a `jobId` unused within `domain_id` for a MEDICAL CODING job: the same UUID
+    /// form a patient insights job's id takes ([`Self::mint_patient_insights_job_id`]), and
+    /// for the same reason — the model constrains `JobId` by length alone (1..36) and the
+    /// id this service hands out is the UUID form AWS mints one in, which is also inside
+    /// the `[-a-zA-Z0-9_/.]+` segment the `MedicalCodingJobArn` pattern allows for a job.
+    pub fn mint_medical_coding_job_id(&mut self, domain_id: &str) -> String {
+        loop {
+            let seq = self.next_seq();
+            let candidate = mint_uuid(seq);
+            let taken = self
+                .domains
+                .get(domain_id)
+                .is_some_and(|domain| domain.medical_coding_jobs.contains_key(&candidate));
+            if !taken {
+                return candidate;
+            }
+        }
+    }
+
+    /// Mint a `datasetId` unused within `domain_id`: 32 lowercase hex characters, which is
+    /// inside the modelled `DatasetId` bound of 1..64 and matches its `^[a-z0-9]{1,64}$`
+    /// pattern (`smithy_query(query="shape",shape="DatasetId")`).
+    ///
+    /// The id carries no prefix because the model's pattern allows none: unlike a
+    /// `domainId` or a `subscriptionId`, a dataset id is a bare alphanumeric token.
+    pub fn mint_dataset_id(&mut self, domain_id: &str) -> String {
+        loop {
+            let seq = self.next_seq();
+            let candidate = mint_id("", 32, seq);
+            let taken = self
+                .domains
+                .get(domain_id)
+                .is_some_and(|domain| domain.datasets.contains_key(&candidate));
+            if !taken {
+                return candidate;
+            }
+        }
+    }
+
+    /// Mint the id one feedback submission is recorded under: the UUID form, as every other
+    /// id this service mints for a record of its own.
+    pub fn mint_feedback_id(&mut self, domain_id: &str) -> String {
+        loop {
+            let seq = self.next_seq();
+            let candidate = mint_uuid(seq);
+            let taken = self
+                .domains
+                .get(domain_id)
+                .is_some_and(|domain| domain.feedback.contains_key(&candidate));
+            if !taken {
+                return candidate;
+            }
+        }
+    }
+
     /// Mint the id of the Identity Center application this service creates for a
     /// domain's web app, WITHIN the Identity Center instance the create named: `apl-`
     /// plus 16 hex, as Identity Center names an application.
@@ -1171,20 +1277,25 @@ impl ComAmazonawsConnecthealthConnecthealthState {
     ///
     /// Stated once HERE rather than per handler, so no handler can materialise one class
     /// of owed work and leave another standing: a `Domain` whose `DELETING` span has
-    /// elapsed is purged (`purge_due_deletions`), and a patient insights job of a LIVE
-    /// domain whose next status transition has fallen due is moved on
-    /// (`advance_due_patient_insights_jobs`). The purge runs first, so no transition is
-    /// applied to a record this same instant already owed the removal of.
+    /// elapsed is purged (`purge_due_deletions`), and every CONTAINED record of a LIVE
+    /// domain whose next transition has fallen due is moved on — a patient insights job
+    /// (`advance_due_patient_insights_jobs`), a medical coding job
+    /// (`advance_due_medical_coding_jobs`) and a dataset (`advance_due_datasets`, which
+    /// also drops a dataset whose deletion has completed). The purge runs first, so no
+    /// transition is applied to a record this same instant already owed the removal of.
     ///
     /// It writes only what was owed at THIS instant whether or not anybody called, which
     /// is why the reporting operations run it too: a deletion is applied at the instant
-    /// its span elapsed and each job transition is stamped with the instant it FELL DUE
-    /// (`PatientInsightsJob::apply_due_transitions`) rather than the instant somebody
+    /// its span elapsed and each transition is stamped with the instant it FELL DUE
+    /// (`PatientInsightsJob::apply_due_transitions`, `MedicalCodingJob::apply_due_transitions`,
+    /// `Dataset::apply_due_transitions`) rather than the instant somebody
     /// looked, so running it in one handler cannot change a value another handler
     /// reports.
     pub fn materialise_due(&mut self, now: SystemTime) {
         self.purge_due_deletions(now);
         self.advance_due_patient_insights_jobs(now);
+        self.advance_due_medical_coding_jobs(now);
+        self.advance_due_datasets(now);
     }
 
     /// Materialise every deletion the CLOCK has already made due: a `Domain` whose
@@ -1249,6 +1360,85 @@ impl ComAmazonawsConnecthealthConnecthealthState {
         self.live_domain(region, domain_id)?
             .patient_insights_jobs
             .get(job_id)
+    }
+
+    /// Materialise every medical-coding-job status transition the CLOCK has already made
+    /// due, in every LIVE domain — the same rule, and the same liveness scope, as
+    /// [`Self::advance_due_patient_insights_jobs`].
+    fn advance_due_medical_coding_jobs(&mut self, now: SystemTime) {
+        for domain in self.domains.values_mut().filter(|domain| domain.is_live()) {
+            for job in domain.medical_coding_jobs.values_mut() {
+                job.apply_due_transitions(now);
+            }
+        }
+    }
+
+    /// Materialise every dataset transition the CLOCK has already made due, in every LIVE
+    /// domain, and DROP every dataset whose deletion has completed.
+    ///
+    /// The drop is the deletion itself: the terminal `DELETED` status is reported by no
+    /// reader of this service (`Dataset::is_reportable`), so a record kept in it would be
+    /// observable nowhere while still growing the store for every create-and-delete a
+    /// caller makes. The same liveness scope as the two job kinds: a dataset held under a
+    /// domain whose deletion is already recorded owes nothing further, because the purge of
+    /// that domain takes it.
+    fn advance_due_datasets(&mut self, now: SystemTime) {
+        for domain in self.domains.values_mut().filter(|domain| domain.is_live()) {
+            for dataset in domain.datasets.values_mut() {
+                dataset.apply_due_transitions(now);
+            }
+            domain
+                .datasets
+                .retain(|_, dataset| dataset.status != DatasetStatus::Deleted);
+        }
+    }
+
+    /// The medical coding job `job_id` names under EXACTLY the domain `domain_id` names —
+    /// the same scoped chain, and the same single answer for every miss, as
+    /// [`Self::patient_insights_job`].
+    pub fn medical_coding_job(
+        &self,
+        region: &str,
+        domain_id: &str,
+        job_id: &str,
+    ) -> Option<&MedicalCodingJob> {
+        self.live_domain(region, domain_id)?
+            .medical_coding_jobs
+            .get(job_id)
+    }
+
+    /// The dataset `dataset_id` names under EXACTLY the domain `domain_id` names, as a
+    /// READER of a dataset sees it.
+    ///
+    /// `None` when any link of that chain is missing — the domain is absent or no longer
+    /// live, it holds no dataset of that id, or the one it holds is in a status no reader
+    /// reports ([`Dataset::is_reportable`]) — which are the cases `GetDataset` answers with
+    /// `ResourceNotFoundException`.
+    pub fn reportable_dataset(
+        &self,
+        region: &str,
+        domain_id: &str,
+        dataset_id: &str,
+    ) -> Option<&Dataset> {
+        self.live_domain(region, domain_id)?
+            .datasets
+            .get(dataset_id)
+            .filter(|dataset| dataset.is_reportable())
+    }
+
+    /// The dataset `dataset_id` names under `domain_id`, for WRITING. The scope and the
+    /// liveness rule are exactly [`Self::reportable_dataset`]'s, so a dataset a caller can
+    /// read is one a caller can delete.
+    pub fn reportable_dataset_mut(
+        &mut self,
+        region: &str,
+        domain_id: &str,
+        dataset_id: &str,
+    ) -> Option<&mut Dataset> {
+        self.live_domain_mut(region, domain_id)?
+            .datasets
+            .get_mut(dataset_id)
+            .filter(|dataset| dataset.is_reportable())
     }
 
     /// The tags recorded for `arn`, in key order.
@@ -1578,6 +1768,26 @@ pub fn patient_insights_job_arn(domain_arn: &str, job_id: &str) -> String {
     format!("{domain_arn}/patient-insights-job/{job_id}")
 }
 
+/// The ARN of a medical coding job: its domain's ARN plus `/medical-coding-job/<jobId>`,
+/// which is the resource form the modelled `MedicalCodingJobArn` pattern declares
+/// (`smithy_query(query="shape",shape="MedicalCodingJobArn")`:
+/// `^arn:aws[-a-z]*:health-agent:[-a-z0-9]+:[0-9]{12}:domain/[-a-zA-Z0-9-]+/medical-coding-job/[-a-zA-Z0-9_/.]+$`).
+pub fn medical_coding_job_arn(domain_arn: &str, job_id: &str) -> String {
+    format!("{domain_arn}/medical-coding-job/{job_id}")
+}
+
+/// The ARN of a `Dataset`: its domain's ARN plus `/dataset/<datasetId>`.
+///
+/// A dataset is created IN a domain and is reachable only through it, so its ARN is rooted
+/// in the domain's own — exactly as a `Subscription`'s and a job's are — and the result
+/// satisfies the modelled `DatasetArn` pattern
+/// (`smithy_query(query="shape",shape="DatasetArn")`:
+/// `^arn:aws[a-z\-]*:[a-z0-9\-]+:[a-z0-9\-]*:[0-9]{12}:.+$`), whose resource part is
+/// unconstrained.
+pub fn dataset_arn(domain_arn: &str, dataset_id: &str) -> String {
+    format!("{domain_arn}/dataset/{dataset_id}")
+}
+
 /// The object a completed patient insights job stores its generated summary as, which is
 /// the object its reported output location names.
 ///
@@ -1622,10 +1832,36 @@ pub fn patient_insights_output_uri(
     patient_id: &str,
     object_name: &str,
 ) -> Option<String> {
-    let derived = format!(
-        "{}/{job_id}/{patient_id}/{object_name}",
-        s3_output_path.trim_end_matches('/')
-    );
+    job_output_uri(s3_output_path, &[job_id, patient_id], object_name)
+}
+
+/// Where ONE output object of a job of this service sits: UNDER the `s3OutputPath` the
+/// start configured, in a prefix of `segments` — the job's own id, and whatever further
+/// segment its own kind keys its objects by — at `object_name`.
+///
+/// The ONE rule both kinds of job of this service derive an output location with
+/// ([`patient_insights_output_uri`] and
+/// [`MedicalCodingJob::output_location`]), so the member a reader answers with and the key
+/// the delivery writes at cannot drift apart, and two jobs configured with the same path
+/// cannot write over one another.
+///
+/// The member every result fills is an `S3Uri`, so a result must satisfy that shape's
+/// [`MAX_S3_URI_LEN`]: a configured path with no room left for an object location under it
+/// has `None` — such a job reports no location and delivers nothing, rather than reporting
+/// one past that bound or one naming a bare prefix. The fit is measured in CHARACTERS, as
+/// `@length` on a string is defined.
+pub fn job_output_uri(
+    s3_output_path: &str,
+    segments: &[&str],
+    object_name: &str,
+) -> Option<String> {
+    let mut derived = s3_output_path.trim_end_matches('/').to_string();
+    for segment in segments {
+        derived.push('/');
+        derived.push_str(segment);
+    }
+    derived.push('/');
+    derived.push_str(object_name);
     (derived.chars().count() <= MAX_S3_URI_LEN).then_some(derived)
 }
 
@@ -1722,6 +1958,21 @@ pub fn subscriptions_page_scope(region: &str, domain_id: &str) -> String {
     format!("subscriptions/{region}/{domain_id}")
 }
 
+/// The collection a `ListDatasets` cursor enumerates: the datasets of ONE domain in ONE
+/// Region, narrowed by the `type` filter the request states — `None` being the unfiltered
+/// listing, a different collection from any one type's.
+///
+/// EVERY request value that narrows which records a listing enumerates belongs in the
+/// scope, for the reason [`domains_page_scope`] states: a cursor is a bare "resume strictly
+/// after this key" position, so one accepted under a different narrowing would skip records
+/// the resuming request's own narrowing never served.
+pub fn datasets_page_scope(region: &str, domain_id: &str, dataset_type: Option<&str>) -> String {
+    format!(
+        "datasets/{region}/{domain_id}/{}",
+        dataset_type.unwrap_or(UNFILTERED_PAGE_SCOPE)
+    )
+}
+
 /// The longest `nextToken` this service attempts to decode at all.
 ///
 /// A cursor it mints is two hex characters per plaintext byte of a 32-character tag, a
@@ -1810,7 +2061,7 @@ pub fn decode_page_token(scope: &str, token: &str) -> Option<String> {
 /// is what applies them (refusing, never clamping), because a refusal of a page size is
 /// one the PLANE serving the listing renders: the recorded refusal of one carries its
 /// detail text under that plane's own key
-/// ([`crate::ops::types::exception_wire`]), which only a modelled error answered by a
+/// ([`crate::service::exception_wire`]), which only a modelled error answered by a
 /// handler carries. That is why the member carries `skip_validation` on both input
 /// shapes — the boundary walk would otherwise refuse the value first, in the framework's
 /// own envelope — and the clause itself is still the framework's
@@ -1950,7 +2201,7 @@ pub fn store_unreachable(operation: &str) -> InternalServerException {
         message: Some(format!("{operation} could not reach this service's store")),
         // The sentence is all this builds: which wire key it travels under belongs to the
         // plane that answers, stated by the operation
-        // (`crate::ops::types::exception_wire`).
+        // (`crate::service::exception_wire`).
         ..Default::default()
     }
 }

@@ -3,6 +3,14 @@
 //! The exception shapes this service's model declares, and the WIRE KEY an error body of
 //! this service carries its detail text under.
 //!
+//! HAND-WRITTEN, and declared by `src/service.rs` as [`crate::service::exception_wire`]
+//! rather than by the `types/mod.rs` beside it: that file is rendered from the model and
+//! rewritten by every model update, so a declaration in it does not survive one. An
+//! operation that answers with these shapes names them explicitly
+//! (`use crate::service::exception_wire::{…}`), which shadows the model-keyed copies the
+//! generated `types` re-exports — those cannot be told which key a plane writes the detail
+//! text under, which is the whole reason these seven exist.
+//!
 //! Every one of them declares exactly one member, `message` targeting `String`, with no
 //! `@jsonName`
 //! (`smithy_query(query="shape",shape="ResourceNotFoundException,ValidationException,AccessDeniedException,InternalServerException,ServiceQuotaExceededException,ThrottlingException,ConflictException",model_path="services/service-com-amazonaws-connecthealth-connecthealth/smithy-model/com-amazonaws-connecthealth-connecthealth.json")`).
@@ -113,7 +121,7 @@ macro_rules! answered_by_plane {
         match $modeled {
             $(
                 $enum::$variant(exception) => $enum::$variant(
-                    $crate::ops::types::exception_wire::Keyed::answered_by(exception, $plane),
+                    $crate::service::exception_wire::Keyed::answered_by(exception, $plane),
                 ),
             )+
         }

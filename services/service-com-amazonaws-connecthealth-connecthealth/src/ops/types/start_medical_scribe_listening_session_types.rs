@@ -5,11 +5,16 @@
 //! structures its `@streaming` input union carries.
 //!
 //! Each structure/union is declared exactly once across this service's `types/`
-//! modules, and `types/mod.rs` re-exports them all — the shapes the implemented
-//! `GetMedicalScribeListeningSession` already declares
+//! modules. The shapes the implemented `GetMedicalScribeListeningSession` already declares
 //! (`MedicalScribeChannelDefinition`, the `*Response` projections of the post-stream
 //! settings, every exception) are reused from `get_medical_scribe_listening_session_types`
 //! and `shared_types` rather than re-declared here.
+//!
+//! HAND-WRITTEN: the scaffold generator skips this operation (its input is a `@streaming`
+//! union it emits no framing for), so `types/mod.rs` declares no module for it. The
+//! declaration lives in the operation's own file instead of in that generated, rewritten-on
+//! -every-update one, which is why the shapes this module reaches are named through
+//! `crate::ops::types` rather than through its parent.
 //!
 //! ## Why the `Settings` / `Headers` pair exists
 //!
@@ -31,7 +36,7 @@
 //! it does frame, `InternalServerException`, is already declared in `shared_types`.
 #![allow(unused_imports)]
 
-use super::*;
+use crate::ops::types::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-connecthealth-connecthealth.json");
 
@@ -104,6 +109,16 @@ pub struct MedicalScribeConfigurationEvent {
 pub struct MedicalScribePostStreamActionSettings {
     pub output_s3_uri: String,
     pub clinical_note_generation_settings: ClinicalNoteGenerationSettings,
+    pub medical_code_generation_settings: Option<MedicalCodeGenerationSettings>,
+}
+
+/// Whether the session generates medical codes from its clinical note after the stream
+/// ends. The one member is `@required`, so it is a bare `bool`
+/// (`smithy_query(query="shape", shape="MedicalCodeGenerationSettings")`).
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodeGenerationSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodeGenerationSettings {
+    pub enabled: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#ClinicalNoteGenerationSettings")]
@@ -144,6 +159,25 @@ pub struct TemplateSectionInstruction {
 #[derive(Debug, Clone, Default)]
 pub struct EncounterContext {
     pub unstructured_context: Option<String>,
+    pub medical_coding_context: Option<MedicalCodingContext>,
+}
+
+/// The structured patient and encounter context a configuration event may carry for
+/// medical code generation — every member optional
+/// (`smithy_query(query="shape", shape="MedicalCodingContext")`). Whether a session was
+/// given one is what `GetMedicalScribeListeningSession` reports
+/// (`medicalCodingContextProvided`); the context itself is sensitive and is reported by no
+/// reader.
+#[smithy_macros::smithy(shape = "com.amazonaws.connecthealth#MedicalCodingContext")]
+#[derive(Debug, Clone, Default)]
+pub struct MedicalCodingContext {
+    pub sex: Option<String>,
+    pub status: Option<String>,
+    pub date_of_birth: Option<String>,
+    pub encounter_type: Option<String>,
+    pub encounter_reason: Option<String>,
+    pub after_hours: Option<bool>,
+    pub encounter_date: Option<String>,
 }
 
 /// The audio event whose chunk travels as a base64 value inside the frame's JSON

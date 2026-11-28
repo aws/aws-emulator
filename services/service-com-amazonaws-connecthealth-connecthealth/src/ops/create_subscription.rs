@@ -80,6 +80,14 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{
+    AccessDeniedException, AnsweringPlane, InternalServerException, ResourceNotFoundException,
+    ServiceQuotaExceededException, ValidationException,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -118,7 +126,7 @@ pub type CreateSubscriptionError = crate::scaffolded::Scaffolded<CreateSubscript
 /// exception this operation can answer with, rather than at each place a refusal is built.
 impl From<CreateSubscriptionErrorModeled> for CreateSubscriptionError {
     fn from(modeled: CreateSubscriptionErrorModeled) -> Self {
-        crate::scaffolded::Scaffolded::Modeled(crate::ops::types::exception_wire::answered_by_plane!(
+        crate::scaffolded::Scaffolded::Modeled(crate::service::exception_wire::answered_by_plane!(
             CreateSubscriptionErrorModeled,
             modeled,
             AnsweringPlane::Subscriptions,

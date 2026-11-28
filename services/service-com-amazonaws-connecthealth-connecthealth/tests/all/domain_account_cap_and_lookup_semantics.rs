@@ -785,6 +785,9 @@ fn seed_session(
         post_stream_action_settings: None,
         post_stream_action_result: None,
         encounter_context_provided: false,
+        // The model's own record of whether the configuration carried the structured
+        // medical-coding context, which a seeded session was given none of.
+        medical_coding_context_provided: false,
         stream_status: case.status,
         stream_creation_time: now,
         stream_end_time: case.ended.then_some(now),

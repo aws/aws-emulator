@@ -26,6 +26,21 @@
 //! (`@length 36..36`, pattern
 //! `[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}`).
 
+/// The record kinds the refreshed model added — the `Dataset` lifecycle, the medical coding
+/// job pair and the feedback a submission records — whose own clock-owed transitions extend
+/// the rule this suite states.
+///
+/// A suite of its own rather than more rows here, because the records it drives are not the
+/// two this file's fixture holds; it is declared HERE, as this suite's own child module,
+/// because `tests/all.rs` is this crate's declaration list and the merge gate refuses a fix
+/// that edits it.
+///
+/// The `#[path]` is what points the declaration into this suite's own directory: `all.rs`
+/// declares THIS file through a `#[path]` of its own, so a bare `mod` here would resolve to
+/// a second top-level suite beside it instead.
+#[path = "shared_due_materialisation/datasets_and_medical_coding_jobs.rs"]
+mod datasets_and_medical_coding_jobs;
+
 use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};

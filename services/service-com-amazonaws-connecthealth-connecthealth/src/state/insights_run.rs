@@ -477,74 +477,16 @@ fn claim(
     })
 }
 
-/// The media type the output documents are stored with: they are JSON documents, and a
-/// client reads the summary straight off the location the job reports.
-const SUMMARY_CONTENT_TYPE: &str = "application/json";
-
-/// The integrity checksum the write of an output document DECLARES, which is the checksum
-/// the object store records for the object and reports back on a read that enables the
-/// checksum mode (`GetObjectOutput$ChecksumCRC32`, under the `FULL_OBJECT` type a one-shot
-/// write stores).
-///
-/// A service writes into a caller's bucket through an AWS SDK, and an SDK computes a CRC32
-/// checksum for every upload it makes unless the caller asks for another algorithm (the
-/// default request checksum calculation of every current SDK), so the objects a finished job
-/// leaves behind carry that checksum and a client that downloads one can verify the bytes it
-/// got. Named here rather than left to the transport: the in-process hop every emulated
-/// service shares computes a checksum only where one is asked for
-/// (`service_common::s3_client`), so this is the SERVICE stating what its write carries.
-const OUTPUT_CHECKSUM_ALGORITHM: ::aws_sdk_s3::types::ChecksumAlgorithm =
-    ::aws_sdk_s3::types::ChecksumAlgorithm::Crc32;
-
 /// Write the objects of one claimed delivery, and report whether the object store took
 /// them.
 ///
-/// `Some(true)` when the store took every object, `Some(false)` when it ANSWERED a refusal
-/// of one — the bucket does not exist, or the write is not permitted — which is a job that
-/// could not store its work product. `None` when nothing answered the write at all: no
-/// object store is mounted in this assembly, so nothing is established and the job keeps
-/// the transition the clock owed it.
+/// The write itself, and what it establishes, belong to neither kind of job of this service:
+/// both make it through the one place this crate writes into a caller's object store
+/// ([`super::object_store_write::write_objects`]), so a refused write and one nothing
+/// answered read the same whichever job made it.
 async fn write_output(callback: &EmbeddedEmulator, claim: &ClaimedDelivery) -> Option<bool> {
-    use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
-
-    let client = ::service_common::s3_client::s3_client(callback, &claim.region);
-    for (key, document) in &claim.objects {
-        let written = client
-            .put_object()
-            .bucket(&claim.bucket)
-            .key(key)
-            .content_type(SUMMARY_CONTENT_TYPE)
-            .checksum_algorithm(OUTPUT_CHECKSUM_ALGORITHM)
-            .body(::aws_sdk_s3::primitives::ByteStream::from(document.clone()))
-            .send()
-            .await;
-        match written {
-            Ok(_) => {}
-            Err(error) => match error.code() {
-                // The store ANSWERED: this job's output could not be stored where it was
-                // configured to go.
-                Some(code) => {
-                    ::tracing::warn!(
-                        bucket = %claim.bucket,
-                        code = %code,
-                        "a patient insights job's output was refused by the emulator's Amazon S3"
-                    );
-                    return Some(false);
-                }
-                // Nothing answered the write — the same reading
-                // `service_common::s3_object_read` gives a read nothing answered.
-                None => {
-                    ::tracing::warn!(
-                        bucket = %claim.bucket,
-                        "nothing answered a patient insights job's output write: this emulator \
-                         has no Amazon S3 to store it in"
-                    );
-                    return None;
-                }
-            },
-        }
-    }
-    Some(true)
+    super::object_store_write::write_objects(callback, &claim.region, &claim.bucket, &claim.objects)
+        .await
 }
 
 /// The `SummaryType` the summary document states for the `insightsType` a job was started

@@ -116,6 +116,14 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{
+    AccessDeniedException, InternalServerException, ResourceNotFoundException,
+    ThrottlingException, ValidationException,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -252,7 +260,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // (`crate::state::patient_insights_job_arn`), so the sentence names the same
             // resource path a job that does exist reports as its `jobArn`.
             return Err(not_found(
-                crate::service::error_detail::patient_insights_job_not_found_message(
+                crate::service::error_detail::job_not_found_message(
                     &crate::state::patient_insights_job_arn(&domain_arn, &input.job_id),
                 ),
             ));

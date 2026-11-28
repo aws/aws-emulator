@@ -90,6 +90,22 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+// This operation's OWN type module. `types/mod.rs` is rendered from the model by the
+// scaffold generator, which skips this operation entirely (its input is a `@streaming`
+// union it emits no framing for) and so declares no module for it — and rewrites that file
+// on every model update. The declaration therefore lives HERE, in the one file that uses
+// those shapes, where no update can drop it again.
+#[path = "types/start_medical_scribe_listening_session_types.rs"]
+mod session_wire;
+use session_wire::*;
+// This operation's exception shapes: the hand-written set, which carries the WIRE KEY the
+// plane answering this call writes their detail text under
+// (`crate::service::exception_wire`), named explicitly so they shadow the model-keyed
+// copies `types` re-exports.
+use crate::service::exception_wire::{
+    AccessDeniedException, InternalServerException, ResourceNotFoundException,
+    ServiceQuotaExceededException, ThrottlingException, ValidationException,
+};
 use crate::state::{ScribeSession, ScribeSessionStart, ScribeStreamStatus};
 use aws_smithy_eventstream::frame::read_message_from;
 use aws_smithy_runtime_api::http::{Request, Response};
@@ -239,6 +255,7 @@ impl<Eng: Send + Sync + 'static> StartMedicalScribeListeningSession<Eng> {
             post_stream_action_settings: None,
             post_stream_action_result: None,
             encounter_context_provided: false,
+            medical_coding_context_provided: false,
             stream_status: ScribeStreamStatus::InProgress,
             stream_creation_time: now,
             stream_end_time: None,
@@ -491,9 +508,10 @@ fn apply_input_stream(
 /// The post-stream settings are stored in the `*Response` shape the reader answers with,
 /// which is the same member set the event carries minus the custom template's
 /// instructions — the model's response shape declares no member for those, and they are
-/// `@sensitive`, so they are not kept. The encounter context itself is `@sensitive` too:
-/// only the modelled `encounterContextProvided` flag is stored, which is the one thing
-/// the model reports about it.
+/// `@sensitive`, so they are not kept. The encounter context itself is `@sensitive` too,
+/// and so is the structured medical-coding context inside it: only the modelled
+/// `encounterContextProvided` / `medicalCodingContextProvided` flags are stored, which is
+/// all the model reports about either.
 fn apply_configuration(session: &mut ScribeSession, configuration: MedicalScribeConfigurationEvent) {
     let settings = configuration.post_stream_action_settings;
     session.post_stream_action_settings = Some(MedicalScribePostStreamActionSettingsResponse {
@@ -514,9 +532,22 @@ fn apply_configuration(session: &mut ScribeSession, configuration: MedicalScribe
                 },
             ),
         },
+        // Whether the session generates medical codes after the stream: a `@required`
+        // member of the event's own settings shape, so the flag the reader answers with is
+        // the one the configuration carried rather than a default of this service.
+        medical_code_generation_settings: settings.medical_code_generation_settings.map(
+            |generation| MedicalCodeGenerationSettingsResponse {
+                enabled: Some(generation.enabled),
+            },
+        ),
     });
     session.channel_definitions = configuration.channel_definitions.unwrap_or_default();
     session.encounter_context_provided = configuration.encounter_context.is_some();
+    // The structured coding context travels INSIDE that encounter context, and the model
+    // reports the same thing about it: whether the configuration carried one.
+    session.medical_coding_context_provided = configuration
+        .encounter_context
+        .is_some_and(|context| context.medical_coding_context.is_some());
 }
 
 /// Read the `@httpHeader`-bound half of the request into the modelled settings shape and

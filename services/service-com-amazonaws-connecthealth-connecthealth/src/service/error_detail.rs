@@ -153,19 +153,32 @@ pub fn scribe_session_not_found_message(session_id: &str) -> String {
     )
 }
 
-/// The detail text of the `ResourceNotFoundException` answered when a patient insights
-/// job cannot be resolved under a domain that does resolve.
+/// The detail text of the `ResourceNotFoundException` answered when a JOB of this service
+/// cannot be resolved under a domain that does resolve.
 ///
-/// RECORDED behaviour: the patient-insights endpoint names the job by its ARN — `Job
-/// <jobArn> does not exist.` — rather than by the bare `jobId`, so a caller reading the
-/// sentence has the whole resource path the lookup failed on. The fixed text is `Job `
-/// and ` does not exist.`; the ARN between them is the one this service's own ARN rule
-/// builds for the resolved domain and the requested `jobId`
-/// ([`crate::state::patient_insights_job_arn`]), never a value echoed from the request
+/// RECORDED behaviour for the patient-insights pair, and the form every job of this service
+/// is named by: the endpoint names the job by its ARN — `Job <jobArn> does not exist.` —
+/// rather than by the bare `jobId`, so a caller reading the sentence has the whole resource
+/// path the lookup failed on. The fixed text is `Job ` and ` does not exist.`; the ARN
+/// between them is the one this service's own ARN rule builds for the resolved domain and
+/// the requested `jobId` ([`crate::state::patient_insights_job_arn`],
+/// [`crate::state::medical_coding_job_arn`]), never a value echoed from the request
 /// unchanged — and it still goes out through this module's one bounded rendering
 /// ([`echoed`]), as every sentence here does.
-pub fn patient_insights_job_not_found_message(job_arn: &str) -> String {
+pub fn job_not_found_message(job_arn: &str) -> String {
     format!("Job {} does not exist.", echoed(job_arn))
+}
+
+/// The detail text of the `ResourceNotFoundException` answered when a dataset cannot be
+/// resolved under a domain that does resolve — because the domain holds no dataset of that
+/// id, or because the one it holds is in a status no reader of a dataset reports (the model
+/// documents `GetDataset` as answering this for a dataset whose status is `DELETED`).
+///
+/// The same `<resource kind> not found: <identifier>` form [`domain_not_found_message`] and
+/// [`subscription_not_found_message`] carry, with the identifier the request addressed the
+/// dataset by, echoed through this module's one bounded rendering ([`echoed`]).
+pub fn dataset_not_found_message(dataset_id: &str) -> String {
+    format!("Dataset not found: {}", echoed(dataset_id))
 }
 
 /// The detail text of the `AccessDeniedException` the patient-insights runtime endpoint
@@ -286,8 +299,12 @@ mod tests {
                 scribe_session_not_found_message(&huge),
             ),
             (
-                "patient_insights_job_not_found_message",
-                patient_insights_job_not_found_message(&huge),
+                "job_not_found_message",
+                job_not_found_message(&huge),
+            ),
+            (
+                "dataset_not_found_message",
+                dataset_not_found_message(&huge),
             ),
             (
                 "subscription_not_found_message",
@@ -348,9 +365,14 @@ mod tests {
                 format!("Resource not found: sessionId with ID {subscription_id} does not exist"),
             ),
             (
-                "patient_insights_job_not_found_message",
-                patient_insights_job_not_found_message(&job_arn),
+                "job_not_found_message",
+                job_not_found_message(&job_arn),
                 format!("Job {job_arn} does not exist."),
+            ),
+            (
+                "dataset_not_found_message",
+                dataset_not_found_message("0123456789abcdef0123456789abcdef"),
+                "Dataset not found: 0123456789abcdef0123456789abcdef".to_string(),
             ),
         ] {
             assert_eq!(
