@@ -12,7 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 use ::service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts_store;
 
 use crate::ops::types::{
-    AccessDeniedException, ConflictException, ExportFilter, ImportOptions,
+    AccessDeniedException, ComputeConfiguration, ConflictException, ExportFilter,
+    GraphSessionConfiguration, ImportOptions, ProvisionedGraphConfiguration,
     ResourceNotFoundException, ServiceQuotaExceededException, ValidationException,
     VectorSearchConfiguration,
 };
@@ -490,7 +491,9 @@ pub struct Graph {
     pub status: GraphStatus,
     pub status_reason: Option<String>,
     pub create_time: SystemTime,
-    pub provisioned_memory: i32,
+    /// The compute serving this graph: ONE configuration, reported through both of the
+    /// members a graph record names it with (see [`GraphCompute`]).
+    pub compute: GraphCompute,
     pub endpoint: String,
     pub public_connectivity: bool,
     pub replica_count: i32,
@@ -606,7 +609,7 @@ impl Graph {
 /// snapshotted graph rather than the value a restore reports.
 #[derive(Debug, Clone)]
 pub struct GraphConfiguration {
-    pub provisioned_memory: i32,
+    pub compute: GraphCompute,
     pub public_connectivity: bool,
     pub replica_count: i32,
     pub deletion_protection: bool,
@@ -616,7 +619,7 @@ pub struct GraphConfiguration {
 impl From<&Graph> for GraphConfiguration {
     fn from(graph: &Graph) -> Self {
         Self {
-            provisioned_memory: graph.provisioned_memory,
+            compute: graph.compute,
             public_connectivity: graph.public_connectivity,
             replica_count: graph.replica_count,
             deletion_protection: graph.deletion_protection,
@@ -4470,7 +4473,12 @@ macro_rules! graph_record_output {
                     status: Some(graph.status.as_wire().to_string()),
                     status_reason: graph.status_reason.clone(),
                     create_time: Some(::aws_smithy_types::DateTime::from(graph.create_time)),
-                    provisioned_memory: Some(graph.provisioned_memory),
+                    // ONE stored compute configuration, reported through both of the
+                    // members that name it: the current one, and the deprecated member
+                    // that carries a provisioned graph's `memory` and a graph session's
+                    // `minMemory` (see `GraphCompute::reported_memory`).
+                    provisioned_memory: graph.compute.reported_memory(),
+                    compute_configuration: Some(graph.compute.as_wire()),
                     endpoint: Some(graph.endpoint.clone()),
                     public_connectivity: Some(graph.public_connectivity),
                     vector_search_configuration: graph.vector_search_configuration.clone(),
@@ -4506,7 +4514,8 @@ impl From<&Graph> for crate::ops::types::GraphSummary {
             name: graph.name.clone(),
             arn: graph.arn.clone(),
             status: Some(graph.status.as_wire().to_string()),
-            provisioned_memory: Some(graph.provisioned_memory),
+            provisioned_memory: graph.compute.reported_memory(),
+            compute_configuration: Some(graph.compute.as_wire()),
             public_connectivity: Some(graph.public_connectivity),
             endpoint: Some(graph.endpoint.clone()),
             replica_count: Some(graph.replica_count),
@@ -4746,6 +4755,7 @@ pub fn locked_store_now(
 mod tests;
 
 mod endpoint_network;
+mod graph_compute;
 mod import_formats;
 mod import_load;
 mod open_cypher;
@@ -4753,6 +4763,7 @@ mod open_cypher_updates;
 mod query_authorization;
 
 pub use endpoint_network::*;
+pub use graph_compute::*;
 pub use import_formats::*;
 pub use import_load::*;
 pub use open_cypher::*;

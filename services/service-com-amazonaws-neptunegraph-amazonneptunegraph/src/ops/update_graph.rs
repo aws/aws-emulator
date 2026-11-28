@@ -46,12 +46,17 @@
 //!
 //! ## Input
 //!
+//! * `computeConfiguration` (ComputeConfiguration) — The updated compute configuration for
+//!   the graph. A graph session can be scaled up to a provisioned graph, and a provisioned
+//!   graph can be scaled down to a graph session, as long as the data in the graph fits
+//!   within the graph session.
 //! * `deletionProtection` (Boolean) — A value that indicates whether the graph has deletion
 //!   protection enabled. The graph can't be deleted when deletion protection is enabled.
 //! * `graphIdentifier` (GraphIdentifier, pattern ^g-[a-z0-9]{10}$) **required** — The unique
 //!   identifier of the Neptune Analytics graph.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) — The provisioned
-//!   memory-optimized Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, use ComputeConfiguration instead. The provisioned memory-optimized
+//!   Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
 //! * `publicConnectivity` (Boolean) — Specifies whether or not the graph can be reachable
 //!   over the internet. All access to graphs is IAM authenticated. (true to enable, or false
 //!   to disable.
@@ -60,6 +65,8 @@
 //!
 //! * `arn` (String) **required** — The ARN associated with the graph.
 //! * `buildNumber` (String) — The build number of the graph.
+//! * `computeConfiguration` (ComputeConfiguration) — The compute configuration of the graph:
+//!   either a provisioned graph or a graph session.
 //! * `createTime` (Timestamp) — The time at which the graph was created.
 //! * `deletionProtection` (Boolean) — If true, deletion protection is enabled for the graph.
 //! * `endpoint` (String) — The graph endpoint.
@@ -70,8 +77,9 @@
 //!   used to encrypt and decrypt graph data.
 //! * `name` (GraphName, len 1..63, pattern ^(?!g-)[a-z][a-z0-9]*(-[a-z0-9]+)*$) **required**
 //!   — The name of the graph.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) — The number of
-//!   memory-optimized Neptune Capacity Units (m-NCUs) allocated to the graph.
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, refer to ComputeConfiguration instead. For backward compatibility it
+//!   returns `memory` for a `provisionedGraph` and `minMemory` for a `graphSession`.
 //! * `publicConnectivity` (Boolean) — If true, the graph has a public endpoint, otherwise
 //!   not.
 //! * `replicaCount` (ReplicaCount, range 0..2) — The number of replicas for the graph.
@@ -176,6 +184,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // Every refusal of a member VALUE comes before the store is consulted, so a
+        // request that breaks a constraint is refused identically whatever the graph it
+        // names is doing. The compute members are one quantity under two spellings,
+        // checked by the one shared rule every operation accepting both reaches.
+        let compute_clauses = crate::state::compute_member_clauses(
+            input.provisioned_memory,
+            input.compute_configuration.as_ref(),
+        );
+        if !compute_clauses.is_empty() {
+            return Err(UpdateGraphErrorModeled::ValidationException(
+                crate::state::constraint_violation(&compute_clauses),
+            )
+            .into());
+        }
+
         // A graph lives in exactly one Region, so the Region this request was signed
         // for is part of the lookup: a graph of another Region is not reconfigurable
         // through this endpoint.
@@ -202,8 +225,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(public_connectivity) = input.public_connectivity {
             graph.public_connectivity = public_connectivity;
         }
-        if let Some(provisioned_memory) = input.provisioned_memory {
-            graph.provisioned_memory = provisioned_memory;
+        // A graph session scales up to a provisioned graph and a provisioned graph
+        // scales down to a graph session, so an update REPLACES the compute
+        // configuration with the one the request named — through either of the members
+        // that name it. A request naming neither leaves the graph's compute as it is.
+        if let Some(compute) = crate::state::GraphCompute::requested(
+            input.provisioned_memory,
+            input.compute_configuration.as_ref(),
+        ) {
+            graph.compute = compute;
         }
         if let Some(deletion_protection) = input.deletion_protection {
             graph.deletion_protection = deletion_protection;

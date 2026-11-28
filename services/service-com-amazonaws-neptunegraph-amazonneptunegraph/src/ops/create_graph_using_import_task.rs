@@ -285,9 +285,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // Both memory members bound ONE chosen value
-        // (`crate::state::import_provisioned_memory`), so a minimum above the maximum
-        // bounds nothing: there is no value the request admits. Each member's own
-        // 16..24576 range is already refused at the boundary.
+        // (`crate::state::import_provisioned_memory`), so each has to be a memory a
+        // graph may be provisioned with: the documented floor is stated once in
+        // `crate::state::provisioned_memory_clause` and reached by every operation that
+        // accepts a member naming a graph's provisioned memory, so no two of them can
+        // drift into different acceptance sets. Each member's own 1..24576 modelled range
+        // is already refused at the boundary.
+        for (member, bound) in [
+            ("minProvisionedMemory", input.min_provisioned_memory),
+            ("maxProvisionedMemory", input.max_provisioned_memory),
+        ] {
+            if let Some(clause) = crate::state::provisioned_memory_clause(member, bound) {
+                violations.push(clause);
+            }
+        }
+
+        // A minimum above the maximum bounds nothing: there is no value the request
+        // admits.
         if let (Some(min), Some(max)) = (input.min_provisioned_memory, input.max_provisioned_memory)
         {
             if min > max {
@@ -406,10 +420,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             status_reason: None,
             create_time,
             // Neither memory member IS the provisioned memory: they bound the value the
-            // service chooses (`crate::state::import_provisioned_memory`).
-            provisioned_memory: crate::state::import_provisioned_memory(
-                input.min_provisioned_memory,
-                input.max_provisioned_memory,
+            // service chooses (`crate::state::import_provisioned_memory`). This
+            // operation models no `computeConfiguration` member at all, so the graph it
+            // mints is a provisioned graph of that chosen memory.
+            compute: crate::state::GraphCompute::provisioned(
+                crate::state::import_provisioned_memory(
+                    input.min_provisioned_memory,
+                    input.max_provisioned_memory,
+                ),
             ),
             // Absent means "not enabled": the model declares no default for either
             // boolean, so an unsupplied member is stored as `false`.

@@ -240,7 +240,7 @@ async fn a_constraint_violation_reports_the_pattern_without_its_anchors() {
                 .to_string(),
         ),
         (
-            "CreateGraph provisionedMemory below its range minimum",
+            "CreateGraph provisionedMemory below the documented floor",
             "POST",
             "/graphs".to_string(),
             Some(json!({"graphName": "under-memory", "provisionedMemory": 15})),
@@ -262,11 +262,11 @@ async fn a_constraint_violation_reports_the_pattern_without_its_anchors() {
                 .to_string(),
         ),
         (
-            "CreateGraph without the required provisionedMemory",
+            "CreateGraph without the required graphName",
             "POST",
             "/graphs".to_string(),
-            Some(json!({"graphName": "no-memory"})),
-            "1 validation error detected: Value null at 'provisionedMemory' failed to \
+            Some(json!({"provisionedMemory": 16})),
+            "1 validation error detected: Value null at 'graphName' failed to \
              satisfy constraint: Member must not be null"
                 .to_string(),
         ),

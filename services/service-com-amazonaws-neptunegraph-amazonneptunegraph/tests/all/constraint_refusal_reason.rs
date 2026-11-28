@@ -65,8 +65,12 @@ const ILLEGAL_ARGUMENT: &str = "ILLEGAL_ARGUMENT";
 /// `__type` discriminator restJson1 writes into an error envelope.
 const BODY_MEMBERS: [&str; 3] = ["__type", "message", "reason"];
 
-/// The smallest `provisionedMemory` the model allows (`range 16..24576`).
+/// The smallest `provisionedMemory` the service documents ("Min = 16").
 const MIN_PROVISIONED_MEMORY: i64 = 16;
+
+/// The largest `provisionedMemory` the model allows
+/// (`smithy_query(query="shape",shape="ProvisionedMemory")` -> `@range max`).
+const MAX_PROVISIONED_MEMORY: i64 = 24_576;
 
 /// The longest `graphName` the model allows (`GraphName` is `@length(1..63)`).
 const MAX_GRAPH_NAME_CHARS: usize = 63;
@@ -217,8 +221,8 @@ fn refusal_rows(stored_graph: &str) -> Vec<Row> {
             method: "POST",
             path: "/graphs".to_string(),
             graph_identifier: None,
-            body: Some(json!({"graphName": "needs-memory"})),
-            members: vec!["provisionedMemory"],
+            body: Some(json!({"provisionedMemory": MIN_PROVISIONED_MEMORY})),
+            members: vec!["graphName"],
         },
         Row {
             case: "a @length minimum, in the body",
@@ -240,7 +244,7 @@ fn refusal_rows(stored_graph: &str) -> Vec<Row> {
             members: vec!["graphName"],
         },
         Row {
-            case: "a @range minimum, in the body",
+            case: "a documented value floor, in the body",
             method: "POST",
             path: "/graphs".to_string(),
             graph_identifier: None,
@@ -320,7 +324,7 @@ fn refusal_rows(stored_graph: &str) -> Vec<Row> {
             graph_identifier: None,
             body: Some(json!({
                 "graphName": "boundary-pair",
-                "provisionedMemory": 15,
+                "provisionedMemory": MAX_PROVISIONED_MEMORY + 1,
                 "replicaCount": 3,
             })),
             members: vec!["provisionedMemory", "replicaCount"],

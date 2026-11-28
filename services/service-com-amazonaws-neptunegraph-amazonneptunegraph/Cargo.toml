@@ -89,6 +89,9 @@ service-com-amazonaws-neptunedata-amazonneptunedataplane = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# One integration-test target rooted at `tests/all/main.rs`: `automod` declares one
+# module per `tests/all/<name>.rs`, so a new suite is a new file and nothing lists it.
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # Compiles the modelled `KmsKeyArn` pattern so the encryption-key suite asserts every

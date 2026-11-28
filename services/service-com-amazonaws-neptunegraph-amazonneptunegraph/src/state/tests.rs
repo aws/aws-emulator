@@ -1244,7 +1244,7 @@ fn sample_graph(id: &str, arn: &str, region: &str) -> Graph {
         status: GraphStatus::Available,
         status_reason: None,
         create_time: SystemTime::UNIX_EPOCH,
-        provisioned_memory: 16,
+        compute: GraphCompute::provisioned(MIN_PROVISIONED_MEMORY),
         endpoint: "endpoint".to_string(),
         public_connectivity: false,
         replica_count: 1,

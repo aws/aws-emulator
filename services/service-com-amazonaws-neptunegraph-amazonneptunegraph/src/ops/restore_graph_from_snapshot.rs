@@ -51,6 +51,9 @@
 //!
 //! ## Input
 //!
+//! * `computeConfiguration` (ComputeConfiguration) — The compute configuration for the
+//!   restored graph. A snapshot can be restored into either a provisioned graph or a graph
+//!   session, regardless of the compute type of the source graph.
 //! * `deletionProtection` (Boolean) — A value that indicates whether the graph has deletion
 //!   protection enabled. The graph can't be deleted when deletion protection is enabled.
 //! * `graphName` (GraphName, len 1..63, pattern ^(?!g-)[a-z][a-z0-9]*(-[a-z0-9]+)*$)
@@ -58,8 +61,9 @@
 //!   snapshot. The name must contain from 1 to 63 letters, numbers, or hyphens, and its first
 //!   character must be a letter. It cannot end with a hyphen or contain two consecutive
 //!   hyphens. Only lowercase letters are allowed.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) — The provisioned
-//!   memory-optimized Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, use ComputeConfiguration instead. The provisioned memory-optimized
+//!   Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
 //! * `publicConnectivity` (Boolean) — Specifies whether or not the graph can be reachable
 //!   over the internet. All access to graphs is IAM authenticated. (true to enable, or false
 //!   to disable).
@@ -75,6 +79,8 @@
 //!
 //! * `arn` (String) **required** — The ARN associated with the graph.
 //! * `buildNumber` (String) — The build number of the graph.
+//! * `computeConfiguration` (ComputeConfiguration) — The compute configuration of the graph:
+//!   either a provisioned graph or a graph session.
 //! * `createTime` (Timestamp) — The time at which the graph was created.
 //! * `deletionProtection` (Boolean) — If true, deletion protection is enabled for the graph.
 //! * `endpoint` (String) — The graph endpoint.
@@ -85,8 +91,9 @@
 //!   used to encrypt and decrypt graph data.
 //! * `name` (GraphName, len 1..63, pattern ^(?!g-)[a-z][a-z0-9]*(-[a-z0-9]+)*$) **required**
 //!   — The name of the graph.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) — The number of
-//!   memory-optimized Neptune Capacity Units (m-NCUs) allocated to the graph.
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, refer to ComputeConfiguration instead. For backward compatibility it
+//!   returns `memory` for a `provisionedGraph` and `minMemory` for a `graphSession`.
 //! * `publicConnectivity` (Boolean) — If true, the graph has a public endpoint, otherwise
 //!   not.
 //! * `replicaCount` (ReplicaCount, range 0..2) — The number of replicas for the graph.
@@ -223,6 +230,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // The two members that name the compute the restored graph is served by: one
+        // quantity under two spellings, checked by the one shared rule every operation
+        // accepting both reaches. A request naming neither restores the snapshotted
+        // graph's own compute, so neither is required here.
+        violations.extend(crate::state::compute_member_clauses(
+            input.provisioned_memory,
+            input.compute_configuration.as_ref(),
+        ));
+
         if !violations.is_empty() {
             return Err(RestoreGraphFromSnapshotErrorModeled::ValidationException(
                 crate::state::constraint_violation(&violations),
@@ -346,9 +362,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // for it when the model documents one, and is otherwise restored as the
             // snapshot captured it, which is what makes this a restore of that graph
             // rather than a create with this service's defaults.
-            provisioned_memory: input
-                .provisioned_memory
-                .unwrap_or(captured_configuration.provisioned_memory),
+            //
+            // "A snapshot can be restored into either a provisioned graph or a graph
+            // session, regardless of the compute type of the source graph"
+            // (`smithy_query(query="doc",shape="RestoreGraphFromSnapshotInput",
+            // member="computeConfiguration")`), so the compute either of the two members
+            // names REPLACES the captured one.
+            compute: crate::state::GraphCompute::requested(
+                input.provisioned_memory,
+                input.compute_configuration.as_ref(),
+            )
+            .unwrap_or(captured_configuration.compute),
             public_connectivity: input
                 .public_connectivity
                 .unwrap_or(captured_configuration.public_connectivity),

@@ -17,6 +17,7 @@ pub struct UpdateGraphInput {
     pub graph_identifier: String,
     pub public_connectivity: Option<bool>,
     pub provisioned_memory: Option<i32>,
+    pub compute_configuration: Option<ComputeConfiguration>,
     pub deletion_protection: Option<bool>,
 }
 
@@ -30,6 +31,7 @@ pub struct UpdateGraphOutput {
     pub status_reason: Option<String>,
     pub create_time: Option<::aws_smithy_types::DateTime>,
     pub provisioned_memory: Option<i32>,
+    pub compute_configuration: Option<ComputeConfiguration>,
     pub endpoint: Option<String>,
     pub public_connectivity: Option<bool>,
     pub vector_search_configuration: Option<VectorSearchConfiguration>,

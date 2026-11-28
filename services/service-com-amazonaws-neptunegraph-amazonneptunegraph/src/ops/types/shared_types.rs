@@ -55,6 +55,26 @@ pub struct VectorSearchConfiguration {
     pub dimension: i32,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.neptunegraph#ComputeConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ComputeConfiguration {
+    provisionedGraph(ProvisionedGraphConfiguration),
+    graphSession(GraphSessionConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.neptunegraph#ProvisionedGraphConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ProvisionedGraphConfiguration {
+    pub memory: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.neptunegraph#GraphSessionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GraphSessionConfiguration {
+    pub min_memory: Option<i32>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.neptunegraph#ServiceQuotaExceededException")]
 #[derive(Debug, Clone, Default)]
 pub struct ServiceQuotaExceededException {

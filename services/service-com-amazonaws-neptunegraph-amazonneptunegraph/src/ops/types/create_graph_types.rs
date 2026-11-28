@@ -21,7 +21,8 @@ pub struct CreateGraphInput {
     pub vector_search_configuration: Option<VectorSearchConfiguration>,
     pub replica_count: Option<i32>,
     pub deletion_protection: Option<bool>,
-    pub provisioned_memory: i32,
+    pub provisioned_memory: Option<i32>,
+    pub compute_configuration: Option<ComputeConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.neptunegraph#CreateGraphOutput")]
@@ -34,6 +35,7 @@ pub struct CreateGraphOutput {
     pub status_reason: Option<String>,
     pub create_time: Option<::aws_smithy_types::DateTime>,
     pub provisioned_memory: Option<i32>,
+    pub compute_configuration: Option<ComputeConfiguration>,
     pub endpoint: Option<String>,
     pub public_connectivity: Option<bool>,
     pub vector_search_configuration: Option<VectorSearchConfiguration>,

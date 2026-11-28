@@ -44,9 +44,9 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_neptunegraph_amazonneptunegraph::state::{
-    service_state, Graph, GraphConfiguration, GraphData, GraphStatus, ImportLoad, ImportTask,
-    ImportTaskStatus, PrivateGraphEndpoint, PrivateGraphEndpointStatus, Snapshot, SnapshotStatus,
-    ARN_NAMESPACE, DEFAULT_REPLICA_COUNT, GRAPH_SOFTWARE_BUILD_NUMBER, MAX_GRAPHS,
+    service_state, Graph, GraphCompute, GraphConfiguration, GraphData, GraphStatus, ImportLoad,
+    ImportTask, ImportTaskStatus, PrivateGraphEndpoint, PrivateGraphEndpointStatus, Snapshot,
+    SnapshotStatus, ARN_NAMESPACE, DEFAULT_REPLICA_COUNT, GRAPH_SOFTWARE_BUILD_NUMBER, MAX_GRAPHS,
     MAX_IMPORT_TASKS, MAX_PRIVATE_GRAPH_ENDPOINTS, MAX_SNAPSHOTS, PROVISIONING_SPAN,
     SOURCE_UNREADABLE_REASON,
 };
@@ -56,7 +56,7 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The region the test's SigV4 credential scope names.
 const REGION: &str = "us-east-1";
 
-/// The smallest `provisionedMemory` the model allows (`range 16..24576`), which is all
+/// The smallest `provisionedMemory` the service documents ("Min = 16"), which is all
 /// these tests need from a graph.
 const MIN_PROVISIONED_MEMORY: i32 = 16;
 
@@ -353,7 +353,7 @@ fn fill_to(
                     pending: None,
                     status_reason: None,
                     create_time: SystemTime::now(),
-                    provisioned_memory: MIN_PROVISIONED_MEMORY,
+                    compute: GraphCompute::provisioned(MIN_PROVISIONED_MEMORY),
                     public_connectivity: false,
                     deletion_protection: false,
                     replica_count: DEFAULT_REPLICA_COUNT,
@@ -384,7 +384,7 @@ fn fill_to(
                     tags: BTreeMap::new(),
                     settles_at: None,
                     source_configuration: GraphConfiguration {
-                        provisioned_memory: MIN_PROVISIONED_MEMORY,
+                        compute: GraphCompute::provisioned(MIN_PROVISIONED_MEMORY),
                         public_connectivity: false,
                         replica_count: DEFAULT_REPLICA_COUNT,
                         deletion_protection: false,

@@ -38,11 +38,11 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_neptunegraph_amazonneptunegraph::state::{
-    service_state, ExportTask, ExportTaskStatus, Graph, GraphConfiguration, GraphData, GraphStatus,
-    ImportLoad, ImportTask, ImportTaskStatus, PrivateGraphEndpoint, PrivateGraphEndpointStatus,
-    Snapshot, SnapshotStatus, ARN_NAMESPACE, DEFAULT_REPLICA_COUNT, GRAPH_SOFTWARE_BUILD_NUMBER,
-    MAX_EXPORT_TASKS, MAX_GRAPHS, MAX_IMPORT_TASKS, MAX_PRIVATE_GRAPH_ENDPOINTS, MAX_SNAPSHOTS,
-    SOURCE_UNREADABLE_REASON,
+    service_state, ExportTask, ExportTaskStatus, Graph, GraphCompute, GraphConfiguration,
+    GraphData, GraphStatus, ImportLoad, ImportTask, ImportTaskStatus, PrivateGraphEndpoint,
+    PrivateGraphEndpointStatus, Snapshot, SnapshotStatus, ARN_NAMESPACE, DEFAULT_REPLICA_COUNT,
+    GRAPH_SOFTWARE_BUILD_NUMBER, MAX_EXPORT_TASKS, MAX_GRAPHS, MAX_IMPORT_TASKS,
+    MAX_PRIVATE_GRAPH_ENDPOINTS, MAX_SNAPSHOTS, SOURCE_UNREADABLE_REASON,
 };
 use service_com_amazonaws_neptunegraph_amazonneptunegraph::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -52,7 +52,7 @@ use crate::graph_state_gate_messages::graph_in_status;
 /// The region the test's SigV4 credential scope names.
 const REGION: &str = "us-east-1";
 
-/// The smallest `provisionedMemory` the model allows (`range 16..24576`), which is all
+/// The smallest `provisionedMemory` the service documents ("Min = 16"), which is all
 /// these tests need from a graph.
 const MIN_PROVISIONED_MEMORY: i32 = 16;
 
@@ -397,7 +397,7 @@ fn fill_to(engine: &Arc<engine::InMemoryEngine>, which: Store, graph_id: &str, u
                     pending: None,
                     status_reason: None,
                     create_time: SystemTime::now(),
-                    provisioned_memory: MIN_PROVISIONED_MEMORY,
+                    compute: GraphCompute::provisioned(MIN_PROVISIONED_MEMORY),
                     public_connectivity: false,
                     deletion_protection: false,
                     replica_count: DEFAULT_REPLICA_COUNT,
@@ -514,7 +514,7 @@ fn snapshot_record(
         // that is already AVAILABLE has nowhere to settle to.
         settles_at: None,
         source_configuration: GraphConfiguration {
-            provisioned_memory: MIN_PROVISIONED_MEMORY,
+            compute: GraphCompute::provisioned(MIN_PROVISIONED_MEMORY),
             public_connectivity: false,
             replica_count: DEFAULT_REPLICA_COUNT,
             deletion_protection: false,

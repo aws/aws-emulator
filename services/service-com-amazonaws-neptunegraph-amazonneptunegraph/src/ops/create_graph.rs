@@ -42,10 +42,18 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-neptunegraph-amazonneptunegraph/smithy-model/com-amazonaws-neptunegraph-amazonneptunegraph.json")
 //! ```
 //!
-//! Creates a new Neptune Analytics graph.
+//! Creates a new Neptune Analytics graph. Neptune Analytics supports two types of graphs,
+//! selected using `computeConfiguration`: provisioned graphs use dedicated compute that is
+//! always available; graph sessions use ephemeral compute that is bootstrapped when a query
+//! is sent to the graph.
 //!
 //! ## Input
 //!
+//! * `computeConfiguration` (ComputeConfiguration) — The compute configuration for the new
+//!   graph. Specify provisionedGraph to create a provisioned graph with dedicated,
+//!   always-available compute, or graphSession to create a graph session that uses ephemeral
+//!   compute bootstrapped on demand when a query is sent, and is subject to cold start
+//!   latency.
 //! * `deletionProtection` (Boolean) — Indicates whether or not to enable deletion protection
 //!   on the graph. The graph can’t be deleted when deletion protection is enabled. (true or
 //!   false).
@@ -57,8 +65,9 @@
 //! * `kmsKeyIdentifier` (KmsKeyArn, len 1..1024, pattern
 //!   ^arn:aws[^:]*:kms:[a-zA-Z0-9-]*:[0-9]{12}:key/[a-zA-Z0-9-]{36}$) — Specifies a KMS key
 //!   to use to encrypt data in the new graph.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) **required** — The provisioned
-//!   memory-optimized Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, use ComputeConfiguration instead. The provisioned memory-optimized
+//!   Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
 //! * `publicConnectivity` (Boolean) — Specifies whether or not the graph can be reachable
 //!   over the internet. All access to graphs is IAM authenticated. (true to enable, or false
 //!   to disable.
@@ -75,6 +84,8 @@
 //!
 //! * `arn` (String) **required** — The ARN of the graph.
 //! * `buildNumber` (String) — The build number of the graph software.
+//! * `computeConfiguration` (ComputeConfiguration) — The compute configuration of the graph:
+//!   either a provisioned graph or a graph session.
 //! * `createTime` (Timestamp) — The time when the graph was created.
 //! * `deletionProtection` (Boolean) — A value that indicates whether the graph has deletion
 //!   protection enabled. The graph can't be deleted when deletion protection is enabled.
@@ -87,8 +98,9 @@
 //!   — The graph name. For example: my-graph-1. The name must contain from 1 to 63 letters,
 //!   numbers, or hyphens, and its first character must be a letter. It cannot end with a
 //!   hyphen or contain two consecutive hyphens. Only lowercase letters are allowed.
-//! * `provisionedMemory` (ProvisionedMemory, range 16..24576) — The provisioned
-//!   memory-optimized Neptune Capacity Units (m-NCUs) to use for the graph. Min = 16
+//! * `provisionedMemory` (ProvisionedMemory, range 1..24576) — DEPRECATED: ProvisionedMemory
+//!   is deprecated, refer to ComputeConfiguration instead. For backward compatibility it
+//!   returns `memory` for a `provisionedGraph` and `minMemory` for a `graphSession`.
 //! * `publicConnectivity` (Boolean) — Specifies whether or not the graph can be reachable
 //!   over the internet. All access to graphs is IAM authenticated. If enabling public
 //!   connectivity for the first time, there will be a delay while it is enabled.
@@ -240,6 +252,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             violations.push(clause);
         }
 
+        // The two members that name the compute the new graph is served by: one
+        // quantity under two spellings, so the pair is checked by the one shared rule
+        // every operation accepting both reaches
+        // (`crate::state::compute_member_clauses`).
+        violations.extend(crate::state::compute_member_clauses(
+            input.provisioned_memory,
+            input.compute_configuration.as_ref(),
+        ));
+
+        // A graph is served by one compute configuration or the other, and neither
+        // member publishes a default for an omitted value, so a request naming neither
+        // names no graph to create. Refused HERE, at the end of the walk, so the one
+        // envelope still reports every other constraint this request broke.
+        let Some(requested_compute) = crate::state::GraphCompute::requested(
+            input.provisioned_memory,
+            input.compute_configuration.as_ref(),
+        ) else {
+            violations.push(crate::state::compute_not_named_clause());
+            return Err(CreateGraphErrorModeled::ValidationException(
+                crate::state::constraint_violation(&violations),
+            )
+            .into());
+        };
+
         if !violations.is_empty() {
             return Err(CreateGraphErrorModeled::ValidationException(
                 crate::state::constraint_violation(&violations),
@@ -312,7 +348,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )),
             status_reason: None,
             create_time,
-            provisioned_memory: input.provisioned_memory,
+            // The compute this graph is served by, from whichever of the two members
+            // named it.
+            compute: requested_compute,
             // Absent means "not enabled": the model declares no default for either
             // boolean, so an unsupplied member is stored as `false`.
             public_connectivity: input.public_connectivity.unwrap_or(false),

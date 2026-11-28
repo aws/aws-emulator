@@ -38,5 +38,6 @@ pub struct GraphSummary {
     pub replica_count: Option<i32>,
     pub kms_key_identifier: Option<String>,
     pub deletion_protection: Option<bool>,
+    pub compute_configuration: Option<ComputeConfiguration>,
 }
 

@@ -25,9 +25,15 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The region the test's SigV4 credential scope names.
 const REGION: &str = "us-east-1";
 
-/// The smallest `provisionedMemory` the model allows (`range 16..24576`), which is all a
-/// graph these tests create needs.
+/// The smallest `provisionedMemory` the service documents ("Min = 16"), which is all a
+/// graph these tests create needs. Below the modelled `@range` minimum (1), so the floor
+/// is enforced by the handler rather than by the model-driven walk.
 const MIN_PROVISIONED_MEMORY: i64 = 16;
+
+/// The largest `provisionedMemory` the model allows
+/// (`smithy_query(query="shape",shape="ProvisionedMemory")` -> `@range max`), which the
+/// model-driven walk refuses a value past.
+const MAX_PROVISIONED_MEMORY: i64 = 24_576;
 
 /// The longest tag key this service stores: `TagKey` is `@length(1..128)`
 /// (`smithy_query(query="shape",shape="TagKey")`). The boundary walk checks a map's entry
@@ -402,13 +408,15 @@ async fn a_refusal_reports_every_constraint_the_request_broke() {
             path: "/graphs".to_string(),
             body: Some(json!({
                 "graphName": "boundary-pair",
-                "provisionedMemory": 15,
+                "provisionedMemory": MAX_PROVISIONED_MEMORY + 1,
                 "replicaCount": 3,
             })),
             clauses: vec![
-                "Value '15' at 'provisionedMemory' failed to satisfy constraint: Member \
-                 must have value greater than or equal to 16"
-                    .to_string(),
+                format!(
+                    "Value '{}' at 'provisionedMemory' failed to satisfy constraint: \
+                     Member must have value less than or equal to {MAX_PROVISIONED_MEMORY}",
+                    MAX_PROVISIONED_MEMORY + 1
+                ),
                 "Value '3' at 'replicaCount' failed to satisfy constraint: Member must \
                  have value less than or equal to 2"
                     .to_string(),
@@ -420,12 +428,33 @@ async fn a_refusal_reports_every_constraint_the_request_broke() {
             path: "/graphs".to_string(),
             body: Some(json!({
                 "graphName": "boundary-single",
-                "provisionedMemory": 15,
+                "provisionedMemory": MAX_PROVISIONED_MEMORY + 1,
+            })),
+            clauses: vec![format!(
+                "Value '{}' at 'provisionedMemory' failed to satisfy constraint: Member \
+                 must have value less than or equal to {MAX_PROVISIONED_MEMORY}",
+                MAX_PROVISIONED_MEMORY + 1
+            )],
+        },
+        // The documented memory floor sits BELOW the modelled range's own minimum, so it
+        // is handler-enforced and counts beside a handler-enforced name violation in the
+        // one envelope.
+        Row {
+            case: "CreateGraph: a reserved graphName AND memory below the documented floor",
+            method: "POST",
+            path: "/graphs".to_string(),
+            body: Some(json!({
+                "graphName": "g-reserved",
+                "provisionedMemory": MIN_PROVISIONED_MEMORY - 1,
             })),
             clauses: vec![
-                "Value '15' at 'provisionedMemory' failed to satisfy constraint: Member \
-                 must have value greater than or equal to 16"
-                    .to_string(),
+                pattern_clause("graphName", "g-reserved", GRAPH_NAME_PATTERN),
+                format!(
+                    "Value '{}' at 'provisionedMemory' failed to satisfy constraint: \
+                     Member must have value greater than or equal to \
+                     {MIN_PROVISIONED_MEMORY}",
+                    MIN_PROVISIONED_MEMORY - 1
+                ),
             ],
         },
     ];
