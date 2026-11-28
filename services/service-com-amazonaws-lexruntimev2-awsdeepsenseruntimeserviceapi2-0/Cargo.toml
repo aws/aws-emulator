@@ -39,6 +39,12 @@ tracing = { workspace = true }
 # automod declares one module per `tests/all/<name>.rs`, so the single integration
 # target picks up a suite from the file alone.
 automod = { workspace = true }
+# aws-smithy-eventstream: the `vnd.amazon.eventstream` frame writer and reader the
+# `StartConversation` suite frames its request stream with and decodes the response
+# stream through — the wire an SDK client speaks to that operation. The service itself
+# needs no direct dependency on it: the framing it serves is
+# `service_common::event_stream`'s.
+aws-smithy-eventstream = "0.60"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

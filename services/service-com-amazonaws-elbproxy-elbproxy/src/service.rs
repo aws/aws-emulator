@@ -16,10 +16,10 @@
 //! Five opt-in seams are yours to change; every one defaults to the framework's
 //! own behaviour, so an unedited service still routes and answers correctly:
 //!
-//! - `can_handle` — which requests this service claims. The default matches the
-//!   request's resolved route key against this service's signing name. Edit it
-//!   for anything the model does not express: a signing name shared by several
-//!   services, or routing that keys on the access-key id.
+//! - `can_handle` — EDITED HERE: which requests this service claims. It no longer
+//!   matches the request's resolved route key against this service's signing name
+//!   alone, because that name is shared with the two Elastic Load Balancing APIs;
+//!   see the inline note on that method.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. The default returns `None`, so every request resolves through the
 //!   generated routing table. Return `Some(op)` to route one yourself.

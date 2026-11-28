@@ -20,9 +20,12 @@
 //!   request's resolved route key against this service's signing name. Edit it
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
-//! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//! - `override_operation` — EDITED HERE: serve a request the model's routing key
+//!   cannot name correctly. It no longer returns the default `None` for every
+//!   request: the model's sixth operation, `StartConversation`, carries a
+//!   `@streaming` event-stream input and output, whose generated `ErasedOperation`
+//!   shim declines the request, so a request for it is served by this file's
+//!   hand-authored copy of that operation instead.
 //! - `override_refusal` — EDITED HERE: how this service words a request the
 //!   framework refused before any handler ran. It no longer returns the default
 //!   `None` for every refusal — a refusal that blames the bot identifier of a
@@ -43,17 +46,19 @@
 //! do not write it; editing the entry would let this file drift from the model.
 
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, Refusal, Refused, Service, Violation,
 };
+use service_common::event_stream::EventStreamRoute;
 use std::sync::Arc;
 
 /// The dotted path the validating walk gives the bot identifier every operation
 /// of this service addresses a session by: the one `@httpLabel` member targeting
 /// `BotIdentifier` (`@length(min: 10, max: 10)`, `@pattern("^[0-9a-zA-Z]+$")`),
-/// which `GetSession`, `PutSession`, `DeleteSession`, `RecognizeText` and
-/// `RecognizeUtterance` all bind under this name — as does the model's sixth
-/// operation, `StartConversation`, whose event-stream input leaves it unwired
-/// (see `ops/SKIPPED_STUBS.md`), so no request of it reaches this seam at all.
+/// which all six operations of the model bind under this name — `GetSession`,
+/// `PutSession`, `DeleteSession`, `RecognizeText` and `RecognizeUtterance`
+/// through the framework's own validating walk, and `StartConversation` through
+/// the request reader of its hand-authored handler, which asks
+/// [`bot_id_refusal`] for the same sentence.
 ///
 /// It is the ONLY label of a session address this rule can be reached through:
 /// the bot ALIAS label targets `BotAliasIdentifier`, which declares neither a
@@ -73,6 +78,27 @@ const INVALID_BOT_OR_ALIAS_MESSAGE: &str = "INVALID_REQUEST - Invalid bot name o
 /// rewording such a refusal keeps it.
 const VALIDATION_EXCEPTION: &str = "ValidationException";
 
+/// The ONE wording this service gives a refusal that blames the bot identifier of
+/// a session address, reached by both paths that can raise one.
+///
+/// The framework's validating walk reaches it through [`EmulatedService::override_refusal`],
+/// which is handed the violations alone; the hand-authored `StartConversation`
+/// reads its own request, so it asks for the sentence here. Neither holds a
+/// wording of its own, so the two cannot drift.
+pub(crate) mod bot_id_refusal {
+    use super::{BOT_ID_PATH, INVALID_BOT_OR_ALIAS_MESSAGE};
+
+    /// The sentence owed for `violations` when one of them blames the bot
+    /// identifier, `None` when none does — in which case the refusal keeps the
+    /// framework's own wording.
+    pub(crate) fn sentence_for(violations: &[super::Violation]) -> Option<String> {
+        violations
+            .iter()
+            .any(|violation| violation.path == BOT_ID_PATH)
+            .then(|| INVALID_BOT_OR_ALIAS_MESSAGE.to_string())
+    }
+}
+
 /// The `com-amazonaws-lexruntimev2-awsdeepsenseruntimeserviceapi2-0` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -80,6 +106,15 @@ const VALIDATION_EXCEPTION: &str = "ValidationException";
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The hand-authored `StartConversation`, the model's one event-stream
+    /// operation. The generated routing table holds a copy of it whose generated
+    /// `ErasedOperation` shim DECLINES the request (its
+    /// `serialize_as_event_stream<P>` needs a `Sized` protocol, which an
+    /// object-safe `run` cannot hand it), so this copy is held behind an
+    /// [`EventStreamRoute`] and routed by [`EmulatedService::override_operation`]
+    /// — the seam the router consults before that table. Both reach the same
+    /// sessions, because the sessions live in the shared engine.
+    start_conversation: EventStreamRoute<crate::ops::start_conversation::StartConversation<Eng>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -88,7 +123,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            start_conversation: EventStreamRoute(
+                crate::ops::start_conversation::StartConversation::new(engine),
+            ),
         }
     }
 }
@@ -125,12 +163,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol
+        // resolves from this request, and every operation it names is served by the
+        // generated table — except the one whose generated shim declines an
+        // event-stream request, which is served by its hand-authored handler here.
+        // That handler owns the whole request-to-response step, so it reads its own
+        // request; a key the model does not name resolves to `None` exactly as it
+        // does in the table, leaving the router's routing-error path unchanged.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        (key == crate::ops::start_conversation::OPERATION)
+            .then_some(&self.start_conversation as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -152,14 +194,10 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // value, `ValidationException`, which is the error every operation of this
         // model declares at HTTP 400 — so only the message changes.
         match refusal {
-            Refusal::Invalid(violations)
-                if violations
-                    .iter()
-                    .any(|violation| violation.path == BOT_ID_PATH) =>
-            {
-                Some(Refused {
+            Refusal::Invalid(violations) => {
+                bot_id_refusal::sentence_for(violations).map(|message| Refused {
                     code: VALIDATION_EXCEPTION.to_string(),
-                    message: INVALID_BOT_OR_ALIAS_MESSAGE.to_string(),
+                    message,
                 })
             }
             _ => None,

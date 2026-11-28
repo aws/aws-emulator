@@ -15,6 +15,9 @@
 //!
 //! * [`deserialize_request`] — read a request into the modelled input shape through the
 //!   service's own protocol, then check it against the model's constraints.
+//! * [`decode_input_stream`] — split a REQUEST body into the event frames a client framed
+//!   into it, reading the `:event-type` header the AWS SDKs set on each one, under a frame
+//!   budget the calling service chooses.
 //! * [`read_request`] — the same read, handing the refusal back STRUCTURALLY (one
 //!   [`Violation`] per requirement the request broke) instead of already worded, for a
 //!   service that states a requirement in its own words.
@@ -34,20 +37,24 @@
 //! Two crates inlined these helpers before there was anywhere shared to put them:
 //!
 //! * `services/service-com-amazonaws-transcribestreaming-transcribe/src/ops/types/event_stream.rs`
-//!   — the full set, near-identical to this module (it also owns an event-stream INPUT
-//!   decoder, which stays service-local because its frame budget is); and
+//!   — the full set, near-identical to this module, including its own copy of
+//!   [`decode_input_stream`] with that service's frame budget inlined rather than passed;
+//!   and
 //! * `services/service-com-amazonaws-sagemakerruntimehttp2-amazonsagemakerruntimehttp2/src/ops/invoke_endpoint_with_bidirectional_stream.rs`
 //!   — a partial copy of the framing inside the one operation that needs it.
 //!
 //! Both are to be MIGRATED onto this module: delete the local copy, `use
-//! service_common::event_stream::…`. That migration is NOT in this change because it
-//! rewrites the wire path of three Transcribe Streaming operations and one SageMaker
-//! Runtime one, whose correctness this change's issue does not own and whose own suites
-//! are the only thing that could pass judgement on it; doing it here would put an
-//! unreviewed rewrite of two other services inside a Bedrock Runtime fix. Nothing new
-//! should inline the framing again — call this module.
+//! service_common::event_stream::…`. That migration is NOT in either change that added
+//! to this module, because it rewrites the wire path of three Transcribe Streaming
+//! operations and one SageMaker Runtime one, whose correctness neither change's issue
+//! owns and whose own suites are the only thing that could pass judgement on it; doing it
+//! there would put an unreviewed rewrite of two other services inside a fix for a third.
+//! Two further operations hold a partial copy of the INPUT decoder for the same reason —
+//! `services/service-com-amazonaws-connecthealth-connecthealth/src/ops/start_medical_scribe_listening_session.rs`
+//! and `services/service-com-amazonaws-polly-parrot-v1/src/ops/start_speech_synthesis_stream.rs`.
+//! Nothing new should inline any of it again — call this module.
 
-use aws_smithy_eventstream::frame::write_message_to;
+use aws_smithy_eventstream::frame::{read_message_from, write_message_to};
 use aws_smithy_runtime_api::http::{Request, Response, StatusCode};
 use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use aws_smithy_schema::{Schema, ShapeId, ShapeType};
@@ -55,6 +62,7 @@ use aws_smithy_schema_server::constraints::{envelope, validate};
 use aws_smithy_schema_server::{DeserializableStruct, ProtocolError, Violation, ViolationKind};
 use aws_smithy_types::body::SdkBody;
 use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
+use bytes::Buf;
 use smithy_server_runtime::{
     BoxFuture, ErasedOperation, OperationContext, OperationError, ServerHttpProtocol, Service,
 };
@@ -154,6 +162,110 @@ fn refusal_of_serde_error(error: SerdeError) -> RequestRefusal {
         }]),
         other => RequestRefusal::Unreadable(other.to_string()),
     }
+}
+
+/// One frame of a REQUEST's event stream: which member of the `@streaming` input union it
+/// carries, and the bytes of its payload.
+///
+/// The payload of an event whose structure has an `@eventPayload` member is that member's
+/// raw value; for any other event it is the event structure encoded in the protocol's body
+/// format, which [`read_request`] reads it back out of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedEvent {
+    /// The union member's name, as the frame's `:event-type` header spells it.
+    pub event_type: String,
+    /// The frame's payload bytes, exactly as they arrived.
+    pub payload: Vec<u8>,
+}
+
+/// Why a request's event-stream body could not be used.
+///
+/// The two cases are carried apart rather than as one sentence because a service answers
+/// them with different modelled errors: a body that is not a message stream is the
+/// caller's mistake, while a body past the frame budget is a limit the service states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputStreamRefusal {
+    /// The body is not a usable `vnd.amazon.eventstream` message stream, or one of its
+    /// frames is not an event a client may send.
+    Malformed(String),
+    /// The body carries more frames than the budget the service passed admits.
+    TooManyEvents(String),
+}
+
+impl InputStreamRefusal {
+    /// The sentence this refusal is worded with.
+    #[must_use]
+    pub fn stated(self) -> String {
+        match self {
+            Self::Malformed(message) | Self::TooManyEvents(message) => message,
+        }
+    }
+}
+
+/// Split an event-stream request body into its frames, in ARRIVAL ORDER.
+///
+/// Each frame has to be an `event` frame naming its union member in `:event-type`, which
+/// is what an AWS SDK's own encoder writes: `exception` is the direction a SERVER answers
+/// in, so a client sending one is sending something no input union declares.
+///
+/// Bounded at `max_events` frames: the frame count is caller-chosen work, so it is refused
+/// before the work is done rather than after. The budget belongs to the calling service —
+/// how many events one of its requests may carry is its own limit — so it is a parameter
+/// here and the refusal carries it.
+pub fn decode_input_stream(
+    body: &[u8],
+    max_events: usize,
+) -> Result<Vec<DecodedEvent>, InputStreamRefusal> {
+    let mut buffer = bytes::Bytes::copy_from_slice(body);
+    let mut events: Vec<DecodedEvent> = Vec::new();
+    while buffer.has_remaining() {
+        if events.len() >= max_events {
+            return Err(InputStreamRefusal::TooManyEvents(format!(
+                "the request stream carries more than the {max_events} events this service \
+                 accepts in one request; send fewer, larger events"
+            )));
+        }
+        let before = buffer.remaining();
+        let message = read_message_from(&mut buffer).map_err(|error| {
+            InputStreamRefusal::Malformed(format!(
+                "the request body is not a valid {EVENT_STREAM_CONTENT_TYPE} message \
+                 stream: {error}"
+            ))
+        })?;
+        if buffer.remaining() >= before {
+            return Err(InputStreamRefusal::Malformed(
+                "the request body carries a zero-length event-stream frame".to_string(),
+            ));
+        }
+        let header = |name: &str| {
+            message
+                .headers()
+                .iter()
+                .find(|header| header.name().as_str() == name)
+                .and_then(|header| match header.value() {
+                    HeaderValue::String(value) => Some(value.as_str().to_string()),
+                    _ => None,
+                })
+        };
+        let message_type = header(":message-type").unwrap_or_default();
+        if message_type != "event" {
+            return Err(InputStreamRefusal::Malformed(format!(
+                "an event-stream frame with :message-type '{message_type}' may not be sent \
+                 on a request stream; only 'event' frames may"
+            )));
+        }
+        let Some(event_type) = header(":event-type") else {
+            return Err(InputStreamRefusal::Malformed(
+                "an event-stream frame carries no :event-type header naming the event"
+                    .to_string(),
+            ));
+        };
+        events.push(DecodedEvent {
+            event_type,
+            payload: message.payload().to_vec(),
+        });
+    }
+    Ok(events)
 }
 
 /// Serialize one modelled event structure as a single `vnd.amazon.eventstream`
@@ -364,4 +476,138 @@ impl<T: EventStreamOperation + 'static> ErasedOperation for EventStreamRoute<T> 
 
     // No override: `None` defers to the auth schemes the model gives the operation
     // the request's routing key names, which is this same operation.
+}
+
+#[cfg(test)]
+mod tests {
+    //! The one half of this module with no protocol in it: splitting a request body
+    //! into the frames a client framed into it, and the two refusals that reading
+    //! can earn.
+
+    use super::*;
+
+    /// One `event` frame, as an AWS SDK's own encoder writes it.
+    fn frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
+        let message = Message::new(payload.to_vec())
+            .add_header(Header::new(
+                ":message-type",
+                HeaderValue::String("event".into()),
+            ))
+            .add_header(Header::new(
+                ":event-type",
+                HeaderValue::String(event_type.to_string().into()),
+            ));
+        let mut framed = Vec::new();
+        write_message_to(&message, &mut framed).expect("an in-memory writer cannot fail");
+        framed
+    }
+
+    /// One frame carrying the `:message-type` given and no `:event-type` header,
+    /// which is what a frame a client may not send looks like.
+    fn typeless_frame(message_type: &str) -> Vec<u8> {
+        let message = Message::new(b"{}".to_vec()).add_header(Header::new(
+            ":message-type",
+            HeaderValue::String(message_type.to_string().into()),
+        ));
+        let mut framed = Vec::new();
+        write_message_to(&message, &mut framed).expect("an in-memory writer cannot fail");
+        framed
+    }
+
+    /// RULE: every frame of the body is read, in arrival order, as the member its
+    /// `:event-type` names and the payload bytes it carries — and a body that is not
+    /// a stream of `event` frames, or that carries more than the budget admits, is
+    /// refused rather than partly read.
+    #[test]
+    fn a_request_stream_is_read_frame_by_frame_under_the_budget_it_was_given() {
+        let one = frame("First", b"{\"a\":1}");
+        let two = frame("Second", b"{}");
+
+        // (case, body, budget, the frames owed, else the refusal owed)
+        type Row<'r> = (&'r str, Vec<u8>, usize, Option<Vec<(&'r str, &'r [u8])>>);
+        let rows: Vec<Row> = vec![
+            ("an empty body carries no event", Vec::new(), 4, Some(Vec::new())),
+            (
+                "one frame",
+                one.clone(),
+                4,
+                Some(vec![("First", b"{\"a\":1}".as_slice())]),
+            ),
+            (
+                "two frames, in arrival order",
+                [one.clone(), two.clone()].concat(),
+                4,
+                Some(vec![("First", b"{\"a\":1}".as_slice()), ("Second", b"{}".as_slice())]),
+            ),
+            (
+                "as many frames as the budget admits",
+                [one.clone(), two.clone()].concat(),
+                2,
+                Some(vec![("First", b"{\"a\":1}".as_slice()), ("Second", b"{}".as_slice())]),
+            ),
+            (
+                "one frame more than the budget admits",
+                [one.clone(), two.clone()].concat(),
+                1,
+                None,
+            ),
+            ("a budget of none at all", one.clone(), 0, None),
+            ("a body that is not a message stream", b"not a frame".to_vec(), 4, None),
+            (
+                "a frame truncated mid-message",
+                one.iter().copied().take(one.len() - 1).collect(),
+                4,
+                None,
+            ),
+            ("an exception frame, which only a server sends", typeless_frame("exception"), 4, None),
+            ("a frame naming no event at all", typeless_frame("event"), 4, None),
+        ];
+
+        for (case, body, budget, expected) in rows {
+            let actual = decode_input_stream(&body, budget);
+            match (expected, actual) {
+                (Some(expected), Ok(events)) => {
+                    let read: Vec<(&str, &[u8])> = events
+                        .iter()
+                        .map(|event| (event.event_type.as_str(), event.payload.as_slice()))
+                        .collect();
+                    assert_eq!(read, expected, "case {case:?}: expected {expected:?}");
+                }
+                (Some(expected), Err(refusal)) => panic!(
+                    "case {case:?}: expected the frames {expected:?}, got the refusal {refusal:?}"
+                ),
+                (None, Ok(events)) => {
+                    panic!("case {case:?}: expected a refusal, got {events:?}")
+                }
+                (None, Err(refusal)) => assert!(
+                    !refusal.clone().stated().is_empty(),
+                    "case {case:?}: a refusal states why, got {refusal:?}"
+                ),
+            }
+        }
+    }
+
+    /// RULE: a body past the budget is refused as a count the service limits, and
+    /// one that cannot be read at all as a malformed stream — two refusals, because a
+    /// service answers them with two different modelled errors.
+    #[test]
+    fn the_two_refusals_of_a_request_stream_are_told_apart() {
+        let body = [frame("First", b"{}"), frame("Second", b"{}")].concat();
+        let too_many = decode_input_stream(&body, 1).expect_err("the budget admits one frame");
+        assert!(
+            matches!(too_many, InputStreamRefusal::TooManyEvents(_)),
+            "a body past the budget is refused as a count, got {too_many:?}"
+        );
+        assert!(
+            too_many.clone().stated().contains('1'),
+            "the refusal carries the budget it was given, got {too_many:?}"
+        );
+
+        let malformed = decode_input_stream(b"not a frame at all", 1)
+            .expect_err("a body that is not a message stream cannot be read");
+        assert!(
+            matches!(malformed, InputStreamRefusal::Malformed(_)),
+            "an unreadable body is refused as malformed, got {malformed:?}"
+        );
+    }
 }

@@ -21,6 +21,7 @@ pub mod put_session_types;
 pub mod recognize_text_types;
 pub mod recognize_utterance_types;
 pub mod shared_types;
+pub mod start_conversation_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_session_types::*;
@@ -36,4 +37,6 @@ pub use recognize_text_types::*;
 pub use recognize_utterance_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_conversation_types::*;
 
