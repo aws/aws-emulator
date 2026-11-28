@@ -11,7 +11,17 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-connect-amazonconnectservice.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.connect#CreateIntegrationAssociationRequest")]
+// `skip_validation` names the path label and the two enum-valued members: this operation
+// refuses each of them itself, in this service's own words and with its OWN modelled
+// `InvalidRequestException` (`crate::state::instance_label_refusal` for the label, and
+// `crate::state::invalid_enum_value` for a value in neither catalog), so the boundary
+// validator must not refuse any of them with a framework `ValidationException` this
+// operation does not model first. `skip_validation` drops only those members' constraint
+// traits; every other member of this shape is still validated at the boundary.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.connect#CreateIntegrationAssociationRequest",
+    skip_validation = ["InstanceId", "IntegrationType", "SourceType"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct CreateIntegrationAssociationInput {
     pub instance_id: String,

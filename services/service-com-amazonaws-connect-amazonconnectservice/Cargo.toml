@@ -33,6 +33,11 @@ service-common = { path = "../common" }
 # owns the transcript and the connection tokens a chat participant calls with, and its
 # own API has no call that creates a chat.
 service-com-amazonaws-connectparticipant-amazonconnectparticipantservicelambda = { workspace = true }
+# `aws-sdk-lambda`: an integration association whose target is an AWS Lambda function is
+# resolved against Lambda and granted the instance's invocation on it, over the emulator's
+# in-process callback (`state::integration_target`). Only the generated client is needed —
+# the emulator supplies the transport.
+aws-sdk-lambda = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

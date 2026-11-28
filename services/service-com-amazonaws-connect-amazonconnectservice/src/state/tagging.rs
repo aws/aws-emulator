@@ -8,11 +8,11 @@
 //! the records it walks, instead of being written again in each tagging operation.
 //!
 //! Every kind of resource this store holds that carries a `TagMap` is reachable through
-//! it: the instance itself, the queues, flows and hours of operation inside it, and the
-//! phone numbers claimed to the account. A record's ARN is minted when the record is
-//! stored, so this resolves exactly the resources that exist — a resource a delete
-//! retired, or one of an account or Region this store never minted for, resolves to
-//! nothing.
+//! it: the instance itself, the queues, flows, hours of operation and integration
+//! associations inside it, and the phone numbers claimed to the account. A record's ARN
+//! is minted when the record is stored, so this resolves exactly the resources that
+//! exist — a resource a delete retired, or one of an account or Region this store never
+//! minted for, resolves to nothing.
 //!
 //! The lookup comes in two forms over ONE resolution: a reporting form for the operations
 //! that read a resource's tags, and a writing form for the ones that edit them, so the
@@ -71,6 +71,8 @@ enum TaggedResource {
     ContactFlow(String, String),
     /// An hours of operation, keyed by its instance's id and its own.
     HoursOfOperation(String, String),
+    /// An integration association, keyed by its instance's id and its own.
+    IntegrationAssociation(String, String),
 }
 
 impl ComAmazonawsConnectAmazonconnectserviceState {
@@ -121,6 +123,12 @@ impl ComAmazonawsConnectAmazonconnectserviceState {
                     hours.id.clone(),
                 ));
             }
+            if let Some(association) = instance.integration_association_by_arn(resource_arn) {
+                return Some(TaggedResource::IntegrationAssociation(
+                    instance.id.clone(),
+                    association.id.clone(),
+                ));
+            }
         }
         None
     }
@@ -157,6 +165,12 @@ impl ComAmazonawsConnectAmazonconnectserviceState {
                 .hours_of_operations
                 .get(&hours)
                 .map(|hours| &hours.tags),
+            TaggedResource::IntegrationAssociation(instance, association) => self
+                .instances
+                .get(&instance)?
+                .integration_associations
+                .get(&association)
+                .map(|association| &association.tags),
         }
     }
 
@@ -195,6 +209,12 @@ impl ComAmazonawsConnectAmazonconnectserviceState {
                 .hours_of_operations
                 .get_mut(&hours)
                 .map(|hours| &mut hours.tags),
+            TaggedResource::IntegrationAssociation(instance, association) => self
+                .instances
+                .get_mut(&instance)?
+                .integration_associations
+                .get_mut(&association)
+                .map(|association| &mut association.tags),
         }
     }
 }

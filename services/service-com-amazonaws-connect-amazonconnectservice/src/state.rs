@@ -44,6 +44,28 @@ pub use chat_contacts::{
     REQUIRED_MESSAGING_CONTENT_TYPE, SUPPORTED_MESSAGING_CONTENT_TYPES,
 };
 
+/// The resources associated with an instance: the record `CreateIntegrationAssociation`
+/// writes and the summary a reader projects it to. Its own file because it is one concern
+/// of its own, and it is re-exported so a handler reaches it through `crate::state` like
+/// everything else here.
+mod integration_associations;
+pub use integration_associations::{
+    integration_association_arn, member_required_for_integration_type, missing_event_member,
+    IntegrationAssociationRecord, EVENT_INTEGRATION_TYPE,
+    INTEGRATION_ASSOCIATIONS_PER_INSTANCE_QUOTA, INTEGRATION_TYPE_PARAMETER,
+    SOURCE_APPLICATION_NAME_PARAMETER, SOURCE_APPLICATION_URL_PARAMETER, SOURCE_TYPE_PARAMETER,
+};
+
+/// What an association's integration ARN points AT, and what associating it takes in the
+/// service that owns it — the in-process hop into that service. Its own file because it is
+/// one concern of its own, and it is re-exported so a handler reaches it through
+/// `crate::state` like everything else here.
+mod integration_target;
+pub use integration_target::{
+    function_answer, grant_instance_invoke, integration_function, revoke_instance_invoke,
+    FunctionAnswer, CONNECT_SERVICE_PRINCIPAL, INVOKE_FUNCTION_ACTION,
+};
+
 /// The instance's feature toggles: what `UpdateInstanceAttribute` writes,
 /// `DescribeInstanceAttribute` reads back and `ListInstanceAttributes` enumerates. Its own
 /// file because it is one concern of its own, and it is re-exported so a handler reaches it
@@ -1049,6 +1071,10 @@ pub struct InstanceRecord {
     /// Bounded without a quota of its own: the request boundary admits only the values
     /// `InstanceAttributeType` declares, and that enum is finite.
     pub instance_attributes: BTreeMap<String, String>,
+    /// The Amazon Web Services resources associated with this instance, keyed by
+    /// integration-association id — the records `CreateIntegrationAssociation` writes.
+    /// Bounded by [`INTEGRATION_ASSOCIATIONS_PER_INSTANCE_QUOTA`].
+    pub integration_associations: BTreeMap<String, IntegrationAssociationRecord>,
 }
 
 impl InstanceRecord {
@@ -1090,6 +1116,7 @@ impl InstanceRecord {
             storage_configs: BTreeMap::new(),
             attached_files_configurations: BTreeMap::new(),
             instance_attributes: BTreeMap::new(),
+            integration_associations: BTreeMap::new(),
         }
     }
 

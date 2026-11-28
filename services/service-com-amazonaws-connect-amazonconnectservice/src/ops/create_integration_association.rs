@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateIntegrationAssociation
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateIntegrationAssociation`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateIntegrationAssociation::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Associates another Amazon Web Services resource with an existing instance: a member
+//! the service cannot read is a 400 refused before anything is resolved, an unknown
+//! `InstanceId` is a 404, the same resource associated twice under one integration type is
+//! a 409, and the stored association's ARN is the instance's own ARN plus
+//! `/integration-association/<IntegrationAssociationId>`.
+//!
+//! An integration whose target is an AWS Lambda function is resolved against LAMBDA before
+//! it is stored, because such an integration exists so the instance can invoke that
+//! function: a function Lambda states it does not hold is a 404 with nothing persisted, and
+//! a function it does hold is granted `lambda:InvokeFunction` for the service principal
+//! Amazon Connect invokes as, scoped to this instance's ARN, so the instance can really
+//! invoke it afterwards. Both halves of that hop live in this crate's
+//! `state::integration_target` module, beside the reading of what the integration's ARN
+//! points at.
 //!
 //! ## Shape of an operation
 //!
@@ -164,18 +170,286 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateIntegrationAssociation` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateIntegrationAssociationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        // The whole request is read BEFORE any state is resolved: a member the service
+        // cannot accept is a client-input fault, so it is answered as one whatever the
+        // store happens to hold. Resolving first would report a missing resource for a
+        // request that was never valid, and would mask which member was wrong.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateIntegrationAssociation"))
+        // The instance-plane path label first, in this service's own words
+        // (`skip_validation` in `super::types::create_integration_association_types`
+        // keeps the boundary from refusing it with an error this operation does not
+        // model).
+        if let Some(refusal) = crate::state::instance_label_refusal(&input.instance_id) {
+            return Err(CreateIntegrationAssociationErrorModeled::InvalidRequestException(
+                refusal,
+            )
+            .into());
+        }
+        // Then the two enum-valued members, each against the catalog the model declares
+        // for it, refused here rather than at the boundary for the reason
+        // `crate::state::invalid_enum_value` gives.
+        if !INTEGRATION_TYPE_VALUES.contains(&input.integration_type.as_str()) {
+            return Err(invalid_enum_value(crate::state::INTEGRATION_TYPE_PARAMETER));
+        }
+        if input
+            .source_type
+            .as_deref()
+            .is_some_and(|source_type| !SOURCE_TYPE_VALUES.contains(&source_type))
+        {
+            return Err(invalid_enum_value(crate::state::SOURCE_TYPE_PARAMETER));
+        }
+        // And the members the integration TYPE requires: the external application's name,
+        // URL and source type are documented as required for one type and for no other
+        // (`crate::state::missing_event_member`).
+        if let Some(member) = crate::state::missing_event_member(
+            &input.integration_type,
+            input.source_application_url.as_deref(),
+            input.source_application_name.as_deref(),
+            input.source_type.as_deref(),
+        ) {
+            return Err(
+                CreateIntegrationAssociationErrorModeled::InvalidRequestException(
+                    crate::state::member_required_for_integration_type(
+                        member,
+                        &input.integration_type,
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+
+        // The instance is resolved, a duplicate refused and the identifier minted under
+        // the lock; the guard is then RELEASED, because what follows asks Lambda about the
+        // integration's target and no lock of this store is held across that call. Both
+        // checks are made again when the record is written, so what is decided here is
+        // never the only decision.
+        let (association_id, instance_arn) = {
+            let mut store = state.lock();
+            let instance = store
+                .instances
+                .get(&input.instance_id)
+                .ok_or_else(instance_not_found)?;
+
+            // One resource is associated to an instance once per integration type, so a
+            // pair that is already associated is not being associated for the first time.
+            if let Some(existing) = instance
+                .integration_association_of(&input.integration_type, &input.integration_arn)
+            {
+                return Err(duplicate_association(
+                    &input.integration_type,
+                    &input.integration_arn,
+                    &existing.id,
+                ));
+            }
+
+            // The store is bounded: an association is kept until a caller deletes it, so a
+            // create that would grow this instance's map past the quota is refused.
+            if instance.integration_associations.len()
+                >= crate::state::INTEGRATION_ASSOCIATIONS_PER_INSTANCE_QUOTA
+            {
+                return Err(associations_quota_exceeded());
+            }
+
+            let instance_arn = instance.arn.clone();
+            // Minted once the request is known to be one this instance can take.
+            // Identifiers need not be contiguous: a refused create simply leaves its id
+            // unused.
+            (store.mint_resource_id(), instance_arn)
+        };
+        let association_arn =
+            crate::state::integration_association_arn(&instance_arn, &association_id);
+
+        // An integration whose target is a function exists so the instance can invoke that
+        // function, so the function has to be there and the instance has to end up able to
+        // invoke it. A target of any other kind is stored as the reference it is: no other
+        // service states what associating its resource takes.
+        let function_arn =
+            crate::state::integration_function(&input.integration_arn).map(ToString::to_string);
+        let mut granted = false;
+        if let Some(function_arn) = function_arn.as_deref() {
+            match crate::state::function_answer(ctx, &region, function_arn).await {
+                // Lambda stated it holds no such function: there is nothing to integrate
+                // with, and nothing is persisted.
+                crate::state::FunctionAnswer::NoSuchFunction => {
+                    return Err(CreateIntegrationAssociationErrorModeled::ResourceNotFoundException(
+                        crate::state::resource_not_found(),
+                    )
+                    .into())
+                }
+                crate::state::FunctionAnswer::Held => {
+                    if !crate::state::grant_instance_invoke(
+                        ctx,
+                        &region,
+                        function_arn,
+                        &association_id,
+                        &instance_arn,
+                    )
+                    .await
+                    {
+                        // The function is there but the grant was not written, so the
+                        // instance could not invoke it: the association is not stored and
+                        // no success is reported for it.
+                        return Err(
+                            CreateIntegrationAssociationErrorModeled::InternalServiceException(
+                                InternalServiceException {
+                                    message: Some(
+                                        "the integration's function could not be granted this \
+                                         instance's invocation"
+                                            .to_string(),
+                                    ),
+                                },
+                            )
+                            .into(),
+                        );
+                    }
+                    granted = true;
+                }
+                // Lambda said nothing about the function — there is none mounted beside
+                // this service to ask — so the integration is judged against nothing and
+                // the reference is stored as it stands.
+                crate::state::FunctionAnswer::Unanswered => {}
+            }
+        }
+
+        let record = crate::state::IntegrationAssociationRecord {
+            id: association_id.clone(),
+            arn: association_arn.clone(),
+            instance_id: input.instance_id.clone(),
+            integration_type: input.integration_type,
+            integration_arn: input.integration_arn,
+            source_application_name: input.source_application_name,
+            source_application_url: input.source_application_url,
+            source_type: input.source_type,
+            tags: crate::state::tags_in(input.tags),
+            last_modified_time: now,
+            last_modified_region: region.clone(),
+        };
+
+        // The write, under the lock the hop above was not allowed to hold: the instance and
+        // what it already holds are read as they are NOW, so the two checks the first pass
+        // made are made AGAIN here. Deciding them only once would let two creates racing on
+        // the same pair both be stored, which is the one record per pair this service keeps.
+        let refusal = {
+            let mut store = state.lock();
+            match store.instances.get_mut(&input.instance_id) {
+                None => Some(instance_not_found()),
+                Some(instance) => {
+                    let taken = instance
+                        .integration_association_of(
+                            &record.integration_type,
+                            &record.integration_arn,
+                        )
+                        .map(|existing| existing.id.clone());
+                    if let Some(existing) = taken {
+                        Some(duplicate_association(
+                            &record.integration_type,
+                            &record.integration_arn,
+                            &existing,
+                        ))
+                    } else if instance.integration_associations.len()
+                        >= crate::state::INTEGRATION_ASSOCIATIONS_PER_INSTANCE_QUOTA
+                    {
+                        Some(associations_quota_exceeded())
+                    } else {
+                        instance
+                            .integration_associations
+                            .insert(association_id.clone(), record);
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(refusal) = refusal {
+            // The association was not stored, so the grant made for it is taken back: a
+            // refused create leaves nothing behind on the function either.
+            if granted {
+                if let Some(function_arn) = function_arn.as_deref() {
+                    crate::state::revoke_instance_invoke(
+                        ctx,
+                        &region,
+                        function_arn,
+                        &association_id,
+                    )
+                    .await;
+                }
+            }
+            return Err(refusal);
+        }
+
+        Ok(CreateIntegrationAssociationOutput {
+            integration_association_id: Some(association_id),
+            integration_association_arn: Some(association_arn),
+        })
     }
+}
+
+/// The modelled `InvalidRequestException` (HTTP 400) a value this operation cannot read as
+/// a member of the set its member admits is refused with, naming the member
+/// ([`crate::state::invalid_enum_value`]).
+fn invalid_enum_value(member: &str) -> CreateIntegrationAssociationError {
+    CreateIntegrationAssociationErrorModeled::InvalidRequestException(
+        crate::state::invalid_enum_value(member),
+    )
+    .into()
+}
+
+/// The modelled `ResourceNotFoundException` (HTTP 404) an `InstanceId` that resolved to no
+/// instance is refused with: this service's fixed not-found sentence, as every operation
+/// whose addressed resource lives INSIDE an instance words it
+/// ([`crate::state::resource_not_found`]).
+fn instance_not_found() -> CreateIntegrationAssociationError {
+    CreateIntegrationAssociationErrorModeled::ResourceNotFoundException(
+        crate::state::resource_not_found(),
+    )
+    .into()
+}
+
+/// The modelled `DuplicateResourceException` (HTTP 409) a pair this instance has already
+/// associated is refused with, naming the pair and the association that holds it.
+///
+/// One function, so both passes over the store — the one before the integration's target is
+/// resolved and the one that writes the record — refuse a duplicate in the same words.
+fn duplicate_association(
+    integration_type: &str,
+    integration_arn: &str,
+    existing_id: &str,
+) -> CreateIntegrationAssociationError {
+    CreateIntegrationAssociationErrorModeled::DuplicateResourceException(
+        DuplicateResourceException {
+            message: Some(format!(
+                "An integration association for the {integration_type} integration \
+                 {integration_arn} already exists for this instance under association \
+                 {existing_id}"
+            )),
+        },
+    )
+    .into()
+}
+
+/// The refusal an instance already holding as many associations as the store keeps gets.
+///
+/// This operation models no limit error, so the bound is stated through the only modelled
+/// error for work the service will not take now; the sentence names the bound it is about.
+fn associations_quota_exceeded() -> CreateIntegrationAssociationError {
+    CreateIntegrationAssociationErrorModeled::ThrottlingException(ThrottlingException {
+        message: Some(format!(
+            "The maximum number of integration associations ({}) for this instance has been \
+             reached; delete an association before creating another",
+            crate::state::INTEGRATION_ASSOCIATIONS_PER_INSTANCE_QUOTA
+        )),
+    })
+    .into()
+}
+
+/// The modelled `InternalServiceException` (HTTP 500) for an engine that does not carry
+/// this service's store at all.
+fn store_unavailable() -> CreateIntegrationAssociationError {
+    CreateIntegrationAssociationErrorModeled::InternalServiceException(InternalServiceException {
+        message: Some("the Amazon Connect store is unavailable".to_string()),
+    })
+    .into()
 }
