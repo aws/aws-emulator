@@ -409,6 +409,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ListProvisionedProductPlans
 
+- **Traits:** @paginated(inputToken=PageToken, outputToken=NextPageToken, items=ProvisionedProductPlans)
 - **Input:** `AcceptLanguage` (string, len 0..100), `ProvisionProductId` (string, len 1..100, pattern ^[a-zA-Z0-9_\-]*$), `PageSize` (integer, range 0..20, default 0, required), `PageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$), `AccessLevelFilter` (AccessLevelFilter)
 - **Output:** `ProvisionedProductPlans` (list<ProvisionedProductPlanSummary>), `NextPageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Errors:** `InvalidParametersException (HTTP 400)`, `ResourceNotFoundException (HTTP 400)`
@@ -428,6 +429,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ListRecordHistory
 
+- **Traits:** @paginated(inputToken=PageToken, outputToken=NextPageToken, items=RecordDetails)
 - **Input:** `AcceptLanguage` (string, len 0..100), `AccessLevelFilter` (AccessLevelFilter), `SearchFilter` (ListRecordHistorySearchFilter), `PageSize` (integer, range 0..20, default 0, required), `PageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Output:** `RecordDetails` (list<RecordDetail>), `NextPageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Errors:** `InvalidParametersException (HTTP 400)`
@@ -455,6 +457,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ListStackInstancesForProvisionedProduct
 
+- **Traits:** @paginated(inputToken=PageToken, outputToken=NextPageToken, items=StackInstances)
 - **Input:** `AcceptLanguage` (string, len 0..100), `ProvisionedProductId` (string, len 1..100, pattern ^[a-zA-Z0-9_\-]*$, required), `PageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$), `PageSize` (integer, range 0..20, default 0, required)
 - **Output:** `StackInstances` (list<StackInstance>), `NextPageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Errors:** `InvalidParametersException (HTTP 400)`, `ResourceNotFoundException (HTTP 400)`
@@ -498,6 +501,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## ScanProvisionedProducts
 
+- **Traits:** @paginated(inputToken=PageToken, outputToken=NextPageToken, items=ProvisionedProducts)
 - **Input:** `AcceptLanguage` (string, len 0..100), `AccessLevelFilter` (AccessLevelFilter), `PageSize` (integer, range 0..20, default 0, required), `PageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Output:** `ProvisionedProducts` (list<ProvisionedProductDetail>), `NextPageToken` (string, len 0..2024, pattern ^[\u0009\u000a\u000d\u0020-\uD7FF\uE000-\uFFFD]*$)
 - **Errors:** `InvalidParametersException (HTTP 400)`

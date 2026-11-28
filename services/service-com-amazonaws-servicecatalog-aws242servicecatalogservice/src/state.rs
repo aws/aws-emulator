@@ -202,8 +202,9 @@ impl Portfolio {
 
 /// One stored instant as the timestamp a response carries.
 ///
-/// This service's protocol is awsJson1_1, so a timestamp goes on the wire as epoch
-/// seconds, and the finest resolution the protocol's `Timestamp` carries there is the
+/// Both wire formats this service declares (`smithy_query(query="service_info")`:
+/// protocols `["awsJson1_1", "rpcv2Cbor"]`) put a timestamp on the wire as epoch seconds,
+/// and the finest resolution the `Timestamp` they carry resolves to there is the
 /// MILLISECOND: an instant is reported truncated to whole milliseconds, so a stored
 /// value read from the host clock — which resolves finer than that — is reported at the
 /// resolution the service reports rather than at the one the host happens to keep.

@@ -86,17 +86,20 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         //
         // So the claim is narrowed to this service's own modelled wire surface, by the
         // one rule `service-common` states for every service under a shared signing name.
-        // This model is `awsJson1_1`, an RPC protocol (`smithy_query(query="service_info")`:
-        // protocols `["awsJson1_1"]`) with no `smithy.api#http` binding anywhere, so all
-        // 90 operations post to `/` and name the target service out of band, in
-        // `X-Amz-Target: AWS242ServiceCatalogService.<OperationName>`; the generated
-        // `ROUTE_PATH_SEGMENTS` is EMPTY for exactly that model ("no constraint"), which
-        // is what made this service claim its peer's paths too. `claims_request` therefore
-        // claims a request only when the service that target NAMES is this one, leaving
-        // AppRegistry's `/applications/…`, `/attribute-groups/…`, `/configuration`,
-        // `/sync/…` and `/tags/…` space to it alone — and a request that names THIS
-        // service while addressing one of those paths contradicts itself, so the shared
-        // rule gives it to neither.
+        // This model declares only RPC protocols (`smithy_query(query="service_info")`:
+        // protocols `["awsJson1_1", "rpcv2Cbor"]`) and carries no `smithy.api#http`
+        // binding anywhere, so every one of its 90 operations names the service and the
+        // operation out of band — in `X-Amz-Target:
+        // AWS242ServiceCatalogService.<OperationName>` on a `POST /` for the JSON form,
+        // and in the path `POST /service/AWS242ServiceCatalogService/operation/<Operation>`
+        // for the CBOR one. The generated `ROUTE_PATH_SEGMENTS` is EMPTY for exactly such
+        // a model ("no constraint"), which is what made this service claim its peer's
+        // paths too. `claims_request` therefore claims a request only when the service
+        // its RPC wire form NAMES is this one — whichever of the two forms it is in —
+        // leaving AppRegistry's `/applications/…`, `/attribute-groups/…`,
+        // `/configuration`, `/sync/…` and `/tags/…` space to it alone; and a request that
+        // names THIS service while addressing one of those paths contradicts itself, so
+        // the shared rule gives it to neither.
         service_common::claims_request(
             parts,
             self.entry.identity().signing_name(),

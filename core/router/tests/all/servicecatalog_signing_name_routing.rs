@@ -4,16 +4,19 @@
 //!
 //! AWS Service Catalog and Service Catalog AppRegistry SHARE one signing name
 //! (`servicecatalog`) while serving two different endpoints (`servicecatalog` and
-//! `servicecatalog-appregistry`) over two different wire protocols (`awsJson1_1`, which
-//! posts every operation to `/` and names the target service in `X-Amz-Target`, and
-//! `restJson1`, whose operations bind their own URI paths). The router resolves a
+//! `servicecatalog-appregistry`) over different wire protocols (two RPC ones —
+//! `awsJson1_1`, which posts every operation to `/` and names the target service in
+//! `X-Amz-Target`, and `rpcv2Cbor`, which names it in the path
+//! `/service/{Service}/operation/{Operation}` — and `restJson1`, whose operations bind
+//! their own URI paths). The router resolves a
 //! request's routing key from the SigV4 credential scope first, so both services see the
 //! key `servicecatalog`: a service that claims on the signing name alone claims the
 //! other's traffic too, and the router answers `500 AmbiguousService` — which is not an
 //! AWS error code at all — for BOTH. Each one therefore also requires the request to
 //! address its OWN modelled wire surface, through `service_common::claims_request`: the
-//! model's bound first path segments for the REST one, and an `X-Amz-Target` naming this
-//! service on a path its protocol posts to for the RPC one.
+//! model's bound first path segments for the REST one, and an RPC wire form naming this
+//! service — an `X-Amz-Target`, or the `rpcv2Cbor` path — on a path its protocol posts to
+//! for the RPC one.
 //!
 //! This suite pins that: with both services mounted, each one's path space reaches it —
 //! whether the operation behind it is implemented (it answers from its own store) or
@@ -27,6 +30,13 @@ use smithy_server_runtime::MultiServiceRouter;
 
 /// The signing name both services share.
 const SIGNING_NAME: &str = "servicecatalog";
+
+/// The fixed first path segment of every `rpcv2Cbor` request
+/// (`POST /service/{Service}/operation/{Operation}`), as the build support publishes it in
+/// `ROUTE_PATH_SEGMENTS` for a service that speaks that protocol. Stated here because
+/// `service_common::RPCV2_CBOR_PATH_SEGMENT`, the tree's one declaration of it, is not a
+/// dependency of this test target.
+const RPCV2_CBOR_PATH_SEGMENT: &str = "service";
 
 /// The `X-Amz-Target` prefix of the awsJson1_1 service: its service shape's name.
 const TARGET_PREFIX: &str = "AWS242ServiceCatalogService";
@@ -367,11 +377,12 @@ async fn a_rest_path_with_an_rpc_target_is_served_by_the_path_owner_alone() {
 #[tokio::test]
 async fn the_two_wire_surfaces_the_claim_rests_on_are_disjoint() {
     // The premise of the two `can_handle` seams, read from the generated, model-derived
-    // constants: AppRegistry publishes literal first segments and does NOT publish the
-    // root-path sentinel, while Service Catalog — an awsJson1_1 service with no
-    // `smithy.api#http` bindings at all — publishes NOTHING, which is why its own seam
-    // passes its shape id to `claims_request` and is discriminated by the service its
-    // `X-Amz-Target` names instead of by a path.
+    // constants: AppRegistry publishes the literal first segments its `restJson1`
+    // operations bind and does NOT publish the root-path sentinel, while Service Catalog —
+    // which binds no `smithy.api#http` URI at all — publishes only the path spaces of the
+    // RPC protocols its model declares, neither of which discriminates between the two
+    // services, which is why its own seam passes its shape id to `claims_request` and is
+    // discriminated by the service its wire form names instead of by a path.
     let appregistry_segments =
         service_com_amazonaws_servicecatalogappregistry_aws242appregistry::ROUTE_PATH_SEGMENTS;
     assert!(
@@ -390,10 +401,28 @@ async fn the_two_wire_surfaces_the_claim_rests_on_are_disjoint() {
              {appregistry_segments:?}"
         );
     }
-    assert!(
-        service_com_amazonaws_servicecatalog_aws242servicecatalogservice::ROUTE_PATH_SEGMENTS
-            .is_empty(),
-        "Service Catalog's model publishes no path discriminator; its seam claims the root \
-         path explicitly instead"
+    // Service Catalog's model declares two RPC protocols and no URI binding
+    // (`smithy_query(query="service_info")`: protocols `["awsJson1_1", "rpcv2Cbor"]`), so
+    // what it publishes is exactly those two protocols' own path spaces: the root path
+    // every `awsJson1_1` operation posts to, and the first segment of the
+    // `/service/{Service}/operation/{Operation}` an `rpcv2Cbor` one posts to. Every RPC
+    // peer under the shared signing name posts to the same two, so neither tells the two
+    // services apart — the claim rests on the service the wire form NAMES.
+    let catalog_segments =
+        service_com_amazonaws_servicecatalog_aws242servicecatalogservice::ROUTE_PATH_SEGMENTS;
+    assert_eq!(
+        catalog_segments,
+        [emulator_server::ROOT_PATH_SEGMENT, RPCV2_CBOR_PATH_SEGMENT],
+        "Service Catalog publishes the path spaces of the two RPC protocols its model \
+         declares, and no path discriminator of its own: {catalog_segments:?}"
     );
+    // And the premise itself: the two published surfaces are DISJOINT, so no request
+    // addresses both services' modelled wire surfaces at once.
+    for segment in catalog_segments {
+        assert!(
+            !appregistry_segments.contains(segment),
+            "the two models' published path spaces must be disjoint, but {segment:?} is in \
+             both: {catalog_segments:?} and {appregistry_segments:?}"
+        );
+    }
 }

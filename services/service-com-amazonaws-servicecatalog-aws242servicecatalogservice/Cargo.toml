@@ -54,6 +54,10 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # URL-form-encodes the CloudFormation request the suite that stages a SOURCE STACK sends
 # (the encoder behind the `url` crate), so no suite hand-rolls a percent-encoder.
 form_urlencoded = "1"
+# Reads an ANSWERED CBOR map back in the suite that drives this service's `rpcv2Cbor`
+# route: the members of a rendered error map are not known from any shape, so the
+# schema-driven reader cannot read one.
+minicbor = { version = "2.3", features = ["alloc"] }
 # The service that VENDS a session of a role, mounted beside Service Catalog and IAM on the
 # one engine the test router builds: a launch path is dependent on the calling principal, so
 # the suite that drives a role session as a caller needs the service that mints one.
