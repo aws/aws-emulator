@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateCampaign
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateCampaign`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateCampaign::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -168,10 +159,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralmarketing
 // here — hence the `CreateCampaignError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#CreateCampaign")]
+// `InternalServerException` is widened in through `extra_errors`: this SERVICE models it
+// as one of its service-wide errors and this operation's own error list does not name
+// it, so the one failure that is not about the request — a store that is not mounted —
+// is answered as the modelled server fault rather than as some other status.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#CreateCampaign",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum CreateCampaignErrorModeled {
     ConflictException(ConflictException),
+    InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     ValidationException(ValidationException),
@@ -228,18 +227,119 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateCampaign` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateCampaignErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateCampaign"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateCampaignErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let now = ::std::time::SystemTime::now();
+        let Some(today) = crate::state::utc_date(now) else {
+            return Err(CreateCampaignErrorModeled::InternalServerException(
+                crate::state::clock_unavailable(),
+            )
+            .into());
+        };
+        let region = crate::state::request_region(ctx.parts());
+        let mut store = state.lock();
+
+        // `@idempotencyToken`: "Same token within 24h returns existing resource", so a
+        // retry reports the campaign the first attempt created and creates no second
+        // one. The token is recorded against the campaign it minted and dropped with
+        // it, so a token whose campaign has been deleted mints a new one.
+        let token_key = input
+            .client_token
+            .as_deref()
+            .map(|token| crate::state::idempotency_key(&input.catalog, Self::NAME, token));
+        if let Some(created) = token_key
+            .as_deref()
+            .and_then(|key| store.client_token_campaign(key))
+            .cloned()
+            .and_then(|campaign_id| store.campaign(&input.catalog, &campaign_id))
+        {
+            return Ok(CreateCampaignOutput {
+                id: created.id.clone(),
+                arn: created.arn.clone(),
+            });
+        }
+
+        // The members this service checks itself, every failing one reported together.
+        let failing = crate::state::run_window_fields(
+            input.start_on.as_deref(),
+            input.end_on.as_deref(),
+            &today,
+        );
+        if !failing.is_empty() {
+            return Err(CreateCampaignErrorModeled::ValidationException(
+                crate::state::field_validation_failed(failing),
+            )
+            .into());
+        }
+        let tags = input.tags.unwrap_or_default();
+        if let Some(refusal) = crate::state::tag_refusal(&tags) {
+            // "The tags are recorded before the campaign is written, so a create that
+            // cannot record them fails and creates nothing."
+            return Err(CreateCampaignErrorModeled::ValidationException(refusal).into());
+        }
+
+        // The campaign draws its assets' blueprints AND its language from one template,
+        // so a template the catalog does not hold is refused before anything is stored.
+        let template = crate::state::effective_template(&input.campaign_template_id, now)
+            .ok_or_else(|| {
+                CreateCampaignErrorModeled::ResourceNotFoundException(
+                    crate::state::campaign_template_not_found(&input.campaign_template_id),
+                )
+            })?;
+
+        if store.campaign_count(&input.catalog) >= crate::state::MAX_CAMPAIGNS_PER_CATALOG {
+            return Err(CreateCampaignErrorModeled::ServiceQuotaExceededException(
+                crate::state::campaign_quota_exceeded(&input.catalog),
+            )
+            .into());
+        }
+
+        let id = store.mint_campaign_id();
+        let arn = crate::state::campaign_arn(&region, &input.catalog, &id);
+        let campaign = crate::state::CampaignRecord {
+            id: id.clone(),
+            arn: arn.clone(),
+            catalog: input.catalog.clone(),
+            name: input.name,
+            template_id: template.id.to_string(),
+            // "The language the campaign's assets are written and typeset in: its
+            // template's `LanguageCode`, set at create."
+            language: Some(template.language_code.to_string()),
+            sender_email: input.sender_email,
+            privacy_policy_url: input.privacy_policy_url,
+            partner_address: input.partner_address,
+            partner_badge: input.partner_badge,
+            email_target_attached_at: input.email_target.as_ref().map(|_| now),
+            email_target: input.email_target,
+            email_target_engagement_group_ids: input
+                .email_target_engagement_group_ids
+                .unwrap_or_default(),
+            // Set by `UpdateCampaign` only: `CreateCampaign` has no
+            // `SocialConnections` member.
+            social_connections: ::std::collections::BTreeMap::new(),
+            estimated_budget: input.estimated_budget,
+            total_budget: input.total_budget,
+            target_audience: input.target_audience,
+            start_on: input.start_on,
+            end_on: input.end_on,
+            created_at: now,
+            updated_at: now,
+            tags,
+            // No asset is created with a campaign: its assets come from
+            // `BatchCreateCampaignAsset`.
+            assets: Vec::new(),
+        };
+        store.insert_campaign(campaign);
+        if let Some(key) = token_key {
+            store.record_client_token(key, &id);
+        }
+
+        // "Returns the identity of the new campaign, not the campaign" — the caller's
+        // next step is a `GetCampaign`.
+        Ok(CreateCampaignOutput { id, arn })
     }
 }

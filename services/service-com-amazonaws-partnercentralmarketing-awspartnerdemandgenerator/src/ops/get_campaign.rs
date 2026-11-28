@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetCampaign
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetCampaign`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetCampaign::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -80,9 +71,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralmarketing
 // here — hence the `GetCampaignError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#GetCampaign")]
+// `InternalServerException` is widened in through `extra_errors`: this SERVICE models it
+// as one of its service-wide errors and this operation's own error list does not name
+// it, so the failures that are not about the request — a store that is not mounted, a
+// clock that cannot be placed on the calendar — are answered as the modelled server
+// fault rather than as some other status.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#GetCampaign",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum GetCampaignErrorModeled {
+    InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
 }
 
@@ -137,18 +137,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetCampaign` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetCampaignErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetCampaign"))
+        // `@readonly`: this reports the stored campaign and writes nothing. `State` and
+        // `ActivationIssues` are derived for this reading rather than stored, as
+        // `CampaignState` requires ("derived on every read ... it is never stored").
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(GetCampaignErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let Some(today) = crate::state::utc_date(::std::time::SystemTime::now()) else {
+            return Err(GetCampaignErrorModeled::InternalServerException(
+                crate::state::clock_unavailable(),
+            )
+            .into());
+        };
+        let not_found = || {
+            GetCampaignErrorModeled::ResourceNotFoundException(crate::state::campaign_not_found(
+                &input.campaign_identifier,
+            ))
+        };
+        // A `CampaignIdentifier` names its campaign "by its id or its ARN", so both
+        // forms resolve to the same stored record.
+        let campaign_id = crate::state::campaign_id_of(&input.catalog, &input.campaign_identifier)
+            .ok_or_else(not_found)?;
+        let store = state.lock();
+        let campaign = store
+            .campaign(&input.catalog, &campaign_id)
+            .ok_or_else(not_found)?;
+        Ok(GetCampaignOutput {
+            campaign: crate::state::campaign_shape(campaign, &today),
+        })
     }
 }

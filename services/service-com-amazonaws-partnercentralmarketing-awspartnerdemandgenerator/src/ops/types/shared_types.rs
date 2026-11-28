@@ -85,6 +85,16 @@ pub struct ResourceNotFoundException {
     pub resource_type: Option<String>,
 }
 
+/// The service-wide server fault. Declared here because every operation of this
+/// service carries it (the service shape's own error list), and each handler widens it
+/// into its own error enum with `extra_errors`.
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralmarketing#InternalServerException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalServerException {
+    pub message: String,
+    pub retry_after_seconds: Option<i32>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralmarketing#Tag")]
 #[derive(Debug, Clone, Default)]
 pub struct Tag {

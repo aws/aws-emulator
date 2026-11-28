@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListCampaigns
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListCampaigns`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListCampaigns::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -85,9 +76,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralmarketing
 // here — hence the `ListCampaignsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#ListCampaigns")]
+// `InternalServerException` and `ValidationException` are widened in through
+// `extra_errors`: this SERVICE models both as its service-wide errors and this
+// operation's own error list names neither — the server fault for a store that is not
+// mounted or a clock that cannot be placed on the calendar, and the client refusal
+// `NextToken` documents for a token issued for other filters or another sort order.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#ListCampaigns",
+    extra_errors = ["InternalServerException", "ValidationException"]
+)]
 #[derive(Debug)]
 pub enum ListCampaignsErrorModeled {
+    InternalServerException(InternalServerException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -103,6 +104,19 @@ impl From<ListCampaignsErrorModeled> for ListCampaignsError {
     fn from(modeled: ListCampaignsErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
+}
+
+/// The sequence one list walks, as the text its continuation tokens are bound to.
+///
+/// `NextToken` is "bound to the filters and sort it was issued for: a request that
+/// changes `CampaignIdentifiers`, `Name`, `States` or `Sort` between pages is refused
+/// ... `MaxResults` may change" — so those four members and the catalog are in it and
+/// the page size is not.
+fn list_scope(input: &ListCampaignsInput) -> String {
+    format!(
+        "ListCampaigns\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}",
+        input.catalog, input.campaign_identifiers, input.name, input.states, input.sort,
+    )
 }
 
 /// The `ListCampaigns` operation.
@@ -141,18 +155,63 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListCampaigns` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListCampaignsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListCampaigns"))
+        // `@readonly`: this reports the stored campaigns and writes nothing. Every
+        // summary is built off a stored record, with `State` derived for this reading
+        // exactly as `GetCampaign` derives it.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListCampaignsErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let Some(today) = crate::state::utc_date(::std::time::SystemTime::now()) else {
+            return Err(ListCampaignsErrorModeled::InternalServerException(
+                crate::state::clock_unavailable(),
+            )
+            .into());
+        };
+        let store = state.lock();
+        let page_token_key = store.page_token_key;
+
+        // The catalog's campaigns, narrowed by every filter the request named (they
+        // "combine with AND") and ordered as `Sort` asks.
+        let mut listed: Vec<crate::state::ListedCampaign<'_>> = store
+            .catalog_campaigns(&input.catalog)
+            .into_iter()
+            .flat_map(|campaigns| campaigns.values())
+            .map(|record| crate::state::ListedCampaign {
+                record,
+                state: crate::state::campaign_state(record, &today),
+            })
+            .filter(|listed| crate::state::passes_filters(listed, &input))
+            .collect();
+        crate::state::sort_campaigns(&mut listed, input.sort.as_ref());
+
+        let scope = list_scope(&input);
+        let start =
+            match crate::state::resume_point(&page_token_key, &scope, input.next_token.as_ref()) {
+                crate::state::ResumePoint::At(offset) => offset.min(listed.len()),
+                crate::state::ResumePoint::NotIssued => {
+                    return Err(ListCampaignsErrorModeled::ValidationException(
+                        crate::state::invalid_next_token(),
+                    )
+                    .into())
+                }
+            };
+        let end = start
+            .saturating_add(crate::state::page_size(input.max_results))
+            .min(listed.len());
+        let page = listed.get(start..end).unwrap_or_default();
+
+        Ok(ListCampaignsOutput {
+            items: page
+                .iter()
+                .map(|listed| crate::state::campaign_summary_shape(listed.record, &today))
+                .collect(),
+            // A token only while campaigns remain, so a caller paging to the end stops.
+            next_token: (end < listed.len())
+                .then(|| crate::state::continuation_token(&page_token_key, &scope, end)),
+        })
     }
 }

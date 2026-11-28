@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op SearchCampaignTemplates
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `SearchCampaignTemplates`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`SearchCampaignTemplates::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -109,9 +100,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralmarketing
 // here — hence the `SearchCampaignTemplatesError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#SearchCampaignTemplates")]
+// `InternalServerException` and `ValidationException` are widened in through
+// `extra_errors`: this SERVICE models both as its service-wide errors and this
+// operation's own error list names neither, so they are declared here rather than
+// answered as some other status — the server fault for a store that is not mounted, and
+// the client refusal for a `NextToken` this read did not issue.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#SearchCampaignTemplates",
+    extra_errors = ["InternalServerException", "ValidationException"]
+)]
 #[derive(Debug)]
 pub enum SearchCampaignTemplatesErrorModeled {
+    InternalServerException(InternalServerException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -127,6 +128,25 @@ impl From<SearchCampaignTemplatesErrorModeled> for SearchCampaignTemplatesError 
     fn from(modeled: SearchCampaignTemplatesErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
+}
+
+/// The sequence one search walks, as the text its continuation tokens are bound to.
+///
+/// Every member that decides WHICH templates match and in WHAT order is in it;
+/// `MaxResults` is not, because a caller may change the page size between pages.
+fn search_scope(input: &SearchCampaignTemplatesInput) -> String {
+    format!(
+        "SearchCampaignTemplates\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}",
+        input.catalog,
+        input.search_text,
+        input.industry,
+        input.use_case,
+        input.language,
+        input.aws_services,
+        input.customer_segments,
+        input.themes,
+        input.collection,
+    )
 }
 
 /// The `SearchCampaignTemplates` operation.
@@ -165,18 +185,75 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `SearchCampaignTemplates` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(SearchCampaignTemplatesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("SearchCampaignTemplates"))
+        // `@readonly`: this reports the AWS-authored catalog and writes nothing. The
+        // catalog itself is a constant (`crate::state::catalog`), so the store is
+        // reached for ONE thing — the key this read's own continuation tokens are
+        // authenticated under.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(SearchCampaignTemplatesErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let page_token_key = state.lock().page_token_key;
+
+        // The whole catalog a partner can see now, narrowed by the facets the request
+        // named: values within one facet are OR-ed and distinct facets are AND-ed.
+        let now = ::std::time::SystemTime::now();
+        let mut matching: Vec<&crate::state::CampaignTemplateRecord> =
+            crate::state::effective_templates(now)
+                .into_iter()
+                .filter(|record| crate::state::passes_facets(record, &input))
+                .collect();
+
+        // With no `SearchText` the catalog's own browsing order stands; with one, only
+        // the templates carrying a word of the query are reported, ranked as
+        // `SearchText` documents and tied by id so the order is total and a page of it
+        // is resumable.
+        if let Some(search_text) = input.search_text.as_deref() {
+            let terms = crate::state::search_terms(search_text);
+            let mut ranked: Vec<(crate::state::SearchRank, &crate::state::CampaignTemplateRecord)> =
+                matching
+                    .into_iter()
+                    .filter_map(|record| {
+                        crate::state::search_rank(record, &terms).map(|rank| (rank, record))
+                    })
+                    .collect();
+            ranked.sort_by(|(left_rank, left), (right_rank, right)| {
+                right_rank.cmp(left_rank).then_with(|| left.id.cmp(right.id))
+            });
+            matching = ranked.into_iter().map(|(_rank, record)| record).collect();
+        }
+
+        // `TotalResults` is "total count over the whole matching set, not just this
+        // page".
+        let total_results = i32::try_from(matching.len()).unwrap_or(i32::MAX);
+        let scope = search_scope(&input);
+        let start =
+            match crate::state::resume_point(&page_token_key, &scope, input.next_token.as_ref()) {
+                crate::state::ResumePoint::At(offset) => offset.min(matching.len()),
+                crate::state::ResumePoint::NotIssued => {
+                    return Err(SearchCampaignTemplatesErrorModeled::ValidationException(
+                        crate::state::invalid_next_token(),
+                    )
+                    .into())
+                }
+            };
+        let end = start
+            .saturating_add(crate::state::page_size(input.max_results))
+            .min(matching.len());
+        let page = matching.get(start..end).unwrap_or_default();
+
+        Ok(SearchCampaignTemplatesOutput {
+            total_results,
+            campaign_templates: page
+                .iter()
+                .map(|record| crate::state::template_summary_shape(record))
+                .collect(),
+            // A token only while templates remain, so a caller paging to the end stops.
+            next_token: (end < matching.len())
+                .then(|| crate::state::continuation_token(&page_token_key, &scope, end)),
+        })
     }
 }

@@ -21,6 +21,14 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# `page_tokens`: the authenticated, opaque continuation token this service's paginated
+# reads issue and read back, so a position no read offered is refused rather than
+# seeked to. `document_text_search`: the ONE tokenisation of a free-text query, which
+# the template search matches a template's name and description with. `arn`: the ONE
+# reading of a caller-supplied ARN, which a `CampaignIdentifier` in its ARN form is read
+# through. `s3_uri`: the reading of the `s3://` reference an attached recipient list is
+# staged under.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

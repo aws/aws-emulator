@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateCampaign
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateCampaign`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateCampaign::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -143,10 +134,17 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-partnercentralmarketing
 // here — hence the `UpdateCampaignError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#UpdateCampaign")]
+// `InternalServerException` is widened in through `extra_errors`, for the reason
+// `GetCampaign` widens it: the SERVICE models it and this operation's own error list
+// does not name it.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#UpdateCampaign",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum UpdateCampaignErrorModeled {
     ConflictException(ConflictException),
+    InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
     ValidationException(ValidationException),
 }
@@ -202,18 +200,124 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateCampaign` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateCampaignErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateCampaign"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateCampaignErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let now = ::std::time::SystemTime::now();
+        let Some(today) = crate::state::utc_date(now) else {
+            return Err(UpdateCampaignErrorModeled::InternalServerException(
+                crate::state::clock_unavailable(),
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // `@idempotencyToken`: a repeat carrying the token of an update already applied
+        // reports that campaign and applies nothing again, so `UpdatedAt` does not move
+        // for a retry.
+        let token_key = input
+            .client_token
+            .as_deref()
+            .map(|token| crate::state::idempotency_key(&input.catalog, Self::NAME, token));
+        if let Some(applied) = token_key
+            .as_deref()
+            .and_then(|key| store.client_token_campaign(key))
+            .cloned()
+            .and_then(|campaign_id| store.campaign(&input.catalog, &campaign_id))
+        {
+            return Ok(UpdateCampaignOutput {
+                id: applied.id.clone(),
+            });
+        }
+
+        let not_found = || {
+            UpdateCampaignErrorModeled::ResourceNotFoundException(crate::state::campaign_not_found(
+                &input.campaign_identifier,
+            ))
+        };
+        let campaign_id = crate::state::campaign_id_of(&input.catalog, &input.campaign_identifier)
+            .ok_or_else(not_found)?;
+        let stored = store
+            .campaign(&input.catalog, &campaign_id)
+            .ok_or_else(not_found)?;
+
+        // "Refused ... once the campaign is completed (`CAMPAIGN_COMPLETED`, the UTC
+        // date is after its `EndOn`)" — the same `EndOn` the reported `State` reads.
+        if crate::state::campaign_state(stored, &today) == crate::state::CAMPAIGN_STATE_COMPLETED {
+            return Err(UpdateCampaignErrorModeled::ConflictException(
+                crate::state::campaign_completed(
+                    &stored.id,
+                    stored.end_on.as_deref().unwrap_or_default(),
+                ),
+            )
+            .into());
+        }
+
+        // The run window is judged on the values the campaign WOULD carry: an update
+        // moving one bound is checked against the other as stored.
+        let start_on = input.start_on.clone().or_else(|| stored.start_on.clone());
+        let end_on = input.end_on.clone().or_else(|| stored.end_on.clone());
+        let failing =
+            crate::state::run_window_fields(start_on.as_deref(), end_on.as_deref(), &today);
+        if !failing.is_empty() {
+            return Err(UpdateCampaignErrorModeled::ValidationException(
+                crate::state::field_validation_failed(failing),
+            )
+            .into());
+        }
+
+        // "Partial update: an omitted field is left unchanged", and there is "no way to
+        // clear a field back to empty", so only the members the request names are
+        // written. `CampaignTemplateId` is not among them: it is "set at create,
+        // immutable", and this operation models no member for it.
+        let Some(campaign) = store.campaign_mut(&input.catalog, &campaign_id) else {
+            return Err(not_found().into());
+        };
+        if let Some(name) = input.name {
+            campaign.name = name;
+        }
+        if let Some(sender_email) = input.sender_email {
+            campaign.sender_email = Some(sender_email);
+        }
+        if let Some(privacy_policy_url) = input.privacy_policy_url {
+            campaign.privacy_policy_url = Some(privacy_policy_url);
+        }
+        if let Some(partner_address) = input.partner_address {
+            campaign.partner_address = Some(partner_address);
+        }
+        if let Some(partner_badge) = input.partner_badge {
+            campaign.partner_badge = Some(partner_badge);
+        }
+        if let Some(email_target) = input.email_target {
+            campaign.email_target = Some(email_target);
+            campaign.email_target_attached_at = Some(now);
+        }
+        if let Some(group_ids) = input.email_target_engagement_group_ids {
+            campaign.email_target_engagement_group_ids = group_ids;
+        }
+        if let Some(social_connections) = input.social_connections {
+            campaign.social_connections = social_connections.into_iter().collect();
+        }
+        if let Some(estimated_budget) = input.estimated_budget {
+            campaign.estimated_budget = Some(estimated_budget);
+        }
+        if let Some(total_budget) = input.total_budget {
+            campaign.total_budget = Some(total_budget);
+        }
+        if let Some(target_audience) = input.target_audience {
+            campaign.target_audience = Some(target_audience);
+        }
+        campaign.start_on = start_on;
+        campaign.end_on = end_on;
+        campaign.updated_at = now;
+        let id = campaign.id.clone();
+        if let Some(key) = token_key {
+            store.record_client_token(key, &id);
+        }
+        Ok(UpdateCampaignOutput { id })
     }
 }

@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteCampaign
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteCampaign`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteCampaign::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -105,10 +96,17 @@ impl ::aws_smithy_schema::serde::SerializableStruct for DeleteCampaignOutput {
 // here — hence the `DeleteCampaignError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.partnercentralmarketing#DeleteCampaign")]
+// `InternalServerException` is widened in through `extra_errors`, for the reason
+// `GetCampaign` widens it: the SERVICE models it and this operation's own error list
+// does not name it.
+#[smithy_macros::operation_error(
+    "com.amazonaws.partnercentralmarketing#DeleteCampaign",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum DeleteCampaignErrorModeled {
     ConflictException(ConflictException),
+    InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
 }
 
@@ -163,18 +161,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteCampaign` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteCampaignErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteCampaign"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteCampaignErrorModeled::InternalServerException(
+                crate::state::no_store(),
+            )
+            .into());
+        };
+        let not_found = || {
+            DeleteCampaignErrorModeled::ResourceNotFoundException(crate::state::campaign_not_found(
+                &input.campaign_identifier,
+            ))
+        };
+        let campaign_id = crate::state::campaign_id_of(&input.catalog, &input.campaign_identifier)
+            .ok_or_else(not_found)?;
+        let mut store = state.lock();
+        let stored = store
+            .campaign(&input.catalog, &campaign_id)
+            .ok_or_else(not_found)?;
+
+        // "Refused with ConflictException while the campaign has a live asset
+        // (`CAMPAIGN_HAS_ACTIVE_ASSETS`), because deleting the record would orphan what
+        // the delivery platform still serves or sends: deactivate those assets first."
+        if stored.has_live_asset() {
+            return Err(DeleteCampaignErrorModeled::ConflictException(
+                crate::state::campaign_has_active_assets(&stored.id),
+            )
+            .into());
+        }
+
+        // A hard delete: the record goes, and with it its tags, its assets and every
+        // idempotency token that resolved to it. "Idempotent in effect: deleting a
+        // campaign that is already gone returns ResourceNotFoundException, and nothing
+        // is left behind by a retry."
+        if store.remove_campaign(&input.catalog, &campaign_id).is_none() {
+            return Err(not_found().into());
+        }
+        Ok(DeleteCampaignOutput)
     }
 }
