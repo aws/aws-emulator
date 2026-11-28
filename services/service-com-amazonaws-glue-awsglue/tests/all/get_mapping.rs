@@ -19,11 +19,12 @@
 //! The rows differ along what the rule generalises over: how many columns the source
 //! declares (none, one, several), whether they are partition keys, whether the target
 //! declares the same column, the same column in another type, the same column in another
-//! case or no such column, how many target tables the request names (none, one, two),
-//! whether a column declares a type at all, and whether the request also carries a
-//! `Location`. A last table walks the two size bounds this operation enforces for itself —
-//! the model bounds neither the `Sinks` list nor a table's column count — at each ceiling
-//! and one past it.
+//! case or no such column, how many target tables the request names (none, one, two —
+//! a request naming none states its destination as a `Location`, since a request stating
+//! neither is refused, which [`crate::mapping_destination`] pins), whether a column declares
+//! a type at all, and whether the request also carries a `Location`. A last table walks the
+//! two size bounds this operation enforces for itself — the model bounds neither the `Sinks`
+//! list nor a table's column count — at each ceiling and one past it.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::ops::get_mapping::{
@@ -250,10 +251,15 @@ fn rows() -> Vec<Row> {
             ],
         },
         Row {
-            case: "no target table proposes the source onto itself",
+            case: "no target table, only a location: the source is proposed onto itself",
             source: flat("orders", &[("id", Some("int")), ("name", Some("string"))]),
             sinks: vec![],
-            location: None,
+            // The destination this request states is the location, which names no columns,
+            // so the proposal is the source's own fields onto themselves. A request stating
+            // NO destination at all is refused, which `mapping_destination` pins.
+            location: Some(json!({
+                "S3": [{ "Name": "path", "Value": "s3://bucket/orders/" }]
+            })),
             expected: &[
                 ("orders", "id", Some("int"), None, "id", Some("int")),
                 ("orders", "name", Some("string"), None, "name", Some("string")),
@@ -507,6 +513,9 @@ async fn an_absent_source_or_target_is_a_miss() {
     for miss in &misses {
         let mut request = json!({
             "Source": { "DatabaseName": miss.database, "TableName": miss.source },
+            // Every miss request states a destination, so what it is refused for is the
+            // entity it names and not the either/or rule `mapping_destination` pins.
+            "Location": { "S3": [{ "Name": "path", "Value": "s3://bucket/out/" }] },
         });
         if !miss.sinks.is_empty() {
             request["Sinks"] = Value::Array(

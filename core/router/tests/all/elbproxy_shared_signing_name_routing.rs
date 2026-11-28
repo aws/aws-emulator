@@ -11,10 +11,10 @@
 //! operation in the `Action` form field) belongs to the query front door that owns the shared
 //! name. Nothing may be claimed twice (`500 AmbiguousService`), and a request that addresses
 //! none of their wire surfaces — an RPC form naming a service none of them is — is claimed by
-//! nobody, which is the router's honest `404 UnknownService` rather than an answer from a
-//! service that does not serve it (the claim rule `service-common` states for every service
-//! under a shared signing name, pinned at both layers by the sibling suite
-//! `elb_signing_name_family_claims`).
+//! nobody, whichever endpoint it was sent to, which is the router's honest
+//! `404 UnknownService` rather than an answer from a service that does not serve it (the claim
+//! rule `service-common` states for every service under a shared signing name, pinned at both
+//! layers by the sibling suite `elb_signing_name_family_claims`).
 //!
 //! All three publish `aws.auth#sigv4` name `elasticloadbalancing`
 //! (`smithy_query(query="service_info")` on each model: ELB Proxy's `endpointPrefix` is

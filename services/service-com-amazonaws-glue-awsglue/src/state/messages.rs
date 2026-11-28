@@ -2875,6 +2875,15 @@ pub const JOB_WORKER_DEFAULTS_INCOMPLETE: &str =
     "Please set default value for both Worker type and Number of workers in jobs \
      configuration, if you intend to set default for either parameter.";
 
+/// A mapping request — the field proposal (`GetMapping`) or the code that performs a mapping
+/// (`GetPlan`) — that states nowhere for the mapped data to go: neither a target table in
+/// `Sinks` nor a `Location` carrying the parameters of one
+/// ([`crate::ops::get_mapping::states_a_destination`] holds the check).
+///
+/// RECORDED constant, and the whole message: it states the rule rather than the request, so it
+/// names neither member, and one wording answers either of the two operations.
+pub const MAPPING_DESTINATION_MISSING: &str = "Either Sinks or Location must be non-empty.";
+
 /// A `PutDataCatalogExportConfiguration` whose `EncryptionConfiguration` is not the
 /// encryption the table bucket the export writes into is already protected by
 /// ([`super::export_encryption_differs`]): the bucket's encryption is the bucket's own, so a

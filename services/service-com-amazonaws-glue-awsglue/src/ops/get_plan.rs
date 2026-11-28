@@ -21,7 +21,10 @@
 //! A `Mapping` entry that names a target table belongs to that target's pipeline alone, and
 //! one that names none belongs to every pipeline. `Location` is where the mapped data goes
 //! when no target TABLE says so, so it is the sink of a request that names no `Sinks` and is
-//! not read by one that does.
+//! not read by one that does. A request that states NEITHER — nowhere for the mapped data to
+//! go — is refused with `InvalidInputException` before anything is looked up, under the rule
+//! this operation shares with the mapping proposal
+//! ([`crate::ops::get_mapping::states_a_destination`]).
 //!
 //! `Language` picks which member carries it: `SCALA` answers `ScalaCode`, and `PYTHON` or
 //! no language at all answers `PythonScript`. Nothing is persisted — two identical calls
@@ -105,7 +108,7 @@ use super::types::*;
 
 use ::std::collections::{BTreeMap, HashMap};
 
-use super::get_mapping::{MAX_MAPPING_ENTRIES, MAX_MAPPING_SINKS};
+use super::get_mapping::{states_a_destination, MAX_MAPPING_ENTRIES, MAX_MAPPING_SINKS};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -386,30 +389,19 @@ fn push(nodes: &mut Vec<Node>, kind: NodeKind, input: Option<usize>) -> usize {
 /// The location a plan with no catalog target writes to, and the connection type that
 /// location's member names. `Location` is "the parameters for the mapping" — where the
 /// mapped data goes when no target TABLE says so — so it is read only when the request
-/// names no sink. The members are tried in the order the structure declares them (S3,
-/// JDBC, DynamoDB) and the first one carrying arguments is the sink; each argument is a
-/// name and the value it takes (`CodeGenNodeArg`), in the order the request listed them.
+/// names no sink. Which member addresses the location, and the arguments it carries, is the
+/// ONE reading shared with the rule that admits the request at all
+/// ([`crate::ops::get_mapping::addressed_location`]); each argument is a name and the value
+/// it takes (`CodeGenNodeArg`), in the order the request listed them.
 fn location_sink(location: Option<&Location>) -> Option<NodeKind> {
-    let location = location?;
-    let members: [(&'static str, Option<&[CodeGenNodeArg]>); 3] = [
-        ("s3", location.s3.as_deref()),
-        ("jdbc", location.jdbc.as_deref()),
-        ("dynamodb", location.dynamo_db.as_deref()),
-    ];
-    for (connection_type, args) in members {
-        let Some(args) = args else { continue };
-        if args.is_empty() {
-            continue;
-        }
-        return Some(NodeKind::LocationSink {
-            connection_type,
-            options: args
-                .iter()
-                .map(|arg| (arg.name.clone(), arg.value.clone()))
-                .collect(),
-        });
-    }
-    None
+    let (connection_type, args) = super::get_mapping::addressed_location(location)?;
+    Some(NodeKind::LocationSink {
+        connection_type,
+        options: args
+            .iter()
+            .map(|arg| (arg.name.clone(), arg.value.clone()))
+            .collect(),
+    })
 }
 
 /// The whole plan: the source node, then one pipeline per target — map, select, and either
@@ -712,6 +704,11 @@ fn scala_call(kind: &NodeKind, name: &str, input: &str) -> String {
 
 /// What every generated Python script opens with: the Glue job's context and the job the
 /// script's nodes run in.
+///
+/// The `@params` line is part of the skeleton, not of any node: it is the codegen annotation
+/// naming the job arguments the script resolves, so it stands with the
+/// `getResolvedOptions` call it annotates — the same annotation the Scala skeleton carries
+/// above its own argument parser ([`SCALA_PREAMBLE`]).
 pub(crate) const PYTHON_PREAMBLE: &str = "\
 import sys
 from awsglue.transforms import *
@@ -720,6 +717,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 
+## @params: [JOB_NAME]
 args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 
 sc = SparkContext()
@@ -894,6 +892,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ctx` is therefore read.
         let _ = ctx;
         let sinks = input.sinks.as_deref().unwrap_or_default();
+        // A plan writes the mapped data somewhere, and whether the request says where is a
+        // property of the REQUEST alone, so it is answered before any table is looked up.
+        if !states_a_destination(sinks, input.location.as_ref()) {
+            return Err(invalid_input(
+                crate::state::messages::MAPPING_DESTINATION_MISSING.to_string(),
+            ));
+        }
         // The request-size bounds are properties of the REQUEST, so they are answered
         // before any table is looked up and before the script allocates anything.
         if sinks.len() > MAX_MAPPING_SINKS {

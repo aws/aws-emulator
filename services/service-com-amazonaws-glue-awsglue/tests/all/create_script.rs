@@ -631,23 +631,29 @@ async fn a_generated_plans_script_survives_the_round_trip() {
         .await;
     }
 
-    for (case, sinks) in [
+    for (case, sinks, location) in [
         (
             "a plan writing to a catalog table",
             json!([{ "DatabaseName": database, "TableName": "orders_copy" }]),
+            Value::Null,
         ),
-        ("a plan with no target table", json!([])),
+        (
+            "a plan with no target table, writing to a location",
+            json!([]),
+            json!({ "S3": [{ "Name": "path", "Value": "s3://bucket/orders_out/" }] }),
+        ),
     ] {
-        let planned = ok(
-            &router,
-            "GetPlan",
-            &json!({
-                "Source": { "DatabaseName": database, "TableName": "orders" },
-                "Sinks": sinks,
-                "Mapping": [{ "SourcePath": "id" }],
-            }),
-        )
-        .await;
+        let mut request = json!({
+            "Source": { "DatabaseName": database, "TableName": "orders" },
+            "Sinks": sinks,
+            "Mapping": [{ "SourcePath": "id" }],
+        });
+        // A plan states where the mapped data goes: a target table, or the location a
+        // request naming no target table names instead.
+        if !location.is_null() {
+            request["Location"] = location;
+        }
+        let planned = ok(&router, "GetPlan", &request).await;
         let script = planned["PythonScript"]
             .as_str()
             .unwrap_or_else(|| panic!("case {case:?}: GetPlan must answer a PythonScript, got {planned}"))

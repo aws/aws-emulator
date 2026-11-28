@@ -14,6 +14,11 @@
 //! table definitions on every call, so a later read of either table sees exactly what the
 //! catalog held before.
 //!
+//! A request that states nowhere for the mapped data to go — neither a target table nor a
+//! `Location` — is refused with `InvalidInputException` before anything is looked up
+//! ([`states_a_destination`]): a mapping is from a source to a destination, and the model
+//! leaves both members optional, so the service enforces the either/or itself.
+//!
 //! An absent source or sink database or table is `EntityNotFoundException`. A request
 //! naming more targets than [`MAX_MAPPING_SINKS`], or one whose proposal would carry more
 //! than [`MAX_MAPPING_ENTRIES`] entries, is refused with `InvalidInputException`: both are
@@ -133,6 +138,49 @@ pub const MAX_MAPPING_SINKS: usize = 100;
 /// `Sinks` list nor a wide source table can buy an answer larger than
 /// [`MAX_MAPPING_SINKS`] pages of it.
 pub const MAX_MAPPING_ENTRIES: usize = 10_000;
+
+/// The member of a `Location` that ADDRESSES one, as the connection type its name states
+/// and the arguments it carries.
+///
+/// A `Location` is a structure of three lists of arguments, one per kind of location it may
+/// address (`smithy_query shape=Location`), so the structure addresses one only when a list
+/// carries an argument: the members are tried in the order the structure declares them (S3,
+/// JDBC, DynamoDB) and the first one carrying arguments is the location. `None` for an
+/// absent `Location` and for one whose every member is absent or empty, which addresses
+/// nothing.
+///
+/// ONE copy of that reading: it is both what makes a request state a destination
+/// ([`states_a_destination`]) and what a plan writes to
+/// ([`crate::ops::get_plan`]'s location sink), so the two cannot disagree about which
+/// `Location` addresses something — and a member the structure gains is read by both at
+/// once.
+pub(crate) fn addressed_location(
+    location: Option<&Location>,
+) -> Option<(&'static str, &[CodeGenNodeArg])> {
+    let location = location?;
+    [
+        ("s3", location.s3.as_deref()),
+        ("jdbc", location.jdbc.as_deref()),
+        ("dynamodb", location.dynamo_db.as_deref()),
+    ]
+    .into_iter()
+    .find_map(|(connection_type, args)| {
+        args.filter(|args| !args.is_empty())
+            .map(|args| (connection_type, args))
+    })
+}
+
+/// Whether a mapping request states WHERE the mapped data goes: at least one target table in
+/// `Sinks`, or a `Location` that addresses one ([`addressed_location`]).
+///
+/// ONE copy of the rule, shared with the plan that performs a mapping
+/// ([`crate::ops::get_plan`]): both operations take the same two optional members —
+/// `Sinks` ("the target tables") and `Location` ("the parameters for the mapping") — and
+/// neither is `@required`, so the service enforces that one of them is stated rather than
+/// mapping a source onto nothing.
+pub(crate) fn states_a_destination(sinks: &[CatalogEntry], location: Option<&Location>) -> bool {
+    !sinks.is_empty() || addressed_location(location).is_some()
+}
 
 /// How many entries a proposal of `columns` source fields onto `sinks` target tables
 /// carries. A request naming no target still proposes each source field once, which is why
@@ -296,6 +344,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // therefore read.
         let _ = ctx;
         let sinks = input.sinks.as_deref().unwrap_or_default();
+        // A mapping needs a destination, and whether the request states one is a property of
+        // the REQUEST alone, so it is answered before any table in it is looked up.
+        if !states_a_destination(sinks, input.location.as_ref()) {
+            return Err(GetMappingErrorModeled::InvalidInputException(
+                InvalidInputException {
+                    message: Some(
+                        crate::state::messages::MAPPING_DESTINATION_MISSING.to_string(),
+                    ),
+                    from_federation_source: None,
+                },
+            )
+            .into());
+        }
         // The request-size bound is a property of the REQUEST as a whole, so it is
         // answered before any table in it is looked up and before the answer allocates
         // anything: a caller that named too many targets learns that, rather than learning

@@ -7,8 +7,8 @@
 //! and the requested mapping — a `DataSource` node reading the source table out of the
 //! catalog, then, per target table, an `ApplyMapping` of the entries that belong to that
 //! target, a `SelectFields` of the fields it mapped, a `ResolveChoice` against the target's
-//! stored schema and a `DataSink` writing to it; a request naming no target table maps and
-//! selects, and writes only to the location it named. Every node is annotated with its
+//! stored schema and a `DataSink` writing to it; a request naming no target table maps,
+//! selects and writes to the location it named. Every node is annotated with its
 //! type, arguments, the name it binds and the frame it reads, and named `<kind><position>`
 //! in one counter across the script. Each table is named by the spelling the CATALOG holds,
 //! and a mapping entry that leaves a type unstated takes the type the stored column
@@ -20,8 +20,10 @@
 //! asserted is HTTP behaviour and not a direct call into a handler.
 //!
 //! The rows differ along what the rule generalises over: how many target tables the request
-//! names (none, one, two), which members a mapping entry states (both types, neither, a
-//! renamed target path, no target path, no source path, a target table of its own), whether
+//! names (none — with a `Location` as its destination, since a request stating neither is
+//! refused, which [`crate::mapping_destination`] pins — one, two), which members a mapping
+//! entry states (both types, neither, a renamed target path, no target path, no source path,
+//! a target table of its own), whether
 //! the field is a storage-descriptor column, a partition key or no column of the table at
 //! all, which language is asked for, whether the request carries additional plan options,
 //! which member of `Location` it carries, and whether it spells the catalog's names in
@@ -317,12 +319,17 @@ fn rows() -> Vec<Row> {
             ],
         },
         Row {
-            case: "no target table and no location: the plan maps and selects alone",
+            case: "a location and no target table: the plan maps, selects and writes there",
             language: None,
             source: flat("orders", &[("id", Some("int"))]),
             sinks: vec![],
             mapping: vec![json!({ "SourcePath": "id" })],
-            location: None,
+            // A request stating NEITHER a target table nor a location states nowhere for
+            // the mapped data to go and is refused, which [`crate::mapping_destination`]
+            // pins; what varies here is which destination the request states.
+            location: Some(json!({
+                "S3": [{ "Name": "path", "Value": "s3://bucket/orders_only/" }],
+            })),
             additional_options: None,
             expected: vec![
                 "datasource0 = glueContext.create_dynamic_frame.from_catalog(database = \
@@ -331,6 +338,9 @@ fn rows() -> Vec<Row> {
                  \"int\", \"id\", \"int\")], transformation_ctx = \"applymapping1\")",
                 "selectfields2 = SelectFields.apply(frame = applymapping1, paths = [\"id\"], \
                  transformation_ctx = \"selectfields2\")",
+                "datasink3 = glueContext.write_dynamic_frame.from_options(frame = \
+                 selectfields2, connection_type = \"s3\", connection_options = {\"path\": \
+                 \"s3://bucket/orders_only/\"}, transformation_ctx = \"datasink3\")",
             ],
         },
         Row {
@@ -410,7 +420,9 @@ fn rows() -> Vec<Row> {
             source: flat("orders", &[("id", Some("int"))]),
             sinks: vec![],
             mapping: vec![json!({ "SourcePath": "id" })],
-            location: None,
+            location: Some(json!({
+                "S3": [{ "Name": "path", "Value": "s3://bucket/orders_out/" }],
+            })),
             // The documented pair, plus a second one, so the ordering is visible.
             additional_options: Some(json!({ "inferSchema": "true", "another": "value" })),
             expected: vec![
@@ -421,6 +433,9 @@ fn rows() -> Vec<Row> {
                  \"int\", \"id\", \"int\")], transformation_ctx = \"applymapping1\")",
                 "selectfields2 = SelectFields.apply(frame = applymapping1, paths = [\"id\"], \
                  transformation_ctx = \"selectfields2\")",
+                "datasink3 = glueContext.write_dynamic_frame.from_options(frame = \
+                 selectfields2, connection_type = \"s3\", connection_options = {\"path\": \
+                 \"s3://bucket/orders_out/\"}, transformation_ctx = \"datasink3\")",
             ],
         },
         Row {
@@ -429,7 +444,9 @@ fn rows() -> Vec<Row> {
             source: flat("orders", &[("id", Some("int"))]),
             sinks: vec![],
             mapping: vec![json!({ "SourcePath": "id" })],
-            location: None,
+            location: Some(json!({
+                "S3": [{ "Name": "path", "Value": "s3://bucket/orders_out/" }],
+            })),
             additional_options: None,
             expected: vec![
                 "datasource0 = glueContext.create_dynamic_frame.from_catalog(database = \
@@ -438,6 +455,9 @@ fn rows() -> Vec<Row> {
                  \"int\", \"id\", \"int\")], transformation_ctx = \"applymapping1\")",
                 "selectfields2 = SelectFields.apply(frame = applymapping1, paths = [\"id\"], \
                  transformation_ctx = \"selectfields2\")",
+                "datasink3 = glueContext.write_dynamic_frame.from_options(frame = \
+                 selectfields2, connection_type = \"s3\", connection_options = {\"path\": \
+                 \"s3://bucket/orders_out/\"}, transformation_ctx = \"datasink3\")",
             ],
         },
         Row {
@@ -655,6 +675,7 @@ async fn the_script_carries_the_annotation_of_every_node() {
         "from awsglue.context import GlueContext\n",
         "from awsglue.job import Job\n",
         "\n",
+        "## @params: [JOB_NAME]\n",
         "args = getResolvedOptions(sys.argv, ['JOB_NAME'])\n",
         "\n",
         "sc = SparkContext()\n",
@@ -863,6 +884,9 @@ async fn an_absent_source_or_target_is_refused() {
         let mut request = json!({
             "Source": { "DatabaseName": miss.database, "TableName": miss.source },
             "Mapping": [{ "SourcePath": "id" }],
+            // Every miss request states a destination, so what it is refused for is the
+            // entity it names and not the either/or rule `mapping_destination` pins.
+            "Location": { "S3": [{ "Name": "path", "Value": "s3://bucket/out/" }] },
         });
         if !miss.sinks.is_empty() {
             request["Sinks"] = Value::Array(
@@ -893,6 +917,7 @@ async fn an_absent_source_or_target_is_refused() {
         &json!({
             "Source": { "DatabaseName": DATABASE, "TableName": PRESENT },
             "Mapping": [{ "SourcePath": "id" }],
+            "Location": { "S3": [{ "Name": "path", "Value": "s3://bucket/out/" }] },
         }),
     )
     .await;
