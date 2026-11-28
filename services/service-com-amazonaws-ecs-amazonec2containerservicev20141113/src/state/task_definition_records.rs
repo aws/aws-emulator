@@ -176,20 +176,23 @@ impl TaskDefinitionRecord {
     /// needs a principal for every image fetch the revision's containers need authenticating
     /// ([`TaskDefinitionRecord::pull_needs_execution_role`]), because a Fargate task runs
     /// on capacity Amazon ECS owns and so has no container instance whose own role the
-    /// agent could pull under.
+    /// agent could pull under. The capacity Amazon ECS provisions and operates for a
+    /// cluster has its own arm beside those ([`TaskDefinitionRecord::admits_managed_instances`]).
     ///
-    /// The launch types this list is drawn from are [`COMPATIBILITY_ORDER`], the launch
-    /// types recorded ECS projections report. Which launch types a PLACEMENT may name
+    /// The launch types this list is drawn from are [`COMPATIBILITY_ORDER`], every member
+    /// of the `Compatibility` enum. Which launch types a PLACEMENT may name
     /// outright is a further and narrower question ([`PLACEMENT_LAUNCH_TYPES`]), decided
     /// where a `launchType` is checked ([`validate_launch_type`]).
     ///
     /// What the REGISTRATION asked to be validated against (`requiresCompatibilities`) is
     /// reported separately and unchanged: the derived list neither adds a launch type the
-    /// revision was not validated against nor withholds one it was, so it is a function of
-    /// the revision's own parameters rather than of what the request asked for or of which
-    /// capacity providers the account happens to hold.
+    /// revision's parameters do not support nor withholds one they do, so it is never an
+    /// echo of the request — and it does not read which capacity providers the account
+    /// happens to hold either. For the ONE launch type no placement may name outright,
+    /// what the registration pinned is itself a stored parameter of the revision and is
+    /// read as such ([`TaskDefinitionRecord::admits_managed_instances`]).
     pub fn compatibilities(&self) -> Vec<String> {
-        let awsvpc = self.network_mode == NETWORK_MODE_AWSVPC;
+        let awsvpc = self.runs_awsvpc();
         COMPATIBILITY_ORDER
             .iter()
             .filter(|launch_type| match **launch_type {
@@ -207,6 +210,7 @@ impl TaskDefinitionRecord {
                         // ([`TaskDefinitionRecord::needs_capacity_fargate_lacks`]).
                         && !self.needs_capacity_fargate_lacks()
                 }
+                "MANAGED_INSTANCES" => self.admits_managed_instances(),
                 // Every launch type is classified above by its own documented
                 // requirements, so one added to [`COMPATIBILITY_ORDER`] later has to be
                 // classified deliberately rather than inheriting a neighbour's rule.
@@ -214,6 +218,53 @@ impl TaskDefinitionRecord {
             })
             .map(|launch_type| (*launch_type).to_string())
             .collect()
+    }
+
+    /// Whether the task this revision describes runs with its own elastic network interface
+    /// — the `awsvpc` network mode, the one the launch-type arms above and
+    /// [`TaskDefinitionRecord::admits_managed_instances`] each read, so the mode is
+    /// compared in one place.
+    ///
+    /// Read off the mode the task RUNS IN rather than the one the registration declared, so
+    /// a revision that declared none is weighed as the documented default it runs under ("If
+    /// no network mode is specified, the default is `bridge`").
+    pub fn runs_awsvpc(&self) -> bool {
+        self.network_mode == NETWORK_MODE_AWSVPC
+    }
+
+    /// Whether this revision was validated against the capacity Amazon ECS provisions and
+    /// operates for a cluster — ECS Managed Instances.
+    ///
+    /// Two conditions, both read off the STORED revision:
+    ///
+    /// * its task runs under `awsvpc` networking. A task on that capacity is allocated its
+    ///   own elastic network interface in the caller's VPC, which is what the mode is for
+    ///   ("If the network mode is `awsvpc`, the task is allocated an elastic network
+    ///   interface"), so a revision whose task runs in any other mode — the documented
+    ///   default, `bridge`, `host` or `none` — is not validated against it.
+    /// * the registration left the launch types OPEN, or asked for this one by name.
+    ///   `requiresCompatibilities` is "the task launch types the task definition was
+    ///   validated against": the launch types a placement may name OUTRIGHT
+    ///   ([`PLACEMENT_LAUNCH_TYPES`]) are validated for whatever the registration pinned,
+    ///   because any placement can ask for them, while this capacity is reached only
+    ///   through a capacity provider (`RunTask$launchType`: "If you want to use Amazon ECS
+    ///   Managed Instances, you must use the `capacityProviderStrategy` request parameter
+    ///   and omit the `launchType` request parameter"), so a registration that pinned the
+    ///   launch types it must run on without naming this one was validated against those
+    ///   and not against this. RECORDED behaviour: an `awsvpc` revision that pins nothing
+    ///   reports this launch type, and one pinned to Fargate does not.
+    ///
+    /// Nothing here reads the account's own capacity providers: which launch types a
+    /// revision was validated against is a property of the revision
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::holds_managed_instances_capacity`]
+    /// is the different question of whether such capacity exists).
+    pub fn admits_managed_instances(&self) -> bool {
+        self.runs_awsvpc()
+            && (self.requires_compatibilities.is_empty()
+                || self
+                    .requires_compatibilities
+                    .iter()
+                    .any(|asked| asked == LAUNCH_TYPE_MANAGED_INSTANCES))
     }
 
     /// Whether an image this revision's containers run can be fetched only AS the task

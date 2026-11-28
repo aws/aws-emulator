@@ -295,7 +295,7 @@ async fn a_network_mode_reads_back_exactly_as_it_was_declared() {
         ("bridge", Some("bridge"), &["EXTERNAL", "EC2"]),
         ("host", Some("host"), &["EXTERNAL", "EC2"]),
         ("none", Some("none"), &["EXTERNAL", "EC2"]),
-        ("awsvpc", Some("awsvpc"), &["EC2"]),
+        ("awsvpc", Some("awsvpc"), &["EC2", "MANAGED_INSTANCES"]),
     ];
 
     for (index, (case, declared, expected_launch_types)) in rows.into_iter().enumerate() {

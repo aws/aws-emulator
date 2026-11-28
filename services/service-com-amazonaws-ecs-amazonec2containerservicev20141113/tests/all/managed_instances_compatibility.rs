@@ -5,33 +5,37 @@
 //!
 //! The rule under test: `TaskDefinition$compatibilities` ("Amazon ECS validates the task
 //! definition parameters with those supported by the launch type") is DERIVED from the
-//! revision's OWN parameters over the launch types a recorded ECS projection reports —
-//! `EXTERNAL`, `EC2` and `FARGATE`, the infrastructure a placement names outright — and over
-//! nothing else: `MANAGED_INSTANCES` is a member of the `Compatibility` enum
+//! revision's OWN parameters, one predicate per member of the `Compatibility` enum
 //! (`smithy_query(query="shape", shape="com.amazonaws.ecs#Compatibility")` -> `EC2`,
-//! `FARGATE`, `EXTERNAL`, `MANAGED_INSTANCES`) that a revision reports nothing about,
-//! because that capacity is reached through a capacity provider rather than by naming a
-//! launch type (`RunTask$launchType`: "If you want to use Amazon ECS Managed Instances, you
-//! must use the `capacityProviderStrategy` request parameter and omit the `launchType`
-//! request parameter").
+//! `FARGATE`, `EXTERNAL`, `MANAGED_INSTANCES`). The member this suite is about, the capacity
+//! Amazon ECS provisions and operates for a cluster, is reported when both of these hold of
+//! the stored revision:
 //!
-//! What the registration ASKED to be validated against is reported separately and
-//! unchanged, so a request that names managed instances in its `requiresCompatibilities`
-//! reads that member back verbatim and still reports a derived list without it.
+//! * its task runs under `awsvpc` networking, the mode that allocates a task its own elastic
+//!   network interface ("If the network mode is `awsvpc`, the task is allocated an elastic
+//!   network interface"), so a revision running in the documented default, `bridge`, `host`
+//!   or `none` reports nothing about it;
+//! * the registration left its launch types OPEN, or named this one in
+//!   `requiresCompatibilities` ("The task launch types the task definition was validated
+//!   against"). The launch types a placement may name OUTRIGHT are validated for whatever
+//!   the registration pinned, because any placement can ask for them; this capacity is
+//!   reached only through a capacity provider (`RunTask$launchType`: "If you want to use
+//!   Amazon ECS Managed Instances, you must use the `capacityProviderStrategy` request
+//!   parameter and omit the `launchType` request parameter"), so a registration pinned to
+//!   other launch types was validated against those and not against this.
 //!
 //! The rows span what the rule generalises over:
 //!
-//! * the NETWORK MODE, which is what decides the launch types reported: the documented
-//!   default, each member of the `NetworkMode` enum, and `awsvpc` with and without a task
-//!   size;
-//! * what the registration ASKED to be validated against (`requiresCompatibilities`):
-//!   nothing, managed instances alone, and managed instances beside another launch type —
-//!   none of which adds a launch type to the derived list;
+//! * the NETWORK MODE: the documented default, each member of the `NetworkMode` enum, and
+//!   `awsvpc` with and without a task size;
+//! * what the registration PINNED (`requiresCompatibilities`): nothing, another launch type
+//!   alone, managed instances alone, and managed instances beside another launch type;
 //! * whether the ACCOUNT holds a managed-instances capacity provider, which the derivation
 //!   does not read: the same rows are registered against an account that created one and
 //!   against one that created none, and both report the same list;
 //! * a revision Fargate does NOT support (an Amazon ECR image with no `executionRoleArn`),
-//!   where only the Fargate answer changes;
+//!   where only the Fargate answer changes — the capacity Amazon ECS operates for the
+//!   cluster runs container instances of its own, whose role the agent pulls under;
 //! * and both projections of the same stored revision — the registration's echo and
 //!   `DescribeTaskDefinition` — so a list rendered off the request rather than off the record
 //!   shows up as a difference between them.
@@ -43,7 +47,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::capacity_providers::managed_instances;
-use crate::ecs_wire::{create_cluster, list, ok, service};
+use crate::ecs_wire::{create_cluster, list, ok, refusal, service};
 use crate::task_lifecycle::container;
 
 /// A public image every container here starts from, which needs no principal to pull.
@@ -77,19 +81,13 @@ fn compatibilities(definition: &Value, case: &str) -> Vec<String> {
         .collect()
 }
 
-/// Assert `definition` reports exactly `expected`, and that managed-instances capacity is
-/// named in no position of it.
+/// Assert `definition` reports exactly `expected`, in that order.
 fn reports(definition: &Value, source: &str, expected: &[&str], case: &str) {
     let actual = compatibilities(definition, case);
     assert_eq!(
         actual, expected,
         "case {case:?}: {source} expected compatibilities {expected:?}, got {actual:?} in \
          {definition}"
-    );
-    assert!(
-        !actual.iter().any(|launch_type| launch_type == MANAGED_INSTANCES),
-        "case {case:?}: {source} must report no {MANAGED_INSTANCES} compatibility, got \
-         {actual:?} in {definition}"
     );
 }
 
@@ -174,36 +172,78 @@ fn rows() -> Vec<(&'static str, Value, Vec<&'static str>)> {
         (
             "awsvpc without a task size",
             json!({"networkMode": "awsvpc"}),
-            vec!["EC2"],
+            vec!["EC2", MANAGED_INSTANCES],
         ),
         (
             "awsvpc with a task size",
             json!({"networkMode": "awsvpc", "cpu": TASK_CPU, "memory": TASK_MEMORY}),
-            vec!["EC2", "FARGATE"],
+            vec!["EC2", "FARGATE", MANAGED_INSTANCES],
         ),
+        // A mode other than `awsvpc` rules the launch type out however the registration
+        // pinned its launch types.
         (
-            "asking to be validated against managed instances alone",
-            json!({"networkMode": "bridge", "requiresCompatibilities": ["MANAGED_INSTANCES"]}),
+            "bridge pinned to managed instances alone",
+            json!({"networkMode": "bridge", "requiresCompatibilities": [MANAGED_INSTANCES]}),
             vec!["EXTERNAL", "EC2"],
         ),
+        // A pin that names OTHER launch types is the validation the registration asked for,
+        // and this launch type is not among them.
         (
-            "asking to be validated against Fargate and managed instances",
+            "awsvpc pinned to Fargate alone",
             json!({
                 "networkMode": "awsvpc",
                 "cpu": TASK_CPU,
                 "memory": TASK_MEMORY,
-                "requiresCompatibilities": ["FARGATE", "MANAGED_INSTANCES"],
+                "requiresCompatibilities": ["FARGATE"],
             }),
             vec!["EC2", "FARGATE"],
+        ),
+        (
+            "awsvpc pinned to the caller's own capacity alone",
+            json!({
+                "networkMode": "awsvpc",
+                "cpu": TASK_CPU,
+                "memory": TASK_MEMORY,
+                "requiresCompatibilities": ["EC2"],
+            }),
+            vec!["EC2", "FARGATE"],
+        ),
+        (
+            "awsvpc pinned to managed instances alone",
+            json!({
+                "networkMode": "awsvpc",
+                "cpu": TASK_CPU,
+                "memory": TASK_MEMORY,
+                "requiresCompatibilities": [MANAGED_INSTANCES],
+            }),
+            vec!["EC2", "FARGATE", MANAGED_INSTANCES],
+        ),
+        (
+            "awsvpc pinned to Fargate and managed instances",
+            json!({
+                "networkMode": "awsvpc",
+                "cpu": TASK_CPU,
+                "memory": TASK_MEMORY,
+                "requiresCompatibilities": ["FARGATE", MANAGED_INSTANCES],
+            }),
+            vec!["EC2", "FARGATE", MANAGED_INSTANCES],
+        ),
+        (
+            "awsvpc at no task size, pinned to managed instances",
+            json!({
+                "networkMode": "awsvpc",
+                "requiresCompatibilities": [MANAGED_INSTANCES],
+            }),
+            vec!["EC2", MANAGED_INSTANCES],
         ),
     ]
 }
 
-/// RULE: a revision reports no managed-instances compatibility, whatever it declares and
-/// whatever it asked to be validated against — in an account that created no capacity
-/// provider of that class.
+/// RULE: a revision reports the capacity Amazon ECS operates for a cluster when its task runs
+/// under `awsvpc` networking and the registration did not pin its launch types to others —
+/// in an account that created no capacity provider of that class.
 #[tokio::test]
-async fn no_revision_reports_managed_instances() {
+async fn the_launch_type_follows_the_network_mode_and_what_the_registration_pinned() {
     let router = service();
 
     for (index, (case, mut request, expected)) in rows().into_iter().enumerate() {
@@ -249,7 +289,7 @@ async fn the_derived_list_is_the_one_the_registration_validated() {
         "memory": TASK_MEMORY,
         "containerDefinitions": [container("app", IMAGE)],
     });
-    let expected = ["EC2", "FARGATE"];
+    let expected = ["EC2", "FARGATE", MANAGED_INSTANCES];
 
     let before = ok(
         &router,
@@ -288,8 +328,8 @@ async fn the_derived_list_is_the_one_the_registration_validated() {
 /// RULE, where FARGATE drops out: a revision whose image can be pulled only AS the task
 /// execution role, and that names none, is not validated against Fargate — Amazon ECS's own
 /// Fargate capacity has no container instance whose role the agent could pull under — while the
-/// caller's own capacity still supports it. Naming the execution role puts Fargate back and
-/// moves nothing else.
+/// caller's own capacity and the instances Amazon ECS runs for the cluster still support it.
+/// Naming the execution role puts Fargate back and moves nothing else.
 #[tokio::test]
 async fn an_image_needing_a_principal_drops_only_fargate() {
     let router = service();
@@ -300,12 +340,12 @@ async fn an_image_needing_a_principal_drops_only_fargate() {
         (
             "an Amazon ECR image with no execution role",
             None,
-            vec!["EC2"],
+            vec!["EC2", MANAGED_INSTANCES],
         ),
         (
             "the same image with an execution role",
             Some("arn:aws:iam::000000000000:role/ecsTaskExecutionRole"),
-            vec!["EC2", "FARGATE"],
+            vec!["EC2", "FARGATE", MANAGED_INSTANCES],
         ),
     ];
 
@@ -324,5 +364,63 @@ async fn an_image_needing_a_principal_drops_only_fargate() {
         {
             reports(&definition, source, &expected, case);
         }
+    }
+}
+
+/// RULE, the narrower question a PLACEMENT puts: reporting the launch type is not permission
+/// to NAME it. `RunTask$launchType` — "If you want to use Amazon ECS Managed Instances, you
+/// must use the `capacityProviderStrategy` request parameter and omit the `launchType`
+/// request parameter" — so a request that names it is refused however compatible the revision
+/// is with that capacity, while the launch types a placement may name outright are accepted
+/// exactly when the revision reports them.
+#[tokio::test]
+async fn naming_the_launch_type_in_a_placement_stays_refused() {
+    let router = service();
+    let case = "setup";
+    create_managed_instances_capacity(&router, "migatecluster", "migate", case).await;
+
+    // Two revisions of the same `awsvpc` shape that differ only in what they pinned, so one
+    // reports the launch type and the other does not.
+    for (family, requires) in [
+        ("migateopen", json!([])),
+        ("migatepinned", json!(["FARGATE"])),
+    ] {
+        let mut request = json!({
+            "family": family,
+            "networkMode": "awsvpc",
+            "cpu": TASK_CPU,
+            "memory": TASK_MEMORY,
+            "containerDefinitions": [container("app", IMAGE)],
+        });
+        if !requires.as_array().is_some_and(|asked| asked.is_empty()) {
+            request["requiresCompatibilities"] = requires;
+        }
+        ok(&router, "RegisterTaskDefinition", request, case).await;
+    }
+
+    for (case, family) in [
+        ("a revision that reports the launch type", "migateopen"),
+        ("a revision that does not", "migatepinned"),
+    ] {
+        let (code, message) = refusal(
+            &router,
+            "RunTask",
+            json!({
+                "cluster": "migatecluster",
+                "taskDefinition": family,
+                "launchType": MANAGED_INSTANCES,
+            }),
+            case,
+        )
+        .await;
+        assert_eq!(
+            code, "InvalidParameterException",
+            "case {case:?}: expected the modelled refusal, got {code:?} with {message:?}"
+        );
+        assert_eq!(
+            message,
+            format!("Task definition does not support launch_type {MANAGED_INSTANCES}."),
+            "case {case:?}: the refusal must name the launch type asked for, got {message:?}"
+        );
     }
 }

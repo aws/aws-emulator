@@ -4,20 +4,21 @@
 //! answers with one.
 //!
 //! The rule under test: `TaskDefinition$compatibilities` ("Amazon ECS validates the task
-//! definition parameters with those supported by the launch type") is drawn from the launch
-//! types a recorded ECS projection reports — `EXTERNAL`, `EC2` and `FARGATE`, in that order —
-//! and from the stored revision's own parameters. `MANAGED_INSTANCES` is the remaining member
+//! definition parameters with those supported by the launch type") is drawn from every member
 //! of the `Compatibility` enum (`smithy_query(query="shape",
 //! shape="com.amazonaws.ecs#Compatibility")` -> `EC2`, `FARGATE`, `EXTERNAL`,
-//! `MANAGED_INSTANCES`) and no projection reports it: that capacity is reached through a
-//! capacity provider rather than by naming a launch type, so a revision is not validated
-//! against it.
+//! `MANAGED_INSTANCES`), reported in the order a recorded ECS projection carries them —
+//! `EXTERNAL`, `EC2`, `FARGATE`, `MANAGED_INSTANCES` — and filtered by the stored revision's
+//! own parameters. The capacity Amazon ECS provisions and operates for a cluster is reported
+//! for an `awsvpc` revision that left its launch types open, since a placement reaches that
+//! capacity only through a capacity provider
+//! ([`crate::managed_instances_compatibility`] tables that arm).
 //!
 //! The rows span what the rule generalises over: the network mode (each member of
 //! `NetworkMode` plus the documented default), whether task-level `cpu` and `memory` are
 //! declared, and what the registration ASKED to be validated against — including a request
 //! that asks for managed-instances capacity, which is echoed back in
-//! `requiresCompatibilities` unchanged while adding nothing to the derived list.
+//! `requiresCompatibilities` unchanged.
 //!
 //! Each row is read back through all four projections of the SAME stored revision — the
 //! registration's echo, `DescribeTaskDefinition`, `DeregisterTaskDefinition` and
@@ -40,11 +41,11 @@ const IMAGE: &str = "public.ecr.aws/docker/library/nginx:latest";
 const TASK_CPU: &str = "512";
 const TASK_MEMORY: &str = "1024";
 
-/// The launch type the `Compatibility` enum carries that no projection reports.
+/// The launch type the `Compatibility` enum carries that a placement may not name outright.
 const MANAGED_INSTANCES: &str = "MANAGED_INSTANCES";
 
 /// Every launch type a projection may report, in the order one reports them.
-const REPORTED_LAUNCH_TYPES: [&str; 3] = ["EXTERNAL", "EC2", "FARGATE"];
+const REPORTED_LAUNCH_TYPES: [&str; 4] = ["EXTERNAL", "EC2", "FARGATE", MANAGED_INSTANCES];
 
 /// One row of the table: the request beside the family and the containers, and the launch
 /// types the revision must report.
@@ -99,13 +100,6 @@ fn assert_projection(definition: &Value, source: &str, row: &Row) {
         row.expected
     );
     assert!(
-        !reported
-            .iter()
-            .any(|launch_type| launch_type == MANAGED_INSTANCES),
-        "case {case:?}: {source} must report no {MANAGED_INSTANCES} compatibility, got \
-         {reported:?} in {definition}"
-    );
-    assert!(
         reported
             .iter()
             .all(|launch_type| REPORTED_LAUNCH_TYPES.contains(&launch_type.as_str())),
@@ -150,7 +144,7 @@ fn rows() -> Vec<Row> {
         Row {
             case: "awsvpc without a task size",
             request: json!({ "networkMode": "awsvpc" }),
-            expected: &["EC2"],
+            expected: &["EC2", "MANAGED_INSTANCES"],
             requires: &[],
         },
         Row {
@@ -160,7 +154,7 @@ fn rows() -> Vec<Row> {
                 "cpu": TASK_CPU,
                 "memory": TASK_MEMORY,
             }),
-            expected: &["EC2", "FARGATE"],
+            expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
             requires: &[],
         },
         Row {
@@ -182,6 +176,17 @@ fn rows() -> Vec<Row> {
             requires: &["MANAGED_INSTANCES"],
         },
         Row {
+            case: "asking to be validated against Fargate alone",
+            request: json!({
+                "networkMode": "awsvpc",
+                "cpu": TASK_CPU,
+                "memory": TASK_MEMORY,
+                "requiresCompatibilities": ["FARGATE"],
+            }),
+            expected: &["EC2", "FARGATE"],
+            requires: &["FARGATE"],
+        },
+        Row {
             case: "asking to be validated against Fargate and managed-instances capacity",
             request: json!({
                 "networkMode": "awsvpc",
@@ -189,7 +194,7 @@ fn rows() -> Vec<Row> {
                 "memory": TASK_MEMORY,
                 "requiresCompatibilities": ["FARGATE", "MANAGED_INSTANCES"],
             }),
-            expected: &["EC2", "FARGATE"],
+            expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
             requires: &["FARGATE", "MANAGED_INSTANCES"],
         },
     ]
@@ -208,8 +213,8 @@ async fn describe(router: &MultiServiceRouter, reference: &str, case: &str) -> V
 }
 
 /// RULE: every projection of a stored revision reports the launch types the revision's own
-/// parameters were validated against, drawn from the launch types a recorded projection
-/// reports and never naming managed-instances capacity.
+/// parameters were validated against, drawn from every launch type the `Compatibility` enum
+/// carries and in the order a recorded projection reports them.
 #[tokio::test]
 async fn every_task_definition_projection_reports_the_same_launch_types() {
     let router = service();
@@ -263,11 +268,11 @@ async fn every_task_definition_projection_reports_the_same_launch_types() {
 }
 
 /// RULE, read the other way round: across the whole table no projection names a launch type
-/// outside the three a recorded projection reports, and the two launch types that depend on
-/// the revision's parameters are each reported by some row — so the table pins a derivation
+/// outside the four the `Compatibility` enum carries, and each of the three that depend on
+/// the revision's parameters is reported by some row — so the table pins a derivation
 /// rather than a constant list.
 #[tokio::test]
-async fn the_reported_launch_types_are_drawn_from_the_recorded_three() {
+async fn the_reported_launch_types_are_drawn_from_the_modelled_four() {
     let router = service();
     let mut seen: Vec<String> = Vec::new();
 
@@ -297,7 +302,8 @@ async fn the_reported_launch_types_are_drawn_from_the_recorded_three() {
         );
     }
     assert!(
-        !seen.iter().any(|named| named == MANAGED_INSTANCES),
-        "no row may report {MANAGED_INSTANCES:?}, got {seen:?}"
+        seen.iter()
+            .all(|named| REPORTED_LAUNCH_TYPES.contains(&named.as_str())),
+        "no row may report a launch type outside {REPORTED_LAUNCH_TYPES:?}, got {seen:?}"
     );
 }

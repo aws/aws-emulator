@@ -437,14 +437,18 @@ async fn task_definition_compatibilities_follow_network_mode_and_task_size() {
     // against the capacity of the caller's own account), with FARGATE
     // only when the network mode is `awsvpc` AND task-level cpu
     // and memory are set ("For Amazon ECS tasks on Fargate, the awsvpc network mode is
-    // required"; cpu/memory "required for Fargate"), and with EXTERNAL only when the
-    // network mode is not `awsvpc`. Managed-instances capacity is reported in no revision's
-    // list (tabled in [`crate::managed_instances_compatibility`]). What a registration asks
-    // to be validated against adds nothing to the derived list (tabled in
-    // [`crate::task_definition_compatibility_validation`]), and none of these rows asks.
+    // required"; cpu/memory "required for Fargate"), with EXTERNAL only when the
+    // network mode is not `awsvpc`, and with the managed-instances capacity Amazon ECS
+    // operates only when the network mode IS `awsvpc` (tabled in
+    // [`crate::managed_instances_compatibility`], which also covers what a registration
+    // that PINS its launch types reports).
     // The list is reported in the launch-type order ECS reports, EXTERNAL, EC2,
-    // FARGATE, so a positional read names the same launch type the real
-    // service named. `networkMode` is the closed `NetworkMode` enum (bridge, host, awsvpc,
+    // FARGATE, MANAGED_INSTANCES, so a positional read names the same launch type the real
+    // service named. What a registration asks to be validated against never ADDS a launch
+    // type to the derived list, and subtracts only the one no placement may name outright
+    // (tabled in [`crate::task_definition_compatibility_validation`] and
+    // [`crate::managed_instances_compatibility`]); none of these rows asks for anything.
+    // `networkMode` is the closed `NetworkMode` enum (bridge, host, awsvpc,
     // none) plus the documented default: "If no network mode is specified, the default is
     // bridge" — which the derivation reads while the member itself carries no default, so
     // a revision that declared none reads back with no `networkMode` at all.
@@ -500,14 +504,14 @@ async fn task_definition_compatibilities_follow_network_mode_and_task_size() {
             network_mode: Some("awsvpc"),
             task_size: false,
             expected_mode: Some("awsvpc"),
-            expected: &["EC2"],
+            expected: &["EC2", "MANAGED_INSTANCES"],
         },
         Row {
             case: "awsvpc with task size",
             network_mode: Some("awsvpc"),
             task_size: true,
             expected_mode: Some("awsvpc"),
-            expected: &["EC2", "FARGATE"],
+            expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
         },
     ];
 

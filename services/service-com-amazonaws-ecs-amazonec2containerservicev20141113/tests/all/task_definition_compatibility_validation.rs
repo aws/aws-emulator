@@ -10,11 +10,12 @@
 //! registration asked to be validated against it in its
 //! `requiresCompatibilities` ("The task launch type that Amazon ECS validates the task
 //! definition against"), which is reported separately and unchanged. The launch types the
-//! derived list is drawn from are the ones a recorded ECS projection reports — `EXTERNAL`,
-//! `EC2` and `FARGATE`, in that order — and `MANAGED_INSTANCES`, the remaining member of the
-//! `Compatibility` enum, is reported by no revision
-//! ([`crate::managed_instances_compatibility`] is that half of the rule); asking
-//! to be validated against it changes neither list's membership.
+//! derived list is drawn from are every member of the `Compatibility` enum, reported in the
+//! order a recorded ECS projection carries them — `EXTERNAL`, `EC2`, `FARGATE`,
+//! `MANAGED_INSTANCES`. The one exception to "whether or not the registration asked" is the
+//! managed-instances capacity no placement may name outright, which a registration that
+//! pinned its launch types without naming it was not validated against
+//! ([`crate::managed_instances_compatibility`] is that half of the rule).
 //!
 //! Which of those launch types a PLACEMENT may name is the narrower question: a
 //! `launchType` names the infrastructure outright, and managed-instances capacity is not
@@ -137,14 +138,14 @@ async fn compatibilities_report_only_the_launch_types_the_revision_supports() {
             network_mode: Some("awsvpc"),
             task_size: false,
             requires: &[],
-            expected: &["EC2"],
+            expected: &["EC2", "MANAGED_INSTANCES"],
         },
         Row {
             case: "awsvpc with a task size, asking for nothing",
             network_mode: Some("awsvpc"),
             task_size: true,
             requires: &[],
-            expected: &["EC2", "FARGATE"],
+            expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
         },
         Row {
             case: "awsvpc with a task size, asking for Fargate",
@@ -158,14 +159,14 @@ async fn compatibilities_report_only_the_launch_types_the_revision_supports() {
             network_mode: Some("awsvpc"),
             task_size: false,
             requires: &["MANAGED_INSTANCES"],
-            expected: &["EC2"],
+            expected: &["EC2", "MANAGED_INSTANCES"],
         },
         Row {
             case: "awsvpc with a task size, asking for every launch type awsvpc allows",
             network_mode: Some("awsvpc"),
             task_size: true,
             requires: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
-            expected: &["EC2", "FARGATE"],
+            expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
         },
     ];
 
@@ -219,8 +220,8 @@ async fn the_derived_list_ignores_the_shape_of_the_container_list() {
     // The rows differ along the container COUNT and the members the containers carry — a
     // log driver that delivers to the task's log router, the router that serves it
     // (`FirelensConfiguration`), a task volume with a mount point — none of which is a
-    // launch-type requirement, so every row derives the same list whatever the
-    // registration asked for.
+    // launch-type requirement, so the list a row derives turns only on what the
+    // registration pinned, never on the shape of its container list.
     let app_image = IMAGE;
     let rows: [(&str, Value, Value); 4] = [
         (
@@ -282,7 +283,7 @@ async fn the_derived_list_ignores_the_shape_of_the_container_list() {
         (&["FARGATE"], &["EC2", "FARGATE"]),
         (
             &["FARGATE", "MANAGED_INSTANCES"],
-            &["EC2", "FARGATE"],
+            &["EC2", "FARGATE", "MANAGED_INSTANCES"],
         ),
     ];
 
@@ -333,7 +334,7 @@ async fn a_placement_may_name_only_a_launch_type_the_revision_reports() {
 
     // Two revisions of the SAME shape — `awsvpc` at a legal Fargate task size — that
     // differ only in whether the registration asked to be validated against
-    // managed-instances capacity: neither reports that launch type among the ones it was
+    // managed-instances capacity: BOTH report that launch type among the ones they were
     // validated against, and neither may be placed by NAMING it, which is the narrower
     // question the gate puts (`CreateService$launchType`).
     let plain = Row {
@@ -341,14 +342,14 @@ async fn a_placement_may_name_only_a_launch_type_the_revision_reports() {
         network_mode: Some("awsvpc"),
         task_size: true,
         requires: &[],
-        expected: &["EC2", "FARGATE"],
+        expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
     };
     let validated = Row {
         case: "asking for managed instances",
         network_mode: Some("awsvpc"),
         task_size: true,
         requires: &["MANAGED_INSTANCES"],
-        expected: &["EC2", "FARGATE"],
+        expected: &["EC2", "FARGATE", "MANAGED_INSTANCES"],
     };
     register(&router, "gateplain", &plain, case).await;
     register(&router, "gatevalidated", &validated, case).await;

@@ -1591,19 +1591,28 @@ pub const DYNAMIC_HOST_PORT: i32 = 0;
 /// Every launch type a task-definition projection may report, in the order Amazon ECS
 /// reports them in `TaskDefinition$compatibilities`: the launch types a revision's own
 /// parameters are validated against, as recorded ECS responses report them — `EXTERNAL`,
-/// `EC2` and `FARGATE`.
+/// `EC2`, `FARGATE` and `MANAGED_INSTANCES`.
 ///
-/// The membership is the infrastructure a PLACEMENT names outright
-/// ([`PLACEMENT_LAUNCH_TYPES`]): recorded ECS projections report those three launch types
-/// and no other member of the `Compatibility` enum (`smithy_query(query="shape",
+/// The membership is the whole `Compatibility` enum (`smithy_query(query="shape",
 /// shape="com.amazonaws.ecs#Compatibility")`: `EC2`, `FARGATE`, `EXTERNAL`,
-/// `MANAGED_INSTANCES`) — the managed-instances capacity Amazon ECS provisions and operates
-/// is reached through a capacity provider rather than by naming a launch type, and a
-/// revision reports nothing about it. The ORDER is the one recorded ECS responses carry, so
-/// a client that reads the list positionally reads the same launch type the real service
-/// named. [`TaskDefinitionRecord::compatibilities`] filters it by what the stored revision
-/// was validated against.
-pub const COMPATIBILITY_ORDER: [&str; 3] = ["EXTERNAL", "EC2", LAUNCH_TYPE_FARGATE];
+/// `MANAGED_INSTANCES`), since every one of them is a launch type a recorded projection
+/// reports of some revision — including the managed-instances capacity Amazon ECS
+/// provisions and operates, which an unconstrained `awsvpc` revision reports. Each is
+/// classified by its OWN per-revision predicate
+/// ([`TaskDefinitionRecord::compatibilities`]), so none of them is reported for every
+/// revision or withheld from all of them. Which launch types a PLACEMENT may name outright
+/// is a narrower question ([`PLACEMENT_LAUNCH_TYPES`]).
+///
+/// The ORDER is the one recorded ECS responses carry, so a client that reads the list
+/// positionally reads the same launch type the real service named.
+/// [`TaskDefinitionRecord::compatibilities`] filters it by what the stored revision was
+/// validated against.
+pub const COMPATIBILITY_ORDER: [&str; 4] = [
+    "EXTERNAL",
+    "EC2",
+    LAUNCH_TYPE_FARGATE,
+    LAUNCH_TYPE_MANAGED_INSTANCES,
+];
 
 /// The launch types `Cluster$statistics` separates a cluster's counts by, each paired
 /// with the segment its four statistic names carry (`running<segment>TasksCount`,
