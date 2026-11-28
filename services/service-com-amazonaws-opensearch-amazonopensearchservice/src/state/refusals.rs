@@ -50,6 +50,16 @@ pub fn domain_not_found_base(domain_name: &str) -> BaseException {
     }
 }
 
+/// The `ValidationException` payload for the same miss, for an operation that refuses a
+/// domain it cannot resolve as a bad request rather than as a missing resource — the class
+/// `AddReplicationPeer` refuses both the domain it is addressed to and the peer it is
+/// handed under.
+pub fn domain_not_found_validation(domain_name: &str) -> ValidationException {
+    ValidationException {
+        message: Some(domain_not_found_message(domain_name)),
+    }
+}
+
 /// How this service states that there is no configuration-change progress to report:
 /// one fixed sentence with no variable part — it names neither the domain nor a change
 /// id, because what it reports is that the service holds no progress information for

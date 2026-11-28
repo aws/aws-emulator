@@ -37,26 +37,25 @@ use super::instance_type_catalog::list_type;
 const OFFERED_VERSION: &str = "OpenSearch_2.19";
 
 /// Current-generation instance types, each a FAMILY the service's catalog publishes: the
-/// seventh-generation Intel, Graviton4, dense-storage and second-generation
+/// general-purpose, compute-optimized, memory-optimized, storage-optimized, burstable and
 /// OpenSearch-optimized families, and both halves of a generation the service publishes as
-/// a pair (an EBS-backed family beside its NVMe-backed one, an Intel family beside its
-/// Graviton one).
+/// a pair (an EBS-backed family beside its NVMe-backed one).
 ///
 /// Source: the instance types the service's own catalog publishes
 /// (`crate::state::published_instance_types`, which `ListInstanceTypeDetails` serves and
 /// [`super::current_generation_instance_types`] tables), sampled one size per family —
 /// including families the report that asked for this listing did not cite.
 const CURRENT_GENERATIONS: [&str; 10] = [
-    "c7i.xlarge.search",
-    "m7i.2xlarge.search",
-    "c8g.16xlarge.search",
-    "r8gd.medium.search",
-    "oi2.4xlarge.search",
-    "om2.8xlarge.search",
-    "i7i.8xlarge.search",
-    "i8g.24xlarge.search",
-    "i4i.4xlarge.search",
-    "r7g.2xlarge.search",
+    "c5.xlarge.search",
+    "c6g.2xlarge.search",
+    "m5.4xlarge.search",
+    "m6g.8xlarge.search",
+    "r5.12xlarge.search",
+    "r6g.large.search",
+    "r6gd.4xlarge.search",
+    "i3.8xlarge.search",
+    "or1.8xlarge.search",
+    "t4g.medium.search",
 ];
 
 /// `DescribeInstanceTypeLimits`:

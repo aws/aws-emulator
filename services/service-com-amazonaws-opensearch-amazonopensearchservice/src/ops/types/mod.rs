@@ -17,6 +17,7 @@
 pub mod accept_inbound_connection_types;
 pub mod add_data_source_types;
 pub mod add_direct_query_data_source_types;
+pub mod add_replication_peer_types;
 pub mod add_tags_types;
 pub mod associate_package_types;
 pub mod associate_packages_types;
@@ -24,6 +25,7 @@ pub mod attach_data_source_types;
 pub mod authorize_vpc_endpoint_access_types;
 pub mod cancel_domain_config_change_types;
 pub mod cancel_service_software_update_types;
+pub mod compare_domain_configuration_types;
 pub mod create_application_types;
 pub mod create_domain_types;
 pub mod create_index_types;
@@ -46,6 +48,7 @@ pub mod describe_domain_change_progress_types;
 pub mod describe_domain_config_types;
 pub mod describe_domain_health_types;
 pub mod describe_domain_nodes_types;
+pub mod describe_domain_replication_types;
 pub mod describe_domain_types;
 pub mod describe_domains_types;
 pub mod describe_dry_run_progress_types;
@@ -60,6 +63,7 @@ pub mod describe_vpc_endpoints_types;
 pub mod detach_data_source_types;
 pub mod dissociate_package_types;
 pub mod dissociate_packages_types;
+pub mod failover_replication_types;
 pub mod get_application_types;
 pub mod get_capability_types;
 pub mod get_compatible_versions_types;
@@ -94,6 +98,7 @@ pub mod purchase_reserved_instance_offering_types;
 pub mod put_default_application_setting_types;
 pub mod register_capability_types;
 pub mod reject_inbound_connection_types;
+pub mod remove_replication_peer_types;
 pub mod remove_tags_types;
 pub mod revoke_vpc_endpoint_access_types;
 pub mod rollback_service_software_update_types;
@@ -101,7 +106,9 @@ pub mod shared_types;
 pub mod start_domain_maintenance_types;
 pub mod start_migration_types;
 pub mod start_service_software_update_types;
+pub mod switchover_replication_types;
 pub mod update_application_types;
+pub mod update_clone_types;
 pub mod update_data_source_types;
 pub mod update_direct_query_data_source_types;
 pub mod update_domain_config_types;
@@ -119,6 +126,8 @@ pub use add_data_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use add_direct_query_data_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use add_replication_peer_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use add_tags_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_package_types::*;
@@ -132,6 +141,8 @@ pub use authorize_vpc_endpoint_access_types::*;
 pub use cancel_domain_config_change_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_service_software_update_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use compare_domain_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -177,6 +188,8 @@ pub use describe_domain_health_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_domain_nodes_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_domain_replication_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_domain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_domains_types::*;
@@ -204,6 +217,8 @@ pub use detach_data_source_types::*;
 pub use dissociate_package_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use dissociate_packages_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use failover_replication_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -273,6 +288,8 @@ pub use register_capability_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use reject_inbound_connection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use remove_replication_peer_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use remove_tags_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use revoke_vpc_endpoint_access_types::*;
@@ -287,7 +304,11 @@ pub use start_migration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_service_software_update_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use switchover_replication_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_application_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_clone_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_data_source_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

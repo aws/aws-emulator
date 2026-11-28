@@ -50,7 +50,7 @@ const VERSIONS: [&str; 3] = ["Elasticsearch_7.10", "OpenSearch_2.11", "OpenSearc
 const NO_ZONE_OFFERS: [&str; 6] = [
     "nosuch.large.search",
     "m5.nosuch.search",
-    "m7i.48xlarge.search",
+    "r6g.48xlarge.search",
     "r6g.large.search.search",
     "T3.SMALL.search",
     "not.a.real.search",
@@ -264,7 +264,7 @@ async fn a_published_type_the_release_does_not_offer_is_answered_rather_than_ref
     for (instance_type, version) in [
         ("t2.micro.search", "OpenSearch_2.11"),
         ("or1.medium.search", "Elasticsearch_7.10"),
-        ("c8g.8xlarge.search", "OpenSearch_2.11"),
+        ("c6g.8xlarge.search", "Elasticsearch_7.8"),
     ] {
         let query = format!("instanceType={instance_type}&retrieveAZs=true");
         let case = format!("{version} ?{query}");

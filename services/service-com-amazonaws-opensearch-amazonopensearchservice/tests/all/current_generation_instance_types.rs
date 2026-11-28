@@ -20,13 +20,11 @@
 //!
 //! Source of the table: the instance types the service's own accepted-value list
 //! reports — the value set its refusal of an unknown `instanceType` enumerates, which
-//! is the service's record of what it accepts and carries the seventh-generation Intel,
-//! Graviton3, Graviton4, dense-storage and second-generation OpenSearch-optimized
-//! families, the Intel and Graviton4 dense-storage
-//! families (`i7i`, `i8g` beside `i8ge`) included, and BOTH halves of a generation the
-//! service publishes as a pair — the EBS-backed family beside the NVMe-backed one of a
-//! memory-optimized generation (`r7g` beside `r7gd`), the Intel family beside the
-//! Graviton one of a storage-optimized generation (`i4i` beside `im4gn`). The sizes each family is published in
+//! is the service's record of what it accepts and carries the Graviton2 general-purpose,
+//! compute-optimized and memory-optimized families, BOTH halves of a generation the
+//! service publishes as a pair (the EBS-backed family beside the NVMe-backed one of a
+//! memory-optimized generation, `r6g` beside `r6gd`), and the OpenSearch-optimized
+//! family. The sizes each family is published in
 //! are the service's published ladder for it, as [`ListInstanceTypeDetails`] reports
 //! them; this suite reads them back from the answer rather than restating them.
 
@@ -41,10 +39,6 @@ use super::instance_type_catalog::list_type;
 /// The roles a general-purpose, compute-optimized or memory-optimized family serves.
 const DATA_MASTER_COORDINATOR: &[&str] = &["data", "master", "coordinator"];
 
-/// The roles a storage-optimized family of an earlier generation serves: a dedicated
-/// coordinator node holds none of the domain's data, so it is not provisioned on one.
-const DATA_AND_MASTER: &[&str] = &["data", "master"];
-
 /// The role a family published for the DATA TIER alone serves — the OpenSearch-optimized
 /// families, and the storage-optimized generations that arrived after the engines forked:
 /// its instances hold the domain's data and are never master-eligible.
@@ -54,30 +48,21 @@ const DATA_ONLY: &[&str] = &["data"];
 /// table spans the size ladder as well as the families: the instance type, a release
 /// that offers it, the release before its family's prerequisite, and the roles an
 /// instance of the family serves.
-const CURRENT_GENERATION: [(&str, &str, &str, &[&str]); 17] = [
-    // The seventh-generation Intel families, offered for the OpenSearch engine alone.
-    ("c7i.xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_MASTER_COORDINATOR),
-    ("m7i.2xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_MASTER_COORDINATOR),
-    ("r7i.24xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_MASTER_COORDINATOR),
-    // The Graviton4 families.
-    ("c8g.16xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
-    ("m8g.12xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
-    ("r8g.large.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
-    ("r8gd.medium.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_MASTER_COORDINATOR),
-    ("i8ge.18xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_ONLY),
-    ("i8g.4xlarge.search", "OpenSearch_2.15", "OpenSearch_2.13", DATA_ONLY),
-    // The seventh-generation Intel dense-storage family.
-    ("i7i.12xlarge.search", "OpenSearch_2.13", "OpenSearch_2.11", DATA_ONLY),
-    // The Graviton families offered from the Graviton prerequisite onwards, so from an
+///
+/// Every row is a family whose first release is one the catalog states, so the
+/// "an earlier release offers none" half of each case has a release to ask about; a family
+/// the service offers on every release it publishes has none and is tabled by its siblings.
+const CURRENT_GENERATION: [(&str, &str, &str, &[&str]); 5] = [
+    // The Graviton2 families, offered from the Graviton prerequisite onwards — so from an
     // Elasticsearch release and on every OpenSearch one.
-    ("im4gn.8xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_AND_MASTER),
-    ("i4i.16xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_AND_MASTER),
-    ("r7gd.4xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
-    ("r7g.12xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
-    // The second OpenSearch-optimized generation.
-    ("oi2.4xlarge.search", "OpenSearch_2.17", "OpenSearch_2.15", DATA_ONLY),
-    ("om2.8xlarge.search", "OpenSearch_2.17", "OpenSearch_2.15", DATA_ONLY),
-    ("or2.16xlarge.search", "OpenSearch_2.17", "OpenSearch_2.15", DATA_ONLY),
+    ("c6g.xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
+    ("m6g.4xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
+    // Both halves of the memory-optimized generation the service publishes as a pair: the
+    // EBS-backed family and the NVMe-backed one.
+    ("r6g.12xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
+    ("r6gd.16xlarge.search", "Elasticsearch_7.9", "Elasticsearch_7.8", DATA_MASTER_COORDINATOR),
+    // The OpenSearch-optimized family, offered for the OpenSearch engine alone.
+    ("or1.2xlarge.search", "OpenSearch_2.11", "OpenSearch_2.9", DATA_ONLY),
 ];
 
 /// A release every row above is offered on, so one listing answers for the whole table.

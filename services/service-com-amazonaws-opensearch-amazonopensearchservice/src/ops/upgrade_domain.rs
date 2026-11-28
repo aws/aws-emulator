@@ -25,6 +25,13 @@
 //! ([`crate::state::Domain::work_in_flight`]) is refused with the modelled
 //! `BaseException` rather than having a run queued behind that work.
 //!
+//! A request may OVERRIDE the deployment strategy the change is performed with: the one
+//! strategy `DeploymentStrategyOverride` declares clones the cluster on the target version
+//! beside the primary one, so the upgrade is managed from there on by `UpdateClone` and its
+//! state is reported on the change this call began
+//! ([`crate::state::cloned_blue_green::ClonedBlueGreenUpgrade`]). A check performs no
+//! upgrade, so it clones nothing.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -189,6 +196,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state =
             crate::state::service_state(&*self.engine).ok_or_else(crate::state::state_unavailable)?;
 
+        // "Overrides the deployment strategy for a single operation, such as a version
+        // upgrade": the only strategy `DeploymentStrategyOverride` declares is the one that
+        // clones the cluster, and the options that go with it carry the retention period for
+        // the cluster the domain cuts over from. "When you start the upgrade, only
+        // `RetentionInHours` is accepted", so a request that asks to START one with a
+        // retention ACTION is refused — a decision about the request alone, so it is taken
+        // before anything about the domain is read.
+        let clone_retention_in_hours = match input.deployment_strategy_options.as_ref() {
+            Some(options)
+                if options.deployment_strategy
+                    == crate::state::DEPLOYMENT_STRATEGY_CLONED_BLUE_GREEN =>
+            {
+                match options
+                    .cloned_blue_green_options
+                    .as_ref()
+                    .and_then(|options| options.retention_options.as_ref())
+                {
+                    Some(RetentionOptions::RetentionAction(_)) => {
+                        return Err(UpgradeDomainErrorModeled::ValidationException(
+                            crate::state::only_retention_in_hours_at_start(),
+                        )
+                        .into())
+                    }
+                    Some(RetentionOptions::RetentionInHours(hours)) => Some(Some(*hours)),
+                    None => Some(None),
+                }
+            }
+            // No strategy override, which is the ordinary blue/green deployment this control
+            // plane performs for every other configuration change.
+            _ => None,
+        };
+
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -280,6 +319,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             now,
         );
 
+        // A check "does not actually perform the upgrade", so it clones no cluster: the
+        // record is started only where an upgrade was. Starting it replaces whatever earlier
+        // upgrade the domain holds, because the upgrade this call starts is the one being
+        // managed from here on — and the change it just began is one of that upgrade, which
+        // is what makes a progress read of it report the clone's state.
+        if let (false, Some(retention_in_hours)) = (perform_check_only, clone_retention_in_hours) {
+            domain.cloned_blue_green = Some(crate::state::ClonedBlueGreenUpgrade::started(
+                retention_in_hours,
+                now,
+            ));
+            domain.mark_cloned_blue_green_change();
+        }
+
         Ok(UpgradeDomainOutput {
             upgrade_id: Some(run.upgrade_id),
             domain_name: Some(domain.domain_name.clone()),
@@ -288,6 +340,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             target_version: Some(input.target_version.clone()),
             perform_check_only: Some(perform_check_only),
             advanced_options: input.advanced_options,
+            // The deployment strategy the request asked this upgrade to be performed with,
+            // echoed beside the rest of what it asked for.
+            deployment_strategy_options: input.deployment_strategy_options,
             // "Container for information about a configuration change happening on a
             // domain": the change this upgrade started, the same record
             // `DescribeDomainChangeProgress` answers about. A check starts none, so it

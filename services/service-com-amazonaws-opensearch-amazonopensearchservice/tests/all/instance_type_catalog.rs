@@ -485,18 +485,16 @@ async fn the_listing_is_the_catalog_the_named_release_offers() {
 
     // The release gates, stated as the difference one release makes: the release a
     // family is offered from reports it and the release before it does not. One row per
-    // published prerequisite — the warm tier's, the Graviton families', the two
-    // generations that arrived after the engines forked, and the two
-    // OpenSearch-optimized generations'.
+    // published prerequisite the model lets a caller name a size of — the warm tier's,
+    // the Graviton families' and the OpenSearch-optimized generation's.
     for (family_member, before, from) in [
         ("ultrawarm1.medium.search", "Elasticsearch_6.7", "Elasticsearch_6.8"),
         ("r6g.large.search", "Elasticsearch_7.8", "Elasticsearch_7.9"),
+        ("r6gd.2xlarge.search", "Elasticsearch_7.8", "Elasticsearch_7.9"),
+        ("m6g.4xlarge.search", "Elasticsearch_7.8", "Elasticsearch_7.9"),
+        ("c6g.8xlarge.search", "Elasticsearch_7.8", "Elasticsearch_7.9"),
         ("t4g.small.search", "Elasticsearch_7.8", "Elasticsearch_7.9"),
         ("or1.medium.search", "OpenSearch_2.9", "OpenSearch_2.11"),
-        ("m7i.2xlarge.search", "OpenSearch_2.11", "OpenSearch_2.13"),
-        ("r7i.12xlarge.search", "OpenSearch_2.11", "OpenSearch_2.13"),
-        ("c8g.12xlarge.search", "OpenSearch_2.13", "OpenSearch_2.15"),
-        ("oi2.8xlarge.search", "OpenSearch_2.15", "OpenSearch_2.17"),
     ] {
         let absent = instance_types(&whole_listing(&emulator, before, "").await);
         let present = instance_types(&whole_listing(&emulator, from, "").await);
@@ -517,10 +515,8 @@ async fn the_listing_is_the_catalog_the_named_release_offers() {
     let last_elasticsearch = instance_types(&whole_listing(&emulator, "Elasticsearch_7.10", "").await);
     for opensearch_only in [
         "or1.large.search",
-        "oi2.8xlarge.search",
-        "m7i.2xlarge.search",
-        "r7i.large.search",
-        "c8g.8xlarge.search",
+        "or1.medium.search",
+        "or1.16xlarge.search",
     ] {
         assert!(
             !last_elasticsearch.contains(&opensearch_only.to_string()),
@@ -731,14 +727,12 @@ async fn roles_and_features_follow_the_family_and_the_engine_release() {
     // The role sets really differ between families, so the rule above is not vacuous:
     // one row per published set, each naming a family of its own.
     for (family, expected) in [
-        ("m7i", vec!["data", "master", "coordinator"]),
-        ("c8g", vec!["data", "master", "coordinator"]),
+        ("m6g", vec!["data", "master", "coordinator"]),
+        ("c6g", vec!["data", "master", "coordinator"]),
         ("r5", vec!["data", "master", "coordinator"]),
         ("i3", vec!["data", "master"]),
         ("c4", vec!["data", "master"]),
         ("t3", vec!["data", "master"]),
-        ("i7i", vec!["data"]),
-        ("oi2", vec!["data"]),
         ("or1", vec!["data"]),
         ("ultrawarm1", vec!["ultrawarm"]),
     ] {
@@ -836,7 +830,7 @@ async fn anchored_entries_are_reported_exactly() {
         (
             "OpenSearch_2.19",
             json!({
-                "InstanceType": "m7i.2xlarge.search",
+                "InstanceType": "m6g.2xlarge.search",
                 "EncryptionEnabled": true,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
@@ -848,7 +842,7 @@ async fn anchored_entries_are_reported_exactly() {
         (
             "OpenSearch_2.19",
             json!({
-                "InstanceType": "c8g.12xlarge.search",
+                "InstanceType": "c6g.12xlarge.search",
                 "EncryptionEnabled": true,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
@@ -860,7 +854,7 @@ async fn anchored_entries_are_reported_exactly() {
         (
             "OpenSearch_2.19",
             json!({
-                "InstanceType": "oi2.8xlarge.search",
+                "InstanceType": "or1.8xlarge.search",
                 "EncryptionEnabled": true,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
@@ -872,13 +866,13 @@ async fn anchored_entries_are_reported_exactly() {
         (
             "OpenSearch_2.19",
             json!({
-                "InstanceType": "i7i.4xlarge.search",
+                "InstanceType": "r6gd.4xlarge.search",
                 "EncryptionEnabled": true,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
                 "AdvancedSecurityEnabled": true,
                 "WarmEnabled": true,
-                "InstanceRole": ["data"],
+                "InstanceRole": ["data", "master", "coordinator"],
             }),
         ),
         (
@@ -1032,9 +1026,9 @@ async fn instance_type_filter_reports_exactly_that_type() {
         [
             "ultrawarm1.large.search",
             "or1.2xlarge.search",
-            "oi2.medium.search",
-            "m7i.24xlarge.search",
-            "r7i.large.search",
+            "r6gd.16xlarge.search",
+            "m6g.12xlarge.search",
+            "c6g.large.search",
             "t4g.medium.search",
             "c4.8xlarge.search",
         ]
@@ -1070,9 +1064,9 @@ async fn instance_type_filter_reports_exactly_that_type() {
     // listing, so the listing it narrows is empty rather than refused.
     for (not_offered, version) in [
         ("or1.medium.search", "Elasticsearch_7.10"),
-        ("oi2.medium.search", "OpenSearch_2.15"),
-        ("m7i.large.search", "Elasticsearch_7.10"),
-        ("c8g.8xlarge.search", "OpenSearch_2.13"),
+        ("or1.16xlarge.search", "OpenSearch_2.9"),
+        ("m6g.large.search", "Elasticsearch_7.8"),
+        ("c6g.8xlarge.search", "Elasticsearch_7.7"),
         ("ultrawarm1.medium.search", "Elasticsearch_6.7"),
         ("r6g.large.search", "Elasticsearch_7.8"),
     ] {

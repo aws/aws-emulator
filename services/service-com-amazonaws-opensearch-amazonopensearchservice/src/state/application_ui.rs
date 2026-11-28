@@ -174,6 +174,51 @@ pub fn application_ui_not_found_document() -> String {
     ::serde_json::json!({ "message": super::APPLICATION_DOES_NOT_EXIST }).to_string()
 }
 
+/// Whether a fetch of an application's endpoint is admitted to READ that application: one
+/// presenting an AWS credential is, and one presenting none is not.
+///
+/// An application's interface is reached through a SIGN-IN — `IamIdentityCenterOptions`
+/// "configuration settings for IAM Identity Center in an OpenSearch application", whose
+/// `enabled` member "indicates whether IAM Identity Center is enabled for the OpenSearch
+/// application" — so the application is not something an anonymous caller reads. This
+/// emulator does not evaluate an Identity Center session; what it has of a caller's identity
+/// is the AWS credential the request carries, which the front door verifies for every other
+/// surface this service serves ([`crate::service::application_ui`] names the scheme so the
+/// router verifies a presented one before this plane runs). A fetch carrying none is
+/// therefore refused, whatever the application configures, and reads nothing of it.
+///
+/// The ONE reading of that rule, so the claim this plane makes and the answer it gives cannot
+/// disagree about who is admitted.
+#[must_use]
+pub fn application_ui_admits(sigv4: bool) -> bool {
+    sigv4
+}
+
+/// What a fetch this plane does not admit answers: the request carried no credential to
+/// resolve a caller from.
+///
+/// Nothing of any application is stated — not whether one exists under the address, not its
+/// name, status or data sources — because the fetch was not admitted to read it; what it is
+/// told is the condition it did not meet, in the sentence this emulator states for a request
+/// that has to be signed and is not
+/// ([`::emulator_server::request_authentication::ACCESS_DENIED`], the framework's own).
+#[must_use]
+pub fn application_ui_unauthenticated_document() -> String {
+    ::serde_json::json!({
+        "message": ::emulator_server::request_authentication::ACCESS_DENIED.message,
+    })
+    .to_string()
+}
+
+/// The error code that answer travels under, which is the one the framework states for the
+/// same condition.
+pub const APPLICATION_UI_UNAUTHENTICATED_CODE: &str =
+    ::emulator_server::request_authentication::ACCESS_DENIED.code;
+
+/// The status it is served on: the status AWS answers a request it will not serve the caller
+/// of, and the one every unauthenticated caller of this emulator's front door is refused on.
+pub const APPLICATION_UI_UNAUTHENTICATED_STATUS: u16 = 403;
+
 #[cfg(test)]
 mod tests {
     use super::*;

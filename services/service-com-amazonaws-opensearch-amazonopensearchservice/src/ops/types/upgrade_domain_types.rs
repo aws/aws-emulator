@@ -18,6 +18,20 @@ pub struct UpgradeDomainInput {
     pub target_version: String,
     pub perform_check_only: Option<bool>,
     pub advanced_options: Option<std::collections::HashMap<String, String>>,
+    pub deployment_strategy_options: Option<DeploymentStrategyOverrideOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.opensearch#DeploymentStrategyOverrideOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct DeploymentStrategyOverrideOptions {
+    pub deployment_strategy: String,
+    pub cloned_blue_green_options: Option<ClonedBlueGreenOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.opensearch#ClonedBlueGreenOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct ClonedBlueGreenOptions {
+    pub retention_options: Option<RetentionOptions>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.opensearch#UpgradeDomainResponse")]
@@ -28,6 +42,7 @@ pub struct UpgradeDomainOutput {
     pub target_version: Option<String>,
     pub perform_check_only: Option<bool>,
     pub advanced_options: Option<std::collections::HashMap<String, String>>,
+    pub deployment_strategy_options: Option<DeploymentStrategyOverrideOptions>,
     pub change_progress_details: Option<ChangeProgressDetails>,
 }
 

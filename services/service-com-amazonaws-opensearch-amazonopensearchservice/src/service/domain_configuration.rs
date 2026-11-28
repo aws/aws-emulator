@@ -601,6 +601,16 @@ pub fn reported_change_progress(
     if let Some(completed) = progress.completed_properties.take() {
         progress.completed_properties = Some(reported_properties(domain, &completed));
     }
+    // "Details about a cloned blue/green upgrade, when the change is one"
+    // (`ChangeProgressStatusDetails$ClonedBlueGreenUpgradeDetails`): the state of the upgrade
+    // the DOMAIN holds, reported for the changes of that upgrade and for no others
+    // ([`ConfigChange::cloned_blue_green`]).
+    if change.cloned_blue_green {
+        progress.cloned_blue_green_upgrade_details = domain
+            .cloned_blue_green
+            .as_ref()
+            .map(crate::state::ClonedBlueGreenUpgrade::to_details);
+    }
     progress
 }
 

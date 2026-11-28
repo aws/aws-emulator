@@ -148,7 +148,7 @@ const ACTION_GROUPS: &[(&str, &[&str])] = &[
 ///
 /// The reading half of [`ACTION_GROUPS`], for a caller that reports the catalogue rather
 /// than resolving one entry of it — the comparison of two domains'
-/// `security_action_groups` ([`crate::service::unmodelled_routes::configuration_comparison`]).
+/// `security_action_groups` ([`crate::state::metadata_categories`]).
 /// Every domain of this service publishes the same set, because the set is the plugin's
 /// rather than a domain's.
 #[must_use]

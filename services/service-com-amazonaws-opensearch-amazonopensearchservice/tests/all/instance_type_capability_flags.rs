@@ -89,7 +89,7 @@ const CAPABILITIES: [(&str, bool, bool); 11] = [
 
 /// An instance type the issue's own cases did not cite, drawn from a generation the
 /// catalog gained later: the rule holds for it too.
-const UNCITED_TYPE: (&str, bool, bool) = ("i8g.large.search", true, true);
+const UNCITED_TYPE: (&str, bool, bool) = ("r6gd.large.search", true, true);
 
 /// A release read apart as this suite states the rules against it.
 fn parse(release: &str) -> (&str, u32, u32) {

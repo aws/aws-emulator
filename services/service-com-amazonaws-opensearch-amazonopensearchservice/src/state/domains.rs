@@ -254,6 +254,11 @@ pub struct Domain {
     /// differently. Empty for a domain that replicates with nobody. See
     /// [`replication::DomainReplication`].
     pub replication: replication::DomainReplication,
+    /// This domain's CLONED BLUE/GREEN upgrade, and `None` for a domain no upgrade with that
+    /// deployment strategy is being managed on. `UpgradeDomain` starts one, `UpdateClone`
+    /// manages it and `DescribeDomainChangeProgress` reports it — all from THIS one record.
+    /// See [`cloned_blue_green::ClonedBlueGreenUpgrade`].
+    pub cloned_blue_green: Option<cloned_blue_green::ClonedBlueGreenUpgrade>,
     /// The insights this domain holds, keyed by their `InsightId` — unique across
     /// the account's insights, so the id IS the key. See [`InsightRecord`].
     ///
@@ -472,6 +477,10 @@ impl Domain {
             revert_to: None,
             cancelled: false,
             stages,
+            // Set by the call that starts a cloned blue/green upgrade and by every
+            // `UpdateClone` that manages it ([`Self::mark_cloned_blue_green_change`]); an
+            // ordinary configuration change belongs to no such upgrade.
+            cloned_blue_green: false,
         });
         // The history is bounded: past its cap the oldest change is dropped, so a
         // domain updated forever holds a fixed number of records.
@@ -489,6 +498,18 @@ impl Domain {
     pub fn record_revert(&mut self, options: DomainOptions) {
         if let Some(change) = self.changes.back_mut() {
             change.revert_to = Some(options);
+        }
+    }
+
+    /// Mark the change this domain has just started as one of its CLONED BLUE/GREEN upgrade,
+    /// so a progress read of it reports that upgrade's state.
+    ///
+    /// Called right after [`Self::begin_change`] by the two operations that make such a
+    /// change: the `UpgradeDomain` that starts the upgrade and the `UpdateClone` that manages
+    /// it.
+    pub fn mark_cloned_blue_green_change(&mut self) {
+        if let Some(change) = self.changes.back_mut() {
+            change.cloned_blue_green = true;
         }
     }
 
@@ -775,6 +796,15 @@ impl Domain {
         // A service software deployment is owed its completion by the same clock, and
         // on its own span: it is not one of the domain's configuration changes.
         self.service_software.settle(now);
+        // A change to this domain's replication arrangement is owed its outcome by the same
+        // clock, on its own span: replication is established, stopped and promoted
+        // asynchronously, so the status a read reports is the one that clock has reached.
+        self.replication.settle(now);
+        // So is a move of a cloned blue/green upgrade: a traffic shift, a cutover, and the
+        // action the service scheduled at the end of the retention period.
+        if let Some(upgrade) = self.cloned_blue_green.as_mut() {
+            upgrade.settle(now);
+        }
         // An association of a package with this domain is owed its outcome by that
         // same clock, and likewise on its own span.
         self.settle_package_associations(now);
@@ -1124,7 +1154,13 @@ impl Domain {
             // endpoints": present for a VPC-access domain and absent for a public one.
             // A service-managed VPC endpoint is a resource of its own, reported by
             // `DescribeVpcEndpoints` rather than here.
-            endpoints: publishes_address.then_some(vpc_access_endpoints).flatten(),
+            // Collected into the map type the member is modelled as; the record itself
+            // keeps the hosts key-ordered, so what is published is the same set of pairs
+            // on every read.
+            endpoints: publishes_address
+                .then_some(vpc_access_endpoints)
+                .flatten()
+                .map(|hosts| hosts.into_iter().collect()),
             // The dual-stack hosted zone is a Route 53 zone of the service's own,
             // published by a part of AWS this emulator does not model, so its id stays
             // absent rather than being invented.

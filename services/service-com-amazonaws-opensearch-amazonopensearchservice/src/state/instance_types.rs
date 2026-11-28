@@ -277,6 +277,36 @@ impl CatalogFamily {
             OfferedReleases::ElasticsearchOnly => !version.is_opensearch(),
         }
     }
+
+    /// The instance types of this family the service PUBLISHES, smallest size first.
+    ///
+    /// The sizes a family is offered in are the catalog's own
+    /// ([`Self::instance_types`]); which of them a caller may NAME is the model's
+    /// (`OpenSearchPartitionInstanceType`), and a value outside that set never reaches a
+    /// handler at all — the request boundary refuses it against the modelled value set
+    /// before any operation runs. What is published is therefore the INTERSECTION of the
+    /// two ([`nameable_instance_type`]): a listing that offered a caller a size the
+    /// boundary then refuses would publish a type no request can use, and a family left
+    /// with no nameable size is published nowhere.
+    pub(super) fn published_types(&self) -> impl Iterator<Item = &'static str> + use<'_> {
+        self.instance_types
+            .iter()
+            .copied()
+            .filter(|instance_type| nameable_instance_type(instance_type))
+    }
+
+    /// Whether this family publishes `instance_type` — a size it is offered in that a
+    /// request may name ([`Self::published_types`]).
+    pub(super) fn publishes(&self, instance_type: &str) -> bool {
+        self.instance_types.contains(&instance_type) && nameable_instance_type(instance_type)
+    }
+}
+
+/// Whether a request may NAME `instance_type`: whether the model declares it as a value of
+/// `OpenSearchPartitionInstanceType`, the one record of which instance types a caller can
+/// send.
+fn nameable_instance_type(instance_type: &str) -> bool {
+    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.contains(&instance_type)
 }
 
 /// The instance families AWS publishes as PREVIOUS generation for this service — the
@@ -320,23 +350,27 @@ pub(super) fn catalog_rank(entry: &CatalogFamily) -> (u8, &'static str) {
 /// This is the service's own published content, so it is written out here rather than
 /// derived from `OpenSearchPartitionInstanceType`: a modelled value set carries neither
 /// the engine releases that offer a family nor the node roles an instance of it serves,
-/// which is most of what a catalog entry IS. Its membership and that value set's are the
-/// same — every instance type the service publishes is one it accepts, and the model
-/// declares the families below — so a caller offered a type by a listing may name it.
+/// which is most of what a catalog entry IS.
 ///
-/// The current generations are the ones the service's OWN accepted-value list reports —
-/// the list its refusal of an unknown instance type enumerates, which is the service's
-/// record of the types it accepts:
-/// the seventh-generation Intel families, the Graviton3 and Graviton4 families, the
-/// dense-storage ones, and the second OpenSearch-optimized generation. A family is in
-/// this table because that list reports it, never because a release's listing happened
-/// to show it.
+/// What a caller may NAME is the model's own record, though, and a request carrying a value
+/// outside `OpenSearchPartitionInstanceType` is refused at the request boundary before any
+/// operation runs — so what this catalog PUBLISHES is the intersection of the two
+/// ([`CatalogFamily::published_types`]): every instance type a listing offers is one the
+/// caller may then name, and a family or a size the model does not declare is published
+/// nowhere, however the table below spells it. That is what keeps a listing, the limit
+/// catalog, the accepted-value set a refusal enumerates and what a create accepts in step.
 ///
-/// A generation is published WHOLE, which is what keeps that list and this table in step:
-/// where the service offers a generation as more than one family — the EBS-backed and the
-/// NVMe-backed half of a memory-optimized generation (`r7g` beside `r7gd`, `r8g` beside
-/// `r8gd`), the Graviton and the Intel half of a storage-optimized one (`im4gn` beside
-/// `i4i`, `i8g` beside `i7i`) — every half it reports is a row here, because a caller
+/// The current generations are the ones this service has offered for a hot tier, newest
+/// first: the Graviton4 and seventh-generation Intel families, the Graviton3 and Graviton2
+/// ones, the dense-storage families and the OpenSearch-optimized generations. A family is
+/// in this table because the service offers it, never because a release's listing happened
+/// to show it — and whether a caller may name a size of it is the model's answer, stated
+/// above.
+///
+/// A generation is published WHOLE: where the service offers one as more than one family —
+/// the EBS-backed and the NVMe-backed half of a memory-optimized generation (`r6g` beside
+/// `r6gd`, `r7g` beside `r7gd`), the Graviton and the Intel half of a storage-optimized one
+/// (`im4gn` beside `i4i`, `i8g` beside `i7i`) — every half is a row here, because a caller
 /// choosing an instance type is offered each of them.
 ///
 /// What is NOT published anywhere machine-readable, and is therefore the emulator's own
@@ -898,12 +932,13 @@ pub fn legacy_instance_type(instance_type: &str) -> String {
 
 /// The catalog entry `instance_type` belongs to, and `None` for a value the service
 /// publishes no instance type for — a family the catalog does not carry, a size that
-/// family is not offered in, or a value that is not `<family>.<size>.search` at all.
+/// family is not offered in or does not publish ([`CatalogFamily::publishes`]), or a value
+/// that is not `<family>.<size>.search` at all.
 pub(super) fn catalog_family(instance_type: &str) -> Option<&'static CatalogFamily> {
     let family = instance_family(instance_type)?;
     INSTANCE_TYPE_CATALOG
         .iter()
-        .find(|entry| entry.family == family && entry.instance_types.contains(&instance_type))
+        .find(|entry| entry.family == family && entry.publishes(instance_type))
 }
 
 /// Whether the service publishes `instance_type` at all, whatever the release: the
@@ -936,7 +971,7 @@ pub fn offered_instance_types(version: EngineVersion) -> Vec<&'static str> {
     families.sort_by_key(|entry| catalog_rank(entry));
     families
         .into_iter()
-        .flat_map(|entry| entry.instance_types.iter().copied())
+        .flat_map(CatalogFamily::published_types)
         .collect()
 }
 
@@ -955,7 +990,7 @@ pub fn published_instance_types() -> Vec<&'static str> {
     families.sort_by_key(|entry| catalog_rank(entry));
     families
         .into_iter()
-        .flat_map(|entry| entry.instance_types.iter().copied())
+        .flat_map(CatalogFamily::published_types)
         .collect()
 }
 

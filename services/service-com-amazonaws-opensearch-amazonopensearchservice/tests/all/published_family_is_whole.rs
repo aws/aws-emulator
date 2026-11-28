@@ -18,8 +18,8 @@
 //! membership of the stated value set): that the catalog's answer about a family is the
 //! SAME answer on every surface, and that a type the listing publishes is a type a domain
 //! can actually run. A generation the service offers as two families — the EBS-backed and
-//! the NVMe-backed half of a memory-optimized generation, the Graviton and the Intel half
-//! of a storage-optimized one — is published as both halves, so each half is a row.
+//! the NVMe-backed half of a memory-optimized generation — is published as both halves, so
+//! each half is a row.
 //!
 //! Source of the rows: the instance types the service's own accepted-value list reports
 //! (the set its refusal of an unknown `instanceType` enumerates), sampled one size per
@@ -37,6 +37,10 @@ const DATA_MASTER_COORDINATOR: &[&str] = &["data", "master", "coordinator"];
 /// The roles a storage-optimized family serves: a dedicated coordinator node holds none
 /// of the domain's data, so it is not provisioned on one.
 const DATA_AND_MASTER: &[&str] = &["data", "master"];
+
+/// The role a family published for the DATA TIER alone serves: its instances hold the
+/// domain's data and are never master-eligible.
+const DATA_ONLY: &[&str] = &["data"];
 
 /// `StorageTypeName`'s `instance`: "built-in storage available for the instance", which
 /// has no sub-type and no volume limits, because there is no volume to size.
@@ -62,56 +66,57 @@ struct Row {
     before: &'static str,
 }
 
-/// The table every case below is made over: both halves of two generations the service
-/// publishes as a pair, and both halves of a third, so no row's rule rests on one family,
-/// one storage kind, one role set or one engine line.
+/// The table every case below is made over: both halves of the memory-optimized generation
+/// the service publishes as a pair, two further classes of the same generation, the warm
+/// tier and the OpenSearch-optimized family, so no row's rule rests on one family, one
+/// storage kind, one role set or one engine line.
 const ROWS: [Row; 6] = [
-    // The memory-optimized Graviton3 generation: the EBS-backed half and the NVMe-backed
+    // The memory-optimized Graviton2 generation: the EBS-backed half and the NVMe-backed
     // one, which serve the same roles and differ only in where the data sits.
     Row {
-        instance_type: "r7g.xlarge.search",
+        instance_type: "r6g.xlarge.search",
         roles: DATA_MASTER_COORDINATOR,
         storage: STORAGE_EBS,
         offered_on: "Elasticsearch_7.9",
         before: "Elasticsearch_7.8",
     },
     Row {
-        instance_type: "r7gd.2xlarge.search",
+        instance_type: "r6gd.2xlarge.search",
         roles: DATA_MASTER_COORDINATOR,
         storage: STORAGE_INSTANCE,
         offered_on: "Elasticsearch_7.9",
         before: "Elasticsearch_7.8",
     },
-    // The fourth storage-optimized generation: its Intel half and its Graviton half.
+    // The general-purpose and compute-optimized classes of that same generation.
     Row {
-        instance_type: "i4i.2xlarge.search",
-        roles: DATA_AND_MASTER,
-        storage: STORAGE_INSTANCE,
-        offered_on: "Elasticsearch_7.9",
-        before: "Elasticsearch_7.8",
-    },
-    Row {
-        instance_type: "im4gn.4xlarge.search",
-        roles: DATA_AND_MASTER,
-        storage: STORAGE_INSTANCE,
-        offered_on: "Elasticsearch_7.9",
-        before: "Elasticsearch_7.8",
-    },
-    // A later generation, gated on an OpenSearch release rather than an Elasticsearch
-    // one, again as both halves.
-    Row {
-        instance_type: "r8g.medium.search",
+        instance_type: "m6g.4xlarge.search",
         roles: DATA_MASTER_COORDINATOR,
         storage: STORAGE_EBS,
-        offered_on: "OpenSearch_2.15",
-        before: "OpenSearch_2.13",
+        offered_on: "Elasticsearch_7.9",
+        before: "Elasticsearch_7.8",
     },
     Row {
-        instance_type: "r8gd.medium.search",
+        instance_type: "c6g.8xlarge.search",
         roles: DATA_MASTER_COORDINATOR,
-        storage: STORAGE_INSTANCE,
-        offered_on: "OpenSearch_2.15",
-        before: "OpenSearch_2.13",
+        storage: STORAGE_EBS,
+        offered_on: "Elasticsearch_7.9",
+        before: "Elasticsearch_7.8",
+    },
+    // The burstable Graviton family, which serves no dedicated coordinator node.
+    Row {
+        instance_type: "t4g.medium.search",
+        roles: DATA_AND_MASTER,
+        storage: STORAGE_EBS,
+        offered_on: "Elasticsearch_7.9",
+        before: "Elasticsearch_7.8",
+    },
+    // A family gated on an OpenSearch release rather than an Elasticsearch one.
+    Row {
+        instance_type: "or1.2xlarge.search",
+        roles: DATA_ONLY,
+        storage: STORAGE_EBS,
+        offered_on: "OpenSearch_2.11",
+        before: "OpenSearch_2.9",
     },
 ];
 

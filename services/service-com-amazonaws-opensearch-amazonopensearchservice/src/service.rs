@@ -89,11 +89,6 @@ pub mod application_ui;
 /// them can report one stored record differently.
 pub mod domain_configuration;
 
-/// The routes of this API the on-disk model does not describe — a domain's cross-cluster
-/// replication family and the comparison of two domains' configuration — served out of the
-/// records this service holds.
-pub mod unmodelled_routes;
-
 /// Whether the request these `parts` came from resolves to this service's signing name
 /// AND addresses a first URI path segment this model publishes
 /// (`crate::ROUTE_PATH_SEGMENTS`).
@@ -147,6 +142,10 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// Held in a field, built once, because `override_operation` hands back a reference
     /// borrowed from `&self`.
     credentialed_data_plane: CredentialedDataPlane<Eng>,
+    /// The endpoint an APPLICATION publishes, as an [`ErasedOperation`] for the same reason:
+    /// so the router verifies the SigV4 credential a fetch of it presents before any stored
+    /// application is read ([`CredentialedApplicationUi`]).
+    credentialed_application_ui: CredentialedApplicationUi<Eng>,
     /// An operation with that operation's OWN validation of its input run first
     /// ([`StatedInputOperation`]): `StartMigration`, which states a constraint report over
     /// members this model declares no constraint trait for. Held in a field for the same
@@ -158,13 +157,6 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// Held in a field for the same reason as the two above, and because it carries this
     /// service's input schemas, which are indexed once rather than per request.
     unreadable_body: request_layer::UnreadableBody,
-    /// The routes of this API the on-disk model does not describe
-    /// ([`unmodelled_routes`]): a domain's cross-cluster replication family and the
-    /// comparison of two domains' configuration. Held in a field for the same reason as
-    /// the ones above — `override_operation` hands back a reference borrowed from `&self`
-    /// — and holding the SAME shared engine, so these routes read and write the one store
-    /// the modelled operations do.
-    unmodelled_routes: unmodelled_routes::UnmodelledRoutes<Eng>,
 }
 
 /// The auth schemes a credentialed data-plane request is verified under.
@@ -184,6 +176,45 @@ const DATA_PLANE_AUTH_SCHEMES: &[&str] = &[::emulator_server::aws_credentials::S
 /// whether a calling principal could be resolved at all.
 struct CredentialedDataPlane<Eng> {
     engine: Arc<Eng>,
+}
+
+/// The endpoint an APPLICATION publishes, for a fetch that PRESENTS a SigV4 credential.
+///
+/// Held for the same reason the credentialed data plane is: the router verifies a presented
+/// credential only for what it names an OPERATION for, and this plane serves a stored
+/// application. Naming it here is what makes a presented signature VERIFIED rather than merely
+/// present; a fetch carrying no credential at all is admitted to no application at all
+/// ([`crate::state::application_ui_admits`]) and is refused from the routing-error seam, which
+/// the router consults before it authenticates anything.
+///
+/// It serves the request through exactly the function that seam uses
+/// ([`application_ui::answer`]), so the credentialed and the uncredentialed path cannot
+/// diverge in what they serve — only in whether a signature was verified on the way in.
+struct CredentialedApplicationUi<Eng> {
+    engine: Arc<Eng>,
+}
+
+impl<Eng: Send + Sync + 'static> ErasedOperation for CredentialedApplicationUi<Eng> {
+    fn run<'r>(
+        &'r self,
+        svc: &'r dyn Service,
+        req: &'r aws_smithy_runtime_api::http::Request,
+        ctx: &'r OperationContext<'r>,
+    ) -> BoxFuture<'r, aws_smithy_runtime_api::http::Response> {
+        Box::pin(async move {
+            let _ = ctx;
+            application_ui::answer(&*self.engine, req)
+                // Unreachable: `override_operation` names this only for a request this plane
+                // claims.
+                .unwrap_or_else(|| svc.definition().routing_error_response(req))
+        })
+    }
+
+    /// SigV4, the only scheme this service's model declares: naming it is what makes the
+    /// router verify the credential this fetch carries, as it does for a modelled operation.
+    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
+        Some(DATA_PLANE_AUTH_SCHEMES)
+    }
 }
 
 impl<Eng: Send + Sync + 'static> ErasedOperation for CredentialedDataPlane<Eng> {
@@ -238,6 +269,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             credentialed_data_plane: CredentialedDataPlane {
                 engine: Arc::clone(&engine),
             },
+            credentialed_application_ui: CredentialedApplicationUi {
+                engine: Arc::clone(&engine),
+            },
             stated_start_migration: StatedInputOperation {
                 // The generated operation's own name, so this can never name a routing
                 // key the generated table does not hold.
@@ -245,7 +279,6 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 violations: crate::ops::start_migration::stated_input_violations,
             },
             unreadable_body: request_layer::UnreadableBody::new::<Eng>(),
-            unmodelled_routes: unmodelled_routes::UnmodelledRoutes::new(Arc::clone(&engine)),
             engine,
         }
     }
@@ -382,16 +415,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         {
             return Some(&self.credentialed_data_plane);
         }
-        // A request addressing one of the routes this API serves that the on-disk model does
-        // not describe (see [`unmodelled_routes`]) is named as an operation for the same
-        // reason the credentialed data plane is: the router verifies the SigV4 credential
-        // only for what it names an operation for, and these are ordinary AWS API calls,
-        // signed like every other call to this endpoint. Without this they resolved through
-        // the generated routing table, which can name no operation the model does not
-        // carry, and the protocol default answered `501 NotImplemented` for a class of
-        // request that is a permanent CLIENT error.
-        if unmodelled_routes::route(req.method(), req.uri()).is_some() {
-            return Some(&self.unmodelled_routes);
+        // And a fetch of the endpoint an APPLICATION publishes that presents a credential, for
+        // the same reason: the router verifies a presented credential only for what it names
+        // an operation for, and this plane serves a stored application
+        // ([`CredentialedApplicationUi`]). A fetch presenting none is left unnamed on purpose —
+        // it is refused by `override_routing_error` below, which the router reaches before
+        // authentication, so a client carrying no AWS credential is answered at all.
+        if application_ui::claims_request(req) && domain_rest::carries_sigv4_credential(req) {
+            return Some(&self.credentialed_application_ui);
         }
         // A body value whose JSON class the modelled member it is bound to cannot be read
         // from never becomes an input at all, so it is answered by the deserialization
@@ -449,18 +480,33 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // modeled operation — neither `override_operation` nor the generated
         // routing table resolved it. A request to a domain's own endpoint carrying no
         // SigV4 credential is exactly that case by construction, so this is where it is
-        // served — BEFORE authentication, which is what lets a client carrying no AWS
-        // credential be answered at all.
+        // served — BEFORE the ROUTER's authentication, which is what lets a client
+        // carrying no AWS credential be answered at all.
+        //
+        // Being answered is not being admitted. The credential such a request does carry —
+        // an HTTP Basic one, or none — is examined by the CLUSTER, which is the layer that
+        // decides it on a domain endpoint: [`domain_rest`]'s own walk authenticates it
+        // against the domain's internal user database before it reads anything of the
+        // cluster (`crate::state::fgac::authentication`, which admits nobody anonymously on
+        // a domain with fine-grained access control) and then authorizes it against the
+        // domain's access policy and role mappings. A request this seam serves therefore
+        // reaches exactly what the domain's own configuration admits it to, which is the
+        // boundary this plane emulates; what the seam decides is only that the answer comes
+        // from the cluster rather than from the front door's unknown-operation default.
         //
         // Anything else keeps the protocol-correct default for this service's envelope
         // (rest -> 501) by returning `None`.
         if domain_rest::claims_request(&*self.engine, req) {
             return Some(domain_rest::serve(&*self.engine, req, None));
         }
-        // The same for a fetch of the endpoint an application reports: it is answered here
+        // The same for a fetch of the endpoint an APPLICATION reports: it is answered here
         // because the router consults this seam before it authenticates anything, which is
-        // how AWS serves its own interface host — unauthenticated, and as a web page rather
-        // than a modelled API call.
+        // what lets a client carrying no AWS credential be answered at all. What it is
+        // answered is the refusal, not the application: a fetch presenting no credential is
+        // admitted to no application ([`crate::state::application_ui_admits`]) and is told
+        // nothing of one — not even whether the address names one. A fetch that DOES present
+        // a credential is named as an operation above, so the router verified its signature
+        // before this plane read anything.
         if let Some(served) = application_ui::answer(&*self.engine, req) {
             return Some(served);
         }

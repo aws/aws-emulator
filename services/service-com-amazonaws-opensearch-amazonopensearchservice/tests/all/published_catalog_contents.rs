@@ -80,25 +80,26 @@ const CAPABILITY_TYPES: [&str; 8] = [
 ];
 
 /// The families the service publishes for the DATA TIER alone, each with a size of its
-/// own so the rows span the size ladder too: the storage-optimized generations that
-/// arrived after the engines forked, and the OpenSearch-optimized ones.
+/// own so the rows span the size ladder too: the OpenSearch-optimized family, which is the
+/// one the model lets a caller name a size of.
 const DATA_TIER_ONLY: [&str; 7] = [
-    "i7i.4xlarge.search",
-    "i7i.large.search",
-    "i8g.24xlarge.search",
-    "i8ge.3xlarge.search",
-    "oi2.8xlarge.search",
-    "om2.medium.search",
-    "or2.16xlarge.search",
+    "or1.medium.search",
+    "or1.large.search",
+    "or1.xlarge.search",
+    "or1.2xlarge.search",
+    "or1.4xlarge.search",
+    "or1.8xlarge.search",
+    "or1.16xlarge.search",
 ];
 
 /// Families that ARE master-eligible, so the rule above is a distinction and not a blanket
-/// answer: the earlier storage-optimized generations and a memory-optimized family.
+/// answer: a storage-optimized generation, a burstable one and both halves of a
+/// memory-optimized generation.
 const MASTER_ELIGIBLE: [&str; 4] = [
     "i3.4xlarge.search",
-    "i4i.large.search",
-    "im4gn.2xlarge.search",
-    "r7g.medium.search",
+    "t4g.medium.search",
+    "r6gd.large.search",
+    "r6g.2xlarge.search",
 ];
 
 /// A release that offers every family the role tables above name.

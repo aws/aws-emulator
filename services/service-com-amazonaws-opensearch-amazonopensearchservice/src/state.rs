@@ -183,6 +183,12 @@ pub mod domain_plane;
 /// A domain's cross-cluster REPLICATION arrangement: the peers it replicates with, the role
 /// it plays with them, and the refusal of a call on a domain that replicates with nobody.
 pub mod replication;
+/// A domain's CLONED BLUE/GREEN upgrade: the clone's share of read traffic, the cutover, and
+/// the retention period for the cluster the domain cut over from.
+pub mod cloned_blue_green;
+/// The metadata categories of a domain two domains are COMPARED in, and the comparison of one
+/// category.
+pub mod metadata_categories;
 /// The store every operation reaches this service's records through, and the ids it mints.
 mod store;
 
@@ -255,6 +261,8 @@ pub use packages::*;
 pub use projections::*;
 pub use refusals::*;
 pub use replication::*;
+pub use cloned_blue_green::*;
+pub use metadata_categories::*;
 pub use reserved_instance_offerings::*;
 pub use reserved_instances::*;
 pub use snapshots::*;
@@ -273,6 +281,9 @@ use crate::ops::types::{
     CapabilityBaseRequestConfig, CapabilityBaseResponseConfig, CapabilityExtendedResponseConfig,
     ChangeProgressDetails, ChangeProgressStage, ChangeProgressStatusDetails, ClusterConfig,
     ClusterConfigStatus,
+    CategoryDiffResult, ClonedBlueGreenScheduledAction, ClonedBlueGreenUpgradeDetails,
+    CutoverOptions, DiffItems, DivergentField, DivergentItem, RetentionOptions,
+    TrafficPercents, TrafficSplitOptions,
     CognitoOptions, CognitoOptionsStatus, ConflictException, ConnectionProperties,
     DataSource as LinkedDataSource, DataSourceAttachmentSummary, DataSourceDetails, DataSourceType,
     DeploymentStrategyOptions,
@@ -303,7 +314,7 @@ use crate::ops::types::{
     PackageAssociationConfiguration, PackageConfiguration, PackageDetails,
     PackageEncryptionOptions, PackageSource,
     PackageVendingOptions, PackageVersionHistory, PluginProperties,
-    RecurringCharge, ReservedInstance,
+    RecurringCharge, ReplicationPeer, ReservedInstance,
     ReservedInstanceOffering, ResourceAlreadyExistsException, ResourceNotFoundException,
     RollbackServiceSoftwareOptions, SAMLOptionsOutput, ScheduledAction,
     ScheduledAutoTuneDetails, ServiceQuotaExceededException, ServiceSoftwareOptions,
@@ -2725,7 +2736,7 @@ pub fn state_unavailable<E>() -> crate::scaffolded::Scaffolded<E> {
 }
 
 /// The one sentence that answer carries, stated once: a route this service serves outside
-/// the generated operation walk ([`crate::service::unmodelled_routes`]) answers the same
+/// the generated operation walk ([`crate::service::domain_rest`]) answers the same
 /// thing for the same condition, so the two cannot word it differently.
 pub const STATE_UNAVAILABLE_MESSAGE: &str =
     "the com-amazonaws-opensearch-amazonopensearchservice emulator's state store is not reachable from this engine";

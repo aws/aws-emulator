@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end tests for the routes of this API the on-disk model does not describe: a
-//! domain's cross-cluster REPLICATION family (`DescribeDomainReplication`,
-//! `AddReplicationPeer`, `RemoveReplicationPeer`, `FailoverReplication`,
-//! `SwitchoverReplication`) and `CompareDomainConfiguration`.
+//! End-to-end tests for a domain's cross-cluster REPLICATION family
+//! (`DescribeDomainReplication`, `AddReplicationPeer`, `RemoveReplicationPeer`,
+//! `FailoverReplication`, `SwitchoverReplication`) and for `CompareDomainConfiguration`.
 //!
 //! Every case drives the real wire path — a signed `restJson1` HTTP request through the
 //! multi-service router into the mounted service — so what is asserted is what a client
@@ -11,28 +10,33 @@
 //! ([`super::domain_lifecycle`] for the control plane, [`super::domain_rest_data_plane`] for
 //! the domain's own REST surface); this suite adds no second copy of either.
 //!
-//! The RULES under test, each asserted over a SET of inputs rather than over one recorded
-//! call:
+//! The RULES under test, each asserted over a SET of inputs rather than over one call:
 //!
-//! * a call of this family is answered by the operation it addresses, in that operation's own
-//!   refusal class — the unknown-domain class, the not-replicating class and the
-//!   constraint class each worded once — never with the front door's unknown-operation
-//!   answer;
-//! * an arrangement is state: establishing one is visible on BOTH domains through the read,
-//!   a promotion moves the roles on both, and releasing it leaves both exactly as a domain
-//!   that never had one;
+//! * a call of this family on a domain this account does not hold is answered in that
+//!   operation's own refusal class — the unknown-domain class, the not-replicating class and
+//!   the constraint class each worded once;
+//! * a relationship is STATE, and every change to it is asynchronous: the call records the
+//!   transient status the model names for it, the clock owes the next one, and both sides of
+//!   the relationship are written by the one call — so a read of either domain reports the
+//!   same relationship, the same role pair and the same status;
+//! * a domain has ONE peer, so a second `AddReplicationPeer` is refused with the
+//!   already-exists class naming the peer it has;
 //! * validation precedes the effect: a refused `AddReplicationPeer` establishes nothing,
 //!   whichever way its dry-run member is set, and a dry run that passes validation
 //!   establishes nothing either;
-//! * a comparison counts the configuration the two domains HOLD, per category, with its
-//!   ARN-format and category validation running before either side is resolved.
+//! * a comparison counts the configuration the two domains HOLD, per category, naming the
+//!   entries behind the counts, with its category validation running before either side is
+//!   resolved.
 //!
-//! No case waits for the clock: none of these routes is gated on a domain's status, so the
-//! domains are created and used.
+//! A case that waits for the clock polls for the CONDITION
+//! ([`super::domain_lifecycle::poll_until`]) rather than sleeping for the span, so the same
+//! case passes on a fast host and on a loaded one.
 
 use serde_json::{json, Value};
 
-use super::domain_lifecycle::{error_code, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS};
+use super::domain_lifecycle::{
+    error_code, poll_until, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS,
+};
 use super::domain_rest_data_plane::rest_prefixed;
 
 /// The error code every refused input of this service travels under.
@@ -41,17 +45,39 @@ const VALIDATION: &str = "ValidationException";
 /// The error code its missing-resource refusals travel under.
 const NOT_FOUND: &str = "ResourceNotFoundException";
 
-/// The roles a domain plays in an arrangement, as the read reports them.
-const LEADER: &str = "LEADER";
-/// See [`LEADER`].
-const FOLLOWER: &str = "FOLLOWER";
+/// The error code a second relationship on a domain that already has one travels under.
+const ALREADY_EXISTS: &str = "ResourceAlreadyExistsException";
 
-/// The categories `CompareDomainConfiguration` supports, in the order the recorded refusal
-/// of an unsupported one lists them.
+/// The status the already-exists shape renders on, which the model annotates it with.
+const ALREADY_EXISTS_STATUS: u16 = 409;
+
+/// The roles a domain plays in a relationship, as `ReplicationRole` declares them
+/// (`smithy_query(query="shape",shape="ReplicationRole")`).
+const PRIMARY: &str = "PRIMARY";
+/// See [`PRIMARY`].
+const SECONDARY: &str = "SECONDARY";
+
+/// The states one relationship goes through, as `ReplicationStatus` declares them
+/// (`smithy_query(query="shape",shape="ReplicationStatus")`).
+const PENDING_SETUP: &str = "PENDING_SETUP";
+/// See [`PENDING_SETUP`].
+const ACTIVE: &str = "ACTIVE";
+/// See [`PENDING_SETUP`].
+const SWITCHING_OVER: &str = "SWITCHING_OVER";
+/// See [`PENDING_SETUP`].
+const FAILING_OVER: &str = "FAILING_OVER";
+/// See [`PENDING_SETUP`].
+const PENDING_REMOVAL: &str = "PENDING_REMOVAL";
+/// See [`PENDING_SETUP`].
+const EJECTED: &str = "EJECTED";
+
+/// The categories `CompareDomainConfiguration` supports, in the order the refusal of an
+/// unsupported one lists them.
 ///
 /// Written out here rather than read off the implementation, because the list AND its order
-/// are the fixed text of that recorded message: the expectation is the recorded wording, not
-/// whatever the code currently carries.
+/// are part of that message's fixed text: the expectation is the published catalogue
+/// (`smithy_query(query="doc",shape="CompareDomainConfigurationRequest",member="Categories")`),
+/// not whatever the code currently carries.
 const SUPPORTED_CATEGORIES: [&str; 11] = [
     "cluster_settings",
     "security_role_mappings",
@@ -156,8 +182,8 @@ fn not_replicating_message(arn: &str) -> String {
     format!("Domain is not replicating: {arn}")
 }
 
-/// The peers a read reports, as `(peer ARN, the peer's role)` pairs.
-fn reported_peers(answer: &Answer, case: &str) -> Vec<(String, String)> {
+/// The peers a read reports, as `(peer ARN, the peer's role, the relationship's status)`.
+fn reported_peers(answer: &Answer, case: &str) -> Vec<(String, String, String)> {
     let peers = answer.body["Peers"]
         .as_array()
         .unwrap_or_else(|| panic!("case {case}: expected a Peers array, got {:?}", answer.body));
@@ -166,16 +192,57 @@ fn reported_peers(answer: &Answer, case: &str) -> Vec<(String, String)> {
         .map(|peer| {
             (
                 peer["PeerDomainArn"].as_str().unwrap_or_default().to_string(),
-                peer["Role"].as_str().unwrap_or_default().to_string(),
+                peer["PeerRole"].as_str().unwrap_or_default().to_string(),
+                peer["Status"].as_str().unwrap_or_default().to_string(),
             )
         })
         .collect()
 }
 
+/// The `(role, peer ARN, the peer's role, the relationship's status)` a read of `domain`
+/// reports, for a domain with exactly one relationship.
+async fn reported_relationship(
+    emulator: &Emulator,
+    domain: &str,
+    case: &str,
+) -> (String, String, String, String) {
+    let read = describe_replication(emulator, domain).await;
+    assert_eq!(
+        read.status, 200,
+        "case {case}: expected 200 from DescribeDomainReplication({domain}), got {} with {:?}",
+        read.status, read.body
+    );
+    let peers = reported_peers(&read, case);
+    let (peer_arn, peer_role, status) = match peers.as_slice() {
+        [only] => only.clone(),
+        other => panic!("case {case}: expected exactly one peer, got {other:?}"),
+    };
+    (
+        read.body["Role"].as_str().unwrap_or_default().to_string(),
+        peer_arn,
+        peer_role,
+        status,
+    )
+}
+
+/// Wait until the relationship `domain` reports is in `status`, which is what a client polls
+/// `DescribeDomainReplication` for.
+async fn settled_relationship(emulator: &Emulator, domain: &str, status: &str) {
+    let case = format!("DescribeDomainReplication({domain}) reaching {status}");
+    poll_until(&case, || async {
+        let read = describe_replication(emulator, domain).await;
+        read.body["Peers"]
+            .as_array()
+            .and_then(|peers| peers.first())
+            .and_then(|peer| peer["Status"].as_str())
+            == Some(status)
+    })
+    .await;
+}
+
 /// RULE: every call of the replication family on a domain this account does not hold is
 /// answered by the operation it addresses, in THAT operation's own refusal class — the
-/// unknown-domain classes differ per route and the message's subject is the domain's own ARN
-/// — rather than with the front door's unknown-operation answer.
+/// unknown-domain classes differ per route and the message's subject is the domain's own ARN.
 ///
 /// The rows span the five routes and, within each, three names nobody created that differ in
 /// what the rule generalises over: length, digits and hyphens.
@@ -225,15 +292,26 @@ async fn every_replication_call_on_an_unheld_domain_is_refused_in_its_own_class(
             ),
             (
                 format!("FailoverReplication({absent})"),
-                replication_action(&emulator, absent, "failover", json!({ "AllowDataLoss": true }))
-                    .await,
+                replication_action(
+                    &emulator,
+                    absent,
+                    "failover",
+                    json!({ "PeerDomainArn": peer_arn, "AllowDataLoss": true }),
+                )
+                .await,
                 RECORDED_NOT_FOUND_STATUS,
                 NOT_FOUND,
                 not_found_message(&arn),
             ),
             (
                 format!("SwitchoverReplication({absent})"),
-                replication_action(&emulator, absent, "switchover", json!({})).await,
+                replication_action(
+                    &emulator,
+                    absent,
+                    "switchover",
+                    json!({ "PeerDomainArn": peer_arn }),
+                )
+                .await,
                 RECORDED_NOT_FOUND_STATUS,
                 NOT_FOUND,
                 not_found_message(&arn),
@@ -259,7 +337,7 @@ async fn every_replication_call_on_an_unheld_domain_is_refused_in_its_own_class(
 }
 
 /// RULE: a domain that replicates with nobody READS as one — `Peers` present and empty, and
-/// no role at all — and every call that acts on an existing arrangement is refused in its own
+/// no role at all — and every call that acts on an existing relationship is refused in its own
 /// class naming that domain's own ARN, leaving the domain untouched.
 #[tokio::test]
 async fn a_domain_that_replicates_with_nobody_reports_no_peers_and_refuses_the_rest() {
@@ -269,9 +347,12 @@ async fn a_domain_that_replicates_with_nobody_reports_no_peers_and_refuses_the_r
 
     let read = describe_replication(&emulator, name).await;
     assert_eq!(
-        read.status, 200,
-        "case DescribeDomainReplication({name}): expected 200, got {} with {:?}",
-        read.status, read.body
+        (read.status, read.body["DomainArn"].as_str()),
+        (200, Some(arn.as_str())),
+        "case DescribeDomainReplication({name}): expected 200 and the domain's own ARN, got {} \
+         with {:?}",
+        read.status,
+        read.body
     );
     assert_eq!(
         reported_peers(&read, "an unreplicated domain"),
@@ -288,23 +369,23 @@ async fn a_domain_that_replicates_with_nobody_reports_no_peers_and_refuses_the_r
     // (case, the action, its body, the status, the code)
     let rows: Vec<(&str, &str, Value, u16, &str)> = vec![
         (
-            "RemoveReplicationPeer on a domain with no arrangement",
+            "RemoveReplicationPeer on a domain with no relationship",
             "removePeer",
             json!({ "PeerDomainArn": arn }),
             RECORDED_NOT_FOUND_STATUS,
             NOT_FOUND,
         ),
         (
-            "FailoverReplication on a domain with no arrangement",
+            "FailoverReplication on a domain with no relationship",
             "failover",
-            json!({ "AllowDataLoss": true }),
+            json!({ "PeerDomainArn": arn, "AllowDataLoss": true }),
             400,
             VALIDATION,
         ),
         (
-            "SwitchoverReplication on a domain with no arrangement",
+            "SwitchoverReplication on a domain with no relationship",
             "switchover",
-            json!({}),
+            json!({ "PeerDomainArn": arn }),
             400,
             VALIDATION,
         ),
@@ -341,121 +422,357 @@ async fn a_domain_that_replicates_with_nobody_reports_no_peers_and_refuses_the_r
     );
 }
 
-/// RULE: an arrangement is STATE. `AddReplicationPeer` writes both sides of it — the domain
-/// that asked follows its peer and the peer leads — a promotion moves the roles on both
-/// records, and `RemoveReplicationPeer` leaves both domains exactly as one that never had an
-/// arrangement.
-///
-/// The rows the promotion is asserted over are the two calls that perform it, each on a fresh
-/// arrangement, because the recorded refusals show them taking the same gates.
+/// RULE: a relationship is STATE, written on BOTH domains by the one call that changes it:
+/// the domain `AddReplicationPeer` is called on becomes the PRIMARY and the peer the
+/// SECONDARY, the relationship is `PENDING_SETUP` until the clock makes it `ACTIVE`, and
+/// `RemoveReplicationPeer` leaves both domains — through `PENDING_REMOVAL` — exactly as one
+/// that never had a relationship.
 #[tokio::test]
-async fn an_arrangement_is_written_on_both_domains_and_released_from_both() {
+async fn a_relationship_is_established_on_both_domains_and_released_from_both() {
     let emulator = Emulator::new();
-    let follower = "following-domain";
-    let leader = "leading-domain";
-    let follower_arn = given_domain(&emulator, follower).await;
-    let leader_arn = given_domain(&emulator, leader).await;
+    let primary = "primary-domain";
+    let secondary = "secondary-domain";
+    let primary_arn = given_domain(&emulator, primary).await;
+    let secondary_arn = given_domain(&emulator, secondary).await;
 
-    for promotion in ["failover", "switchover"] {
+    let established = replication_action(
+        &emulator,
+        primary,
+        "addPeer",
+        json!({ "PeerDomainArn": secondary_arn }),
+    )
+    .await;
+    assert_eq!(
+        (
+            established.status,
+            established.body["DomainArn"].as_str(),
+            established.body["Status"].as_str(),
+        ),
+        (200, Some(primary_arn.as_str()), Some(PENDING_SETUP)),
+        "case AddReplicationPeer({primary} -> {secondary}): expected 200, the calling domain's \
+         ARN and {PENDING_SETUP}, got {} with {:?}",
+        established.status,
+        established.body
+    );
+
+    // Both sides, read back through the read: the domain that asked is the primary of the
+    // relationship and the peer is the secondary, and both report the same transient status.
+    for (case, domain, role, peer, peer_role) in [
+        (
+            "the domain that asked",
+            primary,
+            PRIMARY,
+            secondary_arn.clone(),
+            SECONDARY,
+        ),
+        (
+            "its peer",
+            secondary,
+            SECONDARY,
+            primary_arn.clone(),
+            PRIMARY,
+        ),
+    ] {
+        assert_eq!(
+            reported_relationship(&emulator, domain, case).await,
+            (
+                role.to_string(),
+                peer.clone(),
+                peer_role.to_string(),
+                PENDING_SETUP.to_string()
+            ),
+            "case {case} right after the add: expected role {role} and the one peer {peer} as \
+             {peer_role} in {PENDING_SETUP}"
+        );
+    }
+
+    // "Replication is established asynchronously. Use the DescribeDomainReplication operation
+    // to check whether the relationship has reached the ACTIVE state."
+    for domain in [primary, secondary] {
+        settled_relationship(&emulator, domain, ACTIVE).await;
+    }
+
+    // "A domain can have one peer": a second relationship — with the peer it has or with
+    // another domain — is refused, and the message names the peer it holds.
+    let third_arn = given_domain(&emulator, "third-domain").await;
+    for (case, peer) in [
+        ("the peer it already has", secondary_arn.clone()),
+        ("another domain", third_arn),
+    ] {
+        let refused = replication_action(
+            &emulator,
+            primary,
+            "addPeer",
+            json!({ "PeerDomainArn": peer }),
+        )
+        .await;
+        assert_eq!(
+            (refused.status, error_code(&refused).as_str()),
+            (ALREADY_EXISTS_STATUS, ALREADY_EXISTS),
+            "case AddReplicationPeer({primary} -> {case}): expected \
+             {ALREADY_EXISTS_STATUS} {ALREADY_EXISTS}, got {} with {:?}",
+            refused.status,
+            refused.body
+        );
+        assert_eq!(
+            refused.body["message"].as_str(),
+            Some(
+                format!("Domain {primary_arn} is already replicating with {secondary_arn}")
+                    .as_str()
+            ),
+            "case AddReplicationPeer({primary} -> {case}): expected the peer it holds named, got \
+             {:?}",
+            refused.body
+        );
+    }
+
+    // A call naming a peer this domain holds no relationship with is refused as well.
+    let stranger = replication_action(
+        &emulator,
+        primary,
+        "removePeer",
+        json!({ "PeerDomainArn": arn_like(&primary_arn, "never-a-peer") }),
+    )
+    .await;
+    assert_eq!(
+        (
+            stranger.status,
+            error_code(&stranger).as_str(),
+            stranger.body["message"].as_str(),
+        ),
+        (
+            RECORDED_NOT_FOUND_STATUS,
+            NOT_FOUND,
+            Some(not_replicating_message(&primary_arn).as_str()),
+        ),
+        "case RemoveReplicationPeer({primary} -> a domain it does not replicate with): got {} \
+         with {:?}",
+        stranger.status,
+        stranger.body
+    );
+
+    // Releasing it takes BOTH sides with it, through the status the model names for a
+    // relationship being stopped.
+    let released = replication_action(
+        &emulator,
+        primary,
+        "removePeer",
+        json!({ "PeerDomainArn": secondary_arn }),
+    )
+    .await;
+    assert_eq!(
+        (released.status, released.body["Status"].as_str()),
+        (200, Some(PENDING_REMOVAL)),
+        "case RemoveReplicationPeer({primary} -> {secondary}): expected 200 and \
+         {PENDING_REMOVAL}, got {} with {:?}",
+        released.status,
+        released.body
+    );
+    for domain in [primary, secondary] {
+        let case = format!("{domain} while the removal is in flight");
+        let (_, _, _, status) = reported_relationship(&emulator, domain, &case).await;
+        assert_eq!(
+            status, PENDING_REMOVAL,
+            "case {case}: expected {PENDING_REMOVAL}, got {status}"
+        );
+    }
+
+    // "A relationship that is removed successfully no longer appears in Peers."
+    for domain in [primary, secondary] {
+        let case = format!("{domain} after the removal falls due");
+        poll_until(&case, || async {
+            describe_replication(&emulator, domain).await.body["Peers"]
+                .as_array()
+                .is_some_and(|peers| peers.is_empty())
+        })
+        .await;
+        let read = describe_replication(&emulator, domain).await;
+        assert!(
+            read.body.get("Role").is_none(),
+            "case {case}: expected no Role member at all, got {:?}",
+            read.body
+        );
+    }
+}
+
+/// RULE: both promotions promote the SECONDARY of a relationship to primary, each under the
+/// status the model names for it, and once the clock makes the promotion due the roles have
+/// moved on BOTH records — a switchover leaving replication `ACTIVE` and a failover leaving
+/// the domain it promoted over `EJECTED`.
+///
+/// The rows are the two calls that perform a promotion, each on its own fresh relationship,
+/// because what differs between them is the status they run under and the one they settle to.
+#[tokio::test]
+async fn each_promotion_moves_the_roles_on_both_records() {
+    // (the call, the status while it is in flight, the status it settles to)
+    let rows: [(&str, &str, &str); 2] = [
+        ("switchover", SWITCHING_OVER, ACTIVE),
+        ("failover", FAILING_OVER, EJECTED),
+    ];
+    for (promotion, in_flight, settled) in rows {
+        let emulator = Emulator::new();
+        let promoted = format!("promoted-{promotion}");
+        let demoted = format!("demoted-{promotion}");
+        let promoted_arn = given_domain(&emulator, &promoted).await;
+        let demoted_arn = given_domain(&emulator, &demoted).await;
+        // The relationship is established FROM the domain that becomes the primary, so the
+        // promotion below is called on the secondary — "call this operation in the Region of
+        // the domain you want to promote".
         let established = replication_action(
             &emulator,
-            follower,
+            &demoted,
             "addPeer",
-            json!({ "PeerDomainArn": leader_arn }),
+            json!({ "PeerDomainArn": promoted_arn }),
         )
         .await;
         assert_eq!(
             established.status, 200,
-            "case AddReplicationPeer({follower} -> {leader}) before {promotion}: expected 200, \
-             got {} with {:?}",
+            "case AddReplicationPeer before {promotion}: expected 200, got {} with {:?}",
             established.status, established.body
         );
+        settled_relationship(&emulator, &promoted, ACTIVE).await;
 
-        // Both sides, read back through the read: the domain that asked is the follower of
-        // its peer, and the peer leads.
+        // A promotion naming a domain that is not this domain's peer is refused: "the request
+        // is rejected if this domain is no longer the peer of the domain you are calling".
+        let stranger = arn_like(&promoted_arn, "not-the-peer");
+        let mut body = json!({ "PeerDomainArn": stranger });
+        if promotion == "failover" {
+            body["AllowDataLoss"] = json!(true);
+        }
+        let refused = replication_action(&emulator, &promoted, promotion, body.clone()).await;
+        assert_eq!(
+            (refused.status, error_code(&refused).as_str()),
+            (400, VALIDATION),
+            "case {promotion}(a peer it does not replicate with): expected 400 {VALIDATION}, got \
+             {} with {:?}",
+            refused.status,
+            refused.body
+        );
+
+        // The promotion itself, called on the secondary and naming the relationship's current
+        // primary.
+        body["PeerDomainArn"] = json!(demoted_arn);
+        let answer = replication_action(&emulator, &promoted, promotion, body).await;
+        assert_eq!(
+            (
+                answer.status,
+                answer.body["DomainArn"].as_str(),
+                answer.body["Status"].as_str(),
+            ),
+            (200, Some(promoted_arn.as_str()), Some(in_flight)),
+            "case {promotion}({promoted}): expected 200, the promoted domain's ARN and \
+             {in_flight}, got {} with {:?}",
+            answer.status,
+            answer.body
+        );
+
+        // Once the clock makes it due, the roles have moved on both records and both report
+        // the status this promotion settles to.
+        for domain in [&promoted, &demoted] {
+            settled_relationship(&emulator, domain, settled).await;
+        }
         for (case, domain, role, peer, peer_role) in [
             (
-                format!("the domain that asked, before {promotion}"),
-                follower,
-                FOLLOWER,
-                leader_arn.clone(),
-                LEADER,
+                format!("the promoted domain after {promotion}"),
+                &promoted,
+                PRIMARY,
+                demoted_arn.clone(),
+                SECONDARY,
             ),
             (
-                format!("its peer, before {promotion}"),
-                leader,
-                LEADER,
-                follower_arn.clone(),
-                FOLLOWER,
+                format!("its peer after {promotion}"),
+                &demoted,
+                SECONDARY,
+                promoted_arn.clone(),
+                PRIMARY,
             ),
         ] {
-            let read = describe_replication(&emulator, domain).await;
             assert_eq!(
-                (read.status, read.body["Role"].as_str()),
-                (200, Some(role)),
-                "case {case}: expected 200 and role {role}, got {} with {:?}",
-                read.status,
-                read.body
-            );
-            assert_eq!(
-                reported_peers(&read, &case),
-                vec![(peer.clone(), peer_role.to_string())],
-                "case {case}: expected the one peer {peer} as {peer_role}, got {:?}",
-                read.body
-            );
-        }
-
-        // The promotion: the domain it is called on leads, and its peer follows — on both
-        // records.
-        let promoted = replication_action(&emulator, follower, promotion, json!({})).await;
-        assert_eq!(
-            promoted.status, 200,
-            "case {promotion}({follower}): expected 200, got {} with {:?}",
-            promoted.status, promoted.body
-        );
-        for (case, domain, role) in [
-            (format!("the promoted domain after {promotion}"), follower, LEADER),
-            (format!("its peer after {promotion}"), leader, FOLLOWER),
-        ] {
-            let read = describe_replication(&emulator, domain).await;
-            assert_eq!(
-                read.body["Role"].as_str(),
-                Some(role),
-                "case {case}: expected role {role}, got {:?}",
-                read.body
-            );
-        }
-
-        // Releasing it takes BOTH sides with it.
-        let released = replication_action(
-            &emulator,
-            follower,
-            "removePeer",
-            json!({ "PeerDomainArn": leader_arn }),
-        )
-        .await;
-        assert_eq!(
-            released.status, 200,
-            "case RemoveReplicationPeer({follower} -> {leader}) after {promotion}: expected 200, \
-             got {} with {:?}",
-            released.status, released.body
-        );
-        for domain in [follower, leader] {
-            let read = describe_replication(&emulator, domain).await;
-            let case = format!("{domain} after the release following {promotion}");
-            assert_eq!(
-                reported_peers(&read, &case),
-                Vec::new(),
-                "case {case}: expected no peers, got {:?}",
-                read.body
-            );
-            assert!(
-                read.body.get("Role").is_none(),
-                "case {case}: expected no Role member at all, got {:?}",
-                read.body
+                reported_relationship(&emulator, domain, &case).await,
+                (
+                    role.to_string(),
+                    peer.clone(),
+                    peer_role.to_string(),
+                    settled.to_string()
+                ),
+                "case {case}: expected role {role}, the peer {peer} as {peer_role} and {settled}"
             );
         }
     }
+}
+
+/// RULE: a failover must acknowledge the writes it discards — "you must set `AllowDataLoss`
+/// to true; the request is rejected otherwise" — and the refusal is answered before anything
+/// about either domain is read, so it is the same for a domain that replicates and one that
+/// does not.
+#[tokio::test]
+async fn a_failover_that_does_not_allow_data_loss_is_refused_before_anything_is_read() {
+    let emulator = Emulator::new();
+    let replicating = "failover-secondary";
+    let peer = "failover-primary";
+    let replicating_arn = given_domain(&emulator, replicating).await;
+    let peer_arn = given_domain(&emulator, peer).await;
+    let established = replication_action(
+        &emulator,
+        peer,
+        "addPeer",
+        json!({ "PeerDomainArn": replicating_arn }),
+    )
+    .await;
+    assert_eq!(
+        established.status, 200,
+        "case AddReplicationPeer: expected 200, got {} with {:?}",
+        established.status, established.body
+    );
+
+    // (case, the domain addressed, the peer named)
+    let rows = [
+        ("a domain that replicates", replicating, peer_arn.clone()),
+        (
+            "a domain that replicates with nobody",
+            peer,
+            arn_like(&peer_arn, "never-created-domain"),
+        ),
+        (
+            "a domain nobody created",
+            "absent-failover-domain",
+            peer_arn.clone(),
+        ),
+    ];
+    for (case, domain, named) in rows {
+        let refused = replication_action(
+            &emulator,
+            domain,
+            "failover",
+            json!({ "PeerDomainArn": named, "AllowDataLoss": false }),
+        )
+        .await;
+        assert_eq!(
+            (refused.status, error_code(&refused).as_str()),
+            (400, VALIDATION),
+            "case FailoverReplication({case}, AllowDataLoss false): expected 400 {VALIDATION}, \
+             got {} with {:?}",
+            refused.status,
+            refused.body
+        );
+        assert_eq!(
+            refused.body["message"].as_str(),
+            Some(
+                "AllowDataLoss must be true to fail over, because writes that had not yet \
+                 replicated are lost"
+            ),
+            "case FailoverReplication({case}, AllowDataLoss false): got {:?}",
+            refused.body
+        );
+    }
+
+    // Nothing moved: the relationship is still the one the add established.
+    let (role, _, _, _) =
+        reported_relationship(&emulator, replicating, "after the refused failovers").await;
+    assert_eq!(
+        role, SECONDARY,
+        "case DescribeDomainReplication({replicating}): expected the role untouched, got {role}"
+    );
 }
 
 /// RULE: `AddReplicationPeer` validates BEFORE it establishes anything, and refuses
@@ -526,7 +843,7 @@ async fn add_peer_refuses_an_unresolvable_peer_alike_with_and_without_a_dry_run(
         omitted.body
     );
 
-    // A domain cannot be its own peer: an arrangement has two sides.
+    // A domain cannot be its own peer: a relationship has two sides.
     let itself = replication_action(
         &emulator,
         local,
@@ -535,9 +852,17 @@ async fn add_peer_refuses_an_unresolvable_peer_alike_with_and_without_a_dry_run(
     )
     .await;
     assert_eq!(
-        (itself.status, error_code(&itself).as_str()),
-        (400, VALIDATION),
-        "case AddReplicationPeer(its own ARN): expected 400 {VALIDATION}, got {} with {:?}",
+        (
+            itself.status,
+            error_code(&itself).as_str(),
+            itself.body["message"].as_str(),
+        ),
+        (
+            400,
+            VALIDATION,
+            Some(format!("Domain cannot replicate with itself: {local_arn}").as_str()),
+        ),
+        "case AddReplicationPeer(its own ARN): got {} with {:?}",
         itself.status,
         itself.body
     );
@@ -552,8 +877,8 @@ async fn add_peer_refuses_an_unresolvable_peer_alike_with_and_without_a_dry_run(
         read.body
     );
 
-    // A DRY RUN that passes validation establishes nothing either, and the live call that
-    // follows it does.
+    // A DRY RUN that passes validation reports the status it WOULD have established and
+    // changes neither domain, and the live call that follows it establishes it.
     let dry = replication_action(
         &emulator,
         local,
@@ -562,9 +887,12 @@ async fn add_peer_refuses_an_unresolvable_peer_alike_with_and_without_a_dry_run(
     )
     .await;
     assert_eq!(
-        dry.status, 200,
-        "case AddReplicationPeer(a resolvable peer, DryRun true): expected 200, got {} with {:?}",
-        dry.status, dry.body
+        (dry.status, dry.body["Status"].as_str()),
+        (200, Some(PENDING_SETUP)),
+        "case AddReplicationPeer(a resolvable peer, DryRun true): expected 200 and \
+         {PENDING_SETUP}, got {} with {:?}",
+        dry.status,
+        dry.body
     );
     for (case, domain) in [("the domain that asked", local), ("its peer", peer_name)] {
         let read = describe_replication(&emulator, domain).await;
@@ -590,7 +918,11 @@ async fn add_peer_refuses_an_unresolvable_peer_alike_with_and_without_a_dry_run(
     let read = describe_replication(&emulator, local).await;
     assert_eq!(
         reported_peers(&read, "after the live add"),
-        vec![(peer_arn.clone(), LEADER.to_string())],
+        vec![(
+            peer_arn.clone(),
+            SECONDARY.to_string(),
+            PENDING_SETUP.to_string()
+        )],
         "case DescribeDomainReplication({local}): expected the peer the live call established, \
          got {:?}",
         read.body
@@ -718,38 +1050,57 @@ async fn compare_takes_every_supported_category_and_refuses_any_other() {
         )
         .await;
         assert_eq!(
-            answer.status, 200,
-            "case CompareDomainConfiguration({category}): expected 200, got {} with {:?}",
-            answer.status, answer.body
+            (
+                answer.status,
+                answer.body["SourceDomainArn"].as_str(),
+                answer.body["TargetDomainArn"].as_str(),
+            ),
+            (200, Some(arn.as_str()), Some(arn.as_str())),
+            "case CompareDomainConfiguration({category}): expected 200 and both sides echoed, \
+             got {} with {:?}",
+            answer.status,
+            answer.body
         );
+        let reported = &answer.body["Categories"][category];
         assert_eq!(
             (
-                answer.body["Categories"][category]["Status"].as_str(),
-                answer.body["Categories"][category]["Diverged"].as_i64(),
-                answer.body["Categories"][category]["SourceOnly"].as_i64(),
-                answer.body["Categories"][category]["TargetOnly"].as_i64(),
+                reported["Status"].as_str(),
+                reported["Diverged"].as_i64(),
+                reported["SourceOnly"].as_i64(),
+                reported["TargetOnly"].as_i64(),
+                reported["Truncated"].as_bool(),
             ),
-            (Some("compared"), Some(0), Some(0), Some(0)),
+            (Some("compared"), Some(0), Some(0), Some(0), Some(false)),
             "case CompareDomainConfiguration({category}) of a domain against itself: got {:?}",
             answer.body
         );
     }
 
-    // A request naming NO category compares the whole catalogue.
-    let every = compare(
+    // "At least one is required": a request naming no category at all is refused for the
+    // member it omits.
+    let omitted = compare(
         &emulator,
         json!({ "SourceDomainArn": arn, "TargetDomainArn": arn }),
     )
     .await;
-    for category in SUPPORTED_CATEGORIES {
-        assert_eq!(
-            every.body["Categories"][category]["Status"].as_str(),
-            Some("compared"),
-            "case CompareDomainConfiguration(no Categories): expected {category} compared, got \
-             {:?}",
-            every.body
-        );
-    }
+    assert_eq!(
+        (
+            omitted.status,
+            error_code(&omitted).as_str(),
+            omitted.body["message"].as_str(),
+        ),
+        (
+            400,
+            VALIDATION,
+            Some(
+                "1 validation error detected: Value null at 'categories' failed to satisfy \
+                 constraint: Member must not be null"
+            ),
+        ),
+        "case CompareDomainConfiguration(no Categories): got {} with {:?}",
+        omitted.status,
+        omitted.body
+    );
 
     // (case, the Categories value, the value the refusal names)
     let rows: Vec<(&str, Value, String)> = vec![
@@ -778,11 +1129,6 @@ async fn compare_takes_every_supported_category_and_refuses_any_other() {
             json!(["templates", "not_a_real_category"]),
             "not_a_real_category".to_string(),
         ),
-        (
-            "a category that is not even text",
-            json!([7]),
-            "7".to_string(),
-        ),
     ];
     for (case, categories, named) in rows {
         // Against a source that does not resolve either: the category check comes first, so
@@ -810,16 +1156,41 @@ async fn compare_takes_every_supported_category_and_refuses_any_other() {
             answer.body
         );
     }
+
+    // A category that is not even text is no category the request can carry: the member takes
+    // a list of strings, so the value is refused as the malformed input it is.
+    let untyped = compare(
+        &emulator,
+        json!({
+            "SourceDomainArn": arn,
+            "TargetDomainArn": arn,
+            "Categories": [7],
+        }),
+    )
+    .await;
+    assert_eq!(
+        (untyped.status, error_code(&untyped).as_str()),
+        (400, VALIDATION),
+        "case CompareDomainConfiguration(a category that is not text): expected 400 \
+         {VALIDATION}, got {} with {:?}",
+        untyped.status,
+        untyped.body
+    );
 }
 
-/// RULE: a side of the comparison must BE a domain ARN, and the format check runs before
-/// either side is resolved; a well-formed ARN naming a domain this account does not hold is
-/// then refused naming which side it was.
+/// RULE: a side of the comparison must BE a domain ARN — the constraint the model declares
+/// for `DomainArn`, refused at the request boundary naming the member — and a well-formed ARN
+/// naming a domain this account does not hold is refused naming which SIDE it was, with the
+/// source resolved first.
 #[tokio::test]
 async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either() {
     let emulator = Emulator::new();
     let arn = given_domain(&emulator, "resolvable-side").await;
 
+    // Values outside `DomainArn`'s own pattern
+    // (`^arn:aws[a-z\-]*:[a-z]+:[a-z0-9\-]+:[0-9]+:domain\/[a-z0-9\-]+$`, from
+    // `smithy_query(query="shape",shape="DomainArn")`): not an ARN at all, no resource name,
+    // another partition's spelling, another resource type, and an empty resource name.
     let malformed = [
         "not-an-arn",
         "arn:aws:es:us-east-1:123456789012:domain",
@@ -828,17 +1199,25 @@ async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either
         "arn:aws:es:us-east-1:123456789012:domain/",
     ];
     for sent in malformed {
-        for (side, body) in [
+        for (member, body) in [
             (
-                "SourceDomainArn",
-                json!({ "SourceDomainArn": sent, "TargetDomainArn": arn }),
+                "sourceDomainArn",
+                json!({
+                    "SourceDomainArn": sent,
+                    "TargetDomainArn": arn,
+                    "Categories": ["templates"],
+                }),
             ),
             (
-                "TargetDomainArn",
-                json!({ "SourceDomainArn": arn, "TargetDomainArn": sent }),
+                "targetDomainArn",
+                json!({
+                    "SourceDomainArn": arn,
+                    "TargetDomainArn": sent,
+                    "Categories": ["templates"],
+                }),
             ),
         ] {
-            let case = format!("CompareDomainConfiguration({side} = {sent:?})");
+            let case = format!("CompareDomainConfiguration({member} = {sent:?})");
             let answer = compare(&emulator, body).await;
             assert_eq!(
                 (answer.status, error_code(&answer).as_str()),
@@ -847,15 +1226,10 @@ async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either
                 answer.status,
                 answer.body
             );
-            let expected = format!(
-                "Invalid domain ARN format. Expected domain ARN (arn:aws*:*:*:*:domain/*) but \
-                 received: {sent}. "
-            );
-            assert_eq!(
-                answer.body["message"].as_str(),
-                Some(expected.as_str()),
-                "case {case}: expected {expected:?}, got {:?}",
-                answer.body
+            let message = answer.body["message"].as_str().unwrap_or_default();
+            assert!(
+                message.contains(&format!("at '{member}'")) && message.contains("constraint:"),
+                "case {case}: expected the constraint refusal to name {member}, got {message:?}"
             );
         }
     }
@@ -869,6 +1243,7 @@ async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either
             json!({
                 "SourceDomainArn": arn_like(&arn, "absent-source"),
                 "TargetDomainArn": arn_like(&arn, "absent-target"),
+                "Categories": ["templates"],
             }),
         ),
         (
@@ -877,6 +1252,7 @@ async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either
             json!({
                 "SourceDomainArn": arn,
                 "TargetDomainArn": arn_like(&arn, "absent-target"),
+                "Categories": ["templates"],
             }),
         ),
     ] {
@@ -902,16 +1278,24 @@ async fn compare_refuses_a_side_that_is_not_a_domain_arn_before_resolving_either
 /// The counts one category's comparison is expected to report.
 struct CategoryCounts {
     category: &'static str,
+    in_sync: i64,
     diverged: i64,
     source_only: i64,
     target_only: i64,
 }
 
 impl CategoryCounts {
-    /// `(category, Diverged, SourceOnly, TargetOnly)`, as a row writes it.
-    fn of(category: &'static str, diverged: i64, source_only: i64, target_only: i64) -> Self {
+    /// `(category, InSync, Diverged, SourceOnly, TargetOnly)`, as a row writes it.
+    fn of(
+        category: &'static str,
+        in_sync: i64,
+        diverged: i64,
+        source_only: i64,
+        target_only: i64,
+    ) -> Self {
         Self {
             category,
+            in_sync,
             diverged,
             source_only,
             target_only,
@@ -929,8 +1313,9 @@ struct DiffRow<'a> {
 }
 
 /// RULE: a comparison counts the configuration the two domains HOLD, per category: an entry
-/// only one side holds counts on that side, and an entry both hold with different content
-/// counts as diverged.
+/// both sides hold alike counts in sync, an entry only one side holds counts on that side, an
+/// entry both hold with different content counts as diverged, and `Items` names the entries
+/// behind those counts — with the FIELDS that differ for a diverging one.
 ///
 /// The configuration is written through each domain's OWN data plane — the surface that holds
 /// it — so what is compared is state a client wrote, not anything this suite put in the
@@ -943,15 +1328,20 @@ async fn compare_counts_the_configuration_each_domain_holds() {
     let source_arn = given_domain(&emulator, source).await;
     let target_arn = given_domain(&emulator, target).await;
 
-    // One setting both clusters hold at DIFFERENT values, and one pipeline only the source
-    // holds.
+    // One setting both clusters hold at DIFFERENT values, one both hold ALIKE, and one
+    // pipeline only the source holds.
     for (domain, value) in [(source, "true"), (target, "false")] {
         let written = rest_prefixed(
             &emulator,
             domain,
             "PUT",
             "/_cluster/settings",
-            Some(json!({ "persistent": { "action.auto_create_index": value } })),
+            Some(json!({
+                "persistent": {
+                    "action.auto_create_index": value,
+                    "indices.recovery.max_bytes_per_sec": "40mb",
+                },
+            })),
         )
         .await;
         assert_eq!(
@@ -984,9 +1374,9 @@ async fn compare_counts_the_configuration_each_domain_holds() {
             source: &source_arn,
             target: &target_arn,
             expected: vec![
-                CategoryCounts::of("cluster_settings", 1, 0, 0),
-                CategoryCounts::of("ingest_pipelines", 0, 1, 0),
-                CategoryCounts::of("templates", 0, 0, 0),
+                CategoryCounts::of("cluster_settings", 1, 1, 0, 0),
+                CategoryCounts::of("ingest_pipelines", 0, 0, 1, 0),
+                CategoryCounts::of("templates", 0, 0, 0, 0),
             ],
         },
         DiffRow {
@@ -994,9 +1384,9 @@ async fn compare_counts_the_configuration_each_domain_holds() {
             source: &target_arn,
             target: &source_arn,
             expected: vec![
-                CategoryCounts::of("cluster_settings", 1, 0, 0),
-                CategoryCounts::of("ingest_pipelines", 0, 0, 1),
-                CategoryCounts::of("templates", 0, 0, 0),
+                CategoryCounts::of("cluster_settings", 1, 1, 0, 0),
+                CategoryCounts::of("ingest_pipelines", 0, 0, 0, 1),
+                CategoryCounts::of("templates", 0, 0, 0, 0),
             ],
         },
         DiffRow {
@@ -1004,9 +1394,9 @@ async fn compare_counts_the_configuration_each_domain_holds() {
             source: &source_arn,
             target: &source_arn,
             expected: vec![
-                CategoryCounts::of("cluster_settings", 0, 0, 0),
-                CategoryCounts::of("ingest_pipelines", 0, 0, 0),
-                CategoryCounts::of("templates", 0, 0, 0),
+                CategoryCounts::of("cluster_settings", 2, 0, 0, 0),
+                CategoryCounts::of("ingest_pipelines", 1, 0, 0, 0),
+                CategoryCounts::of("templates", 0, 0, 0, 0),
             ],
         },
     ];
@@ -1035,6 +1425,7 @@ async fn compare_counts_the_configuration_each_domain_holds() {
         for counts in row.expected {
             let CategoryCounts {
                 category,
+                in_sync,
                 diverged,
                 source_only,
                 target_only,
@@ -1043,19 +1434,74 @@ async fn compare_counts_the_configuration_each_domain_holds() {
             assert_eq!(
                 (
                     reported["Status"].as_str(),
+                    reported["InSync"].as_i64(),
                     reported["Diverged"].as_i64(),
                     reported["SourceOnly"].as_i64(),
                     reported["TargetOnly"].as_i64(),
                 ),
                 (
                     Some("compared"),
+                    Some(in_sync),
                     Some(diverged),
                     Some(source_only),
                     Some(target_only)
                 ),
-                "case {case} ({category}): expected diverged {diverged}, source-only \
-                 {source_only}, target-only {target_only}, got {reported:?}"
+                "case {case} ({category}): expected in-sync {in_sync}, diverged {diverged}, \
+                 source-only {source_only}, target-only {target_only}, got {reported:?}"
             );
+            // The counts and the names behind them cannot disagree: each list holds exactly
+            // as many entries as its own count.
+            for (member, counted) in [
+                ("SourceOnly", source_only),
+                ("TargetOnly", target_only),
+                ("Diverged", diverged),
+            ] {
+                let named = reported["Items"][member].as_array().map(Vec::len);
+                assert_eq!(
+                    named,
+                    Some(usize::try_from(counted).unwrap_or_default()),
+                    "case {case} ({category}): expected Items.{member} to name {counted} \
+                     entries, got {:?}",
+                    reported["Items"]
+                );
+            }
         }
     }
+
+    // The entry that diverges is named, and so is the field that differs with each side's
+    // value — the setting both clusters hold at different values.
+    let answer = compare(
+        &emulator,
+        json!({
+            "SourceDomainArn": source_arn,
+            "TargetDomainArn": target_arn,
+            "Categories": ["cluster_settings"],
+        }),
+    )
+    .await;
+    let diverged = &answer.body["Categories"]["cluster_settings"]["Items"]["Diverged"][0];
+    assert_eq!(
+        (
+            diverged["Name"].as_str(),
+            diverged["Fields"][0]["SourceValue"].as_str(),
+            diverged["Fields"][0]["TargetValue"].as_str(),
+        ),
+        (
+            Some("persistent/action.auto_create_index"),
+            Some("true"),
+            Some("false")
+        ),
+        "case the diverging setting: expected the entry and the two values named, got {:?}",
+        answer.body["Categories"]["cluster_settings"]
+    );
+    // The entry both sides hold alike is named nowhere: it is in sync.
+    let source_only = answer.body["Categories"]["cluster_settings"]["Items"]["SourceOnly"]
+        .as_array()
+        .map(Vec::len);
+    assert_eq!(
+        source_only,
+        Some(0),
+        "case the setting both clusters hold alike: expected it named on neither side, got {:?}",
+        answer.body["Categories"]["cluster_settings"]["Items"]
+    );
 }

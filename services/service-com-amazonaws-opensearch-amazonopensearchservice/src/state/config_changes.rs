@@ -52,6 +52,14 @@ pub struct ConfigChange {
     /// for the cluster it would be applied to, and the one a delete records, which
     /// applies no configuration at all.
     pub stages: Vec<ChangeStage>,
+    /// Whether this change belongs to the domain's CLONED BLUE/GREEN upgrade — the
+    /// `UpgradeDomain` that started it and every `UpdateClone` that managed it since.
+    ///
+    /// What it decides is the `ClonedBlueGreenUpgradeDetails` a progress read reports: those
+    /// details are the state of the upgrade the DOMAIN holds
+    /// ([`Domain::cloned_blue_green`]), and they are reported for the changes of that
+    /// upgrade and for no others.
+    pub cloned_blue_green: bool,
 }
 
 impl ConfigChange {
@@ -180,6 +188,11 @@ impl ConfigChange {
             validation_failures: None,
             // Advisory warnings are accepted through the same verbose dry run.
             accepted_warnings: None,
+            // The state of the cloned blue/green upgrade this change belongs to is the
+            // DOMAIN's ([`Domain::cloned_blue_green`]), which this record cannot reach:
+            // [`crate::service::domain_configuration::reported_change_progress`] is handed
+            // both and fills it in.
+            cloned_blue_green_upgrade_details: None,
         }
     }
 

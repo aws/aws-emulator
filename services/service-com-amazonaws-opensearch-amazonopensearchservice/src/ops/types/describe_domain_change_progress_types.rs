@@ -37,6 +37,7 @@ pub struct ChangeProgressStatusDetails {
     pub last_updated_time: Option<::aws_smithy_types::DateTime>,
     pub config_change_status: Option<String>,
     pub initiated_by: Option<String>,
+    pub cloned_blue_green_upgrade_details: Option<ClonedBlueGreenUpgradeDetails>,
     pub validation_failures: Option<Vec<ValidationFailure>>,
     pub accepted_warnings: Option<Vec<String>>,
 }
@@ -48,5 +49,20 @@ pub struct ChangeProgressStage {
     pub status: Option<String>,
     pub description: Option<String>,
     pub last_updated: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.opensearch#ClonedBlueGreenUpgradeDetails")]
+#[derive(Debug, Clone, Default)]
+pub struct ClonedBlueGreenUpgradeDetails {
+    pub traffic_split: Option<TrafficPercents>,
+    pub scheduled_action: Option<ClonedBlueGreenScheduledAction>,
+    pub retention_in_hours: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.opensearch#ClonedBlueGreenScheduledAction")]
+#[derive(Debug, Clone, Default)]
+pub struct ClonedBlueGreenScheduledAction {
+    pub action: Option<String>,
+    pub scheduled_time: Option<::aws_smithy_types::DateTime>,
 }
 

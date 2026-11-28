@@ -916,15 +916,24 @@ fn dialled(url: &str) -> (String, String) {
     }
 }
 
-/// A fetch of `url` exactly as a client follows it: an anonymous `GET` — no AWS credential at
-/// all, the way a client that was handed an address dials it — of the path the URL carries, at
-/// the host it names.
+/// A fetch of `url` exactly as a client follows it: a `GET` of the path the URL carries, at
+/// the host it names, PRESENTING an AWS credential — the credential this plane admits a fetch
+/// on, since an application is reached through a sign-in and is read by no anonymous caller
+/// ([`super::application_endpoint_sign_in`] states that rule and the refusal an
+/// uncredentialed fetch earns).
 async fn followed(emulator: &Emulator, url: &str) -> Answer {
     let (authority, path) = dialled(url);
     let request = http::Request::builder()
         .method("GET")
         .uri(path)
         .header("host", authority)
+        .header(
+            "authorization",
+            format!(
+                "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/{REGION}/es/\
+                 aws4_request, SignedHeaders=host, Signature=0"
+            ),
+        )
         .body(Bytes::new())
         .expect("the test request is well formed");
     emulator.dispatch(request).await

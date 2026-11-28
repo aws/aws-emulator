@@ -907,6 +907,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A new domain replicates with nobody; `AddReplicationPeer` is what
             // establishes an arrangement, and it writes both sides of it.
             replication: crate::state::replication::DomainReplication::default(),
+            // And no cloned blue/green upgrade: `UpgradeDomain` carrying that deployment
+            // strategy is what starts one.
+            cloned_blue_green: None,
             // A domain this create has just minted holds no insight either: the
             // service raises an insight from what it observes of a running domain.
             insights: BTreeMap::new(),
