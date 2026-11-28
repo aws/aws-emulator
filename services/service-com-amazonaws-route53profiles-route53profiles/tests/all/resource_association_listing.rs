@@ -12,6 +12,8 @@
 //!   is ever reported by the listing, whatever the refusal was about (a reserved
 //!   DNS Firewall `priority`, an ARN naming a resource no Profile holds);
 //! * `ResourceType` narrows the listing to the associations reporting that type;
+//! * `ResourceArn` narrows the listing to the association with that resource alone,
+//!   and an ARN the Profile holds no association with selects nothing;
 //! * the listing pages in a stable order, `MaxResults` bounds each page, a token
 //!   resumes strictly after the page that issued it, and a token this operation
 //!   never issued is refused;
@@ -432,6 +434,150 @@ async fn resource_type_narrows_the_listing_to_the_associations_reporting_that_ty
             Vec::<String>::new(),
             "case resourceType={unmatched:?}: no association reports that type, got {:?}",
             listing.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn resource_arn_narrows_the_listing_to_the_association_with_that_resource() {
+    let em = Emulator::new();
+    let profile_id = profile(&em, "arn-filter").await;
+    let neighbour_id = profile(&em, "arn-filter-neighbour").await;
+
+    let resources = associable_resources();
+    for (index, (resource_arn, resource_type)) in resources.iter().enumerate() {
+        let properties = (*resource_type == "FIREWALL_RULE_GROUP").then_some(r#"{"priority":200}"#);
+        let reply = em
+            .associate_resource(&profile_id, resource_arn, &format!("arn-{index}"), properties)
+            .await;
+        assert_eq!(
+            reply.status, 200,
+            "case arn={resource_arn}: expected 200, got {} / {:?}",
+            reply.status, reply.body
+        );
+    }
+
+    // One row per kind of resource a Profile can hold: the filter selects the
+    // association with THAT resource and no other.
+    for (resource_arn, resource_type) in &resources {
+        let listing = em
+            .list_resource_associations(
+                &profile_id,
+                &format!("?resourceArn={}", path_label(resource_arn)),
+            )
+            .await;
+        assert_eq!(
+            listing.status, 200,
+            "case resourceArn={resource_arn}: expected 200, got {} / {:?}",
+            listing.status, listing.body
+        );
+        assert_eq!(
+            listed(&listing, "ResourceArn"),
+            vec![resource_arn.clone()],
+            "case resourceArn={resource_arn}: the listing must report exactly that \
+             association, got {:?}",
+            listing.body
+        );
+
+        // The two filters narrow together: the type the association reports selects it,
+        // and any other type selects nothing.
+        let both = em
+            .list_resource_associations(
+                &profile_id,
+                &format!(
+                    "?resourceArn={}&resourceType={resource_type}",
+                    path_label(resource_arn)
+                ),
+            )
+            .await;
+        assert_eq!(
+            listed(&both, "ResourceArn"),
+            vec![resource_arn.clone()],
+            "case resourceArn={resource_arn} resourceType={resource_type}: the listing must \
+             report that association, got {:?}",
+            both.body
+        );
+        let mismatched = em
+            .list_resource_associations(
+                &profile_id,
+                &format!("?resourceArn={}&resourceType=VPC_ENDPOINT", path_label(resource_arn)),
+            )
+            .await;
+        if *resource_type != "VPC_ENDPOINT" {
+            assert_eq!(
+                listed(&mismatched, "ResourceArn"),
+                Vec::<String>::new(),
+                "case resourceArn={resource_arn}: a type the association does not report must \
+                 select nothing, got {:?}",
+                mismatched.body
+            );
+        }
+
+        // The filter is about the Profile named too: the same ARN under a Profile that
+        // holds no association with it selects nothing.
+        let elsewhere = em
+            .list_resource_associations(
+                &neighbour_id,
+                &format!("?resourceArn={}", path_label(resource_arn)),
+            )
+            .await;
+        assert_eq!(
+            listed(&elsewhere, "ResourceArn"),
+            Vec::<String>::new(),
+            "case resourceArn={resource_arn}: another Profile holds no association with that \
+             resource, got {:?}",
+            elsewhere.body
+        );
+    }
+
+    // An ARN nothing is associated with matches nothing rather than everything, and a
+    // prefix of a held ARN is not that ARN.
+    let held = resources[0].0.clone();
+    for unmatched in [
+        "arn:aws:route53:::hostedzone/ZNOTASSOCIATED00000000".to_string(),
+        held[..held.len() - 1].to_string(),
+        format!("{held}x"),
+        // Exactly the modelled maximum (`smithy_query(query="operation",
+        // operation="ListProfileResourceAssociations")`: `ResourceArn` is `len 1..255`).
+        format!("arn:aws:route53:::hostedzone/{}", "Z".repeat(255 - 29)),
+    ] {
+        let listing = em
+            .list_resource_associations(
+                &profile_id,
+                &format!("?resourceArn={}", path_label(&unmatched)),
+            )
+            .await;
+        assert_eq!(
+            listing.status, 200,
+            "case resourceArn={unmatched:?}: expected 200, got {} / {:?}",
+            listing.status, listing.body
+        );
+        assert_eq!(
+            listed(&listing, "ResourceArn"),
+            Vec::<String>::new(),
+            "case resourceArn={unmatched:?}: no association holds that resource, got {:?}",
+            listing.body
+        );
+    }
+
+    // And a value outside that modelled length is refused rather than filtering.
+    for outside in [
+        String::new(),
+        format!("arn:aws:route53:::hostedzone/{}", "Z".repeat(256 - 29)),
+    ] {
+        let refused = em
+            .list_resource_associations(
+                &profile_id,
+                &format!("?resourceArn={}", path_label(&outside)),
+            )
+            .await;
+        assert_eq!(
+            refused.status, 400,
+            "case resourceArn (len {}): a value outside the modelled length must be refused, \
+             got {} / {:?}",
+            outside.len(),
+            refused.status,
+            refused.body
         );
     }
 }

@@ -99,6 +99,15 @@ pub struct ProfileAssociation {
     pub status_message: Option<String>,
     pub creation_time: SystemTime,
     pub modification_time: SystemTime,
+    /// `Priority` — the order Route 53 VPC Resolver evaluates the VPC's Profile
+    /// associations in, lowest first. Always a value, because an association made
+    /// without one is made with [`DEFAULT_ASSOCIATION_PRIORITY`]
+    /// (`ProfileAssociation$Priority`: "Associations created without a priority have
+    /// priority 100").
+    pub priority: i32,
+    /// The end of the propagation of a priority change, which the clock owes this
+    /// record, or `None` when nothing is owed ([`OwedTransition`]).
+    pub owed_settle: Option<OwedTransition>,
 }
 
 /// How long a resource association is reported in the phase it is created in before
@@ -216,6 +225,27 @@ impl ProfileResourceAssociation {
 }
 
 impl ProfileAssociation {
+    /// Apply the move to [`STATUS_COMPLETE`] the clock owes this record, if it has
+    /// already fallen due as of `now`.
+    ///
+    /// A priority change propagates before it applies to every query from the VPC
+    /// (`UpdateProfileAssociation`: the association is `UPDATING` until the change
+    /// propagates, and then `COMPLETE`), so that move is the clock's rather than a
+    /// caller's: nothing is written before the due instant and nothing after the move
+    /// has been applied, and the record this leaves behind is the one every later
+    /// caller reads.
+    fn settle_if_due(&mut self, now: Instant) {
+        let Some(owed) = self.owed_settle.filter(|owed| owed.is_due(now)) else {
+            return;
+        };
+        self.status = STATUS_COMPLETE.to_string();
+        self.status_message = Some(profile_association_status_message(AssociationPhase::Settled));
+        // The record changed when the move fell DUE, so that instant is its
+        // modification time whoever reads it and whenever they do.
+        self.modification_time = owed.at;
+        self.owed_settle = None;
+    }
+
     /// This association as the wire shape, reported in `phase`: the stored record
     /// with the `Status` and `StatusMessage` of the lifecycle step being reported.
     ///
@@ -245,6 +275,9 @@ impl ProfileAssociation {
 pub enum AssociationPhase {
     /// The association is being applied — the phase the associate call reports.
     BeingApplied,
+    /// A change a caller asked for is propagating — the phase an update call that
+    /// changed how the association is evaluated reports.
+    BeingUpdated,
     /// The association has been applied and is in force.
     Settled,
     /// The association is being removed — the phase the disassociate call reports.
@@ -275,7 +308,7 @@ pub fn profile_status_message(status: &str) -> Option<String> {
 /// the status such an association carries until it is in force.
 pub fn resource_association_status(phase: AssociationPhase) -> &'static str {
     match phase {
-        AssociationPhase::BeingApplied => STATUS_UPDATING,
+        AssociationPhase::BeingApplied | AssociationPhase::BeingUpdated => STATUS_UPDATING,
         AssociationPhase::Settled => STATUS_COMPLETE,
         AssociationPhase::BeingRemoved => STATUS_DELETING,
     }
@@ -295,7 +328,9 @@ pub fn resource_association_status(phase: AssociationPhase) -> &'static str {
 pub fn resource_association_status_message(phase: AssociationPhase, resource_type: &str) -> String {
     let kind = resource_kind_phrase(resource_type);
     match phase {
-        AssociationPhase::BeingApplied => format!("Updating the Profile to {kind} association"),
+        AssociationPhase::BeingApplied | AssociationPhase::BeingUpdated => {
+            format!("Updating the Profile to {kind} association")
+        }
         AssociationPhase::Settled => {
             format!("Completed creation of Profile to {kind} association")
         }
@@ -313,6 +348,10 @@ pub fn resource_association_status_message(phase: AssociationPhase, resource_typ
 pub fn profile_association_status(phase: AssociationPhase) -> &'static str {
     match phase {
         AssociationPhase::BeingApplied | AssociationPhase::Settled => STATUS_COMPLETE,
+        // A changed priority has to propagate before it applies to every query from
+        // the VPC, which is the one thing that moves a live VPC association's status
+        // (`UpdateProfileAssociation`'s own documentation).
+        AssociationPhase::BeingUpdated => STATUS_UPDATING,
         AssociationPhase::BeingRemoved => STATUS_DELETING,
     }
 }
@@ -328,6 +367,7 @@ pub fn profile_association_status(phase: AssociationPhase) -> &'static str {
 pub fn profile_association_status_message(phase: AssociationPhase) -> String {
     match phase {
         AssociationPhase::BeingApplied => "Creating Profile Association".to_string(),
+        AssociationPhase::BeingUpdated => "Updating Profile Association".to_string(),
         AssociationPhase::Settled => "Created Profile Association".to_string(),
         AssociationPhase::BeingRemoved => "Deleting Profile Association".to_string(),
     }
@@ -418,6 +458,17 @@ fn resource_type_of_segment(segment: &str) -> String {
     segment.to_ascii_uppercase().replace('-', "_")
 }
 
+/// The `Priority` an association made without one gets, from
+/// `ProfileAssociation$Priority`'s own documentation: "Associations created without a
+/// priority have priority 100."
+pub const DEFAULT_ASSOCIATION_PRIORITY: i32 = 100;
+
+/// How many Profile associations ONE VPC admits, from `AssociateProfile`'s own
+/// documentation: "A VPC can have up to two Profile associations." A further one is
+/// the operation's `LimitExceededException`
+/// ([`vpc_association_limit_exceeded`]).
+pub const MAX_ASSOCIATIONS_PER_VPC: usize = 2;
+
 /// The most Profiles this emulator stores for one account.
 ///
 /// A ceiling, not a claim about AWS's published quota: it exists so a create loop
@@ -498,6 +549,9 @@ impl ComAmazonawsRoute53profilesRoute53profilesState {
     /// and the record it leaves behind is what every later caller reads.
     pub fn settle_due_associations(&mut self, now: Instant) {
         for association in self.profile_resource_associations.values_mut() {
+            association.settle_if_due(now);
+        }
+        for association in self.profile_associations.values_mut() {
             association.settle_if_due(now);
         }
     }
@@ -598,15 +652,41 @@ impl ComAmazonawsRoute53profilesRoute53profilesState {
             .map(|association| association.id.clone())
     }
 
-    /// The stored association holding `resource_id`, whatever Profile it names, or
-    /// `None` when that VPC is not associated.
+    /// Every stored association holding `resource_id`, whatever Profile each names,
+    /// in id order.
     ///
-    /// A VPC can have only one Profile associated with it, so this is the lookup
-    /// `AssociateProfile` refuses on — independent of the `ProfileId` asked for.
-    pub fn association_for_resource(&self, resource_id: &str) -> Option<&ProfileAssociation> {
+    /// A VPC admits [`MAX_ASSOCIATIONS_PER_VPC`] Profile associations, each with its
+    /// own priority, so what a VPC already holds is a SET: this is the lookup
+    /// `AssociateProfile` weighs its allowance and its priorities against,
+    /// independent of the `ProfileId` asked for.
+    pub fn associations_for_resource(&self, resource_id: &str) -> Vec<&ProfileAssociation> {
         self.profile_associations
             .values()
-            .find(|association| association.resource_id == resource_id)
+            .filter(|association| association.resource_id == resource_id)
+            .collect()
+    }
+
+    /// The stored association of `resource_id` that already evaluates at `priority`,
+    /// disregarding the one whose id is `besides`, or `None` when that priority is
+    /// free for the VPC.
+    ///
+    /// Route 53 VPC Resolver evaluates a VPC's Profile associations in priority
+    /// order, so a priority identifies one of them: both the operation that adds an
+    /// association to a VPC and the one that re-prioritises an existing one refuse a
+    /// priority another association of the SAME VPC holds. `besides` is the
+    /// association being changed, which never conflicts with itself.
+    pub fn association_with_priority(
+        &self,
+        resource_id: &str,
+        priority: i32,
+        besides: Option<&str>,
+    ) -> Option<&ProfileAssociation> {
+        self.associations_for_resource(resource_id)
+            .into_iter()
+            .find(|association| {
+                association.priority == priority
+                    && besides.is_none_or(|excluded| association.id != excluded)
+            })
     }
 
     /// The stored resource association of `profile_id` with the resource
@@ -899,6 +979,7 @@ pub fn profile_association_shape(
         status_message: association.status_message.clone(),
         creation_time: Some(timestamp(association.creation_time)),
         modification_time: Some(timestamp(association.modification_time)),
+        priority: Some(association.priority),
     }
 }
 
@@ -1081,9 +1162,11 @@ pub fn profile_still_associated(association_id: &str) -> crate::ops::types::Conf
     }
 }
 
-/// `LimitExceededException` refusing to associate a VPC that a Profile already
-/// holds: a VPC admits one Profile association, so a second one asks for more than
-/// that per-VPC allowance.
+/// `LimitExceededException` refusing to associate a VPC that already holds
+/// [`MAX_ASSOCIATIONS_PER_VPC`] Profile associations: a further one asks for more
+/// than that per-VPC allowance (`AssociateProfile`: the request fails with a
+/// `LimitExceededException` if the VPC already has the maximum number of Profile
+/// associations).
 ///
 /// The one variable part is the `ResourceId` the request named.
 pub fn vpc_association_limit_exceeded(
@@ -1096,6 +1179,81 @@ pub fn vpc_association_limit_exceeded(
         resource_type: Some(PROFILE_ASSOCIATION_RESOURCE_TYPE.to_string()),
     }
 }
+
+/// `ValidationException` refusing an association of a VPC that already has one when
+/// the request states no `Priority` (`AssociateProfile`: the request fails with a
+/// `ValidationException` when you omit `Priority` and the VPC already has a Profile
+/// association).
+///
+/// The VPC's associations are evaluated in priority order, so a further one has to
+/// state where in that order it goes; only the first association with a VPC may be
+/// made without one, and it gets [`DEFAULT_ASSOCIATION_PRIORITY`]. The one variable
+/// part is the `ResourceId` the request named.
+pub fn priority_required_for_resource(
+    resource_id: &str,
+) -> crate::ops::types::ValidationException {
+    crate::ops::types::ValidationException {
+        message: Some(format!(
+            "VPC [{resource_id}] already has a Profile association. Specify a Priority between \
+             {MIN_ASSOCIATION_PRIORITY} and {MAX_ASSOCIATION_PRIORITY} that no other Profile \
+             association for the VPC uses."
+        )),
+    }
+}
+
+/// `ValidationException` refusing a `Priority` another Profile association of the
+/// same VPC already uses (`AssociateProfile` and `UpdateProfileAssociation` both
+/// fail with a `ValidationException` when another Profile association for the VPC
+/// already uses the priority that you specify).
+///
+/// The variable parts are the priority the request asked for, the `ResourceId` of
+/// the VPC and the id of the association already evaluating at that priority, read
+/// off this service's own state.
+pub fn priority_already_in_use(
+    priority: i32,
+    resource_id: &str,
+    holder_id: &str,
+) -> crate::ops::types::ValidationException {
+    crate::ops::types::ValidationException {
+        message: Some(format!(
+            "Priority {priority} is already used by Profile association \"{holder_id}\" for VPC \
+             [{resource_id}]. Specify a priority that no other Profile association for the VPC \
+             uses."
+        )),
+    }
+}
+
+/// `ValidationException` refusing a repeat of an association that already exists
+/// with a different `Name` or `Priority` (`AssociateProfile`: the request fails with
+/// a `ValidationException` when the Profile is already associated with the VPC and
+/// you specify a different `Name` or `Priority`; to change the priority, use
+/// `UpdateProfileAssociation`).
+///
+/// The variable parts are the ids the request named and the id of the association
+/// that already holds the pair, which is the association an update would address.
+pub fn association_not_updatable_by_associate(
+    profile_id: &str,
+    resource_id: &str,
+    association_id: &str,
+) -> crate::ops::types::ValidationException {
+    crate::ops::types::ValidationException {
+        message: Some(format!(
+            "Profile [{profile_id}] is already associated with VPC [{resource_id}] by Profile \
+             association \"{association_id}\". Use UpdateProfileAssociation to change the Name \
+             or Priority of an existing Profile association."
+        )),
+    }
+}
+
+/// The lowest `Priority` a Profile association may be evaluated at, as the model's
+/// `Priority` shape declares its `@range` (`smithy_query(query="shape",
+/// shape="Priority")`: `range 100..9900`) and `UpdateProfileAssociation`'s
+/// documentation states it ("the range 100–9900").
+pub const MIN_ASSOCIATION_PRIORITY: i32 = 100;
+
+/// The highest `Priority` a Profile association may be evaluated at, from that same
+/// `@range`.
+pub const MAX_ASSOCIATION_PRIORITY: i32 = 9900;
 
 /// The `ResourceType` a Profile-resource-association error reports.
 pub const PROFILE_RESOURCE_ASSOCIATION_RESOURCE_TYPE: &str = "PROFILE_RESOURCE_ASSOCIATION";

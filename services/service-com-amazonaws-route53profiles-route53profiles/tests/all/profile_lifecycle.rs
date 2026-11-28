@@ -21,9 +21,16 @@
 //!   items remain; a token neither issued is `InvalidNextTokenException`;
 //! * `ListProfileAssociations` narrows by `profileId` and `resourceId`;
 //! * `AssociateProfile` persists an association readable by `GetProfileAssociation`,
-//!   refuses a (ProfileId, ResourceId) pair that is already associated, refuses a
-//!   `ResourceId` another Profile already holds as having spent that VPC's one
-//!   Profile association, and refuses a `ProfileId` that names nothing;
+//!   refuses a (ProfileId, ResourceId) pair that is already associated, refuses an
+//!   associate that would rename or re-prioritise one that already exists, places
+//!   each association in its VPC's evaluation order by `Priority`, and refuses a
+//!   `ProfileId` that names nothing;
+//! * a VPC's Profile associations are evaluated in priority order: the first one may
+//!   be made without a `Priority` and gets 100, a further one has to state a priority
+//!   no other association of that VPC holds, and a VPC past its allowance is refused;
+//! * `UpdateProfileAssociation` applies the `Name` and `Priority` the request names
+//!   and nothing else, reports a changed priority as propagating until it settles,
+//!   and refuses a priority another association of the same VPC holds;
 //! * an association's `StatusMessage` states the lifecycle step the response is
 //!   about — the creation the associate call performed, the created association
 //!   every read reports, the removal the disassociate call performed — and both its
@@ -568,29 +575,38 @@ async fn the_association_lifecycle_is_persisted_and_reversible() {
             );
         }
 
-        // The same (ProfileId, ResourceId) pair cannot be associated twice, whatever
-        // name the repeat gives it.
-        for repeat_name in [name, "a-different-name"] {
-            let duplicate = em.associate(&profile_id, resource_id, repeat_name).await;
-            assert_eq!(
-                duplicate.error.as_deref(),
-                Some("ResourceExistsException"),
-                "case {case} repeat_name={repeat_name:?}: a duplicate pair must be refused, \
-                 got {} / {:?}",
-                duplicate.status,
-                duplicate.body
-            );
-        }
+        // The same (ProfileId, ResourceId) pair cannot be associated twice: a repeat
+        // that asks for the association exactly as it stands reports it as existing,
+        // while one naming it differently asks for a CHANGE this operation does not
+        // make.
+        let duplicate = em.associate(&profile_id, resource_id, name).await;
+        assert_eq!(
+            duplicate.error.as_deref(),
+            Some("ResourceExistsException"),
+            "case {case}: a duplicate pair must be refused, got {} / {:?}",
+            duplicate.status,
+            duplicate.body
+        );
+        let renamed = em
+            .associate(&profile_id, resource_id, "a-different-name")
+            .await;
+        assert_eq!(
+            renamed.error.as_deref(),
+            Some("ValidationException"),
+            "case {case}: an associate that renames an existing association must be \
+             refused, got {} / {:?}",
+            renamed.status,
+            renamed.body
+        );
 
-        // A resource can have only one Profile associated with it, so another Profile
-        // over the same `ResourceId` has spent that VPC's allowance — and the first
-        // association is untouched.
+        // A VPC's associations are evaluated in priority order, so a further one has
+        // to state a priority of its own — and the first association is untouched.
         let taken = em.associate(&rival_id, resource_id, "rival-assoc").await;
         assert_eq!(
             taken.error.as_deref(),
-            Some("LimitExceededException"),
-            "case {case}: a second Profile over the same ResourceId must be refused, \
-             got {} / {:?}",
+            Some("ValidationException"),
+            "case {case}: a second Profile over the same ResourceId with no Priority \
+             must be refused, got {} / {:?}",
             taken.status,
             taken.body
         );
@@ -847,9 +863,8 @@ async fn list_profile_associations_narrows_by_filter_and_pages_every_record_once
     }
     let mut expected: Vec<(String, String, String)> = Vec::new();
     for (owner_index, profile_id) in owners.iter().enumerate() {
-        // A resource can have only one Profile, so every VPC here belongs to exactly
-        // one owner; the two owners hold different numbers of them, so a `profileId`
-        // filter has a distinguishable answer.
+        // Every VPC here belongs to exactly one owner; the two owners hold different
+        // numbers of them, so a `profileId` filter has a distinguishable answer.
         for vpc_index in 0..=owner_index + 1 {
             let resource_id = format!("vpc-{owner_index}{vpc_index}");
             let reply = em
@@ -868,7 +883,7 @@ async fn list_profile_associations_narrows_by_filter_and_pages_every_record_once
         }
     }
 
-    // A VPC one Profile already holds cannot be taken by the other.
+    // A VPC one Profile already holds admits another only at a priority of its own.
     let (_, held_by, held_vpc) = expected[0].clone();
     let rival = owners
         .iter()
@@ -877,8 +892,8 @@ async fn list_profile_associations_narrows_by_filter_and_pages_every_record_once
     let taken = em.associate(rival, &held_vpc, "rival-assoc").await;
     assert_eq!(
         taken.error.as_deref(),
-        Some("LimitExceededException"),
-        "a VPC already associated with one Profile must be refused to another, got {} / {:?}",
+        Some("ValidationException"),
+        "a second association with a VPC and no Priority must be refused, got {} / {:?}",
         taken.status,
         taken.body
     );
@@ -1480,4 +1495,631 @@ async fn a_write_past_the_modelled_tag_ceiling_is_refused_and_changes_nothing() 
         json!({}),
         "case too-many: a refused write must persist nothing"
     );
+}
+
+/// The lowest `Priority` a Profile association may be evaluated at, as the model's
+/// `Priority` shape declares its range (`smithy_query(query="shape",
+/// shape="Priority")`: `range 100..9900`) and as the documentation of
+/// `UpdateProfileAssociation` states it ("the range 100–9900"). Transcribed here, so
+/// the suite states the published bound independently of the code that applies it.
+const MIN_PRIORITY: i64 = 100;
+
+/// The highest `Priority` a Profile association may be evaluated at, from that same
+/// range.
+const MAX_PRIORITY: i64 = 9900;
+
+/// The message `AssociateProfile` refuses a further association with when the request
+/// states no `Priority`, naming the VPC from the request and the bounds a priority
+/// has to fall inside. Transcribed here for the same reason.
+fn priority_required_message(resource_id: &str) -> String {
+    format!(
+        "VPC [{resource_id}] already has a Profile association. Specify a Priority between \
+         {MIN_PRIORITY} and {MAX_PRIORITY} that no other Profile association for the VPC uses."
+    )
+}
+
+/// The message a priority another association of the same VPC already holds is
+/// refused with, naming the priority asked for, the VPC and the association already
+/// evaluating at it.
+fn priority_in_use_message(priority: i64, resource_id: &str, holder_id: &str) -> String {
+    format!(
+        "Priority {priority} is already used by Profile association \"{holder_id}\" for VPC \
+         [{resource_id}]. Specify a priority that no other Profile association for the VPC uses."
+    )
+}
+
+/// The message an associate that would rename or re-prioritise an association that
+/// already exists is refused with, naming the ids from the request and the
+/// association that holds the pair.
+fn associate_cannot_change_message(
+    profile_id: &str,
+    resource_id: &str,
+    association_id: &str,
+) -> String {
+    format!(
+        "Profile [{profile_id}] is already associated with VPC [{resource_id}] by Profile \
+         association \"{association_id}\". Use UpdateProfileAssociation to change the Name or \
+         Priority of an existing Profile association."
+    )
+}
+
+/// The `Priority` of the association a reply reports, which the model carries as an
+/// integer.
+fn reported_priority(reply: &super::harness::Reply) -> i64 {
+    reply.member("ProfileAssociation")["Priority"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("ProfileAssociation.Priority is not an integer in {:?}", reply.body))
+}
+
+#[tokio::test]
+async fn an_association_is_placed_in_its_vpcs_evaluation_order_by_priority() {
+    let em = Emulator::new();
+    let profile_id = em
+        .create_named("priority-owner")
+        .await
+        .nested_string("Profile", "Id");
+
+    // One row per class of `Priority` the model admits: no priority at all, which
+    // `ProfileAssociation$Priority` documents as priority 100, each published bound of
+    // the modelled range, and an interior value. Each row takes its OWN VPC, so the
+    // rows say nothing about one another.
+    let rows: [(Option<i64>, i64); 5] = [
+        (None, MIN_PRIORITY),
+        (Some(MIN_PRIORITY), MIN_PRIORITY),
+        (Some(101), 101),
+        (Some(5000), 5000),
+        (Some(MAX_PRIORITY), MAX_PRIORITY),
+    ];
+
+    for (index, (requested, expected)) in rows.into_iter().enumerate() {
+        let resource_id = format!("vpc-order{index}");
+        let case = format!("requested={requested:?} resourceId={resource_id}");
+
+        let created = em
+            .associate_with_priority(&profile_id, &resource_id, &format!("order-{index}"), requested)
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "case {case}: AssociateProfile expected 200, got {} / {:?}",
+            created.status, created.body
+        );
+        assert_eq!(
+            reported_priority(&created),
+            expected,
+            "case {case}: expected Priority {expected}, got {:?}",
+            created.member("ProfileAssociation")
+        );
+
+        // Read back through the reader addressed by the minted id, and through the
+        // listing narrowed to the VPC: both report the priority that was stored.
+        let association_id = created.nested_string("ProfileAssociation", "Id");
+        let fetched = em.get_association(&association_id).await;
+        assert_eq!(
+            reported_priority(&fetched),
+            expected,
+            "case {case}: GetProfileAssociation must report Priority {expected}, got {:?}",
+            fetched.body
+        );
+        let listed = em
+            .list_associations(&format!("?resourceId={resource_id}"))
+            .await;
+        let listed_priorities: Vec<&Value> = listed
+            .list("ProfileAssociations")
+            .iter()
+            .filter(|association| association["Id"] == json!(association_id))
+            .map(|association| &association["Priority"])
+            .collect();
+        assert_eq!(
+            listed_priorities,
+            vec![&json!(expected)],
+            "case {case}: the listing must report Priority {expected} once, got {:?}",
+            listed.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_priority_outside_the_modelled_range_is_refused_and_persists_nothing() {
+    let em = Emulator::new();
+    let profile_id = em
+        .create_named("priority-bounds")
+        .await
+        .nested_string("Profile", "Id");
+
+    // One past each published bound, and values far outside it on either side.
+    for (index, priority) in [MIN_PRIORITY - 1, MAX_PRIORITY + 1, 0, -1, 1_000_000]
+        .into_iter()
+        .enumerate()
+    {
+        let resource_id = format!("vpc-bound{index}");
+        let case = format!("priority={priority} resourceId={resource_id}");
+
+        let refused = em
+            .associate_with_priority(
+                &profile_id,
+                &resource_id,
+                &format!("bound-{index}"),
+                Some(priority),
+            )
+            .await;
+        assert_eq!(
+            refused.status, 400,
+            "case {case}: a priority outside the modelled range must be refused, got {} / {:?}",
+            refused.status, refused.body
+        );
+        assert!(
+            em.list_associations(&format!("?resourceId={resource_id}"))
+                .await
+                .list("ProfileAssociations")
+                .is_empty(),
+            "case {case}: a refused association must persist nothing"
+        );
+    }
+
+    // And the same bound governs an update of an association that already exists.
+    let standing = em
+        .associate(&profile_id, "vpc-bound-standing", "standing")
+        .await;
+    let standing_id = standing.nested_string("ProfileAssociation", "Id");
+    for priority in [MIN_PRIORITY - 1, MAX_PRIORITY + 1, 0] {
+        let case = format!("update priority={priority}");
+        let refused = em
+            .update_association(&standing_id, json!({ "Priority": priority }))
+            .await;
+        assert_eq!(
+            refused.status, 400,
+            "case {case}: a priority outside the modelled range must be refused, got {} / {:?}",
+            refused.status, refused.body
+        );
+        assert_eq!(
+            reported_priority(&em.get_association(&standing_id).await),
+            MIN_PRIORITY,
+            "case {case}: a refused update must leave the stored priority as it stood"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_vpcs_associations_each_hold_a_priority_of_their_own() {
+    let em = Emulator::new();
+    let mut profiles: Vec<String> = Vec::new();
+    for index in 0..3 {
+        profiles.push(
+            em.create_named(&format!("sharing-{index}"))
+                .await
+                .nested_string("Profile", "Id"),
+        );
+    }
+    let resource_id = "vpc-shared01";
+
+    // The first association with a VPC may be made without a priority.
+    let first = em.associate(&profiles[0], resource_id, "first").await;
+    assert_eq!(
+        first.status, 200,
+        "case first: AssociateProfile expected 200, got {} / {:?}",
+        first.status, first.body
+    );
+    let first_id = first.nested_string("ProfileAssociation", "Id");
+    assert_eq!(
+        reported_priority(&first),
+        MIN_PRIORITY,
+        "case first: an association made without a Priority takes {MIN_PRIORITY}, got {:?}",
+        first.member("ProfileAssociation")
+    );
+
+    // A further one has to say where in the VPC's evaluation order it goes.
+    let silent = em.associate(&profiles[1], resource_id, "silent").await;
+    assert_eq!(
+        silent.error.as_deref(),
+        Some("ValidationException"),
+        "case silent: a further association with no Priority must be refused, got {} / {:?}",
+        silent.status,
+        silent.body
+    );
+    assert_eq!(
+        silent.message(),
+        priority_required_message(resource_id),
+        "case silent: unexpected refusal message"
+    );
+
+    // And the priority it says has to be one no other association of that VPC holds.
+    let taken = em
+        .associate_with_priority(&profiles[1], resource_id, "taken", Some(MIN_PRIORITY))
+        .await;
+    assert_eq!(
+        taken.error.as_deref(),
+        Some("ValidationException"),
+        "case taken: a priority another association of the VPC holds must be refused, \
+         got {} / {:?}",
+        taken.status,
+        taken.body
+    );
+    assert_eq!(
+        taken.message(),
+        priority_in_use_message(MIN_PRIORITY, resource_id, &first_id),
+        "case taken: unexpected refusal message"
+    );
+
+    // A free priority is accepted, and the VPC then reports both associations.
+    let second = em
+        .associate_with_priority(&profiles[1], resource_id, "second", Some(200))
+        .await;
+    assert_eq!(
+        second.status, 200,
+        "case second: AssociateProfile expected 200, got {} / {:?}",
+        second.status, second.body
+    );
+    let second_id = second.nested_string("ProfileAssociation", "Id");
+    let held = em
+        .list_associations(&format!("?resourceId={resource_id}"))
+        .await;
+    let mut held_order: Vec<(i64, String)> = held
+        .list("ProfileAssociations")
+        .iter()
+        .map(|association| {
+            (
+                association["Priority"].as_i64().unwrap_or_default(),
+                association["Id"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    held_order.sort();
+    assert_eq!(
+        held_order,
+        vec![
+            (MIN_PRIORITY, first_id.clone()),
+            (200, second_id.clone())
+        ],
+        "case second: the VPC must hold both associations, each at its own priority, got {:?}",
+        held.body
+    );
+
+    // Nothing but the refusals above touched the first association.
+    assert_eq!(
+        reported_priority(&em.get_association(&first_id).await),
+        MIN_PRIORITY,
+        "case second: a refused association must not have changed the stored one"
+    );
+}
+
+#[tokio::test]
+async fn an_associate_will_not_rename_or_re_prioritise_an_association_that_exists() {
+    let em = Emulator::new();
+    let profile_id = em
+        .create_named("repeat-owner")
+        .await
+        .nested_string("Profile", "Id");
+    let resource_id = "vpc-repeat01";
+    let created = em
+        .associate_with_priority(&profile_id, resource_id, "original", Some(300))
+        .await;
+    assert_eq!(
+        created.status, 200,
+        "setup: AssociateProfile expected 200, got {} / {:?}",
+        created.status, created.body
+    );
+    let association_id = created.nested_string("ProfileAssociation", "Id");
+    let stored = em
+        .get_association(&association_id)
+        .await
+        .member("ProfileAssociation")
+        .clone();
+
+    // Rows differing in what the repeat asks for: the association exactly as it
+    // stands, with its priority left unsaid, with another name, and with another
+    // priority. Only a repeat that asks for no change reports the resource as
+    // existing; one that asks for a change asks for the update operation's work.
+    let rows: [(&str, Option<i64>, &str); 5] = [
+        ("original", Some(300), "ResourceExistsException"),
+        ("original", None, "ResourceExistsException"),
+        ("renamed", Some(300), "ValidationException"),
+        ("original", Some(400), "ValidationException"),
+        ("renamed", None, "ValidationException"),
+    ];
+
+    for (name, priority, expected_error) in rows {
+        let case = format!("name={name:?} priority={priority:?}");
+        let repeat = em
+            .associate_with_priority(&profile_id, resource_id, name, priority)
+            .await;
+        assert_eq!(
+            repeat.error.as_deref(),
+            Some(expected_error),
+            "case {case}: expected {expected_error}, got {} / {:?}",
+            repeat.status,
+            repeat.body
+        );
+        if expected_error == "ValidationException" {
+            assert_eq!(
+                repeat.message(),
+                associate_cannot_change_message(&profile_id, resource_id, &association_id),
+                "case {case}: unexpected refusal message"
+            );
+        }
+        assert_eq!(
+            *em.get_association(&association_id)
+                .await
+                .member("ProfileAssociation"),
+            stored,
+            "case {case}: a refused repeat must leave the stored association as it stood"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_updated_association_keeps_every_member_the_request_does_not_name() {
+    let em = Emulator::new();
+    let profile_id = em
+        .create_named("update-owner")
+        .await
+        .nested_string("Profile", "Id");
+
+    // Rows differing in which members the update names, and in the value each names:
+    // nothing at all, the name alone over the classes the modelled `Name` accepts,
+    // the priority alone at each published bound, both together, and a priority the
+    // association already evaluates at.
+    let rows: [(Value, &str, i64, bool); 7] = [
+        (json!({}), "original", 300, false),
+        (json!({ "Name": "renamed" }), "renamed", 300, false),
+        (json!({ "Name": "My_Assoc 2" }), "My_Assoc 2", 300, false),
+        (json!({ "Name": "o'brien" }), "o'brien", 300, false),
+        (json!({ "Priority": MIN_PRIORITY }), "original", MIN_PRIORITY, true),
+        (json!({ "Priority": MAX_PRIORITY }), "original", MAX_PRIORITY, true),
+        (
+            json!({ "Name": "both", "Priority": 500 }),
+            "both",
+            500,
+            true,
+        ),
+    ];
+
+    for (index, (body, expected_name, expected_priority, changes_order)) in
+        rows.into_iter().enumerate()
+    {
+        let resource_id = format!("vpc-update{index}");
+        let case = format!("body={body} resourceId={resource_id}");
+        let created = em
+            .associate_with_priority(&profile_id, &resource_id, "original", Some(300))
+            .await;
+        assert_eq!(
+            created.status, 200,
+            "case {case}: AssociateProfile expected 200, got {} / {:?}",
+            created.status, created.body
+        );
+        let association_id = created.nested_string("ProfileAssociation", "Id");
+
+        let updated = em.update_association(&association_id, body.clone()).await;
+        assert_eq!(
+            updated.status, 200,
+            "case {case}: UpdateProfileAssociation expected 200, got {} / {:?}",
+            updated.status, updated.body
+        );
+        assert_eq!(
+            updated.nested_string("ProfileAssociation", "Name"),
+            expected_name,
+            "case {case}: unexpected Name in {:?}",
+            updated.member("ProfileAssociation")
+        );
+        assert_eq!(
+            reported_priority(&updated),
+            expected_priority,
+            "case {case}: unexpected Priority in {:?}",
+            updated.member("ProfileAssociation")
+        );
+        // Every member the request did not name is the one the record already held.
+        for member in ["Id", "ProfileId", "ResourceId", "OwnerId", "CreationTime"] {
+            assert_eq!(
+                updated.member("ProfileAssociation")[member],
+                created.member("ProfileAssociation")[member],
+                "case {case}: {member} must be left as it stood, got {:?}",
+                updated.member("ProfileAssociation")
+            );
+        }
+        for member in ["CreationTime", "ModificationTime"] {
+            assert_timestamp_form(&case, member, &updated.member("ProfileAssociation")[member]);
+        }
+
+        // A CHANGED priority has to propagate before it applies to every query from
+        // the VPC, so the association is reported as updating until the move the clock
+        // owes it falls due; anything else leaves the status where it stood.
+        let (expected_status, expected_message) = if changes_order {
+            ("UPDATING", "Updating Profile Association")
+        } else {
+            ("COMPLETE", "Created Profile Association")
+        };
+        assert_eq!(
+            updated.nested_string("ProfileAssociation", "Status"),
+            expected_status,
+            "case {case}: unexpected Status in {:?}",
+            updated.member("ProfileAssociation")
+        );
+        assert_eq!(
+            updated.nested_string("ProfileAssociation", "StatusMessage"),
+            expected_message,
+            "case {case}: unexpected StatusMessage in {:?}",
+            updated.member("ProfileAssociation")
+        );
+
+        // The reader reports the record the update left behind, propagation and all,
+        // and once the owed move falls due the association is in force again with the
+        // values the update stored.
+        let read_back = em.get_association(&association_id).await;
+        assert_eq!(
+            read_back.nested_string("ProfileAssociation", "Status"),
+            expected_status,
+            "case {case}: the reader must report the stored phase, got {:?}",
+            read_back.body
+        );
+        if changes_order {
+            em.settle_association(&association_id);
+        }
+        let settled = em.get_association(&association_id).await;
+        assert_eq!(
+            settled.nested_string("ProfileAssociation", "Status"),
+            "COMPLETE",
+            "case {case}: a settled association is COMPLETE, got {:?}",
+            settled.body
+        );
+        assert_eq!(
+            settled.nested_string("ProfileAssociation", "Name"),
+            expected_name,
+            "case {case}: the settled record must keep the updated Name, got {:?}",
+            settled.body
+        );
+        assert_eq!(
+            reported_priority(&settled),
+            expected_priority,
+            "case {case}: the settled record must keep the updated Priority, got {:?}",
+            settled.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_update_is_refused_a_priority_another_association_of_the_vpc_holds() {
+    let em = Emulator::new();
+    let holder_profile = em
+        .create_named("update-holder")
+        .await
+        .nested_string("Profile", "Id");
+    let rival_profile = em
+        .create_named("update-rival")
+        .await
+        .nested_string("Profile", "Id");
+    let resource_id = "vpc-reorder1";
+
+    let first = em
+        .associate_with_priority(&holder_profile, resource_id, "first", Some(MIN_PRIORITY))
+        .await;
+    let first_id = first.nested_string("ProfileAssociation", "Id");
+    let second = em
+        .associate_with_priority(&rival_profile, resource_id, "second", Some(200))
+        .await;
+    let second_id = second.nested_string("ProfileAssociation", "Id");
+    assert_eq!(
+        second.status, 200,
+        "setup: the second association expected 200, got {} / {:?}",
+        second.status, second.body
+    );
+
+    // The priority the OTHER association of this VPC holds is refused, and the record
+    // is left exactly as it stood.
+    let refused = em
+        .update_association(&second_id, json!({ "Priority": MIN_PRIORITY }))
+        .await;
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("ValidationException"),
+        "case taken: expected ValidationException, got {} / {:?}",
+        refused.status,
+        refused.body
+    );
+    assert_eq!(
+        refused.message(),
+        priority_in_use_message(MIN_PRIORITY, resource_id, &first_id),
+        "case taken: unexpected refusal message"
+    );
+    let unchanged = em.get_association(&second_id).await;
+    assert_eq!(
+        reported_priority(&unchanged),
+        200,
+        "case taken: a refused update must leave the stored priority as it stood"
+    );
+    assert_eq!(
+        unchanged.nested_string("ProfileAssociation", "Status"),
+        "COMPLETE",
+        "case taken: a refused update must leave the stored status as it stood, got {:?}",
+        unchanged.body
+    );
+
+    // An association never conflicts with ITSELF, so re-stating the priority it
+    // already evaluates at changes nothing and moves no status.
+    let restated = em
+        .update_association(&second_id, json!({ "Priority": 200 }))
+        .await;
+    assert_eq!(
+        restated.status, 200,
+        "case restated: UpdateProfileAssociation expected 200, got {} / {:?}",
+        restated.status, restated.body
+    );
+    assert_eq!(
+        restated.nested_string("ProfileAssociation", "Status"),
+        "COMPLETE",
+        "case restated: re-stating the held priority moves no status, got {:?}",
+        restated.body
+    );
+
+    // The priority the other association gives up is then free for this one.
+    let released = em
+        .update_association(&first_id, json!({ "Priority": 300 }))
+        .await;
+    assert_eq!(
+        released.status, 200,
+        "case released: UpdateProfileAssociation expected 200, got {} / {:?}",
+        released.status, released.body
+    );
+    let reordered = em
+        .update_association(&second_id, json!({ "Priority": MIN_PRIORITY }))
+        .await;
+    assert_eq!(
+        reordered.status, 200,
+        "case reordered: a freed priority must be accepted, got {} / {:?}",
+        reordered.status, reordered.body
+    );
+    assert_eq!(
+        reported_priority(&reordered),
+        MIN_PRIORITY,
+        "case reordered: unexpected Priority in {:?}",
+        reordered.member("ProfileAssociation")
+    );
+
+    // A `Name` outside the modelled pattern is refused, and persists nothing.
+    em.settle_association(&second_id);
+    let stored = em
+        .get_association(&second_id)
+        .await
+        .member("ProfileAssociation")
+        .clone();
+    for name in ["", "12345", "no/slashes", "tab\there"] {
+        let case = format!("name={name:?}");
+        let refused = em
+            .update_association(&second_id, json!({ "Name": name }))
+            .await;
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("ValidationException"),
+            "case {case}: a Name outside the modelled pattern must be refused, got {} / {:?}",
+            refused.status,
+            refused.body
+        );
+        assert_eq!(
+            *em.get_association(&second_id)
+                .await
+                .member("ProfileAssociation"),
+            stored,
+            "case {case}: a refused update must persist nothing"
+        );
+    }
+
+    // An id that names no association names nothing to update, and the id of one that
+    // has been removed is such an id.
+    em.disassociate(&rival_profile, resource_id).await;
+    for id in [
+        second_id.as_str(),
+        "rpassoc-0123456789abcdef",
+        "nosuchassociation",
+    ] {
+        let case = format!("id={id:?}");
+        let refused = em
+            .update_association(id, json!({ "Priority": 400 }))
+            .await;
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("ResourceNotFoundException"),
+            "case {case}: an id that names nothing must be ResourceNotFoundException, \
+             got {} / {:?}",
+            refused.status,
+            refused.body
+        );
+    }
 }

@@ -30,6 +30,7 @@ pub mod list_tags_for_resource_types;
 pub mod shared_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
+pub mod update_profile_association_types;
 pub mod update_profile_resource_association_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -64,6 +65,8 @@ pub use shared_types::*;
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_profile_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_profile_resource_association_types::*;
 

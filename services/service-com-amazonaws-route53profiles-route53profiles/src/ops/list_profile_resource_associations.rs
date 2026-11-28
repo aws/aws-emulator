@@ -57,6 +57,8 @@
 //!   the prior request in your next request.
 //! * `ProfileId` (ResourceId, len 1..64) **required** — The ID of the Profile.
 //! * `ResourceType` (String) — ID of a resource if you want information on only one type.
+//! * `ResourceArn` (Arn, len 1..255) — The Amazon Resource Name (ARN) of a resource. If you
+//!   specify this parameter, only the association with that resource is returned.
 //!
 //! ## Output
 //!
@@ -214,9 +216,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(after) => ::std::ops::Bound::Excluded(after),
             None => ::std::ops::Bound::Unbounded,
         };
-        // The Profile and the optional `ResourceType` narrow the set BEFORE the page
-        // is cut, so a page is `MaxResults` matching associations rather than
-        // whatever matched within an unfiltered page.
+        // The Profile and the optional `ResourceType` and `ResourceArn` narrow the set
+        // BEFORE the page is cut, so a page is `MaxResults` matching associations rather
+        // than whatever matched within an unfiltered page. A named `ResourceArn` selects
+        // the association with THAT resource alone, so it is compared exactly.
         let mut remaining = store
             .profile_resource_associations
             .range::<str, _>((start, ::std::ops::Bound::Unbounded))
@@ -227,6 +230,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .resource_type
                         .as_deref()
                         .is_none_or(|wanted| association.resource_type == wanted)
+                    && input
+                        .resource_arn
+                        .as_deref()
+                        .is_none_or(|wanted| association.resource_arn == wanted)
             });
 
         let page: Vec<&crate::state::ProfileResourceAssociation> =

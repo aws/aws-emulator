@@ -18,6 +18,7 @@ pub struct AssociateProfileInput {
     pub resource_id: String,
     pub name: String,
     pub tags: Option<Vec<Tag>>,
+    pub priority: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.route53profiles#AssociateProfileResponse")]

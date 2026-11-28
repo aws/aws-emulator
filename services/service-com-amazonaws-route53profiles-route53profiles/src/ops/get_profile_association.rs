@@ -42,8 +42,8 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-route53profiles-route53profiles/smithy-model/com-amazonaws-route53profiles-route53profiles.json")
 //! ```
 //!
-//! Retrieves a Route 53 Profile association for a VPC. A VPC can have only one Profile
-//! association, but a Profile can be associated with up to 5000 VPCs.
+//! Retrieves a Route 53 Profile association for a VPC. A VPC can have up to two Profile
+//! associations, and a Profile can be associated with up to 1,000 VPCs.
 //!
 //! ## Input
 //!
@@ -142,9 +142,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // `@readonly`: this reports the stored association and writes nothing. A VPC
-        // association is recorded in its terminal status, so there is no move the
-        // clock owes one to materialise here.
+        // `@readonly`: this reports the stored association. The only thing it writes
+        // is a move the CLOCK had already made due — the end of the propagation of a
+        // priority change — which was owed at this instant whether or not anybody
+        // called.
         let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
@@ -156,7 +157,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-        let store = state.lock();
+        let now = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle_due_associations(now);
         let association = store
             .profile_associations
             .get(&input.profile_association_id)

@@ -30,6 +30,7 @@ pub struct ProfileAssociation {
     pub status_message: Option<String>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
     pub modification_time: Option<::aws_smithy_types::DateTime>,
+    pub priority: Option<i32>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.route53profiles#AccessDeniedException")]

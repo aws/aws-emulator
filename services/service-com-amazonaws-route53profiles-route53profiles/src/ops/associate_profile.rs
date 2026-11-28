@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateProfile
-//! IMPLEMENTED: validates the Profile, refuses a (ProfileId, ResourceId) pair that is
-//! already associated, and persists the association it reports.
+//! IMPLEMENTED: validates the Profile, places the association in the VPC's evaluation
+//! order by `Priority`, refuses a (ProfileId, ResourceId) pair that is already
+//! associated, a priority another association of the VPC holds and a VPC whose
+//! allowance is spent, and persists the association it reports.
 //!
 //! ## Shape of an operation
 //!
@@ -42,10 +44,20 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-route53profiles-route53profiles/smithy-model/com-amazonaws-route53profiles-route53profiles.json")
 //! ```
 //!
-//! Associates a Route 53 Profiles profile with a VPC. A VPC can have only one Profile
-//! associated with it, but a Profile can be associated with 1000 of VPCs (and you can
-//! request a higher quota). For more information, see
-//! https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/DNSLimitations.html#limits-api-entities.
+//! Associates a Route 53 Profiles profile with a VPC. A VPC can have up to two Profile
+//! associations. A Profile can be associated with up to 1,000 VPCs, and you can request a
+//! higher quota for the number of VPCs. Route 53 VPC Resolver evaluates the Profile
+//! associations for a VPC in priority order, starting with the lowest `Priority` value. If
+//! the VPC has no other Profile associations, you can omit `Priority`, and the association
+//! gets priority 100. When the VPC already has a Profile association, you must specify a
+//! `Priority`, and each Profile association for the VPC must have a unique priority. To
+//! change the priority of an existing association, use `UpdateProfileAssociation`. The
+//! request fails with a `ValidationException` when you omit `Priority` and the VPC already
+//! has a Profile association, when another Profile association for the VPC already uses the
+//! priority that you specify, when the priority is outside the range 100–9900, or when the
+//! Profile is already associated with the VPC and you specify a different `Name` or
+//! `Priority`. The request fails with a `LimitExceededException` if the VPC already has the
+//! maximum number of Profile associations.
 //!
 //! ## Input
 //!
@@ -55,6 +67,11 @@
 //! * `ResourceId` (ResourceId, len 1..64) **required** — The ID of the VPC.
 //! * `Tags` (TagList, len 0..200) — A list of the tag keys and values that you want to
 //!   identify the Profile association.
+//! * `Priority` (Priority, range 100..9900) — The priority of the Profile association. Route
+//!   53 VPC Resolver evaluates the Profile associations for a VPC in priority order, starting
+//!   with the lowest value. When the VPC already has a Profile association, you must specify
+//!   a priority that no other Profile association for the VPC uses. If you omit the priority
+//!   for the first association with a VPC, the association gets priority 100.
 //!
 //! ## Output
 //!
@@ -188,20 +205,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // A VPC can have only one Profile associated with it, though a Profile may be
-        // associated with many VPCs (`AssociateProfile`'s own documentation). So the
-        // lookup is by `ResourceId` alone, independent of the `ProfileId` asked for,
-        // and which refusal it earns depends on what already holds that VPC: the same
-        // Profile means this exact association already exists, so the resource the
-        // request would create is reported as existing; a different Profile means the
-        // VPC's allowance of one Profile association is already spent, which is a
-        // quota refusal rather than a request conflict.
-        if let Some(existing) = store.association_for_resource(&input.resource_id) {
-            return Err(if existing.profile_id == input.profile_id {
-                // Only this arm names the stored association, so its id is cloned
-                // here rather than before the branch.
-                let existing_id = existing.id.clone();
-                AssociateProfileErrorModeled::ResourceExistsException(ResourceExistsException {
+        // A VPC admits several Profile associations, evaluated in priority order
+        // (`AssociateProfile`'s own documentation), so what the VPC already holds is a
+        // SET weighed by `ResourceId` alone, independent of the `ProfileId` asked for.
+        // Copied off the store, because the checks below and the insert that follows
+        // them need it while the association being created is minted.
+        let held: Vec<(String, String, String, i32)> = store
+            .associations_for_resource(&input.resource_id)
+            .into_iter()
+            .map(|association| {
+                (
+                    association.id.clone(),
+                    association.profile_id.clone(),
+                    association.name.clone(),
+                    association.priority,
+                )
+            })
+            .collect();
+
+        // The Profile asked for already being associated with this VPC means the
+        // resource this request would create exists. A `Name` or `Priority` differing
+        // from the stored one is a CHANGE to that association, which is the update
+        // operation's to make, so it is refused as a value this operation will not
+        // accept rather than reported as an existing resource.
+        if let Some((existing_id, _, existing_name, existing_priority)) = held
+            .iter()
+            .find(|(_, profile_id, _, _)| *profile_id == input.profile_id)
+        {
+            if *existing_name != input.name
+                || input
+                    .priority
+                    .is_some_and(|asked| asked != *existing_priority)
+            {
+                return Err(AssociateProfileErrorModeled::ValidationException(
+                    crate::state::association_not_updatable_by_associate(
+                        &input.profile_id,
+                        &input.resource_id,
+                        existing_id,
+                    ),
+                )
+                .into());
+            }
+            return Err(AssociateProfileErrorModeled::ResourceExistsException(
+                ResourceExistsException {
                     message: Some(format!(
                         "Profile {} is already associated with resource {} by association \
                          {existing_id}.",
@@ -210,12 +256,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     resource_type: Some(
                         crate::state::PROFILE_ASSOCIATION_RESOURCE_TYPE.to_string(),
                     ),
-                })
-            } else {
-                AssociateProfileErrorModeled::LimitExceededException(
-                    crate::state::vpc_association_limit_exceeded(&input.resource_id),
+                },
+            )
+            .into());
+        }
+
+        // A VPC's allowance of Profile associations, spent before this request: a
+        // further one is a quota refusal rather than a request conflict.
+        if held.len() >= crate::state::MAX_ASSOCIATIONS_PER_VPC {
+            return Err(AssociateProfileErrorModeled::LimitExceededException(
+                crate::state::vpc_association_limit_exceeded(&input.resource_id),
+            )
+            .into());
+        }
+
+        // Where in the VPC's evaluation order this association goes. Only the FIRST
+        // association with a VPC may be made without saying: it takes the default
+        // priority, while a further one has to state a priority of its own, and the
+        // priority it states has to be one no other association of that VPC holds.
+        let priority = match input.priority {
+            Some(asked) => asked,
+            None if held.is_empty() => crate::state::DEFAULT_ASSOCIATION_PRIORITY,
+            None => {
+                return Err(AssociateProfileErrorModeled::ValidationException(
+                    crate::state::priority_required_for_resource(&input.resource_id),
                 )
+                .into());
             }
+        };
+        if let Some((holder_id, _, _, _)) = held
+            .iter()
+            .find(|(_, _, _, held_priority)| *held_priority == priority)
+        {
+            return Err(AssociateProfileErrorModeled::ValidationException(
+                crate::state::priority_already_in_use(priority, &input.resource_id, holder_id),
+            )
             .into());
         }
 
@@ -260,6 +335,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )),
             creation_time: now,
             modification_time: now,
+            priority,
+            // The association is in force the moment it is recorded, so the clock
+            // owes it nothing.
+            owed_settle: None,
         };
         store.record_tags(&arn, input.tags.unwrap_or_default());
         // Insert, then report from the record now in the store — in the phase THIS

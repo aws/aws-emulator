@@ -157,7 +157,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // `@readonly`: paging a list never changes what a later caller sees.
+        // `@readonly`: paging a list never changes what a later caller sees. The only
+        // thing it writes is a move the CLOCK had already made due — the end of the
+        // propagation of a priority change — which was owed at this instant whether or
+        // not anybody called.
         let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(
@@ -186,8 +189,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `MaxResults` is modelled `range 1..100`, so the boundary validator has
         // already refused anything outside it; an absent one pages at that maximum.
         let page_size = crate::state::page_size(input.max_results);
+        // One instant for the whole page, so every association on it is reported as
+        // of the same clock reading.
+        let now = ::std::time::Instant::now();
 
-        let store = state.lock();
+        let mut store = state.lock();
+        // Materialise every move the clock had already made due, so a page reports
+        // each association in the phase it had reached rather than the one it was
+        // last written in.
+        store.settle_due_associations(now);
         // A range query, not a scan: resuming costs O(log n) + O(page) rather than
         // walking every stored association on each page.
         let start = match resume_after.as_deref() {

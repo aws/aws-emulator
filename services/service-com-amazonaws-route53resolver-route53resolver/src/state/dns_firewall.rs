@@ -366,40 +366,55 @@ impl StoredFirewall {
             .collect()
     }
 
-    /// The rule groups that reach `vpc_id` through a Route 53 Profile associated with it, each
-    /// with the priority its own resource association states.
+    /// The rule groups that reach `vpc_id` through the Route 53 Profiles associated with it,
+    /// each with the priority its own resource association states.
     ///
-    /// The Profiles are that service's records, read through its own accessors: a Profile is
-    /// associated with a VPC, and the DNS Firewall rule groups it holds are the resource
-    /// associations of that Profile whose `ResourceType` is a rule group.
+    /// The Profiles are that service's records, read through its own accessors: a VPC's Profile
+    /// associations are evaluated in priority order, lowest first, and the DNS Firewall rule
+    /// groups each one pushes are the resource associations of its Profile whose `ResourceType`
+    /// is a rule group. An association whose own priority change is still propagating stays in
+    /// force throughout, so only one being removed pushes nothing.
     fn profile_rule_groups(&self, vpc_id: &str, now: Instant) -> Vec<(String, i64)> {
         let Some(state) = self.profiles.as_ref() else {
             return Vec::new();
         };
         let store = state.lock();
-        let Some(association) = store
-            .association_for_resource(vpc_id)
-            .filter(|association| association.status == profiles::STATUS_COMPLETE)
-        else {
-            return Vec::new();
-        };
-        store
-            .profile_resource_associations
-            .values()
-            .filter(|resource| resource.profile_id == association.profile_id)
-            .filter(|resource| {
-                resource.resource_type == profiles::FIREWALL_RULE_GROUP_RESOURCE_TYPE
-            })
-            // A resource association still being added to the Profile is not pushed to the VPC
-            // yet.
-            .filter(|resource| resource.status_at(now) == profiles::STATUS_COMPLETE)
-            .filter_map(|resource| {
-                Some((
-                    rule_group_id_of_arn(&resource.resource_arn)?,
-                    firewall_priority_of(resource.resource_properties.as_deref()),
-                ))
-            })
-            .collect()
+        let mut associated: Vec<(i32, String)> = Vec::new();
+        for association in store.associations_for_resource(vpc_id) {
+            // An association being REMOVED pushes nothing; one whose own priority change is
+            // still propagating stays in force throughout.
+            if association.status == profiles::STATUS_DELETING {
+                continue;
+            }
+            associated.push((association.priority, association.profile_id.clone()));
+        }
+        // Read in the order the Resolver evaluates the VPC's Profile associations in, lowest
+        // priority first, so a rule-group priority two Profiles both state is broken by the
+        // order their associations are evaluated in.
+        associated.sort();
+        let mut reaching: Vec<(String, i64)> = Vec::new();
+        for (_, profile_id) in associated {
+            for resource in store.profile_resource_associations.values() {
+                if resource.profile_id != profile_id {
+                    continue;
+                }
+                if resource.resource_type != profiles::FIREWALL_RULE_GROUP_RESOURCE_TYPE {
+                    continue;
+                }
+                // A resource association still being added to the Profile is not pushed to the
+                // VPC yet.
+                if resource.status_at(now) != profiles::STATUS_COMPLETE {
+                    continue;
+                }
+                if let Some(group_id) = rule_group_id_of_arn(&resource.resource_arn) {
+                    reaching.push((
+                        group_id,
+                        firewall_priority_of(resource.resource_properties.as_deref()),
+                    ));
+                }
+            }
+        }
+        reaching
     }
 }
 

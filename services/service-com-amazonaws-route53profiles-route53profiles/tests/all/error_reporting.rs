@@ -28,9 +28,10 @@
 //! * `DeleteProfile` refuses a Profile an association still names with
 //!   `ConflictException`, and the message names the blocking ASSOCIATION, read off
 //!   the service's own state, so the caller is told what to delete first;
-//! * a VPC admits one Profile association, so associating a VPC another Profile
-//!   already holds is the quota refusal `LimitExceededException` naming the VPC,
-//!   while re-associating the SAME pair reports the association as already existing;
+//! * a VPC admits a bounded number of Profile associations, so associating a VPC
+//!   whose allowance is spent is the quota refusal `LimitExceededException` naming the
+//!   VPC, while re-associating the SAME pair reports the association as already
+//!   existing;
 //! * every one of these refusals is HTTP 400.
 
 use std::thread::sleep;
@@ -66,7 +67,8 @@ fn still_associated_message(association_id: &str) -> String {
     )
 }
 
-/// The message a VPC that already has a Profile is refused a second one with.
+/// The message a VPC whose Profile-association allowance is spent is refused a
+/// further one with.
 fn vpc_limit_message(resource_id: &str) -> String {
     format!("VPC [{resource_id}] exceeded its maximum profile association limit.")
 }
@@ -303,7 +305,7 @@ async fn deleting_an_associated_profile_names_the_blocking_association() {
 }
 
 #[tokio::test]
-async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
+async fn a_vpc_whose_association_allowance_is_spent_is_refused_as_a_spent_quota() {
     let em = Emulator::new();
     let holder = em
         .create_named("quota-holder")
@@ -313,9 +315,13 @@ async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
         .create_named("quota-rival")
         .await
         .nested_string("Profile", "Id");
+    let latecomer = em
+        .create_named("quota-latecomer")
+        .await
+        .nested_string("Profile", "Id");
 
-    // Rows differing in the VPC id's form and in the name the second request gives
-    // the association it is refused.
+    // Rows differing in the VPC id's form and in the name the refused request gives
+    // the association.
     for (resource_id, rival_name) in [
         ("vpc-12345678", "rival-1"),
         ("vpc-0a1b2c3d4e5f67890", "My_Rival 2"),
@@ -329,7 +335,20 @@ async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
             held.status, held.body
         );
 
-        let refused = em.associate(&rival, resource_id, rival_name).await;
+        // Every association a VPC's allowance admits, each at its own priority.
+        let second = em
+            .associate_with_priority(&rival, resource_id, rival_name, Some(200))
+            .await;
+        assert_eq!(
+            second.status, 200,
+            "case {case}: the second association expected 200, got {} / {:?}",
+            second.status, second.body
+        );
+
+        // One past the allowance is the quota refusal, whatever priority it asks for.
+        let refused = em
+            .associate_with_priority(&latecomer, resource_id, "latecomer", Some(300))
+            .await;
         assert_eq!(
             refused.error.as_deref(),
             Some("LimitExceededException"),
@@ -351,7 +370,7 @@ async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
         );
 
         // The same pair again is a different refusal: that association already exists.
-        let duplicate = em.associate(&holder, resource_id, "held-again").await;
+        let duplicate = em.associate(&holder, resource_id, "held").await;
         assert_eq!(
             duplicate.error.as_deref(),
             Some("ResourceExistsException"),
@@ -361,10 +380,12 @@ async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
             duplicate.body
         );
 
-        // Positive control: once the VPC is released the rival association succeeds,
-        // so the refusal is about the spent allowance and nothing else.
+        // Positive control: once the VPC releases one of them the refused association
+        // succeeds, so the refusal is about the spent allowance and nothing else.
         em.disassociate(&holder, resource_id).await;
-        let now_allowed = em.associate(&rival, resource_id, rival_name).await;
+        let now_allowed = em
+            .associate_with_priority(&latecomer, resource_id, "latecomer", Some(300))
+            .await;
         assert_eq!(
             now_allowed.status, 200,
             "case {case}: after the VPC was released the association expected 200, \
@@ -373,6 +394,7 @@ async fn a_vpc_that_already_has_a_profile_is_refused_as_a_spent_quota() {
             now_allowed.body
         );
         em.disassociate(&rival, resource_id).await;
+        em.disassociate(&latecomer, resource_id).await;
     }
 }
 

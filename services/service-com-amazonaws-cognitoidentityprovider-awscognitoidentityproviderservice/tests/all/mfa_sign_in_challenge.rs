@@ -36,7 +36,7 @@
 //! users, enrollments, challenge sessions and devices all come from this
 //! service's own operations.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Map, Value};
 
@@ -83,6 +83,43 @@ const SESSION_LENGTH: (usize, usize) = (20, 4096);
 
 /// A six-digit value that is not the code the challenge asks for.
 const WRONG_CODE: &str = "000000";
+
+/// How long a one-time-password presentation keeps being read afresh and presented
+/// again, and how long it waits between tries.
+///
+/// Reading the clock and the service checking the password are two instants, and one
+/// time step lasts 30 s, so a step boundary between them leaves the password outside
+/// the window the service accepts. That race is the one thing about these fixtures
+/// that depends on WHEN they run, so a presentation is repeated from a FRESH reading
+/// until it is served or this deadline passes, rather than asserted on the first try
+/// — the same bound the sibling `device_authentication` suite presents a password
+/// under. The window is several time steps wide, so only a service that never accepts
+/// the authenticator's password runs it out.
+const PRESENT_CODE_DEADLINE: Duration = Duration::from_secs(150);
+const PRESENT_CODE_POLL: Duration = Duration::from_millis(200);
+
+/// Present the one-time password `code_for_step` computes to the self-service
+/// `operation`, reading the time step afresh on every try ([`PRESENT_CODE_DEADLINE`]).
+async fn presented_until_served(
+    emulator: &Emulator,
+    operation: &str,
+    code_for_step: impl Fn(u64) -> Value,
+) -> Value {
+    let deadline = SystemTime::now() + PRESENT_CODE_DEADLINE;
+    loop {
+        let body = code_for_step(current_step(SystemTime::now()));
+        let (status, payload) = dispatch(emulator, operation, &body, false).await;
+        if status == 200 {
+            return payload;
+        }
+        assert!(
+            SystemTime::now() < deadline,
+            "{operation} must be served with the authenticator's own one-time password, got \
+             {status} with {payload}"
+        );
+        ::tokio::time::sleep(PRESENT_CODE_POLL).await;
+    }
+}
 
 /// The message a wrong code is refused with: the software token's own sentence,
 /// and for a factor whose code was DELIVERED the wording of the authentication
@@ -278,18 +315,15 @@ async fn enrolled(emulator: &Emulator, name: &str, pool_extra: Value) -> Enrolle
     // resynchronisation window accepts: one time step's password is good for one
     // use, and the code a registration consumes is spent, so enrolling with the
     // previous step's code leaves the code each row then presents for a SIGN-IN
-    // unspent.
-    ok_self_service(
-        emulator,
-        "VerifySoftwareToken",
-        &json!({
+    // unspent. The step is read afresh on every try, because a boundary crossed
+    // between the reading and the check would leave that password two steps old
+    // ([`presented_until_served`]).
+    presented_until_served(emulator, "VerifySoftwareToken", |step| {
+        json!({
             "AccessToken": access_token,
-            "UserCode": one_time_password(
-                &secret_code,
-                current_step(SystemTime::now()).saturating_sub(1),
-            ),
-        }),
-    )
+            "UserCode": one_time_password(&secret_code, step.saturating_sub(1)),
+        })
+    })
     .await;
     Enrolled {
         secret_code,
@@ -906,14 +940,12 @@ async fn the_setup_challenge_enrolls_the_factor_and_activates_it() {
             .as_str()
             .unwrap_or_else(|| panic!("case {case:?}: expected a key, got {associated}"))
             .to_string();
-        let verified = ok_self_service(
-            &emulator,
-            "VerifySoftwareToken",
-            &json!({
+        let verified = presented_until_served(&emulator, "VerifySoftwareToken", |step| {
+            json!({
                 "Session": associated["Session"],
-                "UserCode": one_time_password(&secret_code, current_step(SystemTime::now())),
-            }),
-        )
+                "UserCode": one_time_password(&secret_code, step),
+            })
+        })
         .await;
         let setup_session = verified["Session"]
             .as_str()

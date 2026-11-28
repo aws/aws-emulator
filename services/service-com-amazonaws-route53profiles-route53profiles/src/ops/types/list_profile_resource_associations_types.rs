@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-route53profiles-route53
 pub struct ListProfileResourceAssociationsInput {
     pub profile_id: String,
     pub resource_type: Option<String>,
+    pub resource_arn: Option<String>,
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
 }

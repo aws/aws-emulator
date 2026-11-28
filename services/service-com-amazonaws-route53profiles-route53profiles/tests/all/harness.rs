@@ -7,11 +7,15 @@
 //! Both suites use it, so a request is built in exactly one place.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
+use service_com_amazonaws_route53profiles_route53profiles::state::{
+    service_state, OwedTransition, ASSOCIATION_SETTLE_DELAY,
+};
 use service_com_amazonaws_route53profiles_route53profiles::EmulatedService;
 
 /// This service's sigv4 signing name, from the model (`OPERATIONS.md`, "Wire protocol").
@@ -90,6 +94,9 @@ impl Reply {
 pub(crate) struct Emulator {
     router: MultiServiceRouter,
     region: String,
+    /// The engine the service is mounted on, so a suite can reach the store to bring
+    /// a clock-owed transition forward instead of waiting for it.
+    engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
@@ -97,10 +104,11 @@ impl Emulator {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
         Self {
             router,
             region: region.to_string(),
+            engine,
         }
     }
 
@@ -199,16 +207,53 @@ impl Emulator {
         resource_id: &str,
         name: &str,
     ) -> Reply {
-        self.call(
-            "POST",
-            "/profileassociation",
-            Some(json!({
-                "ProfileId": profile_id,
-                "ResourceId": resource_id,
-                "Name": name,
-            })),
-        )
-        .await
+        self.associate_with_priority(profile_id, resource_id, name, None)
+            .await
+    }
+
+    /// `AssociateProfile`, with `Priority` on the request only when the case names
+    /// one: a VPC's FIRST association may be made without one.
+    pub(crate) async fn associate_with_priority(
+        &self,
+        profile_id: &str,
+        resource_id: &str,
+        name: &str,
+        priority: Option<i64>,
+    ) -> Reply {
+        let mut body = json!({
+            "ProfileId": profile_id,
+            "ResourceId": resource_id,
+            "Name": name,
+        });
+        if let Some(priority) = priority {
+            body["Priority"] = json!(priority);
+        }
+        self.call("POST", "/profileassociation", Some(body)).await
+    }
+
+    /// `UpdateProfileAssociation`: the association id is a path label and the body
+    /// carries only the members this update names.
+    pub(crate) async fn update_association(&self, id: &str, body: Value) -> Reply {
+        self.call("PATCH", &format!("/profileassociation/{id}"), Some(body))
+            .await
+    }
+
+    /// Bring the clock-owed move to the settled phase of the Profile association
+    /// `id` forward instead of waiting for it: the stored due instant is what the
+    /// reported phase is a function of, and the wall-clock instant kept beside it is
+    /// the one the move was owed at, so the record reports exactly what waiting would
+    /// have reported.
+    pub(crate) fn settle_association(&self, id: &str) {
+        let state = service_state(&*self.engine).expect("the service's store is mounted");
+        let mut store = state.lock();
+        let association = store
+            .profile_associations
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("association {id} is not in the store"));
+        association.owed_settle = Some(OwedTransition {
+            due: Instant::now(),
+            at: association.modification_time + ASSOCIATION_SETTLE_DELAY,
+        });
     }
 
     pub(crate) async fn get_association(&self, id: &str) -> Reply {
