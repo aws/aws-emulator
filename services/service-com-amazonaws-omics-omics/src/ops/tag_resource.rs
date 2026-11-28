@@ -8,11 +8,13 @@
 //! takes the new value and every other key it carries stays, which is what a tagging
 //! call does to a resource that is already tagged.
 //!
-//! An ARN that names no resource of this service is refused as invalid; one that names a
-//! resource this emulator does not hold is the modelled `ResourceNotFoundException`; and
-//! a merge that would take the resource past the documented tags-per-resource ceiling is
-//! refused with the modelled `ServiceQuotaExceededException`, leaving the resource's tags
-//! as they were.
+//! An ARN that names no resource of this service is refused as invalid; one that resolves
+//! to a resource this emulator does not hold is refused on the REQUEST, with the modelled
+//! `ValidationException` and the one sentence this path words that condition with (see
+//! [`crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE`]) rather than with the
+//! resource-level 404 the resource's own reader answers; and a merge that would take the
+//! resource past the documented tags-per-resource ceiling is refused with the modelled
+//! `ServiceQuotaExceededException`, leaving the resource's tags as they were.
 //!
 //! ## Shape of an operation
 //!
@@ -194,18 +196,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.settle(now_ms);
 
+        // An ARN that DOES name a resource of this service but resolves to no record here
+        // — an id nothing holds, an id held in another Region or account, or a resource a
+        // delete has already reclaimed — is refused on the request by this path, which is
+        // what distinguishes it from the resource's own reader answering the same resource
+        // with its resource-level 404.
         let Some(tags) = store.resource_tags_mut(&input.resource_arn) else {
             crate::state::audit(
                 Self::NAME,
                 ctx,
-                crate::state::AuditOutcome::NotFound,
+                crate::state::AuditOutcome::ValidationRefused,
                 Some(&input.resource_arn),
             );
-            return Err(TagResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: crate::state::resource_arn_not_found_message(&input.resource_arn),
-                },
-            )
+            return Err(TagResourceErrorModeled::ValidationException(ValidationException {
+                message: crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+            })
             .into());
         };
 

@@ -9,8 +9,10 @@
 //! Idempotent, as the model declares: a key the resource does not carry is nothing to
 //! remove, so a repeat of the same call answers the same way and leaves the resource in
 //! the same state. An ARN that names no resource of this service is refused as invalid;
-//! one that names a resource this emulator does not hold is the modelled
-//! `ResourceNotFoundException`.
+//! one that resolves to a resource this emulator does not hold is refused on the REQUEST,
+//! with the modelled `ValidationException` and the one sentence this path words that
+//! condition with (see [`crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE`]), the same way
+//! the other two tagging operations refuse it.
 //!
 //! ## Shape of an operation
 //!
@@ -188,18 +190,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.settle(now_ms);
 
+        // An ARN that DOES name a resource of this service but resolves to no record here
+        // is refused on the request by this path, under the same rule the other two
+        // tagging operations resolve an ARN by.
         let Some(tags) = store.resource_tags_mut(&input.resource_arn) else {
             crate::state::audit(
                 Self::NAME,
                 ctx,
-                crate::state::AuditOutcome::NotFound,
+                crate::state::AuditOutcome::ValidationRefused,
                 Some(&input.resource_arn),
             );
-            return Err(UntagResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: crate::state::resource_arn_not_found_message(&input.resource_arn),
-                },
-            )
+            return Err(UntagResourceErrorModeled::ValidationException(ValidationException {
+                message: crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE.to_string(),
+            })
             .into());
         };
 

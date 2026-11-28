@@ -18,9 +18,10 @@
 //! * every kind's tags read back through `ListTagsForResource` and through the resource's
 //!   own `Get`, which answers from the same record;
 //! * one resource's tags are its own: tagging or untagging another leaves them alone;
-//! * an ARN naming no resource of this service at all is refused as invalid, while one
+//! * an ARN naming no resource of this service at all is refused as invalid, and so is one
 //!   naming a resource this emulator does not hold — an id nothing holds, or a held id in
-//!   another Region or account — is the modelled 404, from each of the three operations;
+//!   another Region or account — which this ARN-addressed path refuses on the request with
+//!   its own fixed sentence, from each of the three operations;
 //! * the documented tags-per-resource ceiling is a quota: a merge past it is refused and
 //!   leaves the resource's tags as they were, while giving a key already there a new value
 //!   needs no room.
@@ -43,12 +44,13 @@ use crate::private_workflow_runs::{
 /// Source: `smithy_query(query="operation",operation="TagResource,UntagResource")`.
 const TAG_MUTATION_STATUS: u16 = 204;
 
-/// The sentence this service states when a caller-supplied resource ARN names no resource
-/// it holds. Fixed form, with the ARN the REQUEST carried as its only variable part, and
-/// the same sentence `CreateShare` answers that condition with.
-fn not_found_sentence(resource_arn: &str) -> String {
-    format!("Resource {resource_arn} not found")
-}
+/// The sentence the ARN-addressed tagging path states when the `resourceArn` it was given
+/// resolves to a resource this service does not hold. Entirely FIXED text: it carries no
+/// ARN, name or id, so the three operations state it identically whichever kind of
+/// resource the ARN named.
+/// Source: the sentence this service's tagging path answers that condition with,
+/// `state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE`.
+const TAGGING_NOT_FOUND_SENTENCE: &str = "Resource was not found";
 
 /// Percent-encode `value` the way an AWS SDK encodes a non-greedy `@httpLabel` or a query
 /// value: everything outside RFC 3986's unreserved set is escaped, so an ARN's `:` and `/`
@@ -501,7 +503,7 @@ async fn an_arn_naming_no_resource_of_this_service_is_refused() {
 }
 
 #[tokio::test]
-async fn an_arn_naming_a_resource_this_emulator_does_not_hold_is_not_found() {
+async fn an_arn_naming_a_resource_this_emulator_does_not_hold_is_refused_on_the_request() {
     let router = emulator();
     let rows = taggable_resources(&router).await;
 
@@ -550,19 +552,19 @@ async fn an_arn_naming_a_resource_this_emulator_does_not_hold_is_not_found() {
             ("UntagResource", untag_resource(&router, resource_arn, &["env"]).await),
         ] {
             assert_eq!(
-                status, 404,
-                "case {case:?} / {operation}: expected 404, got {status} with {body:?}"
+                status, 400,
+                "case {case:?} / {operation}: expected 400, got {status} with {body:?}"
             );
             assert_eq!(
                 error_code(&body),
-                "ResourceNotFoundException",
-                "case {case:?} / {operation}: expected ResourceNotFoundException, got {body:?}"
+                "ValidationException",
+                "case {case:?} / {operation}: expected ValidationException, got {body:?}"
             );
             assert_eq!(
                 body.get("message").and_then(Value::as_str),
-                Some(not_found_sentence(resource_arn).as_str()),
-                "case {case:?} / {operation}: expected the service's not-found sentence, \
-                 got {body:?}"
+                Some(TAGGING_NOT_FOUND_SENTENCE),
+                "case {case:?} / {operation}: expected the tagging path's own \
+                 missing-resource sentence, got {body:?}"
             );
         }
     }

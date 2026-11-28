@@ -339,15 +339,27 @@ pub const READ_SET_PART_NOT_FOUND_MESSAGE: &str = "ResourceNotFoundException";
 pub const RESOURCE_HAS_DEPENDENTS_MESSAGE: &str =
     "The specified resource is associated with other resources and cannot be deleted.";
 
-/// What an operation that resolves a CALLER-SUPPLIED resource ARN answers when the ARN
-/// names no resource this emulator holds.
+/// What the sharing path answers when the CALLER-SUPPLIED resource ARN it was given names
+/// no resource this emulator holds: the modelled `ResourceNotFoundException`, for the
+/// resource that would have been offered.
 ///
-/// The variable part is the resource ARN the REQUEST carried. One sentence for the whole
-/// condition, so `CreateShare` (the resource it is offered) and the tagging operations
-/// (the resource whose tags were addressed) state it identically.
+/// The variable part is the resource ARN the REQUEST carried. The ARN-addressed tagging
+/// path words its own missing-resource refusal differently — see
+/// [`TAGGING_RESOURCE_NOT_FOUND_MESSAGE`].
 pub fn resource_arn_not_found_message(resource_arn: &str) -> String {
     format!("Resource {resource_arn} not found")
 }
+
+/// What the ARN-addressed tagging path answers when the `resourceArn` it was given
+/// resolves to a resource of this service that no record here holds — an id nothing holds,
+/// an id held in another Region or account, or one a delete has already reclaimed.
+///
+/// The three tagging operations share one path and refuse this condition on the REQUEST
+/// (HTTP 400 `ValidationException`), not as the resource-level 404 the resource's own
+/// reader answers for the very same resource, so the two paths deliberately do not answer
+/// alike. The sentence is FIXED text: it echoes no ARN, name or id back, so every
+/// operation and every kind of resource states it identically.
+pub const TAGGING_RESOURCE_NOT_FOUND_MESSAGE: &str = "Resource was not found";
 
 /// What a tagging call answers when the tags it would add take the resource past
 /// [`MAX_TAGS`].

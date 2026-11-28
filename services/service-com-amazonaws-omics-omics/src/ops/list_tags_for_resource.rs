@@ -6,8 +6,11 @@
 //! so the two readers cannot disagree. Reporting only: nothing about the stored record
 //! changes here, so two reads of one resource answer identically.
 //!
-//! An ARN that names no resource of this service is refused as invalid; one that names a
-//! resource this emulator does not hold is the modelled `ResourceNotFoundException`. A
+//! An ARN that names no resource of this service is refused as invalid; one that resolves
+//! to a resource this emulator does not hold is refused on the REQUEST, with the modelled
+//! `ValidationException` and the one sentence this path words that condition with (see
+//! [`crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE`]), the same way the two tagging
+//! mutations refuse it. A
 //! resource carrying no tags is answered with an empty map, which is what the `@required`
 //! `tags` member asks for.
 //!
@@ -191,15 +194,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         store.settle(now_ms);
 
+        // An ARN that DOES name a resource of this service but resolves to no record here
+        // is refused on the request by this path, under the same rule the two tagging
+        // mutations resolve an ARN by.
         let tags = store.resource_tags(&input.resource_arn).ok_or_else(|| {
             crate::state::audit(
                 Self::NAME,
                 ctx,
-                crate::state::AuditOutcome::NotFound,
+                crate::state::AuditOutcome::ValidationRefused,
                 Some(&input.resource_arn),
             );
-            ListTagsForResourceErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                message: crate::state::resource_arn_not_found_message(&input.resource_arn),
+            ListTagsForResourceErrorModeled::ValidationException(ValidationException {
+                message: crate::state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE.to_string(),
             })
         })?;
         let reported = tags

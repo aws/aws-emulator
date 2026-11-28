@@ -930,17 +930,19 @@ fn run_group_not_found_sentence(id: &str) -> String {
     format!("Run group {id} not found")
 }
 
-/// The sentence this service states when a caller-supplied resource ARN names no resource
-/// it holds, which is what a deleted group's ARN becomes: fixed form, with the ARN the
-/// request carried as its only variable part.
-fn resource_not_found_sentence(resource_arn: &str) -> String {
-    format!("Resource {resource_arn} not found")
-}
+/// The sentence the ARN-addressed tagging path states when the ARN it was given resolves
+/// to a resource this service does not hold, which is what a deleted group's ARN becomes:
+/// entirely fixed text, carrying nothing of the request.
+/// Source: the sentence this service's tagging path answers that condition with,
+/// `state::TAGGING_RESOURCE_NOT_FOUND_MESSAGE`.
+const TAGGING_NOT_FOUND_SENTENCE: &str = "Resource was not found";
 
-/// Assert `id` names no run group any reader of this service holds: the read, a further
-/// delete and the tag reader of its ARN all answer the modelled 404 with the sentence that
-/// condition is worded with, so the record is gone rather than merely hidden from one
-/// reader.
+/// Assert `id` names no run group any reader of this service holds: the read and a further
+/// delete answer the modelled 404 with the sentence that condition is worded with, and the
+/// tag reader of its ARN refuses the request with the tagging path's own fixed sentence, so
+/// the record is gone rather than merely hidden from one reader. The two paths deliberately
+/// do not answer alike: the resource's own readers state the resource-level 404, the
+/// ARN-addressed tagging path a request-level 400.
 async fn assert_gone(router: &MultiServiceRouter, case: &str, id: &str, arn: &str) {
     for (reader, expected, (status, body)) in [
         (
@@ -952,11 +954,6 @@ async fn assert_gone(router: &MultiServiceRouter, case: &str, id: &str, arn: &st
             "DeleteRunGroup",
             run_group_not_found_sentence(id),
             delete_group(router, id).await,
-        ),
-        (
-            "ListTagsForResource",
-            resource_not_found_sentence(arn),
-            list_tags(router, arn).await,
         ),
     ] {
         assert_eq!(
@@ -974,6 +971,23 @@ async fn assert_gone(router: &MultiServiceRouter, case: &str, id: &str, arn: &st
             "case {case:?}: expected {reader} to answer {expected:?}, got {body:?}"
         );
     }
+
+    let (status, body) = list_tags(router, arn).await;
+    assert_eq!(
+        status, 400,
+        "case {case:?}: expected 400 from ListTagsForResource for a deleted group, got {body:?}"
+    );
+    assert_eq!(
+        error_code(&body),
+        "ValidationException",
+        "case {case:?}: expected ValidationException from ListTagsForResource, got {body:?}"
+    );
+    assert_eq!(
+        body.get("message").and_then(Value::as_str),
+        Some(TAGGING_NOT_FOUND_SENTENCE),
+        "case {case:?}: expected ListTagsForResource to answer \
+         {TAGGING_NOT_FOUND_SENTENCE:?}, got {body:?}"
+    );
 }
 
 #[tokio::test]
