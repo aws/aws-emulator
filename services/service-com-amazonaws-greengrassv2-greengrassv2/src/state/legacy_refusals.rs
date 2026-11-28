@@ -87,16 +87,38 @@ pub const UNREADABLE_REQUEST_BODY_MESSAGE: &str = "Invalid json format found in 
 /// targets `connectivityInfoList`), not the member name and not a value of the request.
 pub const CONNECTIVITY_INFO_PARAMETER: &str = "connectivityInfoList";
 
-/// What the legacy surface answers a request under whose parameter nothing it could read as
-/// that parameter's value arrived: the fixed sentence, naming that parameter.
+/// What the legacy surface answers a request under whose parameters nothing it could read as
+/// those parameters' values arrived: the fixed sentence, naming every one of them.
+///
+/// The sentence's fixed text is everything but the names, and its variable part is the list
+/// of parameters the service could not parse, taken from the request — so a caller is told
+/// exactly which parameters of its own request it has to correct. Several are stated in one
+/// sentence, which is what the `(s)` of the fixed text is for, separated as a list of names
+/// is read.
 ///
 /// The two refusals are distinct classes, worded as AWS words each: this one names the
-/// parameter nothing readable arrived under, and [`UNREADABLE_REQUEST_BODY_MESSAGE`] answers
+/// parameters nothing readable arrived under, and [`UNREADABLE_REQUEST_BODY_MESSAGE`] answers
 /// a parameter that WAS read and carries something the operation does not take.
+///
+/// # Panics
+///
+/// In a debug build, when `parameters` is empty: the sentence exists to NAME what a caller
+/// has to correct, so a refusal that names nothing is a caller being told nothing, and the
+/// decision to refuse at all is the decision that there is a name to state.
 #[must_use]
-pub fn unparsable_parameter_message(parameter: &str) -> String {
-    format!("The following required parameter(s) are unparsable: {parameter}.")
+pub fn unparsable_parameter_message(parameters: &[&str]) -> String {
+    debug_assert!(
+        !parameters.is_empty(),
+        "this refusal names the parameters it could not parse, so there is at least one"
+    );
+    format!(
+        "The following required parameter(s) are unparsable: {}.",
+        parameters.join(PARAMETER_SEPARATOR)
+    )
 }
+
+/// What separates two parameter names in [`unparsable_parameter_message`].
+const PARAMETER_SEPARATOR: &str = ", ";
 
 /// What `GetConnectivityInfo` answers for a core device that has published no connectivity
 /// information.

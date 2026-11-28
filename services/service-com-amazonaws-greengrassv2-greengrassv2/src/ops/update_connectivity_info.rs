@@ -177,7 +177,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // Nothing this surface could read as the endpoint list arrived under the
                 // `@required` parameter, so the refusal names that parameter.
                 return Err(st::LegacyRefusal::bad_request(
-                    st::unparsable_parameter_message(st::CONNECTIVITY_INFO_PARAMETER),
+                    st::unparsable_parameter_message(&[st::CONNECTIVITY_INFO_PARAMETER]),
                 )
                 .into())
             }

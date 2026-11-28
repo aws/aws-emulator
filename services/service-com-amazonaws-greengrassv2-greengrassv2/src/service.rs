@@ -57,6 +57,9 @@
 //! the request does not carry, and a request that leaves such a member out addresses an
 //! operation this service HAS. See [`EmulatedService::addressed_operation`], and
 //! [`untag_without_keys`] for the one of those requests that is SERVED rather than refused.
+//! It is also where a request NAMING a parameter this service could not read a value for is
+//! refused, because that is the last point at which an unreadable value is still
+//! distinguishable from an absent one ([`unparsable_parameters`]).
 //!
 //! `override_refusal` is taken for the refusals of the tagging route this service words
 //! itself — a `resourceArn` that is no ARN at all, and one that is an ARN of another vendor
@@ -65,6 +68,7 @@
 
 mod tagging_resource_arn;
 mod tagging_vendor;
+mod unparsable_parameters;
 mod untag_without_keys;
 
 use aws_smithy_runtime_api::http::{Request as WireRequest, Response as WireResponse};
@@ -334,9 +338,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // NOT a re-route: a request the protocol resolves a routing key for is left to the
-        // generated routing table, which is what `None` here means.
+        // Mostly NOT a re-route: a request the protocol resolves a routing key for is left
+        // to the generated routing table, which is what `None` here means.
         //
+        // First, though, the one decision about a request that cannot be made later: a
+        // parameter the body NAMES with a value the modelled member cannot be read from
+        // never became a value at all, and this service's codec reads it as the member
+        // being absent — so no handler can still tell the two apart. Such a request is
+        // answered here, naming that parameter ([`unparsable_parameters`]).
+        if unparsable_parameters::refuses(req) {
+            return Some(&unparsable_parameters::UNPARSABLE_PARAMETERS);
+        }
+
         // A request the protocol names NO key for is given one more chance, on the route its
         // method and URI address ([`Self::addressed_operation`]): a `@required` header or
         // query member a request leaves out is a request for an operation this service HAS,
