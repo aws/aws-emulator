@@ -321,6 +321,7 @@ service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeas
 service-com-amazonaws-partnercentralselling-awspartnercentralselling = { workspace = true }
 service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane = { workspace = true }
 service-com-amazonaws-paymentcryptographydata-paymentcryptographydataplane = { workspace = true }
+service-com-amazonaws-payments-awspayments = { workspace = true }
 service-com-amazonaws-pcaconnectorad-pcaconnectorad = { workspace = true }
 service-com-amazonaws-pcaconnectorscep-pcaconnectorscep = { workspace = true }
 service-com-amazonaws-pcs-awsparallelcomputingservice = { workspace = true }

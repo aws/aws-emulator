@@ -775,6 +775,7 @@ fn mount_chunk_28(
 ) -> MultiServiceRouter {
     router.register_service(service_com_amazonaws_paymentcryptography_paymentcryptographycontrolplane::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_paymentcryptographydata_paymentcryptographydataplane::EmulatedService::new(engine.clone()));
+    router.register_service(service_com_amazonaws_payments_awspayments::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pcaconnectorad_pcaconnectorad::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pcaconnectorscep_pcaconnectorscep::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pcs_awsparallelcomputingservice::EmulatedService::new(engine.clone()));
@@ -783,7 +784,6 @@ fn mount_chunk_28(
     router.register_service(service_com_amazonaws_personalizeruntime_amazonpersonalizeruntime::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pi_performanceinsightsv20180227::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pinpoint_pinpoint::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_pinpointemail_amazonpinpointemailservice::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -796,6 +796,7 @@ fn mount_chunk_29(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_pinpointemail_amazonpinpointemailservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pinpointsmsvoice_pinpointsmsvoice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pinpointsmsvoicev2_pinpointsmsvoicev2::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_pipes_pipes::EmulatedService::new(engine.clone()));
@@ -806,7 +807,6 @@ fn mount_chunk_29(
     router.register_service(service_com_amazonaws_qapps_qappsservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_qbusiness_expertq::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_qconnect_wisdomservice::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_quicksight_quicksight_20180401::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -819,6 +819,7 @@ fn mount_chunk_30(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_quicksight_quicksight_20180401::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_ram_amazonresourcesharing::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_rbin_amazonrecyclebin::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_rds_amazonrdsv19::EmulatedService::new(engine.clone()));
@@ -829,7 +830,6 @@ fn mount_chunk_30(
     router.register_service(service_com_amazonaws_rekognition_rekognitionservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_repostspace_repostspace::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_resiliencehub_awsresiliencehub::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_resiliencehubv2_ngrhservicecore::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -842,6 +842,7 @@ fn mount_chunk_31(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_resiliencehubv2_ngrhservicecore::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_resourceexplorer2_resourceexplorer::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_resourcegroups_ardi::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_resourcegroupstaggingapi_resourcegroupstaggingapi_20170126::EmulatedService::new(engine.clone()));
@@ -852,7 +853,6 @@ fn mount_chunk_31(
     router.register_service(service_com_amazonaws_route53profiles_route53profiles::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_route53recoverycluster_togglecustomerapi::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_route53recoverycontrolconfig_route53recoverycontrolconfig::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_route53recoveryreadiness_route53recoveryreadiness::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -865,6 +865,7 @@ fn mount_chunk_32(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_route53recoveryreadiness_route53recoveryreadiness::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_route53resolver_route53resolver::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_rtbfabric_rtbfabric::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_rum_rum::EmulatedService::new(engine.clone()));
@@ -875,7 +876,6 @@ fn mount_chunk_32(
     router.register_service(service_com_amazonaws_s3tables_s3tablebuckets::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_s3vectors_s3vectors::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sagemaker_sagemaker::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_sagemakera2iruntime_amazonsagemakera2iruntime::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -888,6 +888,7 @@ fn mount_chunk_33(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_sagemakera2iruntime_amazonsagemakera2iruntime::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sagemakeredge_amazonsagemakeredge::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sagemakerfeaturestoreruntime_amazonsagemakerfeaturestoreruntime::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sagemakergeospatial_sagemakergeospatial::EmulatedService::new(engine.clone()));
@@ -898,7 +899,6 @@ fn mount_chunk_33(
     router.register_service(service_com_amazonaws_sagemakertrainingsessionruntime_legorouterservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_savingsplans_awssavingsplan::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_scheduler_awschronosservice::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_schemas_schemas::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -911,6 +911,7 @@ fn mount_chunk_34(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_schemas_schemas::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_securityagent_securityagent::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_securityhub_securityhubapiservice::EmulatedService::new(engine.clone()));
@@ -921,7 +922,6 @@ fn mount_chunk_34(
     router.register_service(service_com_amazonaws_servicecatalogappregistry_aws242appregistry::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_servicediscovery_route53autonaming_v20170314::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_servicequotas_servicequotasv20190624::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_ses_simpleemailservice::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -934,6 +934,7 @@ fn mount_chunk_35(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_ses_simpleemailservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sesv2_simpleemailservice_v2::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sfn_awsstepfunctions::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_shield_awsshield_20160616::EmulatedService::new(engine.clone()));
@@ -944,7 +945,6 @@ fn mount_chunk_35(
     router.register_service(service_com_amazonaws_snowball_awsiesnowballjobmanagementservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_snowdevicemanagement_snowdevicemanagement::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sns_amazonsimplenotificationservice::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_socialmessaging_socialmessaging::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -957,6 +957,7 @@ fn mount_chunk_36(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_socialmessaging_socialmessaging::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_ssm_amazonssm::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_ssmcontacts_ssmcontacts::EmulatedService::new(engine.clone()));
@@ -967,7 +968,6 @@ fn mount_chunk_36(
     router.register_service(service_com_amazonaws_sso_swbportalservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_ssoadmin_swbexternalservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_ssooidc_awsssooidcservice::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_storagegateway_storagegateway_20130630::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -980,6 +980,7 @@ fn mount_chunk_37(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_storagegateway_storagegateway_20130630::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_sts_awssecuritytokenservicev20110615::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_supplychain_galaxypublicapigateway::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_support_awssupport_20130415::EmulatedService::new(engine.clone()));
@@ -990,7 +991,6 @@ fn mount_chunk_37(
     router.register_service(service_com_amazonaws_synthetics_synthetics::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_taxsettings_taxsettings::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_textract_textract::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_timestreaminfluxdb_amazontimestreaminfluxdb::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -1003,6 +1003,7 @@ fn mount_chunk_38(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_timestreaminfluxdb_amazontimestreaminfluxdb::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_timestreamquery_timestream_20181101::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_timestreamwrite_timestream_20181101::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_transcribe_transcribe::EmulatedService::new(engine.clone()));
@@ -1013,7 +1014,6 @@ fn mount_chunk_38(
     router.register_service(service_com_amazonaws_uxc_awsaccountuxsetting::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_verifiedpermissions_verifiedpermissions::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_voiceid_voiceid::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_vpclattice_mercurycontrolplane::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -1026,6 +1026,7 @@ fn mount_chunk_39(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_vpclattice_mercurycontrolplane::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_waf_awswaf_20150824::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_wafregional_awswaf_regional_20161128::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_wafv2_awswaf_20190729::EmulatedService::new(engine.clone()));
@@ -1036,7 +1037,6 @@ fn mount_chunk_39(
     router.register_service(service_com_amazonaws_workmail_workmailservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_workmailmessageflow_giraffemessageintransitservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_workspaces_workspacesservice::EmulatedService::new(engine.clone()));
-    router.register_service(service_com_amazonaws_workspacesinstances_eucmifrontendapiservice::EmulatedService::new(engine.clone()));
     router
 }
 
@@ -1049,6 +1049,7 @@ fn mount_chunk_40(
     mut router: MultiServiceRouter,
     engine: &Arc<InMemoryEngine>,
 ) -> MultiServiceRouter {
+    router.register_service(service_com_amazonaws_workspacesinstances_eucmifrontendapiservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_workspacesthinclient_thinclient::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_workspacesweb_awserminecontrolplaneservice::EmulatedService::new(engine.clone()));
     router.register_service(service_com_amazonaws_xray_awsxray::EmulatedService::new(engine.clone()));

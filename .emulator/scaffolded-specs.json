@@ -1241,6 +1241,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/payment-cryptography-data/service/2022-02-03/payment-cryptography-data-2022-02-03.json"
     },
     {
+      "shape_id": "com.amazonaws.payments#AWSPayments",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/c017e19db1da3c456cbf8f8cd3f6a4b9922c5bcf/models/payments/service/2026-09-23/payments-2026-09-23.json"
+    },
+    {
       "shape_id": "com.amazonaws.pcaconnectorad#PcaConnectorAd",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/pca-connector-ad/service/2018-05-10/pca-connector-ad-2018-05-10.json"
     },

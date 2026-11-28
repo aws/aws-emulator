@@ -310,6 +310,7 @@ members = [
     "services/service-com-amazonaws-partnercentralselling-awspartnercentralselling",
     "services/service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane",
     "services/service-com-amazonaws-paymentcryptographydata-paymentcryptographydataplane",
+    "services/service-com-amazonaws-payments-awspayments",
     "services/service-com-amazonaws-pcaconnectorad-pcaconnectorad",
     "services/service-com-amazonaws-pcaconnectorscep-pcaconnectorscep",
     "services/service-com-amazonaws-pcs-awsparallelcomputingservice",
@@ -788,6 +789,7 @@ service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeas
 service-com-amazonaws-partnercentralselling-awspartnercentralselling = { path = "services/service-com-amazonaws-partnercentralselling-awspartnercentralselling" }
 service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane = { path = "services/service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane" }
 service-com-amazonaws-paymentcryptographydata-paymentcryptographydataplane = { path = "services/service-com-amazonaws-paymentcryptographydata-paymentcryptographydataplane" }
+service-com-amazonaws-payments-awspayments = { path = "services/service-com-amazonaws-payments-awspayments" }
 service-com-amazonaws-pcaconnectorad-pcaconnectorad = { path = "services/service-com-amazonaws-pcaconnectorad-pcaconnectorad" }
 service-com-amazonaws-pcaconnectorscep-pcaconnectorscep = { path = "services/service-com-amazonaws-pcaconnectorscep-pcaconnectorscep" }
 service-com-amazonaws-pcs-awsparallelcomputingservice = { path = "services/service-com-amazonaws-pcs-awsparallelcomputingservice" }
