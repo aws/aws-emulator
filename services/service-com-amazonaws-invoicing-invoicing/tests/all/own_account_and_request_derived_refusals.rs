@@ -231,41 +231,38 @@ async fn a_named_linked_account_resolves_to_its_invoice_profile() {
     }
 
     // The bare case: nothing at all in state, which is how a client first meets this
-    // operation — the organization then links no account whatsoever, so the account the
-    // caller authenticates as is the only readable one and every other id is refused.
+    // operation — the organization then links no account whatsoever, so every id is
+    // refused, the account the caller authenticates as included.
     let router = emulator();
-    let (status, body) = batch_get(&router, std::slice::from_ref(&own)).await;
-    assert_eq!(
-        status, 200,
-        "case empty organization ({own}): the caller's own account is readable, got {status} \
-         {body}"
-    );
-    assert_eq!(
-        reported_accounts(&body),
-        vec![own.clone()],
-        "case empty organization ({own}): expected one profile for that account, got {body}"
-    );
-    let stranger = account(41);
-    let (status, body) = batch_get(&router, std::slice::from_ref(&stranger)).await;
-    assert_eq!(
-        status, 403,
-        "case empty organization ({stranger}): expected HTTP 403, got {status} {body}"
-    );
-    assert!(
-        error_code(&body).contains("AccessDeniedException"),
-        "case empty organization ({stranger}): expected an AccessDeniedException, got {body}"
-    );
-    let refusal =
-        format!("Account {own} is not authorized to access resources for account {stranger}");
-    assert_eq!(
-        error_message(&body),
-        refusal,
-        "case empty organization ({stranger}): expected message {refusal:?}, got {body}"
-    );
-    assert!(
-        body.get("Profiles").is_none(),
-        "case empty organization ({stranger}): a refused batch reports no profiles, got {body}"
-    );
+    for (label, refused) in [
+        ("the caller's own account", own.clone()),
+        ("a stranger", account(41)),
+    ] {
+        let (status, body) = batch_get(&router, std::slice::from_ref(&refused)).await;
+        assert_eq!(
+            status, 403,
+            "case empty organization, {label} ({refused}): expected HTTP 403, got {status} \
+             {body}"
+        );
+        assert!(
+            error_code(&body).contains("AccessDeniedException"),
+            "case empty organization, {label} ({refused}): expected an \
+             AccessDeniedException, got {body}"
+        );
+        let refusal =
+            format!("Account {own} is not authorized to access resources for account {refused}");
+        assert_eq!(
+            error_message(&body),
+            refusal,
+            "case empty organization, {label} ({refused}): expected message {refusal:?}, got \
+             {body}"
+        );
+        assert!(
+            body.get("Profiles").is_none(),
+            "case empty organization, {label} ({refused}): a refused batch reports no \
+             profiles, got {body}"
+        );
+    }
 }
 
 /// RULE 1, the negative half: a well-formed account id the organization does not name as a

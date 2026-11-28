@@ -584,28 +584,21 @@ impl ComAmazonawsInvoicingInvoicingState {
         }
     }
 
-    /// Every account this service may be answered about: the requester's OWN account,
-    /// and the LINKED accounts of its organization, which [`Self::linked_accounts`]
-    /// derives from stored configurations.
+    /// Every account this service may be answered about: the LINKED accounts of the
+    /// requester's organization, those stored configurations name, and NOTHING else.
     ///
-    /// `BatchGetInvoiceProfile` reads "the invoice profile of a given list of accounts",
-    /// and the account a requester is always entitled to is its own — it is the account
-    /// the request is signed for, so no configuration has to grant it. Beside it stand the
-    /// accounts its organization LINKS ("the accounts must be linked accounts under the
-    /// requester management account organization"), which is what makes a SECOND account
-    /// readable. An account id outside that set is one the requester holds no access to,
-    /// and is what such an operation refuses ([`not_authorized_for_account`]).
+    /// `BatchGetInvoiceProfile` is documented "the accounts must be linked accounts under
+    /// the requester management account organization", so being a LINKED account of that
+    /// organization is the whole of what makes an account readable. The account a request
+    /// is signed for is the organization's MANAGEMENT account, which is not a linked
+    /// account of it, so the requester's own identity grants it no access either: its own
+    /// account id is readable exactly when a stored configuration links it, the way every
+    /// other account id is. An account id outside that set is one the requester holds no
+    /// access to, and is what such an operation refuses
+    /// ([`not_authorized_for_account`]).
     ///
-    /// A read never widens the set: membership is the requester's own identity plus what
-    /// stored configurations link, so nothing but a write changes it.
-    pub fn accounts_the_requester_may_read(&self) -> BTreeSet<String> {
-        let mut readable = self.linked_accounts();
-        readable.insert(::engine::emulator_account_id().to_string());
-        readable
-    }
-
-    /// Every LINKED account this service's state names under the requester's
-    /// management-account organization.
+    /// A read never widens the set: membership is what stored configurations link, so
+    /// nothing but a write changes it.
     ///
     /// This service's state names a linked account of that organization in exactly two
     /// places: an invoice unit's `InvoiceReceiver` ("the Amazon Web Services account ID
@@ -613,10 +606,6 @@ impl ComAmazonawsInvoicingInvoicingState {
     /// `LinkedAccounts` ("the list of `LINKED_ACCOUNT` IDs where charges are included
     /// within the invoice unit") — `smithy_query(query="shape", shape="InvoiceUnitRule")`
     /// and `smithy_query(query="operation", operation="CreateInvoiceUnit")`.
-    ///
-    /// Membership of this set is derived from those configurations and from NOTHING else:
-    /// it is the LINKED half of the organization, which is the whole of what
-    /// [`Self::accounts_the_requester_may_read`] admits.
     ///
     /// `BillSourceAccounts` is deliberately NOT a source: the model documents those as
     /// accounts that "can be payer accounts from other organizations that have
@@ -627,7 +616,7 @@ impl ComAmazonawsInvoicingInvoicingState {
     /// account an update dropped from a rule left that invoice unit, not the
     /// organization. A deleted invoice unit takes its accounts with it — state is the
     /// only record either way.
-    pub fn linked_accounts(&self) -> BTreeSet<String> {
+    pub fn accounts_the_requester_may_read(&self) -> BTreeSet<String> {
         let mut accounts = BTreeSet::new();
         for unit in self.live_invoice_units() {
             accounts.insert(unit.invoice_receiver.clone());
