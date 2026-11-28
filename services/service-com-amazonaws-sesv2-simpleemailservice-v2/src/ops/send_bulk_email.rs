@@ -280,11 +280,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The REQUEST/CONTENT validation stage Amazon SES runs before it weighs the send
-        // against anything the account holds: the addresses the request names, the headers,
-        // the tags and the attachments the one template states for every message of this
-        // call ([`crate::state::send_validation`]). What ONE ENTRY states for itself — the
-        // headers and the tags of its own message — is read the same way, once the call is
-        // known to have a message to compose at all ([`validate_entry_members`]).
+        // against anything the account holds: the addresses the request names, the headers
+        // and the attachments the one template states for every message of this call
+        // ([`crate::state::send_validation`]). What ONE ENTRY states for itself — the headers
+        // of its own message — is read the same way, once the call is known to have a message
+        // to compose at all ([`validate_entry_members`]); the TAGS the call and its entries
+        // state are read once its identities have passed their gate ([`validate_tags`]).
         validate_request(&input, template)?;
 
         if template
@@ -482,6 +483,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
                 .into());
             }
+
+            // The TAGS this call states, the default set and each entry's replacement set:
+            // read here, once the identities of the call have passed their gate
+            // ([`validate_tags`]).
+            validate_tags(&input)?;
 
             // The template every message of this call is rendered from, read back out of
             // the account's template store: a resource of the account, resolved for the
@@ -1027,12 +1033,12 @@ fn entry_tags(entry: &BulkEmailEntry, default_tags: &[MessageTag]) -> Vec<(Strin
 /// at all, checked before anything the account holds is read.
 ///
 /// The same stage a single send runs ([`crate::state::send_validation`]), over what this
-/// request states for EVERY message it sends: the addresses it names, and the headers, the
-/// tags and the attachments its one template carries. What ONE ENTRY states for its own
-/// message is read by [`validate_entry_members`], once the call is known to have a message
-/// to compose, and the DESTINATION one addresses is read per entry instead ([`entry_defect`]),
-/// because a defect there is reported in that destination's own result rather than failing
-/// the call.
+/// request states for EVERY message it sends: the addresses it names, and the headers and the
+/// attachments its one template carries. What ONE ENTRY states for its own message is read by
+/// [`validate_entry_members`], once the call is known to have a message to compose, and the
+/// DESTINATION one addresses is read per entry instead ([`entry_defect`]), because a defect
+/// there is reported in that destination's own result rather than failing the call. The TAGS
+/// are read after the identities of the call have passed their gate ([`validate_tags`]).
 fn validate_request(
     input: &SendBulkEmailInput,
     template: &Template,
@@ -1070,11 +1076,6 @@ fn validate_request(
     ) {
         return Err(bad_request(defect));
     }
-    if let Some(defect) = crate::state::send_validation::tags_defect(
-        input.default_email_tags.as_deref().unwrap_or_default(),
-    ) {
-        return Err(bad_request(defect));
-    }
     // The tenant every message of this call is sent THROUGH: a resource of the account, so
     // the value has to be one a tenant can be named by before the tenant table is read.
     if let Some(defect) =
@@ -1085,13 +1086,14 @@ fn validate_request(
     Ok(())
 }
 
-/// What the HEADERS and the TAGS one entry states for its own message have to be, over every
-/// entry of the request, in the order the request lists them.
+/// What the HEADERS one entry states for its own message have to be, over every entry of the
+/// request, in the order the request lists them.
 ///
 /// Part of the request's own FORM, not of that destination's result: SES is recorded refusing
 /// the whole call for a header it writes itself wherever the request states it, rather than
 /// reporting it as that entry's result. What is read per entry is the DESTINATION it addresses
-/// ([`entry_defect`]).
+/// ([`entry_defect`]), and the TAGS an entry replaces the call's with are read after the
+/// identities of the call have passed their gate ([`validate_tags`]).
 ///
 /// Read BEFORE anything the account holds, as every other reading of the request's form is:
 /// SES is recorded refusing a call whose entry states a header it writes itself with that
@@ -1106,6 +1108,27 @@ fn validate_entry_members(input: &SendBulkEmailInput) -> Result<(), SendBulkEmai
         ) {
             return Err(bad_request(defect));
         }
+    }
+    Ok(())
+}
+
+/// What the TAGS this call states have to be: the set every message of the call carries
+/// (`DefaultEmailTags`) and then the set ONE ENTRY replaces them with for its own message
+/// (`BulkEmailEntry$ReplacementTags`), in the order the request lists the entries.
+///
+/// Read AFTER the sending identity has passed its gate, which is where SES is recorded
+/// reading it: a call whose identities are not verified is refused as an unverified send even
+/// when a tag it carries is outside the character set `MessageTag` documents, so the tag
+/// grammar never preempts the verification refusal. A defect is the caller's mistake about
+/// the whole call rather than about one destination, so it refuses the call
+/// ([`crate::state::send_validation::tags_defect`]).
+fn validate_tags(input: &SendBulkEmailInput) -> Result<(), SendBulkEmailError> {
+    if let Some(defect) = crate::state::send_validation::tags_defect(
+        input.default_email_tags.as_deref().unwrap_or_default(),
+    ) {
+        return Err(bad_request(defect));
+    }
+    for entry in &input.bulk_email_entries {
         if let Some(defect) = crate::state::send_validation::tags_defect(
             entry.replacement_tags.as_deref().unwrap_or_default(),
         ) {

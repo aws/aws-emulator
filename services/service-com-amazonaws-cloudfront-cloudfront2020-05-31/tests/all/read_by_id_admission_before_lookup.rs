@@ -13,29 +13,30 @@
 //! no `@pattern` and no `@length`), so the MESSAGE is the whole of what tells two conditions
 //! apart, and it is decided from the VALUE alone, before the lookup:
 //!
-//! * a value that could never be an identifier CloudFront issued for the addressed kind is the
-//!   identifier the route reports it cannot READ ("Id format is invalid"). Three things about a
-//!   value say that: it is written outside both forms CloudFront issues an identifier in (the
-//!   alphabet of decimal digits and uppercase letters, and the UUID its key groups and policy
-//!   kinds are minted with); it is written WIDER
-//!   than the width an identifier of this mint is issued at, which overflows every identifier it
-//!   could be; or it is written exactly the way an identifier is ISSUED — that alphabet at that
-//!   width, where the leading character is the namespace — under the namespace letter of ANOTHER
-//!   kind this service issues identifiers under, which makes it that kind's identifier;
+//! * a value that IS an identifier CloudFront issued for ANOTHER kind of this service — the
+//!   alphabet of decimal digits and uppercase letters at the width an identifier is issued at,
+//!   under another kind's namespace letter — names that other kind's record, so no record of the
+//!   addressed kind could ever answer to it and it is the identifier the route reports it cannot
+//!   READ ("Id format is invalid");
+//! * beyond that one claim, HOW MUCH of the value a route reads is the addressed kind's own
+//!   recorded contract: the field-level encryption records' routes also refuse a value written
+//!   OUTSIDE the alphabet an identifier is written in, while the public key's routes read
+//!   nothing else at all, as their recorded answers to a probe written in lower case around
+//!   separators report;
 //! * every other value is carried through to the STORE — WHICH identifier of a kind was ever
 //!   issued is a property of the store rather than of the value, the width this service
 //!   issues at is one width CloudFront writes an identifier in rather than the only one, so a
-//!   NARROWER value could be one too, whatever letter it opens with, and a UUID marks no kind at
-//!   all — and the record the store
+//!   value at ANY other width could be one too, whatever letter it opens with, and a UUID marks
+//!   no kind at all — and the record the store
 //!   holds none under is the resource reported ABSENT, under that kind's own fixed sentence.
 //!
-//! HOW MUCH of the value a route reads is each resource kind's own recorded contract, and the
-//! distribution is the contrast this suite drives beside the three kinds above: a distribution's
+//! The distribution is the further contrast this suite drives beside the three kinds above: a
+//! distribution's
 //! identifier comes from the namespace its kind SHARES with three others (`E`), so neither the
 //! letter nor the width says which of them issued it and `GetDistributionConfig` reads the
 //! ALPHABET and nothing more — a value written in it is carried through to the store however wide
 //! it is and whichever other kind holds it, while a value written outside it is the identifier
-//! that route cannot read either.
+//! that route cannot read.
 //!
 //! The rows span what the rule generalises over, derived from identifiers these creates really
 //! minted so no width or letter is written out by hand:
@@ -135,6 +136,14 @@ impl Kind {
     /// shares its letter with three other kinds, so its routes read no letter at all.
     fn has_its_own_namespace(self) -> bool {
         self != Self::Distribution
+    }
+
+    /// Whether this kind's routes refuse a value written OUTSIDE the alphabet CloudFront writes
+    /// an identifier in, as their recorded answers report: the field-level encryption records'
+    /// and the distribution's do, while the public key's carry such a value through to the store
+    /// and report the key it holds none under as absent.
+    fn reads_the_alphabet(self) -> bool {
+        self != Self::PublicKey
     }
 
     /// Address `id` through this kind's read.
@@ -283,14 +292,13 @@ struct Row {
     case: String,
     id: String,
     /// `true` where the value is written OUTSIDE the alphabet CloudFront writes an identifier
-    /// in, so it claims to be no identifier of this mint at all — which every route addressed by
-    /// an identifier reads, whatever else it reads.
+    /// in, so it claims to be no identifier of this mint at all — which the routes whose kind's
+    /// recorded answers read the alphabet refuse it for.
     outside_the_alphabet: bool,
-    /// `true` where the value is written in that alphabet and is ruled out by its WIDTH (wider
-    /// than an identifier of this mint is issued) or by its LEADING CHARACTER at the issued
-    /// width (another kind's namespace letter) — which only a kind whose namespace letter is its
-    /// OWN reads.
-    ruled_out_within_the_alphabet: bool,
+    /// `true` where the value IS an identifier CloudFront issued for another kind of this
+    /// service: that alphabet at the issued width under another kind's namespace letter — which
+    /// only a kind whose namespace letter is its OWN reads.
+    issued_for_another_kind: bool,
 }
 
 /// The rows this suite submits where an identifier of `kind` belongs, each derived from the
@@ -310,20 +318,22 @@ fn rows(kind: Kind, live: &Live) -> Vec<Row> {
             case: "the kind's own letter over a body of zeros at the issued width".to_string(),
             id: format!("{letter}{}", "0".repeat(body_width)),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
-        // Carried through: narrower than the issued width, whatever letter it opens with.
+        // Carried through: any width other than the issued one, whatever letter it opens with,
+        // since the width this service issues at is one width CloudFront writes an identifier in
+        // rather than the only one.
         Row {
             case: "the kind's own letter over a body one character short".to_string(),
             id: format!("{letter}{}", &body[..body_width - 1]),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
         Row {
             case: "the kind's own namespace letter with no body at all".to_string(),
             id: letter.to_string(),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
         Row {
             case: "a letter no kind of this service issues an identifier under, at the issued \
@@ -331,58 +341,58 @@ fn rows(kind: Kind, live: &Live) -> Vec<Row> {
                 .to_string(),
             id: format!("W{body}"),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
-        // Ruled out within the alphabet: wider than an identifier of this mint is issued.
         Row {
             case: "the kind's own letter over a body one character too long".to_string(),
             id: format!("{letter}{body}A"),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: true,
+            issued_for_another_kind: false,
         },
         Row {
             case: "the kind's own letter over a body twice the issued width".to_string(),
             id: format!("{letter}{body}{body}"),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: true,
+            issued_for_another_kind: false,
         },
         Row {
             case: "an uppercase word wider than any identifier is issued at".to_string(),
             id: "NONEXISTENTIDENTIFIER".to_string(),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: true,
+            issued_for_another_kind: false,
         },
         // Outside the alphabet an identifier is written in at all.
         Row {
             case: "the minted identifier in lower case".to_string(),
             id: minted.to_lowercase(),
             outside_the_alphabet: true,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
         Row {
             case: "a UUID, the shape the policy kinds' identifiers take".to_string(),
             id: "00000000-0000-0000-0000-000000000000".to_string(),
             outside_the_alphabet: true,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
         Row {
             case: "the issued width with its body broken by a separator".to_string(),
             id: format!("{letter}{}-A", &body[..body_width - 2]),
             outside_the_alphabet: true,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
         Row {
             case: "the caller reference rather than an identifier".to_string(),
             id: REFERENCE.to_string(),
             outside_the_alphabet: true,
-            ruled_out_within_the_alphabet: false,
+            issued_for_another_kind: false,
         },
-        // Ruled out within the alphabet by the LEADING CHARACTER alone, at the issued width.
+        // Ruled out within the alphabet by the LEADING CHARACTER alone, at the issued width:
+        // the value IS an identifier of another kind.
         Row {
             case: "an identifier another kind of this account really holds".to_string(),
             id: live.another_kinds(kind).to_string(),
             outside_the_alphabet: false,
-            ruled_out_within_the_alphabet: true,
+            issued_for_another_kind: true,
         },
         Row {
             case: "the namespace letter the shared-form family is drawn from, at the issued width"
@@ -391,7 +401,7 @@ fn rows(kind: Kind, live: &Live) -> Vec<Row> {
             outside_the_alphabet: false,
             // Where the addressed kind is itself of that family the letter is its OWN, and a
             // value under it is one only the store can answer for.
-            ruled_out_within_the_alphabet: letter != 'E',
+            issued_for_another_kind: letter != 'E',
         },
     ];
     for row in &rows {
@@ -404,31 +414,31 @@ fn rows(kind: Kind, live: &Live) -> Vec<Row> {
     rows
 }
 
-/// The sentence `kind`'s read owes `row`: the unreadable identifier where the value is written
-/// outside both forms CloudFront issues an identifier in, and where its width or its leading
-/// character rules it out on a kind whose namespace letter is its own; the absent record
-/// otherwise.
+/// The sentence `kind`'s read owes `row`.
+///
+/// A value that IS an identifier issued for another kind of this service is the identifier a
+/// route of a kind with a namespace of its OWN reports it cannot read. Beyond that, how much of
+/// a value a route reads is that kind's own recorded contract: the field-level encryption
+/// records' and the distribution's routes read the identifier ALPHABET, so a value written
+/// outside it is unreadable to them, while the public key's routes read nothing else at all and
+/// carry every other value through to the store.
 ///
 /// A value written in the OTHER form CloudFront issues an identifier in — the UUID its key
 /// groups and policy kinds are minted with — carries no namespace marker at all and is shared by
 /// every kind identified by one, so a route that reads the NAMESPACE finds nothing in it to
-/// contradict the addressed kind and carries it through to the store, while a route whose
-/// contract reads the ALPHABET alone refuses every value outside that alphabet.
+/// contradict the addressed kind and carries it through to the store, while the shared-form
+/// family's routes, which read the alphabet alone, refuse it.
 fn expected(kind: Kind, row: &Row) -> &'static str {
-    if is_minted_uuid(&row.id) {
-        return if kind.has_its_own_namespace() {
-            kind.absent()
-        } else {
-            UNREADABLE_IDENTIFIER
-        };
+    if row.issued_for_another_kind && kind.has_its_own_namespace() {
+        return UNREADABLE_IDENTIFIER;
     }
-    if row.outside_the_alphabet
-        || (row.ruled_out_within_the_alphabet && kind.has_its_own_namespace())
-    {
-        UNREADABLE_IDENTIFIER
-    } else {
-        kind.absent()
+    if !row.outside_the_alphabet || !kind.reads_the_alphabet() {
+        return kind.absent();
     }
+    if is_minted_uuid(&row.id) && kind.has_its_own_namespace() {
+        return kind.absent();
+    }
+    UNREADABLE_IDENTIFIER
 }
 
 /// RULE: a read addressed by an identifier answers the unreadable-identifier sentence for every

@@ -3742,13 +3742,12 @@ pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE: &str =
 /// alone and therefore before the store is consulted. What the value has to say for the format
 /// refusal to be the answer is that it could never be an identifier CloudFront issued for a
 /// PROFILE ([`id_format_refused_for`]): it is written outside the alphabet an identifier is
-/// written in at all, it is written wider than an identifier of this mint is issued, or it is
-/// written exactly as an identifier is ISSUED under another kind's namespace letter, in which
-/// case it is that other kind's identifier. Either way the route
+/// written in at all, or it is written exactly as an identifier is ISSUED under another kind's
+/// namespace letter, in which case it is that other kind's identifier. Either way the route
 /// reports the identifier it cannot READ ([`id_format_invalid_message`]). Every other value is
 /// carried through to the store — WHICH identifier of this kind was ever issued is a property of
-/// the STORE rather than of the value, and so is a value of the alphabet written narrower than
-/// the issued width —
+/// the STORE rather than of the value, and so is a value of the alphabet written at any width
+/// other than the issued one —
 /// and the profile the store holds none under is the profile that is simply ABSENT.
 ///
 /// Only an identifier that ADDRESSES the operation is judged this way: a profile id borne by a
@@ -3885,9 +3884,8 @@ pub const NO_SUCH_FIELD_LEVEL_ENCRYPTION_CONFIG_MESSAGE: &str =
 /// field-level encryption configuration `Id` that read or write the CONFIGURATION DOCUMENT —
 /// its `/config` read, its update and its delete — answer an `Id` they cannot resolve: the
 /// split [`unresolved_field_level_encryption_profile`] makes for the other field-level
-/// encryption record, over the alphabet an identifier is written in, the width one is issued at
-/// and the namespace letter an identifier written as an ISSUED one carries
-/// ([`id_format_refused_for`]).
+/// encryption record, over the alphabet an identifier is written in and the namespace letter an
+/// identifier written as an ISSUED one carries ([`id_format_refused_for`]).
 ///
 /// The RESOURCE read of the same kind (`GetFieldLevelEncryption`, `GET
 /// /2020-05-31/field-level-encryption/{Id}`) reads NO form of the value at all, as its own

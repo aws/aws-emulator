@@ -6,17 +6,19 @@
 //! one 404 error for an `Id` they cannot resolve — `NoSuchPublicKey`
 //! (`smithy_query(query="operation",operation="GetPublicKey,GetPublicKeyConfig,UpdatePublicKey,DeletePublicKey")`
 //! reports it and `AccessDenied` and no argument error) — so the MESSAGE is the whole of what
-//! tells two conditions apart, and what decides it is whether the submitted value could be an
-//! identifier CloudFront ISSUED FOR A PUBLIC KEY at all: a value written outside either form
-//! CloudFront issues an identifier in, one written wider than an identifier of this mint is
-//! issued, and one written exactly as an identifier is ISSUED — the identifier alphabet at the
-//! issued width — under another kind's namespace letter are each the identifier the route reports
-//! it cannot READ, while every other value is carried through to the STORE and the key it holds
-//! none under is the key reported ABSENT. A value written in the UUID form CloudFront issues the
-//! identifiers of its other kinds in is one of those: that form carries no namespace marker at
-//! all and is shared by every kind identified by one, so it says which kind issued it no more
-//! than a letter no kind issues under does. Both sentences are fixed text and echo nothing the
-//! request sent.
+//! tells two conditions apart, and what decides it is whether the submitted value IS an
+//! identifier CloudFront ISSUED FOR ANOTHER KIND of this service: a value written exactly as an
+//! identifier is ISSUED — the identifier alphabet at the issued width — under another kind's
+//! namespace letter names that other kind's record, so no public key could ever answer to it
+//! and it is the identifier the route reports it cannot READ. Every OTHER value is carried
+//! through to the STORE, and the key it holds none under is the key reported ABSENT: `Id` is a
+//! plain `string` `@httpLabel` with no `@pattern` and no `@length`, WHICH identifier of this
+//! kind was ever issued is a property of the store, and the alphabet and the width this service
+//! MINTS in are one form CloudFront writes an identifier in rather than the only one — so a
+//! value of that alphabet at another width, a value under a letter no kind issues under, a
+//! value carrying lower case or a separator, the UUID form CloudFront issues its other kinds'
+//! identifiers in and a word of no identifier shape at all are each resolved against the store.
+//! Both sentences are fixed text and echo nothing the request sent.
 //!
 //! The rows span what the rule generalises over — the RELATION a value has to the identifier
 //! namespaces this service mints in: a live distribution id, a live key group's UUID, both
@@ -153,7 +155,7 @@ async fn one_code_carries_both_sentences_over_every_public_key_route() {
         (
             "the public key prefix with too long a body",
             format!("{PUBLIC_KEY_ID_PREFIX}2AAAAAAAAAAAAAAAAAAA"),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a public key id of this namespace that was never minted",
@@ -163,23 +165,23 @@ async fn one_code_carries_both_sentences_over_every_public_key_route() {
         (
             "the stored id in lower case",
             known.to_lowercase(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the stored id with one character appended",
             format!("{known}9"),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the caller reference rather than the id",
             present.caller_reference.clone(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         ("a bare digit", "0".to_string(), NO_SUCH_PUBLIC_KEY),
         (
             "a word of no CloudFront id shape at all",
             "..".to_string(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
     ];
 

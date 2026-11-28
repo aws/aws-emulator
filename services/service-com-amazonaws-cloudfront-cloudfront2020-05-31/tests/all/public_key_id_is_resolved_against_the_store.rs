@@ -6,13 +6,12 @@
 //! `GetPublicKeyConfig`, `UpdatePublicKey` and `DeletePublicKey`
 //! (`smithy_query(query="operation",operation="GetPublicKey,GetPublicKeyConfig,UpdatePublicKey,DeletePublicKey")`)
 //! — model one 404 error, `NoSuchPublicKey`, so its MESSAGE is what tells two conditions apart:
-//! a value that COULD be an identifier CloudFront issued for a public key — the identifier
-//! alphabet, no wider than the width one is issued at, and at exactly that width under this
-//! kind's own namespace letter, plus the UUID form CloudFront issues the identifiers of its
-//! other kinds in, which carries no namespace marker at all — is resolved against the STORE, and
-//! the key it holds none under is the key that is ABSENT; a value that could never be one is the
-//! identifier the route reports it cannot READ. Both sentences echo
-//! nothing the request submitted.
+//! a value that IS an identifier CloudFront issued for ANOTHER kind of this service — the
+//! identifier alphabet at the issued width under another kind's namespace letter — is the
+//! identifier the route reports it cannot READ, while EVERY other value is resolved against the
+//! STORE and the key it holds none under is the key that is ABSENT, whatever alphabet and width
+//! it is written in (`Id` is a plain `string` the model constrains no further). Both sentences
+//! echo nothing the request submitted.
 //!
 //! The rows span what the rule generalises over — a value's RELATION to this service's
 //! identifier namespaces. The point this suite adds to the
@@ -104,8 +103,9 @@ async fn a_public_key_id_earns_the_sentence_its_own_form_decides() {
     // of another kind, each other
     // namespace this service mints ids in, a value in the public key namespace of no minted
     // id's width, and ids that could have been public keys CloudFront issued. Where the value
-    // could be a public key identifier the STORE is what decides, and the key it holds none
-    // under earns the absent-key sentence; where it could never be one the route says so.
+    // IS an identifier issued for another kind the route says it cannot read it; every other
+    // value is the STORE's to decide, and the key it holds none under earns the absent-key
+    // sentence.
     let rows: Vec<(&str, String, &str)> = vec![
         (
             "a key group id that really names a key group",
@@ -140,17 +140,17 @@ async fn a_public_key_id_earns_the_sentence_its_own_form_decides() {
         (
             "the stored id in lower case",
             key_id.to_lowercase(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the caller reference rather than the id",
             key.caller_reference.clone(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a word of no CloudFront id shape at all",
             "..".to_string(),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
     ];
 

@@ -613,9 +613,9 @@ async fn a_comment_past_the_documented_bound_is_refused() {
     .await;
 }
 
-/// An id no stored key holds is `NoSuchPublicKey` (HTTP 404) — under the absent-key sentence
-/// for an id of a public key's own shape and the unreadable-identifier sentence for one
-/// outside it — and the refused update creates nothing under it.
+/// An id no stored key holds is `NoSuchPublicKey` (HTTP 404) — under the unreadable-identifier
+/// sentence for a value that IS an identifier issued for another kind of this service and the
+/// absent-key sentence for every other value — and the refused update creates nothing under it.
 #[tokio::test]
 async fn an_id_no_key_holds_is_refused() {
     let router = emulator();
@@ -636,7 +636,7 @@ async fn an_id_no_key_holds_is_refused() {
     let mut flipped: Vec<char> = id.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let rows: [(&str, String, &str); 4] = [
+    let rows: [(&str, String, &str); 5] = [
         (
             "an id never minted",
             "K2NEVERMINTED1".to_string(),
@@ -650,11 +650,16 @@ async fn an_id_no_key_holds_is_refused() {
         (
             "the existing id in lower case",
             id.to_lowercase(),
-            UNREADABLE_IDENTIFIER_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a token of no public key id's shape",
             "not-a-key".to_string(),
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
+        ),
+        (
+            "an identifier issued for another kind of this service",
+            "EDFDVBD6EXAMPL".to_string(),
             UNREADABLE_IDENTIFIER_MESSAGE,
         ),
     ];

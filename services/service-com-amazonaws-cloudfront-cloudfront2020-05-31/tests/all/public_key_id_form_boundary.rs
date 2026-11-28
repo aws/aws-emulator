@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The WIDTH boundary of a public key identifier: where it lies, and which of the one 404
-//! code's two sentences each side of it earns, end to end over HTTP.
+//! The WIDTH of a public key identifier, and which of the one 404 code's two sentences a value
+//! at each width earns, end to end over HTTP.
 //!
 //! RULE under test: `GetPublicKey`, `GetPublicKeyConfig`, `UpdatePublicKey` and
 //! `DeletePublicKey` model one 404 error for an `Id` they cannot resolve — `NoSuchPublicKey`
 //! (`smithy_query(query="operation",operation="GetPublicKey,GetPublicKeyConfig,UpdatePublicKey,DeletePublicKey")`
 //! reports it and `AccessDenied` and no argument error) — so the MESSAGE tells two conditions
-//! apart: a value no WIDER than the width CloudFront issues an identifier of this kind at, and
-//! written in the identifier alphabet, could be one, so it is carried through to the STORE and
-//! the key it holds none under is the key reported ABSENT; a value WIDER than that width, one
-//! written outside the alphabet, and one written at exactly that width under another kind's
-//! namespace letter could be no public key identifier at all, so each is the identifier the
-//! route reports it cannot READ.
+//! apart, and what decides it is whether the value IS an identifier CloudFront issued for
+//! another kind of this service: a value written as an identifier is ISSUED (the identifier
+//! alphabet at the issued width) under ANOTHER kind's namespace letter names that other kind's
+//! record, so no public key could ever answer to it and it is the identifier the route reports
+//! it cannot READ. Every other value is carried through to the STORE, whatever width and
+//! whatever characters it is written in, and the key the store holds none under is the key
+//! reported ABSENT: `Id` is a plain `string` `@httpLabel` the model constrains no further, and
+//! the width this service MINTS at is one width CloudFront writes an identifier in rather than
+//! the only one.
 //!
 //! The sibling suites span the NAMESPACE the value belongs to
 //! ([`crate::public_key_id_is_resolved_against_the_store`],
-//! [`crate::refusal_message_fidelity`]); what this one spans is the other half of the form,
-//! the WIDTH: the body one character short of what this service mints, exactly that width, and
-//! one character past it, plus the alphabet at that exact width (a lower-cased body, one
-//! carrying a separator). The width is not written out here — it is read off an id
-//! `CreatePublicKey` MINTED in this test, so the rows cannot drift from what the service
-//! issues.
+//! [`crate::refusal_message_fidelity`]); what this one spans is the WIDTH: the body one
+//! character short of what this service mints, exactly that width, and one character past it,
+//! plus the alphabet at that exact width (a lower-cased body, one carrying a separator) and
+//! that width under another kind's letter, which is the one row the refusal belongs to. The
+//! width is not written out here — it is read off an id `CreatePublicKey` MINTED in this test,
+//! so the rows cannot drift from what the service issues.
 //!
 //! The wire harness and the create helpers are the crate's own.
 
@@ -122,12 +125,12 @@ async fn the_width_of_an_id_decides_which_sentence_a_refusal_carries() {
         (
             "a body one character past the minted width".to_string(),
             format!("{PUBLIC_KEY_ID_PREFIX}{}", "A".repeat(body_width + 1)),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a body of the minted width in lower case".to_string(),
             format!("{PUBLIC_KEY_ID_PREFIX}{}", "a".repeat(body_width)),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "a body of the minted width carrying a separator".to_string(),
@@ -136,7 +139,7 @@ async fn the_width_of_an_id_decides_which_sentence_a_refusal_carries() {
                 "A".repeat(body_width - 3),
                 "AA"
             ),
-            UNREADABLE_IDENTIFIER,
+            NO_SUCH_PUBLIC_KEY,
         ),
         (
             "the namespace letter with no body at all".to_string(),

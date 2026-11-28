@@ -509,6 +509,12 @@ async fn a_message_tag_outside_the_form_its_member_states_is_refused() {
     // numbers (0–9), underscores (_), or dashes (-)" and "It can contain no more than 256
     // characters". The name names ONE tag of the message, so a second tag of the same name
     // is no tag set either.
+    //
+    // Every row sends from an identity the account HAS verified, with production access given
+    // and no configuration set named: the tags' form is read after the sending identity has
+    // passed its gate, so a send whose identities are not verified is refused as an unverified
+    // send instead ([`the_identity_gate_is_weighed_before_the_message_tags`]) and this suite
+    // would be asserting that refusal rather than the tag's.
     let long = "a".repeat(257);
     let cases: Vec<(String, Value, String)> = vec![
         (
@@ -562,11 +568,88 @@ async fn a_message_tag_outside_the_form_its_member_states_is_refused() {
     ];
 
     for (case, tags, message) in cases {
-        let ses = Ses::new();
-        let mut body = request(UNVERIFIED);
+        let ses = verified().await;
+        crate::send_sandbox_destination_gate::given_production_access(&ses.engine);
+        let mut body = request(VERIFIED_SENDER);
+        body.as_object_mut()
+            .expect("a request object")
+            .remove("ConfigurationSetName");
         body["EmailTags"] = tags;
         let reply = ses.send(body).await;
         refused(&case, &reply, &message);
+    }
+}
+
+/// RULE: the send path weighs the sending identity's VERIFICATION before it reads the form of
+/// the message tags, so a send whose identities are not verified is refused as an unverified
+/// send even when a tag it carries is outside the character set `MessageTag` documents — and the
+/// tag refusal is still what a send from a verified identity earns.
+///
+/// The rows span what the rule generalises over: which member carries the offending tag (the
+/// name and the value), and whether the sending identity is one the account has verified.
+#[tokio::test]
+async fn the_identity_gate_is_weighed_before_the_message_tags() {
+    let unverified_sender = format!(
+        "Email address is not verified. The following identities failed the check in \
+         region {}: {UNVERIFIED}",
+        HOME.to_uppercase()
+    );
+    let rows: Vec<(&str, Value, &str)> = vec![
+        (
+            "a tag name no tag may take",
+            json!([{"Name": "not a tag", "Value": "ok"}]),
+            "Invalid tag name <not a tag>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+        (
+            "a tag value no tag may take",
+            json!([{"Name": "campaign", "Value": "spring.2026"}]),
+            "Invalid tag value <spring.2026>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+    ];
+
+    for (case, tags, tag_refusal) in rows {
+        // The sender the account has NOT verified: the identity gate is what answers, and the
+        // tag's own refusal never reaches the wire.
+        let ses = verified().await;
+        crate::send_sandbox_destination_gate::given_production_access(&ses.engine);
+        let mut body = request(UNVERIFIED);
+        body.as_object_mut()
+            .expect("a request object")
+            .remove("ConfigurationSetName");
+        body["EmailTags"] = tags.clone();
+        let reply = ses.send(body).await;
+        assert_eq!(
+            (reply.status, reply.error_code().as_str()),
+            (400, "MessageRejected"),
+            "case {case:?} from an unverified identity: expected the unverified-identity \
+             refusal, got {} {:?}",
+            reply.status,
+            reply.body
+        );
+        assert_eq!(
+            reply.message(),
+            unverified_sender,
+            "case {case:?} from an unverified identity: expected {unverified_sender:?}, got {:?}",
+            reply.message()
+        );
+
+        // And the same tag from a sender the account HAS verified: the identities pass their
+        // gate, so the tag's own refusal is what answers.
+        let ses = verified().await;
+        crate::send_sandbox_destination_gate::given_production_access(&ses.engine);
+        let mut body = request(VERIFIED_SENDER);
+        body.as_object_mut()
+            .expect("a request object")
+            .remove("ConfigurationSetName");
+        body["EmailTags"] = tags;
+        let reply = ses.send(body).await;
+        refused(
+            &format!("{case} from a verified identity"),
+            &reply,
+            tag_refusal,
+        );
     }
 }
 
@@ -1124,11 +1207,15 @@ async fn a_bulk_entry_that_addresses_nobody_is_reported_in_its_own_result() {
 
 #[tokio::test]
 async fn what_a_bulk_entry_states_for_its_own_message_is_read_before_the_identity_gate() {
-    // What an ENTRY states for its own message — the headers and the tags of that message —
-    // is part of the request's own FORM, so it is read before anything the account holds,
+    // What an ENTRY states for its own message — the HEADERS of that message — is part of the
+    // request's own FORM, so it is read before anything the account holds,
     // like every other reading of the request's form: a call stating a header the service
     // writes itself is told so even though the identity it would have sent from is not one
-    // this account has verified. A call whose entries state nothing of the kind reaches the
+    // this account has verified. The TAGS an entry replaces the call's with are read on the
+    // other side of that gate, so a call carrying one no tag may take is refused for the
+    // identity while its identities are unverified
+    // ([`the_identity_gate_is_weighed_before_a_bulk_entrys_tags`]). A call whose entries state
+    // nothing of the kind reaches the
     // gates on sending and is refused WHOLE for the identity instead, rather than reported
     // entry by entry. The rows span both: an entry carrying a header the service writes
     // itself, one carrying a tag name no tag may take, a well-formed entry, a well-formed
@@ -1161,10 +1248,8 @@ async fn what_a_bulk_entry_states_for_its_own_message_is_read_before_the_identit
                 "Destination": {"ToAddresses": [SIMULATOR]},
                 "ReplacementTags": [{"Name": "not a tag", "Value": "v"}],
             })],
-            "BadRequestException",
-            "Invalid tag name <not a tag>: only alphanumeric ASCII characters, '_',  '-' \
-             are allowed."
-                .to_string(),
+            "MessageRejected",
+            unverified_sender.clone(),
         ),
         (
             "a well-formed entry",
@@ -1399,5 +1484,106 @@ async fn a_bulk_send_states_its_content_and_its_sender_before_anything_is_resolv
         let ses = verified().await;
         let reply = ses.send_bulk(body).await;
         refused(case, &reply, message);
+    }
+}
+
+/// RULE, on the bulk path: the call weighs the sending identity's VERIFICATION before it reads
+/// the form of the tags the call and its entries state, so a call whose identities are not
+/// verified is refused as an unverified send even when a tag it carries is outside the character
+/// set `MessageTag` documents — and the tag refusal is still what a call from a verified
+/// identity earns.
+///
+/// The rows span what the rule generalises over: WHERE the offending tag sits (the call's
+/// `DefaultEmailTags`, which every message of the call carries, and one entry's
+/// `ReplacementTags`, which replace them for that message), WHICH member of the tag is outside
+/// the form (its name and its value), and whether the sending identity is one the account has
+/// verified. Every recipient is the mailbox simulator's, which belongs to no account and needs
+/// no identity, so the one identity a refusal names is the sender the call states.
+#[tokio::test]
+async fn the_identity_gate_is_weighed_before_a_bulk_entrys_tags() {
+    let unverified_sender = format!(
+        "Email address is not verified. The following identities failed the check in \
+         region {}: {UNVERIFIED}",
+        HOME.to_uppercase()
+    );
+    // (case, the tags the call states, the tags one entry states, the tag refusal a verified
+    // sender earns)
+    let rows: Vec<(&str, Option<Value>, Option<Value>, &str)> = vec![
+        (
+            "the call's own tags carrying a name no tag may take",
+            Some(json!([{"Name": "not a tag", "Value": "v"}])),
+            None,
+            "Invalid tag name <not a tag>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+        (
+            "the call's own tags carrying a value no tag may take",
+            Some(json!([{"Name": "campaign", "Value": "spring.2026"}])),
+            None,
+            "Invalid tag value <spring.2026>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+        (
+            "one entry's replacement tags carrying a name no tag may take",
+            None,
+            Some(json!([{"Name": "not a tag", "Value": "v"}])),
+            "Invalid tag name <not a tag>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+        (
+            "one entry's replacement tags carrying a value no tag may take",
+            None,
+            Some(json!([{"Name": "campaign", "Value": "spring.2026"}])),
+            "Invalid tag value <spring.2026>: only alphanumeric ASCII characters, '_',  '-' are \
+             allowed.",
+        ),
+    ];
+
+    for (case, default_tags, replacement_tags, tag_refusal) in rows {
+        for (sender, verified_sender) in [(UNVERIFIED, false), (VERIFIED_SENDER, true)] {
+            let ses = verified().await;
+            let created = ses.create_template().await;
+            assert_eq!(
+                created.status, 200,
+                "case {case:?}: the template must be saved first, got {} {:?}",
+                created.status, created.body
+            );
+            let mut entry = bulk_entry(SIMULATOR);
+            if let Some(tags) = replacement_tags.clone() {
+                entry["ReplacementTags"] = tags;
+            }
+            let mut body = bulk(
+                sender,
+                json!({"TemplateName": TEMPLATE, "TemplateData": DATA}),
+                vec![entry],
+            );
+            if let Some(tags) = default_tags.clone() {
+                body["DefaultEmailTags"] = tags;
+            }
+            let reply = ses.send_bulk(body).await;
+            if verified_sender {
+                refused(
+                    &format!("{case}, from a verified identity"),
+                    &reply,
+                    tag_refusal,
+                );
+            } else {
+                assert_eq!(
+                    (reply.status, reply.error_code().as_str()),
+                    (400, "MessageRejected"),
+                    "case {case:?}, from an unverified identity: expected the \
+                     unverified-identity refusal, got {} {:?}",
+                    reply.status,
+                    reply.body
+                );
+                assert_eq!(
+                    reply.message(),
+                    unverified_sender,
+                    "case {case:?}, from an unverified identity: expected \
+                     {unverified_sender:?}, got {:?}",
+                    reply.message()
+                );
+            }
+        }
     }
 }

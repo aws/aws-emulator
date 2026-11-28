@@ -1996,9 +1996,13 @@ pub const CLASSIFIED_ONLY_SOURCE_TYPES: &[&str] = &[
 ];
 
 /// Every `RecommendationSourceType` this service TRACKS — the whole vocabulary
-/// `RecommendationSummary$recommendationResourceType` names — in the order the model
-/// declares it, which is the order `GetRecommendationSummaries` reports one summary per
-/// group in.
+/// `RecommendationSummary$recommendationResourceType` names — in the order
+/// `GetRecommendationSummaries` reports one summary per group in.
+///
+/// The ORDER is the service's own reported order, as its recorded answers report it: the
+/// groups it rightsizes or classifies first, in the order the model declares them, and then
+/// the groups it only ever found idle — and it is not the model's declaration order for the
+/// whole list, so a group may not be moved here to make the list read like the enum.
 ///
 /// A recommendation summary is a COUNT ROLL-UP per resource type — `Summary$value` is a
 /// count whose default is `0` — so the summaries an enrolled account is answered with are
@@ -2026,12 +2030,12 @@ pub const TRACKED_SOURCE_TYPES: &[&str] = &[
     SOURCE_TYPE_RDS_DB_INSTANCE_STORAGE,
     SOURCE_TYPE_AURORA_DB_CLUSTER_STORAGE,
     SOURCE_TYPE_NAT_GATEWAY,
-    SOURCE_TYPE_DYNAMODB_TABLE,
     SOURCE_TYPE_ELASTICACHE_CLUSTER,
+    SOURCE_TYPE_DYNAMODB_TABLE,
     SOURCE_TYPE_MEMORYDB_CLUSTER,
-    SOURCE_TYPE_DOCUMENTDB_CLUSTER,
-    SOURCE_TYPE_WORKSPACES,
     SOURCE_TYPE_SAGEMAKER_ENDPOINT,
+    SOURCE_TYPE_WORKSPACES,
+    SOURCE_TYPE_DOCUMENTDB_CLUSTER,
 ];
 
 /// The findings a summary of `resource_type` reports a count at, each as the `Finding` a

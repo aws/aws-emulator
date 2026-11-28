@@ -13,16 +13,14 @@
 //! * the configuration's `/config` read, the profile's two reads, and the updates and deletes
 //!   of both report the identifier they cannot READ ("Id format is invalid") for a value that
 //!   could never be an identifier issued for their kind: one written OUTSIDE the identifier
-//!   alphabet (digits and uppercase letters, no separator and no lower case), one written WIDER
-//!   than an identifier of this mint is issued, which overflows every identifier it could be,
-//!   and one written
+//!   alphabet (digits and uppercase letters, no separator and no lower case), and one written
 //!   exactly the way an identifier is ISSUED — that alphabet at the issued width — under the
 //!   NAMESPACE LETTER of ANOTHER kind this service issues identifiers under, which makes it that
 //!   other kind's identifier. Every other value is carried through to the STORE — a value under
 //!   the addressed kind's own letter, since WHICH identifier of the kind was ever issued is a
 //!   property of the store rather than of the value, a value under a letter no kind of this
-//!   service issues an identifier under, and a value of the alphabet NARROWER than the issued
-//!   width,
+//!   service issues an identifier under, and a value of the alphabet at ANY width other than the
+//!   issued one,
 //!   whatever letter it opens with, since the width this service issues at is one width
 //!   CloudFront writes an identifier in rather than the only one — and the record the store
 //!   holds none under is the record reported ABSENT;
@@ -37,8 +35,8 @@
 //!   letter, and as the minted identifier with its last character changed — each the record
 //!   reported absent, on every route;
 //! * the BODY WIDTH, from one character up to three times the width this service issues,
-//!   including one short of and one past it — each NARROWER one carried through to the store and
-//!   each WIDER one the identifier reported unreadable;
+//!   including one short of and one past it — each carried through to the store, whichever side
+//!   of the issued width it falls;
 //! * the NAMESPACE LETTER: the addressed kind's own, one no kind of this service issues an
 //!   identifier under, the one every other CloudFront entity id is drawn from, and a leading
 //!   digit — the last three at the issued width (where a letter another kind issues under is
@@ -343,25 +341,21 @@ pub(crate) fn of_the_issued_form(id: &str, minted: &str) -> bool {
 
 /// Whether `id` could be an identifier CloudFront issued FOR THE KIND `minted` was issued for:
 /// it is written in the UUID form CloudFront issues the identifiers of its other kinds in, or it
-/// is written in the identifier alphabet, is no WIDER than the width an identifier is issued
-/// at, and — where it is written exactly the way an identifier is ISSUED, at that width — it
-/// opens with the kind's own namespace letter or with a letter no kind of this service issues an
-/// identifier under. A letter in
-/// [`NAMESPACE_LETTERS`] that is not the kind's own says the value was issued for THAT kind, so
-/// no record of this one could answer to it; a value WIDER than the issued width overflows every
-/// identifier CloudFront writes for these kinds, so it could be none of them; a value of the
-/// alphabet NARROWER than that width names no kind of its own, so the store is what answers for
-/// it; and a UUID names no kind of its own either — that form carries no namespace marker at all
-/// and every kind this service identifies by one is minted in it — so the store answers for it
-/// too.
+/// is written in the identifier alphabet and — where it is written exactly the way an identifier
+/// is ISSUED, at the issued width — it opens with the kind's own namespace letter or with a
+/// letter no kind of this service issues an identifier under. A letter in
+/// [`NAMESPACE_LETTERS`] that is not the kind's own, at the issued width, says the value IS the
+/// identifier of THAT kind, so no record of this one could answer to it; a value of the alphabet
+/// at any OTHER width names no kind of its own, so the store is what answers for it, since the
+/// width this service issues at is one width CloudFront writes an identifier in rather than the
+/// only one; and a UUID names no kind of its own either — that form carries no namespace marker
+/// at all and every kind this service identifies by one is minted in it — so the store answers
+/// for it too.
 pub(crate) fn could_be_issued_for_the_kind(id: &str, minted: &str) -> bool {
     if crate::distribution_lifecycle::is_minted_uuid(id) {
         return true;
     }
     if !in_the_identifier_alphabet(id) {
-        return false;
-    }
-    if id.len() > minted.len() {
         return false;
     }
     if !of_the_issued_form(id, minted) {
@@ -378,8 +372,7 @@ pub(crate) fn could_be_issued_for_the_kind(id: &str, minted: &str) -> bool {
 ///
 /// The two sentences of the kind's one not-found code: the unreadable identifier for a value
 /// that could never be an identifier issued for the addressed kind — one outside the identifier
-/// alphabet, one wider than an identifier is issued, and one written exactly as an ISSUED
-/// identifier under the namespace letter of
+/// alphabet, and one written exactly as an ISSUED identifier under the namespace letter of
 /// another kind this service issues identifiers under — and the absent record for every value
 /// that could be one ([`could_be_issued_for_the_kind`]), as well as for every value whatever its
 /// form on the one route that reads no form at all ([`reads_the_form`]).

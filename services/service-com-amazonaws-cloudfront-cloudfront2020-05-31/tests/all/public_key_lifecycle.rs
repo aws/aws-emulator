@@ -560,17 +560,18 @@ async fn create_persists_the_configuration_every_read_then_reports() {
     }
 
     // An id no public key holds, in the forms such a value takes: an id of this namespace
-    // that was never minted and a bare digit, which COULD be identifiers CloudFront issued for
-    // a public key and are therefore resolved against the STORE and reported as the key that is
-    // ABSENT; and a word of no id shape at all and a well-formed
-    // identifier of another resource kind this service mints, which could never be one and are
-    // reported as the identifier the route cannot READ. Both sentences are fixed text that names
-    // no part of the request, and BOTH readers of the one record answer the same way.
+    // that was never minted, a bare digit and a word of no id shape at all, none of which is an
+    // identifier issued for another kind of this service and each of which is therefore resolved
+    // against the STORE and reported as the key that is ABSENT; and a well-formed
+    // identifier of another resource kind this service mints, which names that other kind's
+    // record and is reported as the identifier the route cannot READ. Both sentences are fixed
+    // text that names no part of the request, and BOTH readers of the one record answer the same
+    // way.
     // The wider table over this service's other namespaces is asserted in
     // `refusal_message_fidelity`.
     for (id, sentence) in [
         ("K1AAAAAAAAAAAA", NO_SUCH_PUBLIC_KEY),
-        ("not-an-id", UNREADABLE_IDENTIFIER),
+        ("not-an-id", NO_SUCH_PUBLIC_KEY),
         ("0", NO_SUCH_PUBLIC_KEY),
         ("E1AAAAAAAAAAAA", UNREADABLE_IDENTIFIER),
     ] {

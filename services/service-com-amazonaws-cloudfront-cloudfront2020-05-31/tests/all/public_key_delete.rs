@@ -709,9 +709,9 @@ async fn a_key_a_stored_record_references_cannot_be_deleted() {
 }
 
 /// An `Id` the store holds no public key for is `NoSuchPublicKey` (HTTP 404) — with the
-/// absent-key sentence for an `Id` of a public key identifier's own form and the
-/// unreadable-identifier sentence for every other value — never a 204, which would claim
-/// something was removed.
+/// unreadable-identifier sentence for a value that IS an identifier issued for another kind of
+/// this service and the absent-key sentence for every other value — never a 204, which would
+/// claim something was removed.
 #[tokio::test]
 async fn an_id_no_key_holds_is_refused() {
     let router = emulator();
@@ -721,10 +721,10 @@ async fn an_id_no_key_holds_is_refused() {
     let mut flipped: Vec<char> = known.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    // Each row: the case, the `Id` submitted, and the sentence it is refused with — a value that
-    // could be an identifier CloudFront issued for a public key is resolved against the STORE,
-    // so one it holds no key under is the key reported ABSENT, while a value that could never be
-    // one is the identifier the route reports it cannot READ.
+    // Each row: the case, the `Id` submitted, and the sentence it is refused with — a value
+    // that IS an identifier CloudFront issued for another kind of this service is the
+    // identifier the route reports it cannot READ, while every other value is resolved against
+    // the STORE and the one it holds no key under is the key reported ABSENT.
     let absent: [(&str, String, &str); 7] = [
         (
             "a public key id never minted",
@@ -739,17 +739,17 @@ async fn an_id_no_key_holds_is_refused() {
         (
             "the known id in lower case",
             known.to_lowercase(),
-            UNREADABLE_IDENTIFIER_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a token that is no public key id",
             "not-a-public-key-id".to_string(),
-            UNREADABLE_IDENTIFIER_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "the caller reference rather than the id",
             present.caller_reference.clone(),
-            UNREADABLE_IDENTIFIER_MESSAGE,
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
         (
             "a well-formed distribution id",

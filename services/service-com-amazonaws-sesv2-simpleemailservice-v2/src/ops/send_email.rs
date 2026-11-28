@@ -478,6 +478,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // "A list of tags, in the form of name/value pairs, to apply to an email that you
+        // send using the SendEmail operation": the message's own tags, whatever form its
+        // content carries. The form of a tag's name and value is read HERE — after the
+        // sending identity has passed its gate — because that is where SES is recorded
+        // reading it: a send whose identities are not verified is refused as an unverified
+        // send even when a tag it carries is outside the character set the member documents,
+        // so the tag grammar never preempts the verification refusal
+        // ([`crate::state::send_validation::tags_defect`]).
+        if let Some(defect) = crate::state::send_validation::tags_defect(
+            input.email_tags.as_deref().unwrap_or_default(),
+        ) {
+            return Err(bad_request(defect));
+        }
+
         // The subject, the body parts and the headers of the message this request sends.
         // A templated message takes them from the template it names, which is a RESOURCE of
         // this account: it is resolved here, once the sending identity has passed its gate,
@@ -788,10 +802,14 @@ fn content_form(content: &EmailContent) -> Result<ContentForm, SendEmailError> {
 ///
 /// The ONE stage both send paths run ([`crate::state::send_validation`]), over every element
 /// of this request that carries one: each address member it names, the recipient set it
-/// addresses, the headers and the tags the message carries, and the attachments it includes.
-/// A defect in any of them is the caller's mistake — `BadRequestException`, naming the
-/// element that is wrong — so the sender's verification check, the account's sending
-/// switches and the resources the content names are never reached by a malformed request.
+/// addresses, the headers the message carries, and the attachments it includes. A defect in
+/// any of them is the caller's mistake — `BadRequestException`, naming the element that is
+/// wrong — so the sender's verification check, the account's sending switches and the
+/// resources the content names are never reached by a malformed request.
+///
+/// The message TAGS are not read here: their character set is weighed after the sending
+/// identity has passed its gate (the handler), because that is where SES is recorded reading
+/// it.
 fn validate_request(input: &SendEmailInput) -> Result<(), SendEmailError> {
     // The sending identity and the two addresses the message nominates for replies and for
     // feedback: each names a mailbox, so each is read against the one address form.
@@ -835,14 +853,6 @@ fn validate_request(input: &SendEmailInput) -> Result<(), SendEmailError> {
     if let Some(defect) =
         crate::state::send_validation::attachments_defect(content_attachments(&input.content))
     {
-        return Err(bad_request(defect));
-    }
-
-    // "A list of tags, in the form of name/value pairs, to apply to an email that you send
-    // using the SendEmail operation": they are the message's whatever form it carries.
-    if let Some(defect) = crate::state::send_validation::tags_defect(
-        input.email_tags.as_deref().unwrap_or_default(),
-    ) {
         return Err(bad_request(defect));
     }
 

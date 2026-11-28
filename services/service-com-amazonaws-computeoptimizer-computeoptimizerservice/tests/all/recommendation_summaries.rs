@@ -577,10 +577,10 @@ async fn account_ids_selects_one_account_and_refuses_more_than_one() {
     }
 }
 
-/// `maxResults` never changes WHAT is summarised, only how many rows one answer carries: the
-/// summary set is reported in the same order whatever size is asked for, walked by the
-/// `nextToken` the service hands out while rows remain. A token this service did not issue is
-/// refused.
+/// `maxResults` never changes WHAT is summarised, and it does not shorten the group list of the
+/// one account a request summarises: one account's roll-up is answered whole, in the same order
+/// whatever size is asked for, and with no `nextToken`, since after one account's groups there
+/// are no more pages. A token this service did not issue is refused.
 #[tokio::test]
 async fn the_summary_set_is_walked_whatever_size_is_asked_for() {
     let router = analysed_emulator().await;
@@ -605,42 +605,20 @@ async fn the_summary_set_is_walked_whatever_size_is_asked_for() {
     ];
     for page_size in page_sizes {
         let case = format!("maxResults={page_size:?}");
-        let mut walked = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut request = json!({});
-            if let Some(size) = page_size {
-                request["maxResults"] = json!(size);
-            }
-            if let Some(token) = &next_token {
-                request["nextToken"] = json!(token);
-            }
-            let body = get_summaries(&router, request).await;
-            let page = summaries_of(&body);
-            if let Some(size) = page_size.filter(|size| *size > 0) {
-                assert!(
-                    page.len() as i64 <= size,
-                    "case {case:?}: an answer carries at most the size asked for, got {} \
-                     summaries",
-                    page.len()
-                );
-            }
-            walked.extend(page);
-            next_token = body["nextToken"].as_str().map(ToString::to_string);
-            if next_token.is_none() {
-                break;
-            }
-            assert!(
-                walked.len() <= unpaged.len(),
-                "case {case:?}: a walk cannot report more than the {} summaries the service \
-                 reports on, got {}",
-                unpaged.len(),
-                walked.len()
-            );
+        let mut request = json!({});
+        if let Some(size) = page_size {
+            request["maxResults"] = json!(size);
         }
+        let body = get_summaries(&router, request).await;
         assert_eq!(
-            walked, unpaged,
+            summaries_of(&body),
+            unpaged,
             "case {case:?}: the size asked for must not change what is summarised"
+        );
+        assert!(
+            body["nextToken"].is_null(),
+            "case {case:?}: one account's roll-up is answered whole, so there is no page to \
+             advance to, got {body}"
         );
     }
 

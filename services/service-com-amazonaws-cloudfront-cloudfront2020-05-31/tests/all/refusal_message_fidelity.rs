@@ -63,8 +63,8 @@ use crate::web_acl_association::create as create_distribution_returning_id;
 /// these rows are held to.
 const NO_SUCH_PUBLIC_KEY: &str = "The specified CloudFront public key does not exist.";
 
-/// The sentence the same code carries for a value that could never be an identifier CloudFront
-/// issued for a public key, spelled out here for the same reason.
+/// The sentence the same code carries for a value that IS an identifier CloudFront issued for
+/// another kind of this service, spelled out here for the same reason.
 const UNREADABLE_PUBLIC_KEY_ID: &str = "Id format is invalid";
 
 /// The sentence an `IpCount` outside the documented value set is refused with: it names the
@@ -540,12 +540,12 @@ async fn every_id_the_store_holds_no_public_key_for_is_refused_under_the_sentenc
         IdRow {
             case: "the public key prefix with too long a body",
             id: format!("{PUBLIC_KEY_ID_PREFIX}2AAAAAAAAAAAAAAAAAAA"),
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
         IdRow {
             case: "the stored id with one character appended",
             id: format!("{known}9"),
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
         IdRow {
             case: "a public key id of this namespace that was never minted",
@@ -565,12 +565,12 @@ async fn every_id_the_store_holds_no_public_key_for_is_refused_under_the_sentenc
         IdRow {
             case: "the stored id in lower case",
             id: known.to_lowercase(),
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
         IdRow {
             case: "the caller reference rather than the id",
             id: present.caller_reference.clone(),
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
         IdRow {
             case: "a bare digit",
@@ -580,7 +580,7 @@ async fn every_id_the_store_holds_no_public_key_for_is_refused_under_the_sentenc
         IdRow {
             case: "a word of no CloudFront id shape at all",
             id: "not-a-public-key-id".to_string(),
-            message: UNREADABLE_PUBLIC_KEY_ID,
+            message: NO_SUCH_PUBLIC_KEY,
         },
     ];
 

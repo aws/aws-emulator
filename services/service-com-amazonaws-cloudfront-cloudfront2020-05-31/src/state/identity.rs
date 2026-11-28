@@ -1359,20 +1359,17 @@ pub const ISSUED_ENTITY_ID_LEN: usize = ID_BODY_LEN + 1;
 /// the one not-found code carries.
 ///
 /// A route refuses the form of every value that could never be an identifier CloudFront issued
-/// FOR THIS KIND, which the value alone says in three ways:
+/// FOR THIS KIND, which the value alone says in two ways:
 ///
 /// * it is written OUTSIDE the characters CloudFront writes an identifier in
 ///   ([`is_entity_id_form`] — decimal digits and uppercase ASCII letters, carrying no separator
-///   and no lower case): in lower case, around a separator, as a UUID or as a word, it claims to
-///   be no identifier of this mint at all, so there is nothing in it for the service to resolve;
-/// * or it is WIDER than the width an identifier of this mint is issued at
-///   ([`ISSUED_ENTITY_ID_LEN`]): CloudFront writes an identifier of these kinds in at most that
-///   many characters, so a longer run of the alphabet overflows every identifier it could be and
-///   names no record of any kind;
-/// * or it is written exactly the way an identifier is ISSUED — that alphabet at that very width
-///   — under the NAMESPACE LETTER of ANOTHER kind this service issues identifiers under
-///   ([`identifies_a_namespace`]). Such a value IS an identifier of that other kind, and no
-///   record of the addressed kind could ever answer to it.
+///   and no lower case): in lower case, around a separator or as a word of other characters, it
+///   claims to be no identifier of this mint at all, so there is nothing in it for the service
+///   to resolve;
+/// * or it IS an identifier of ANOTHER kind of this service
+///   ([`is_issued_for_another_kind`]): written exactly the way an identifier is ISSUED — that
+///   alphabet at the issued width — under the NAMESPACE LETTER of another kind this service
+///   issues identifiers under, so no record of the addressed kind could ever answer to it.
 ///
 /// Either way the route reports the identifier it cannot READ ([`invalid_id_format`]).
 ///
@@ -1387,10 +1384,12 @@ pub const ISSUED_ENTITY_ID_LEN: usize = ID_BODY_LEN + 1;
 /// is the resource that is ABSENT: a value under the addressed kind's OWN letter, since WHICH
 /// identifier of this kind was ever issued is a property of the store rather than of the value;
 /// a value under a letter no kind of this service issues an identifier under, which says nothing
-/// about the kind it was issued for; and a value of this alphabet written NARROWER than the
-/// issued width, whatever letter it opens with, since the width this service issues an
-/// identifier at is one width CloudFront writes one in, never the only one, so below that width
-/// the leading character says nothing about the kind and the store is what answers for it.
+/// about the kind it was issued for; and a value of this alphabet written at ANY OTHER WIDTH
+/// than the issued one, whatever letter it opens with, since the width this service issues an
+/// identifier at is one width CloudFront writes one in, never the only one, so away from that
+/// width the leading letter names no identifier of another kind either and the store is what
+/// answers for it — which is what the recorded answers to these routes report for a value of
+/// the alphabet written wider than one is issued.
 ///
 /// So the two refusals keep the conditions they describe: a value this reports `true` for is
 /// the identifier a route reports it cannot READ, and every other value the store holds nothing
@@ -1399,7 +1398,9 @@ pub const ISSUED_ENTITY_ID_LEN: usize = ID_BODY_LEN + 1;
 /// `prefix` is the namespace letter the addressed kind mints under; a kind whose identifiers
 /// come from the namespace its four kinds SHARE ([`ENTITY_ID_PREFIX`]) reads no form of its own
 /// instead ([`super::no_such_origin_access_control`]), since there the letter says nothing about
-/// which of the four kinds issued the identifier.
+/// which of the four kinds issued the identifier. A kind whose recorded answers read NO form of
+/// the value beyond that one identifier claim — the public key's routes — reads
+/// [`is_issued_for_another_kind`] alone instead ([`super::unresolved_public_key`]).
 pub fn id_format_refused_for(prefix: char, value: &str) -> bool {
     if is_minted_uuid(value) {
         return false;
@@ -1407,12 +1408,23 @@ pub fn id_format_refused_for(prefix: char, value: &str) -> bool {
     if !is_entity_id_form(value) {
         return true;
     }
-    if value.len() > ISSUED_ENTITY_ID_LEN {
-        return true;
-    }
-    value.len() == ISSUED_ENTITY_ID_LEN
-        && identifies_a_namespace(value)
-        && !value.starts_with(prefix)
+    is_issued_for_another_kind(prefix, value)
+}
+
+/// Whether `value` IS an identifier CloudFront issued for a kind of this service OTHER than the
+/// one minted under `prefix`: the id alphabet at the width an identifier is issued at
+/// ([`is_prefixed_token`]) under one of the other namespace letters this service issues
+/// identifiers under ([`ID_NAMESPACE_LETTERS`]).
+///
+/// Such a value names a record of ANOTHER kind, so no record of the addressed kind could ever
+/// answer to it, whichever route is addressed by it — which is the whole of what the public
+/// key's routes read of an identifier before they resolve it
+/// ([`super::unresolved_public_key`]), and one of the two things the field-level encryption
+/// records' routes read ([`id_format_refused_for`]).
+pub fn is_issued_for_another_kind(prefix: char, value: &str) -> bool {
+    ID_NAMESPACE_LETTERS
+        .iter()
+        .any(|letter| *letter != prefix && is_prefixed_token(value, *letter))
 }
 
 /// Whether `body` is [`ID_BODY_LEN`] characters of the id alphabet — the body every

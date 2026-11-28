@@ -23,17 +23,16 @@
 //!   that alphabet is the identifier the route reports it cannot READ;
 //! * the field-level encryption CONFIGURATION DOCUMENT routes refuse the form of every value
 //!   that could never be an identifier issued for their kind — one written outside the alphabet
-//!   an identifier is written in, one written WIDER than an identifier of this mint is issued,
-//!   and one written exactly as an ISSUED identifier (that alphabet at the issued width) under
-//!   another kind's namespace letter, which makes it that
+//!   an identifier is written in, and one written exactly as an ISSUED identifier (that alphabet
+//!   at the issued width) under another kind's namespace letter, which makes it that
 //!   other kind's identifier ([`super::unresolved_field_level_encryption_config`],
 //!   [`super::unresolved_field_level_encryption_profile`]); every other value is carried
 //!   through to the store, while that configuration's resource read reads no form at all and
 //!   reports every id it cannot resolve as the configuration that is absent
 //!   ([`super::no_such_field_level_encryption_config`]);
-//! * the PUBLIC KEY routes refuse the form of every value that could never be an identifier
-//!   issued for their kind, the same three ways the field-level encryption documents' routes do
-//!   ([`unresolved_public_key`]);
+//! * the PUBLIC KEY routes read ONE of those two things: an identifier ISSUED FOR ANOTHER KIND
+//!   is the identifier they report they cannot read, and every other value — in any characters,
+//!   at any width — is carried through to the store ([`unresolved_public_key`]);
 //! * the ORIGIN ACCESS CONTROL reads the ALPHABET and nothing more
 //!   ([`unresolved_origin_access_control_id`]), the way the distribution does and for the same
 //!   reason: its identifiers come from the namespace its kind SHARES with the distributions,
@@ -69,25 +68,29 @@ pub const ADDRESSED_BY_ID: &str = "Id";
 /// DeletePublicKey")` reports `AccessDenied` and `NoSuchPublicKey` as the only errors covering an
 /// `Id` they cannot resolve), so one code and one status cover two conditions and the MESSAGE is
 /// what tells them apart — decided from the value alone, and therefore before the store is
-/// consulted. What the value has to say for the format refusal to be the answer is that it could
-/// never be an identifier CloudFront issued for a PUBLIC KEY ([`id_format_refused_for`]): it is
-/// written outside the alphabet an identifier is written in at all, it is written wider than an
-/// identifier of this mint is issued, or it is written exactly as an identifier is ISSUED under
-/// another kind's namespace letter, in which case it is that other kind's identifier. Either way
-/// the route reports the
-/// identifier it cannot READ ([`id_format_invalid_message`]). Every other value is carried
-/// through to the store — WHICH identifier of this kind was ever issued is a property of the
-/// STORE rather than of the value, and so is a value of the alphabet written narrower than the
-/// issued width, and so is a value written in the UUID form CloudFront issues the identifiers of
-/// its other kinds in, which carries no namespace marker at all — and
-/// the key the store holds none under is the key that is simply ABSENT.
+/// consulted. These routes read ONE thing of the value, which their recorded answers are what
+/// settles: whether it IS an identifier CloudFront issued for another kind of this service
+/// ([`is_issued_for_another_kind`]) — the id alphabet at the issued width under another kind's
+/// namespace letter — in which case it names that other kind's record and the route reports the
+/// identifier it cannot READ ([`id_format_invalid_message`]).
+///
+/// EVERY other value is carried through to the store, however it is spelled: `Id` is a plain
+/// `string` `@httpLabel` the model constrains no further (no `@pattern`, no `@length`), WHICH
+/// identifier of this kind was ever issued is a property of the STORE rather than of the value,
+/// and the widths and alphabets this service MINTS in are one form CloudFront writes an
+/// identifier in rather than the only one — so a value of the alphabet at another width, a value
+/// under a letter no kind issues under, a value carrying lower case or a separator and a value
+/// of no identifier shape at all are each resolved against the store, and the key it holds none
+/// under is the key that is simply ABSENT. This is what the recorded answers of these routes
+/// report: a probe written in lower case around separators, and one of the alphabet written
+/// wider than a key's identifier is issued, are each answered with the absent-key sentence.
 ///
 /// Only an identifier that ADDRESSES the operation is judged this way: a public key id borne by a
 /// submitted DOCUMENT (a key group's `Items` member, a field-level encryption profile's
 /// `PublicKeyId`) addresses nothing, so it is resolved against the store alone and reports the
 /// absent key whatever its shape ([`no_such_public_key`]).
 pub fn unresolved_public_key(id: &str) -> crate::ops::types::NoSuchPublicKey {
-    if id_format_refused_for(PUBLIC_KEY_ID_PREFIX, id) {
+    if is_issued_for_another_kind(PUBLIC_KEY_ID_PREFIX, id) {
         crate::ops::types::NoSuchPublicKey {
             message: Some(id_format_invalid_message(ADDRESSED_BY_ID)),
         }

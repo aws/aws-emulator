@@ -973,15 +973,18 @@ async fn an_id_no_profile_holds_is_refused_by_both_readers() {
     // A value written the way this service ISSUES an identifier — the identifier alphabet at
     // the issued width — under ANOTHER kind's namespace letter is that kind's identifier, so it
     // is the identifier the service cannot READ; so is a value outside that alphabet, which
-    // claims to be no identifier of this mint at all, and one written wider than any identifier
-    // of this kind is written, which overflows every identifier it could be.
+    // claims to be no identifier of this mint at all. A value of the alphabet at any other
+    // width names no kind of its own, so the store is what answers for it.
     for (case, expected) in [
         (
             "P280MFCLSYOCVU",
             NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
         ),
         ("E2QWRUHAPOMQZL", UNREADABLE_PROFILE_ID_MESSAGE),
-        ("EDFDVBD6EXAMPLE", UNREADABLE_PROFILE_ID_MESSAGE),
+        (
+            "EDFDVBD6EXAMPLE",
+            NO_SUCH_FIELD_LEVEL_ENCRYPTION_PROFILE_MESSAGE,
+        ),
         ("not-a-profile-id", UNREADABLE_PROFILE_ID_MESSAGE),
     ] {
         for (reader, answer) in [

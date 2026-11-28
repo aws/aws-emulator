@@ -11,8 +11,8 @@
 //! the two conditions apart, and what decides it is whether the value could be an identifier
 //! CloudFront ISSUED FOR THE ADDRESSED KIND at all — for the routes that read a form at all. A
 //! value written in the identifier ALPHABET (digits and uppercase letters, carrying no separator
-//! and no lower case) at no more than the width an identifier is issued at is carried through to
-//! the STORE whatever body it carries — WHICH
+//! and no lower case) is carried through to
+//! the STORE whatever body and whatever width it carries — WHICH
 //! identifier was ever issued is a property of the store, and the width this service issues at
 //! is one width CloudFront writes an identifier in rather than the only one — and the record the
 //! store holds none under is the ABSENT resource ("The specified field level encryption
@@ -20,8 +20,7 @@
 //! identifier is ISSUED — at that width — under the namespace letter of ANOTHER kind this
 //! service issues identifiers under IS that kind's identifier, so no record of the addressed
 //! kind could answer to it and it earns the unreadable-identifier sentence ("Id format is
-//! invalid"); so does a value written WIDER than an identifier of these kinds is ever written,
-//! which overflows every identifier it could be, and a value written OUTSIDE the alphabet, which
+//! invalid"); so does a value written OUTSIDE the alphabet, which
 //! claims to be no identifier of
 //! this mint at all and leaves nothing to resolve.
 //! `GetFieldLevelEncryption`, the
@@ -38,13 +37,12 @@
 //! * the values of the kind's own minted form the store holds nothing for: one of the
 //!   kind's own namespace that was never minted and the minted id with its last character
 //!   changed — each the ABSENT resource on every route;
-//! * the values of the alphabet NARROWER than the width this service issues an identifier at:
+//! * the values of the alphabet at a width OTHER than the width this service issues an
+//!   identifier at:
 //!   this kind's own
-//!   namespace letter over a body one character short of it — carried through to the store, which
-//!   reports the record absent, since a narrower value names no kind of its own;
-//! * the values of the alphabet WIDER than that width: this kind's own namespace letter over a
-//!   body one character past it, and an unminted namespace letter over a far longer body — each
-//!   the identifier reported UNREADABLE, since no identifier of these kinds is written that wide;
+//!   namespace letter over a body one character short of it and one character past it, and an
+//!   unminted namespace letter over a far longer body — each carried through to the store, which
+//!   reports the record absent, since a value at another width names no kind of its own;
 //! * the values of the alphabet at the ISSUED width that were issued for ANOTHER kind: the
 //!   sibling kind's own minted id, a public key id and the `E`-prefixed namespace the other
 //!   CloudFront entity ids are drawn from — each the identifier reported UNREADABLE;
@@ -292,9 +290,9 @@ impl Shape {
         }
     }
 
-    /// A value written in the identifier alphabet NARROWER than the width this service issues an
-    /// identifier at: the width this service issues at is one width CloudFront writes an
-    /// identifier in
+    /// A value written in the identifier alphabet at a width OTHER than the one this service
+    /// issues an identifier at, on either side of it: the width this service issues at is one
+    /// width CloudFront writes an identifier in
     /// rather than the only one, so such a value names no kind of its own and every route
     /// carries it through to the store.
     fn other_width(case: impl Into<String>, id: impl Into<String>, absent: &'static str) -> Self {
@@ -302,23 +300,6 @@ impl Shape {
             case: case.into(),
             id: id.into(),
             expected: absent,
-            absent,
-        }
-    }
-
-    /// A value written in the identifier alphabet WIDER than the width this service issues an
-    /// identifier at: CloudFront writes an identifier of these kinds in at most that many
-    /// characters, so a longer run of the alphabet could be none of them and every route that
-    /// reads the form reports the identifier unreadable.
-    fn wider_than_issued(
-        case: impl Into<String>,
-        id: impl Into<String>,
-        absent: &'static str,
-    ) -> Self {
-        Self {
-            case: case.into(),
-            id: id.into(),
-            expected: UNREADABLE_IDENTIFIER,
             absent,
         }
     }
@@ -437,7 +418,7 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
             format!("{prefix}{}", &body[..body.len() - 1]),
             absent,
         ),
-        Shape::wider_than_issued(
+        Shape::other_width(
             "this kind's prefix with a body one character too long",
             format!("{prefix}{body}A"),
             absent,
@@ -458,7 +439,7 @@ fn shapes(kind: Kind, stored: &Stored, public_key: &str) -> Vec<Shape> {
             format!("E{body}"),
             absent,
         ),
-        Shape::wider_than_issued(
+        Shape::other_width(
             "a namespace letter no kind of this service mints and a far longer body",
             format!("W{body}{body}"),
             absent,

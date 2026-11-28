@@ -29,8 +29,11 @@
 //!   profile, whose identifiers come from a namespace of its own as well;
 //! * and the BOUNDARY of the form, in the second test: values that look like a UUID but are
 //!   none — one in upper case, one with its separators removed, one with a group of the wrong
-//!   width and one carrying a sixth group — which are no identifier CloudFront issues in either
-//!   form and are therefore the identifier the route reports it cannot read.
+//!   width and one carrying a sixth group — which the profile's route, reading the identifier
+//!   ALPHABET, reports as the identifier it cannot read, while the public key's routes, reading
+//!   only whether a value IS an identifier issued for another kind, resolve them against the
+//!   store: how much of a value a route reads before it resolves it is that kind's own recorded
+//!   contract.
 //!
 //! Both sentences are fixed text, so no row may see its value echoed back, and the records this
 //! account really holds are read at their own identifiers afterwards: these are reporting calls
@@ -248,6 +251,22 @@ async fn assert_held_records_survived(router: &MultiServiceRouter, held: &Held) 
     );
 }
 
+/// The sentence the kind behind `code` answers for a value of NEITHER form CloudFront issues an
+/// identifier in.
+///
+/// How much of such a value a route reads before it resolves it is that resource kind's own
+/// recorded contract: the field-level encryption profile's routes read the identifier ALPHABET,
+/// so a value carrying lower case or a separator is the identifier they report they cannot READ,
+/// while the public key's routes read only whether the value IS an identifier issued for another
+/// kind of this service, so every other value — this one included — is resolved against the
+/// store and reported as the key that is ABSENT.
+fn unreadable_or_absent(code: &str) -> &'static str {
+    match code {
+        "NoSuchPublicKey" => NO_SUCH_PUBLIC_KEY,
+        _ => UNREADABLE_IDENTIFIER,
+    }
+}
+
 /// RULE: a value written in the UUID form CloudFront issues identifiers in is carried through to
 /// the store wherever an identifier of a kind minted under its own namespace letter belongs, so
 /// the record the store holds none under is the record reported ABSENT — whichever of that
@@ -299,8 +318,10 @@ async fn a_value_of_the_uuid_form_is_resolved_against_the_store() {
 }
 
 /// The RULE's boundary: a value that only LOOKS like a UUID is of neither form CloudFront issues
-/// an identifier in, so there is nothing in it for the service to resolve and the route reports
-/// the identifier it cannot read.
+/// an identifier in, so the profile's route — which reads the identifier alphabet — reports the
+/// identifier it cannot read, while the public key's routes, which read only whether a value is
+/// an identifier issued for another kind, resolve it against the store and report the key as
+/// absent.
 #[tokio::test]
 async fn a_value_that_is_no_uuid_is_reported_unreadable() {
     let router = emulator();
@@ -335,7 +356,7 @@ async fn a_value_that_is_no_uuid_is_reported_unreadable() {
                 &answer,
                 &format!("{operation} with {case} ({id:?})"),
                 code,
-                UNREADABLE_IDENTIFIER,
+                unreadable_or_absent(code),
                 id,
             );
         }

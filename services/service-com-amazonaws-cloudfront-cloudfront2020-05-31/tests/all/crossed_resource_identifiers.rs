@@ -26,12 +26,11 @@
 //!   nothing more, and report every identifier of it they cannot resolve as the control that is
 //!   ABSENT;
 //! * a field-level encryption configuration's and a profile's identifiers come from namespaces
-//!   of their OWN (`C` and `P`), so those routes read the WIDTH and the NAMESPACE LETTER too: a
-//!   value WIDER than the width this service issues an identifier at could be none of these
-//!   kinds', and a value written exactly the way an identifier is ISSUED — that alphabet at that
+//!   of their OWN (`C` and `P`), so those routes read the NAMESPACE LETTER too, at the ISSUED
+//!   width: a value written exactly the way an identifier is ISSUED — that alphabet at that
 //!   width — under another kind's letter IS that kind's identifier, so no record of the
-//!   addressed kind could answer to either and both are unreadable, while a value of the
-//!   alphabet NARROWER than that width, or at that width under a letter no kind of this service
+//!   addressed kind could answer to it and it is unreadable, while a value of the
+//!   alphabet at any OTHER width, or at that width under a letter no kind of this service
 //!   issues one under, names no kind of
 //!   its own and is carried through to the store — as is a value written in the OTHER form
 //!   CloudFront issues an identifier in, the UUID its key groups and policy kinds are minted
@@ -151,12 +150,11 @@ impl Route {
     /// control's routes read NOTHING MORE of it, because its identifiers come from the namespace
     /// its kind SHARES with the distributions: every value of the alphabet is carried through to
     /// the store, so the record it holds none under is reported ABSENT. The field-level
-    /// encryption routes read the WIDTH and the NAMESPACE LETTER too: a value WIDER than an
-    /// identifier of this mint is issued could be none of them, and a value written exactly the
-    /// way an identifier is ISSUED under another kind's letter IS that kind's identifier, so both
-    /// are unreadable, while a value of the alphabet narrower than the issued width, or at that
-    /// width under a letter no kind of this service issues one under, is carried through to the
-    /// store.
+    /// encryption routes read the NAMESPACE LETTER too, at the ISSUED width: a value written
+    /// exactly the way an identifier is issued under another kind's letter IS that kind's
+    /// identifier and is unreadable, while a value of the alphabet at any other width, or at the
+    /// issued width under the kind's own letter or a letter no kind of this service issues one
+    /// under, is carried through to the store.
     fn expected(self, id: &str) -> &'static str {
         // The OTHER form CloudFront issues an identifier in: a UUID carries no namespace marker
         // at all and every kind identified by one is minted in it, so a route that reads the
@@ -173,12 +171,11 @@ impl Route {
             return UNREADABLE_IDENTIFIER;
         }
         let unreadable = self.own_namespace().is_some_and(|own| {
-            id.len() > MINTED_ID_WIDTH
-                || (id.len() == MINTED_ID_WIDTH
-                    && id
-                        .chars()
-                        .next()
-                        .is_some_and(|letter| letter != own && ISSUED_NAMESPACES.contains(&letter)))
+            id.len() == MINTED_ID_WIDTH
+                && id
+                    .chars()
+                    .next()
+                    .is_some_and(|letter| letter != own && ISSUED_NAMESPACES.contains(&letter))
         });
         if unreadable {
             UNREADABLE_IDENTIFIER

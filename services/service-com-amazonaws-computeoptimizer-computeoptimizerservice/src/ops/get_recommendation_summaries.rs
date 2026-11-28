@@ -18,21 +18,21 @@
 //!
 //! ## How this answer is paged
 //!
-//! The summary set is the resource-type vocabulary — one row per `RecommendationSourceType`
-//! the service reports on (`crate::state::TRACKED_SOURCE_TYPES`), whatever the account holds
-//! of it — and `maxResults` is "The maximum number of recommendation summaries to return with
-//! a single request. To retrieve the remaining results, make another request with the returned
-//! nextToken value." So a request is answered with AT MOST the number of rows it asked for,
-//! followed by the `nextToken` that resumes the walk, which is "null when there are no more
-//! pages of recommendation summaries to return" and only then.
+//! ONE ACCOUNT'S ROLL-UP IS ANSWERED WHOLE. The summary set of an account is the
+//! resource-type vocabulary — one row per `RecommendationSourceType` the service reports on
+//! (`crate::state::TRACKED_SOURCE_TYPES`), whatever the account holds of it — and a request
+//! summarises exactly one account ("Only one account ID can be specified per request"), so
+//! every group of that one account's roll-up is in the one answer and no `nextToken` is handed
+//! out: it is "null when there are no more pages of recommendation summaries to return", and
+//! after one account's groups there are none.
 //!
-//! How large that page is is the crate's one rule for it (`crate::state::page_size`): the size
-//! the request asks for, `crate::state::DEFAULT_PAGE_SIZE` when it asks for none — an absent
-//! member, or the modelled range's lower bound `0`, which the service documents no meaning for
-//! — and never more than `crate::state::MAX_PAGE_SIZE`, so no number a request carries can
-//! size the response or the allocation that builds it.
+//! `maxResults` is "the maximum number of recommendation summaries to return with a single
+//! request", which bounds how many SUMMARISED ACCOUNTS one answer carries and never shortens
+//! the group list of a single account's roll-up: a size smaller than the vocabulary leaves the
+//! answer as it is, because an absent group is a different statement from a group whose counts
+//! are zero — it says the service does not report on that resource type at all.
 //!
-//! The boundary a token names is the GROUP the next page starts at
+//! The boundary a token names is the GROUP the answer resumes at
 //! (`crate::state::encode_summary_page_token`) rather than an offset, because the sequence
 //! walked is the fixed vocabulary in its reported order: the group names the same position in
 //! every walk of it, whatever the account holds. A value that is not one of this operation's
@@ -258,18 +258,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // "The maximum number of recommendation summaries to return with a single request":
-        // the page is the size the request asked for, [`crate::state::DEFAULT_PAGE_SIZE`] when
-        // it asked for none (an absent `maxResults`, or the modelled range's lower bound `0`,
-        // which the service documents no meaning for), and never more than
-        // [`crate::state::MAX_PAGE_SIZE`] — the crate's one rule for how large a page a
-        // paginated reader builds, applied here as every other reader of this service applies
-        // it, so no number a request carries can size the response or the allocation that
-        // builds it.
-        let page_size = crate::state::page_size(
-            input.max_results,
-            crate::state::DEFAULT_PAGE_SIZE,
-            crate::state::MAX_PAGE_SIZE,
-        );
+        // what a single request summarises is ONE ACCOUNT ("Only one account ID can be
+        // specified per request"), so the size asked for bounds how many summarised ACCOUNTS
+        // an answer carries and never shortens the group list of one account's roll-up. Every
+        // group of this account is therefore reported, whatever `maxResults` the request
+        // carries: an absent group would tell a caller the service does not report on that
+        // resource type at all, which is not what a page boundary means.
 
         let guard = state.lock();
         // "The account is not opted in to Compute Optimizer": the service analyses an
@@ -291,8 +285,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut recommendation_summaries: Vec<RecommendationSummary> = Vec::with_capacity(
             crate::state::TRACKED_SOURCE_TYPES
                 .len()
-                .saturating_sub(resume_at)
-                .min(page_size),
+                .saturating_sub(resume_at),
         );
         // The databases the account holds an analysis for, by the crate's one rule for it
         // ([`crate::state::analysed_databases`]): a summary of the account's Amazon Aurora and
@@ -396,21 +389,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let idle = guard.idle_analyses_by_source_type(&account_id);
         // One summary per resource type this service TRACKS — every value of the
         // `RecommendationSourceType` vocabulary `RecommendationSummary$recommendationResourceType`
-        // names ([`crate::state::TRACKED_SOURCE_TYPES`]), in that vocabulary's order — and
-        // not only the types the account happens to hold rows of: "Returns the optimization
+        // names ([`crate::state::TRACKED_SOURCE_TYPES`]), in that vocabulary's reported order —
+        // and not only the types the account happens to hold rows of: "Returns the optimization
         // findings for an account. It returns the number of" resources at each finding, and
         // the number at a finding no resource carries is zero. So an enrolled account whose
         // analysis has produced nothing yet reads a summary per tracked resource type with
         // every count at zero, which is what tells a caller the type is tracked and has
         // nothing to optimize — an absent entry would say the type is not reported at all.
         // Every group the store holds is in that vocabulary, because a record names its
-        // resource type with one of its values. What ONE answer carries of that sequence is
-        // the page this request asked for: the groups that follow the one the cursor resumed
-        // at, at most `page_size` of them, with the rest walked by the token below.
+        // resource type with one of its values. ONE ANSWER carries the whole of this one
+        // account's roll-up: the groups that follow the one a cursor resumed at, to the end of
+        // the vocabulary, since the size a request asks for bounds the accounts summarised
+        // rather than the groups of one account.
         for resource_type in crate::state::TRACKED_SOURCE_TYPES
             .iter()
             .skip(resume_at)
-            .take(page_size)
             .copied()
         {
             let resources = analysed
@@ -429,17 +422,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // A token is handed out exactly when the vocabulary CONTINUES past the page just
-        // reported, and it names the group the next page starts at, so a walk resumes at the
-        // group it stopped before and reports every group exactly once. The last page of a walk
-        // carries none: "This value is null when there are no more pages of recommendation
-        // summaries to return."
-        let next_token = crate::state::TRACKED_SOURCE_TYPES
-            .get(resume_at.saturating_add(recommendation_summaries.len()))
-            .map(|resource_type| crate::state::encode_summary_page_token(resource_type));
-
+        // No token: this answer carries every group of the one account it summarises, and
+        // "this value is null when there are no more pages of recommendation summaries to
+        // return."
         Ok(GetRecommendationSummariesOutput {
-            next_token,
+            next_token: None,
             recommendation_summaries: Some(recommendation_summaries),
         })
     }

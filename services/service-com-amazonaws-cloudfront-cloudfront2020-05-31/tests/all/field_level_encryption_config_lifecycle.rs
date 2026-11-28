@@ -1489,8 +1489,8 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
     // value written the way this service ISSUES an identifier — the identifier alphabet at the
     // issued width — under ANOTHER kind's namespace letter IS that kind's identifier, so it is
     // the identifier the service cannot READ; so is a value outside that alphabet, which
-    // claims to be no identifier of this mint at all, and one written wider than any identifier
-    // of these kinds is written; a value of the alphabet narrower than the issued width
+    // claims to be no identifier of this mint at all; a value of the alphabet at any OTHER
+    // width, on either side of the issued one,
     // names no kind of its own, so it is carried through to the store, since WHICH identifier
     // was ever issued is the store's to say.
     let mut mangled: Vec<char> = stored_id.chars().collect();
@@ -1500,7 +1500,7 @@ async fn an_id_no_configuration_holds_is_refused_by_the_configuration_reader() {
     let mangled: String = mangled.into_iter().collect();
     for (case, expected) in [
         ("C3V3PVOY5NSBVE", NO_SUCH_CONFIG_MESSAGE),
-        ("EDFDVBD6EXAMPLE", UNREADABLE_ID_MESSAGE),
+        ("EDFDVBD6EXAMPLE", NO_SUCH_CONFIG_MESSAGE),
         ("E2QWRUHAPOMQZL", UNREADABLE_ID_MESSAGE),
         (profile.as_str(), UNREADABLE_ID_MESSAGE),
         (mangled.as_str(), NO_SUCH_CONFIG_MESSAGE),
