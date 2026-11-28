@@ -794,6 +794,7 @@ dependencies = [
  "service-com-amazonaws-partnercentralaccount-partnercentralaccount",
  "service-com-amazonaws-partnercentralbenefits-partnercentralbenefitsservice",
  "service-com-amazonaws-partnercentralchannel-partnercentralchannel",
+ "service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator",
  "service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement",
  "service-com-amazonaws-partnercentralselling-awspartnercentralselling",
  "service-com-amazonaws-paymentcryptography-paymentcryptographycontrolplane",
@@ -19533,6 +19534,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-com-amazonaws-partnercentralmarketing-awspartnerdemandgenerator"
+version = "0.1.0"
+dependencies = [
+ "automod",
+ "aws-emulator-build-support",
+ "aws-emulator-emulator-telemetry",
+ "aws-emulator-engine",
+ "aws-emulator-server",
+ "aws-emulator-smithy-macros",
+ "aws-emulator-smithy-schema-server",
+ "aws-emulator-smithy-server-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema 0.2.1",
+ "aws-smithy-types",
+ "bytes",
+ "hex",
+ "http",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "service-com-amazonaws-partnercentralrevenuemeasurement-partnercentralrevenuemeasurement"
 version = "0.1.0"
 dependencies = [
@@ -21802,6 +21827,7 @@ dependencies = [
  "aws-emulator-smithy-server-runtime",
  "aws-sdk-ec2",
  "aws-sdk-route53",
+ "aws-smithy-cbor 0.62.2",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
@@ -23620,6 +23646,7 @@ dependencies = [
  "aws-sdk-ssm",
  "aws-sdk-xray",
  "aws-sigv4",
+ "aws-smithy-cbor 0.62.2",
  "aws-smithy-eventstream 0.60.21",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",

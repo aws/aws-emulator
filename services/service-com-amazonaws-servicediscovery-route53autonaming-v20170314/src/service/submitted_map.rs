@@ -35,8 +35,9 @@
 //!   doubles while the entries would pass the
 //!   [`LOAD_FACTOR_NUMERATOR`]/[`LOAD_FACTOR_DENOMINATOR`] load ([`capacity_for`]);
 //! * and, for two keys that share a bucket, the order they were PUT in, which is the order
-//!   the request's JSON object wrote them — so the ordering is a STABLE sort of the
-//!   submitted entries by bucket ([`in_iteration_order`]).
+//!   the request's own body wrote them, in whichever of this model's protocols carried it —
+//!   so the ordering is a STABLE sort of the submitted entries by bucket
+//!   ([`in_iteration_order`]).
 //!
 //! One case is NOT modelled: a single bucket holding [`TREEIFIED_BUCKET`] entries or more,
 //! which the iteration re-orders by a rule of its own. The load the table is kept under

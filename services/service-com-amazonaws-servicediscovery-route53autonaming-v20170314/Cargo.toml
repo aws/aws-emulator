@@ -55,6 +55,10 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 # `tests/all/main.rs` declares one module per suite file under `tests/all/`.
 automod = { workspace = true }
+# The CBOR implementation the framework's own codec is built on: `tests/all/rpcv2_cbor_wire.rs`
+# writes and reads the bodies of this service's `rpcv2Cbor` protocol with it. Already in the
+# lock, at the version the vendored codec uses.
+aws-smithy-cbor = "0.62.2"
 # `tests/all/async_namespace_operations.rs` and
 # `tests/all/namespace_vpc_failure_reason.rs`: the VPC a private DNS namespace is created
 # for is resolved in Amazon EC2, so the tests mount EC2 beside this service on the one

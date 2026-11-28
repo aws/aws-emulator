@@ -382,7 +382,12 @@ pub fn with_error_body_list_element_shape(
 /// `resp` with its body replaced by `rewrite`'s, and the advertised length corrected — the
 /// one response-level half of this rule, so a rename and a restatement cannot differ in what
 /// they leave alone.
-fn with_rewritten_body(
+///
+/// `pub(crate)` because the CBOR half of the same rule
+/// ([`crate::cbor_error_detail_member`]) owns the same responses and leaves the same ones
+/// alone: the body it rewrites is another encoding, and which responses are a failure at all
+/// is stated here once.
+pub(crate) fn with_rewritten_body(
     mut resp: RtResponse,
     rewrite: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> RtResponse {

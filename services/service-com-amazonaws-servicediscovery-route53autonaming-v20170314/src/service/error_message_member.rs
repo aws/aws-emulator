@@ -35,6 +35,17 @@
 //! scaffold's own 501 — keeps the member the framework wrote it in, because the rename is
 //! keyed on the modelled shapes.
 //!
+//! # Either wire
+//!
+//! This model declares `rpcv2Cbor` beside `awsJson1_1`
+//! (`smithy_query(query="service_info",model_path="services/service-com-amazonaws-servicediscovery-route53autonaming-v20170314/smithy-model/com-amazonaws-servicediscovery-route53autonaming-v20170314.json")`),
+//! and every request is served in the protocol it names, so the same two layers answer a
+//! failed call on either wire: on the CBOR one the body above is the CBOR map
+//! `{"__type": "InvalidInput", "Message": "…"}` under `content-type: application/cbor`. The
+//! member an error carries its text in is a fact of THIS SERVICE rather than of a codec, so
+//! it is the same member on both, and the rename is taken on both — each half leaving the
+//! other wire's bodies byte for byte as its renderer wrote them.
+//!
 //! The structural home for the rule is the framework's error renderer, which writes the
 //! synthetic shape's `message` for every service; that renderer is in the agent-immutable
 //! `vendor/` tree, so this service states it at the one seam that can see a whole rendered
@@ -83,8 +94,17 @@ const MODELLED_ERROR_SHAPES: [&str; 15] = [
 /// member differs from the one a layer wrote.
 #[must_use]
 pub(super) fn with_modelled_message_member(resp: RtResponse) -> RtResponse {
-    ::service_common::error_detail_member::with_renamed_detail_member(
+    let answered = ::service_common::error_detail_member::with_renamed_detail_member(
         resp,
+        &MODELLED_ERROR_SHAPES,
+        RENDERED_MESSAGE_MEMBER,
+        MODELLED_MESSAGE_MEMBER,
+    );
+    // The same rename on the other wire this model declares: a body the JSON half owns is
+    // not a CBOR map and a body this half owns is not a JSON document, so each leaves the
+    // other's alone and a response carries one rename at most.
+    ::service_common::cbor_error_detail_member::with_renamed_cbor_detail_member(
+        answered,
         &MODELLED_ERROR_SHAPES,
         RENDERED_MESSAGE_MEMBER,
         MODELLED_MESSAGE_MEMBER,

@@ -346,6 +346,11 @@ aws-sdk-cloudwatch = { version = "1", default-features = false }
 # protocol-serialized event frame with, rather than a second laying-out of the prelude, the
 # headers and their CRCs here.
 aws-smithy-eventstream = "0.60"
+# `cbor_error_detail_member`: the CBOR implementation the framework's own `rpcv2Cbor` codec is
+# built on, which reads an ALREADY ANSWERED error map back whatever members it carries and
+# writes the renamed one again. At the version that vendored codec uses, so no second CBOR
+# implementation enters this workspace.
+aws-smithy-cbor = "0.62.2"
 
 [dev-dependencies]
 # `acm_certificate_termination`'s own cases load REAL certificate material, minted by the

@@ -433,6 +433,11 @@ pub mod api_gateway_access_logs;
 /// into this workspace's in-process SQL engine, for every service whose data plane answers a
 /// query over such a table, so two of them cannot decode one table differently.
 pub mod catalog_table_rows;
+/// The renaming [`error_detail_member`] states, for a failure answered on a service's
+/// `rpcv2Cbor` protocol — the CBOR half of the rule, so a service whose model declares that
+/// protocol beside another reports an error's text in one member whichever wire carried the
+/// call.
+pub mod cbor_error_detail_member;
 /// The ONE clock an emulated service's clock-owed transitions are decided against — the due
 /// instants a transient status is recorded with and the comparisons that materialise them —
 /// for every service that reports one, so a caller can hold a span open or cross it instead

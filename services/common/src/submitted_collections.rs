@@ -435,13 +435,16 @@ pub fn quoting_refusal<Op: Operation>(
 ) -> Option<RtResponse> {
     // The codec the request is SERVED in, resolved the way the framework's own dispatch
     // resolves it: the author's `override_protocol` when the service replaces the
-    // model-derived one, else the definition's (the same resolution
-    // [`crate::front_door`] makes). A pass that read the request with a different codec
-    // from the operation behind it would find a different violation set — or none at all,
-    // for a service whose own codec is what reads its bodies.
+    // model-derived one, else the one the definition selects FOR THIS REQUEST (the same
+    // resolution [`crate::front_door`] makes). A pass that read the request with a
+    // different codec from the operation behind it would find a different violation set —
+    // or none at all, for a service whose own codec is what reads its bodies. The
+    // selection is per request because a service may declare several protocols and serves
+    // each request in the one it names, so the service's first-declared codec is only its
+    // own for a service that declares one.
     let protocol = svc
         .override_protocol()
-        .unwrap_or_else(|| svc.definition().protocol());
+        .unwrap_or_else(|| svc.definition().wire_protocol(req).protocol());
     let refusing = refusing_violations_with_mapped_echoes::<Op>(protocol, req).0;
     let mut restated_a_clause = false;
     // The request's own maps, read at most once per member whatever the clause count.
@@ -804,6 +807,20 @@ fn restated_map(
 /// a member no map was found at, which keeps the validating walk's own rendering.
 const MAX_PARSED_PATHS: usize = 16;
 
+/// How many STEPS of one member path this reader descends through the body, at most.
+///
+/// The depth has to be bounded by the MODEL and not by the request, for the same reason
+/// [`MAX_PARSED_PATHS`] bounds the count: a clause's path is not always the model's — a
+/// constraint broken by one of a map's VALUES is reported at `<map member>.<key>`, the key
+/// is the caller's own text and may itself carry a `.`, and [`SubmittedMaps::of_path`]
+/// splits the whole path on `.` — so the number of steps a path presents is request-shaped,
+/// while each step is one level of descent into the body. This is that bound — well above
+/// the deepest member path an emulated input declares (`probes.1.member.packetSize` is
+/// four), and a constant — so one read descends a fixed depth whatever a request chooses. A
+/// path past it is answered as a member no map was found at, which keeps the validating
+/// walk's own rendering, exactly as a path past the count is.
+const MAX_PATH_STEPS: usize = 8;
+
 /// The maps the REQUEST carried, each read at most ONCE however many clauses ask for it,
 /// and at most [`MAX_PARSED_PATHS`] of them read at all.
 ///
@@ -858,13 +875,15 @@ impl<'r> SubmittedMaps<'r> {
     }
 }
 
-/// The entries the request's `member` carried, in the order its JSON object wrote them, or
-/// `None` when the body is not an object, carries no such member, or carries one that is
-/// not a map of strings.
+/// The entries the request's `member` carried, in the order its body wrote them, or `None`
+/// when the body is not a structure, carries no such member, or carries one that is not a
+/// map of strings.
 ///
-/// The JSON is read by `serde_json`'s own parser, through `serde`'s deserializer seam:
-/// nothing here reads the body's bytes itself. The seam is what keeps the ORDER, which a
-/// parse into a `Value` would not — that type holds its members in a map of its own.
+/// A JSON body is read by `serde_json`'s own parser, through `serde`'s deserializer seam, and
+/// a CBOR one by the CBOR implementation the framework's own codec for that protocol is built
+/// on ([`read_member_entries`]): nothing here reads the body's bytes itself. The seam is what
+/// keeps the ORDER, which a parse into a `Value` would not — that type holds its members in a
+/// map of its own.
 ///
 /// It reads the body the server has already buffered and the framework has already
 /// deserialized into the operation's input, over the one member a clause is about and
@@ -883,8 +902,7 @@ pub fn submitted_map_entries(body: &[u8], member: &str) -> Option<Vec<(String, S
 
 /// The entries the request carried at `path` — the member names from the body's root down
 /// to the map, as the dotted member path a clause is stated at spells them — in the order
-/// its JSON object wrote them, or `None` when the body does not carry a map of strings
-/// there.
+/// its body wrote them, or `None` when the body does not carry a map of strings there.
 ///
 /// [`submitted_map_entries`] is this over a path of one step, which is the member a clause
 /// at the TOP level of the body names; a map declared on a nested structure member is
@@ -917,18 +935,143 @@ pub fn submitted_scalar_map_entries_at(
 
 /// The one reading both entry points above go through: `path`'s member, read as the map of
 /// `admitted` values it holds.
+///
+/// Both wire forms a request's body can arrive in are read, because a service's model may
+/// declare several protocols and serves each request in the one it names: the JSON document
+/// an `awsJson` or `restJson1` request carries, and otherwise the CBOR map an `rpcv2Cbor`
+/// request carries ([`cbor_member_entries`]). A body neither reads is answered `None`, which
+/// keeps the validating walk's own rendering of the collection.
 fn read_member_entries(
     body: &[u8],
     path: &[&str],
     admitted: AdmittedValues,
 ) -> Option<Vec<(String, String)>> {
-    if path.is_empty() {
+    // Every descent below is one level per step of `path`, and the step count a path
+    // presents is request-shaped ([`MAX_PATH_STEPS`]): the depth is bounded HERE, at the one
+    // funnel both readers go through, so neither can be driven past it.
+    if path.is_empty() || path.len() > MAX_PATH_STEPS {
         return None;
     }
     let mut deserializer = ::serde_json::Deserializer::from_slice(body);
     ::serde::de::DeserializeSeed::deserialize(MemberEntries { path, admitted }, &mut deserializer)
         .ok()
         .flatten()
+        .or_else(|| cbor_member_entries(body, path, admitted))
+}
+
+/// [`read_member_entries`] over the CBOR body an `rpcv2Cbor` request carries: the entries the
+/// member at `path` held, in the order the map wrote them.
+///
+/// The same answer the JSON reader gives for the same request, so a clause about a collection
+/// quotes the same thing whichever of a service's declared protocols carried the call. Read
+/// with the CBOR implementation the framework's own codec for that protocol is built on, over
+/// the one member a clause is about: every other member is SKIPPED without being built, so
+/// one question costs one pass of the body exactly as the JSON reading does, and the descent
+/// is one level per step of a path whose length [`read_member_entries`] has already bounded
+/// by [`MAX_PATH_STEPS`].
+///
+/// `None` when the body is not a CBOR map, carries no such member, or carries one that is
+/// not a map of `admitted` values — the same conditions the JSON reader answers `None` for.
+fn cbor_member_entries(
+    body: &[u8],
+    path: &[&str],
+    admitted: AdmittedValues,
+) -> Option<Vec<(String, String)>> {
+    cbor_entries_at(&mut ::aws_smithy_cbor::Decoder::new(body), path, admitted)
+}
+
+/// The map `path` names inside the CBOR map the decoder is positioned at, descending through
+/// the structure members ahead of it by reading each with this same walk.
+fn cbor_entries_at(
+    decoder: &mut ::aws_smithy_cbor::Decoder<'_>,
+    path: &[&str],
+    admitted: AdmittedValues,
+) -> Option<Vec<(String, String)>> {
+    let (step, rest) = path.split_first()?;
+    // A map of a declared length, or an indefinite one closed by a break item: an encoder of
+    // this protocol is free to write either, and the framework's own codec writes the second.
+    let declared = decoder.map().ok()?;
+    let mut read = 0_u64;
+    loop {
+        if cbor_map_ends(decoder, declared, read)? {
+            return None;
+        }
+        // The member is matched without regard to case for the reason the JSON reader
+        // matches it that way: a violation names it in the lowerCamel path a clause is
+        // stated at, while the body carries the wire name the model declares.
+        let name = decoder.string().ok()?;
+        if name.eq_ignore_ascii_case(step) {
+            return if rest.is_empty() {
+                cbor_map_of(decoder, admitted)
+            } else {
+                cbor_entries_at(decoder, rest, admitted)
+            };
+        }
+        decoder.skip().ok()?;
+        read = read.saturating_add(1);
+    }
+}
+
+/// Whether the CBOR map the decoder is reading ends here, `read` entries in — consuming the
+/// break item of an indefinite-length one. `None` when the bytes end mid-map.
+fn cbor_map_ends(
+    decoder: &mut ::aws_smithy_cbor::Decoder<'_>,
+    declared: Option<u64>,
+    read: u64,
+) -> Option<bool> {
+    match declared {
+        Some(count) => Some(read == count),
+        None => {
+            if matches!(decoder.datatype().ok()?, ::aws_smithy_cbor::data::Type::Break) {
+                decoder.skip().ok()?;
+                return Some(true);
+            }
+            Some(false)
+        }
+    }
+}
+
+/// The CBOR map the decoder is positioned at as its entries, in the order it wrote them, or
+/// `None` when it is no map of `admitted` values.
+fn cbor_map_of(
+    decoder: &mut ::aws_smithy_cbor::Decoder<'_>,
+    admitted: AdmittedValues,
+) -> Option<Vec<(String, String)>> {
+    let declared = decoder.map().ok()?;
+    let mut entries: Vec<(String, String)> = Vec::new();
+    loop {
+        if cbor_map_ends(decoder, declared, entries.len() as u64)? {
+            return Some(entries);
+        }
+        let key = decoder.string().ok()?;
+        entries.push((key, cbor_scalar(decoder, admitted)?));
+    }
+}
+
+/// The value the decoder is positioned at, as the text it was written with — a string as
+/// sent, and, where the caller admits any scalar, a number or a boolean as the document
+/// wrote it. `None` for a value of any other kind, which is what makes a map carrying one
+/// "no map of `admitted` values".
+fn cbor_scalar(
+    decoder: &mut ::aws_smithy_cbor::Decoder<'_>,
+    admitted: AdmittedValues,
+) -> Option<String> {
+    use ::aws_smithy_cbor::data::Type;
+    let datatype = decoder.datatype().ok()?;
+    match (datatype, admitted) {
+        (Type::String | Type::StringIndef, _) => decoder.string().ok(),
+        (_, AdmittedValues::StringsOnly) => None,
+        (Type::Bool, _) => decoder.boolean().ok().map(|held| held.to_string()),
+        (
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::I8 | Type::I16 | Type::I32
+            | Type::I64 | Type::Int,
+            _,
+        ) => decoder.long().ok().map(|whole| whole.to_string()),
+        (Type::F16 | Type::F32 | Type::F64, _) => {
+            decoder.double().ok().map(|held| held.to_string())
+        }
+        _ => None,
+    }
 }
 
 /// Which values a map read back from a request body may hold.
@@ -1131,6 +1274,68 @@ mod tests {
         );
     }
 
+    /// RULE: one read descends at most [`MAX_PATH_STEPS`] steps into the body, on either
+    /// wire form — a path whose last step is the CALLER's own map key may carry a `.` of its
+    /// own, so the step count is not the model's either. A path past the bound is answered
+    /// as a member no map was found at, which keeps the validating walk's own rendering.
+    #[test]
+    fn one_read_descends_a_bounded_number_of_path_steps() {
+        /// A body nesting `steps` structure members, the innermost carrying a map of
+        /// strings, written as JSON and as CBOR — the shape a path of that length matches.
+        fn nested(steps: usize) -> (Vec<u8>, Vec<u8>) {
+            let mut json = String::from(r#"{"m":{"k":"v"}}"#);
+            for _ in 0..steps {
+                json = format!(r#"{{"step":{json}}}"#);
+            }
+            let value: ::serde_json::Value =
+                ::serde_json::from_str(&json).expect("the body is JSON");
+            (json.clone().into_bytes(), cbor_of(&value))
+        }
+
+        /// `value` as CBOR, written with declared container lengths.
+        fn cbor_of(value: &::serde_json::Value) -> Vec<u8> {
+            fn write(encoder: &mut ::aws_smithy_cbor::Encoder, value: &::serde_json::Value) {
+                match value {
+                    ::serde_json::Value::String(text) => {
+                        encoder.str(text);
+                    }
+                    ::serde_json::Value::Object(members) => {
+                        encoder.map(members.len());
+                        for (name, held) in members {
+                            encoder.str(name);
+                            write(encoder, held);
+                        }
+                    }
+                    other => panic!("this case writes no {other}"),
+                }
+            }
+            let mut encoder = ::aws_smithy_cbor::Encoder::new(Vec::new());
+            write(&mut encoder, value);
+            encoder.into_writer()
+        }
+
+        // The deepest path the bound admits is read; one step past it reads nothing, on
+        // either wire form, however deeply the body nests to match it.
+        for (case, steps, expected) in [
+            ("at the bound", MAX_PATH_STEPS - 1, true),
+            ("one step past the bound", MAX_PATH_STEPS, false),
+            ("far past the bound", MAX_PATH_STEPS * 4, false),
+        ] {
+            let mut path: Vec<&str> = vec!["step"; steps];
+            path.push("m");
+            let (json, cbor) = nested(steps);
+            for (wire, body) in [("json", &json), ("cbor", &cbor)] {
+                let read = submitted_map_entries_at(body, &path).is_some();
+                assert_eq!(
+                    read, expected,
+                    "case {case:?} over {wire}: a path of {} steps must {}be read",
+                    path.len(),
+                    if expected { "" } else { "not " }
+                );
+            }
+        }
+    }
+
     /// RULE: the member a clause is about is read back in the order the document wrote it,
     /// whatever else the body carries — and nothing is read where there is nothing to read.
     #[test]
@@ -1247,6 +1452,209 @@ mod tests {
                 submitted_scalar_map_entries_at(body, &["tags"]).is_none(),
                 "case {case:?}: expected nothing to be read"
             );
+        }
+    }
+
+    /// A CBOR body, written as `lengths` says, carrying `members` at its root.
+    fn cbor_body(members: &[(&str, CborValue<'_>)], lengths: CborLengths) -> Vec<u8> {
+        let mut encoder = ::aws_smithy_cbor::Encoder::new(Vec::new());
+        write_cbor_map(&mut encoder, members, lengths);
+        encoder.into_writer()
+    }
+
+    /// One value a CBOR case writes, over the item kinds a request body carries.
+    enum CborValue<'a> {
+        Text(&'a str),
+        Whole(i64),
+        Fraction(f64),
+        Flag(bool),
+        Map(&'a [(&'a str, CborValue<'a>)]),
+        List(&'a [i64]),
+    }
+
+    /// How a CBOR case writes its container headers: both forms are CBOR, and the framework's
+    /// own codec writes the second.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CborLengths {
+        Declared,
+        Indefinite,
+    }
+
+    fn write_cbor_map(
+        encoder: &mut ::aws_smithy_cbor::Encoder,
+        members: &[(&str, CborValue<'_>)],
+        lengths: CborLengths,
+    ) {
+        match lengths {
+            CborLengths::Declared => encoder.map(members.len()),
+            CborLengths::Indefinite => encoder.begin_map(),
+        };
+        for (name, held) in members {
+            encoder.str(name);
+            match held {
+                CborValue::Text(text) => {
+                    encoder.str(text);
+                }
+                CborValue::Whole(whole) => {
+                    encoder.long(*whole);
+                }
+                CborValue::Fraction(held) => {
+                    encoder.double(*held);
+                }
+                CborValue::Flag(flag) => {
+                    encoder.boolean(*flag);
+                }
+                CborValue::Map(nested) => write_cbor_map(encoder, nested, lengths),
+                CborValue::List(elements) => {
+                    match lengths {
+                        CborLengths::Declared => encoder.array(elements.len()),
+                        CborLengths::Indefinite => encoder.begin_array(),
+                    };
+                    for element in *elements {
+                        encoder.long(*element);
+                    }
+                    if lengths == CborLengths::Indefinite {
+                        encoder.end();
+                    }
+                }
+            }
+        }
+        if lengths == CborLengths::Indefinite {
+            encoder.end();
+        }
+    }
+
+    /// RULE: the member a clause is about is read back from the CBOR body an `rpcv2Cbor`
+    /// request carries exactly as it is read back from the JSON body of the same request —
+    /// in the order the map wrote its entries, at a top-level member and at a nested path,
+    /// with both container framings, and nothing read where there is nothing to read.
+    #[test]
+    fn a_cbor_request_body_is_read_back_the_same_way_a_json_one_is() {
+        for lengths in [CborLengths::Declared, CborLengths::Indefinite] {
+            let case = match lengths {
+                CborLengths::Declared => "declared lengths",
+                CborLengths::Indefinite => "indefinite lengths",
+            };
+            let body = cbor_body(
+                &[
+                    ("Before", CborValue::Text("x")),
+                    (
+                        "Attributes",
+                        CborValue::Map(&[
+                            ("z", CborValue::Text("1")),
+                            ("a", CborValue::Text("2")),
+                            ("m", CborValue::Text("3")),
+                        ]),
+                    ),
+                    ("After", CborValue::List(&[1, 2])),
+                ],
+                lengths,
+            );
+            let entries =
+                submitted_map_entries(&body, "attributes").expect("the member is a map");
+            assert_eq!(
+                entries,
+                vec![
+                    ("z".to_string(), "1".to_string()),
+                    ("a".to_string(), "2".to_string()),
+                    ("m".to_string(), "3".to_string()),
+                ],
+                "case {case}: expected the entries in the order the map wrote them, got \
+                 {entries:?}"
+            );
+
+            // A map a nested member carries, at the dotted path a clause names it by.
+            let nested = cbor_body(
+                &[
+                    (
+                        "SamplingRule",
+                        CborValue::Map(&[
+                            ("RuleName", CborValue::Text("r")),
+                            (
+                                "Attributes",
+                                CborValue::Map(&[
+                                    ("z", CborValue::Text("1")),
+                                    ("a", CborValue::Text("2")),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    ("Other", CborValue::Whole(3)),
+                ],
+                lengths,
+            );
+            let read = submitted_map_entries_at(&nested, &["samplingRule", "attributes"])
+                .expect("the nested member is a map");
+            assert_eq!(
+                read,
+                vec![
+                    ("z".to_string(), "1".to_string()),
+                    ("a".to_string(), "2".to_string()),
+                ],
+                "case {case}: expected the nested entries in order, got {read:?}"
+            );
+
+            // A map of SCALARS, each value as the map wrote it, where the reader of a map of
+            // STRINGS answers nothing for the same body.
+            let scalars = cbor_body(
+                &[(
+                    "Weights",
+                    CborValue::Map(&[
+                        ("2", CborValue::Fraction(1.5)),
+                        ("3", CborValue::Whole(2)),
+                        ("4", CborValue::Text("x")),
+                        ("5", CborValue::Flag(true)),
+                    ]),
+                )],
+                lengths,
+            );
+            let scalar_entries = submitted_scalar_map_entries_at(&scalars, &["weights"])
+                .expect("the member is a map of scalars");
+            let stated: Vec<(&str, &str)> = scalar_entries
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect();
+            assert_eq!(
+                stated,
+                vec![("2", "1.5"), ("3", "2"), ("4", "x"), ("5", "true")],
+                "case {case}: expected every scalar as the map wrote it, got {stated:?}"
+            );
+            assert!(
+                submitted_map_entries_at(&scalars, &["weights"]).is_none(),
+                "case {case}: a map of numbers is no map of STRINGS"
+            );
+
+            // (what is asked for, the path asked for, the body) — nothing is read where there
+            // is nothing to read.
+            let reads_nothing: Vec<(&str, Vec<&str>, Vec<u8>)> = vec![
+                ("no such member", vec!["nothing"], body.clone()),
+                (
+                    "a step that is not there",
+                    vec!["rule", "attributes"],
+                    nested.clone(),
+                ),
+                (
+                    "a leaf that is not a map",
+                    vec!["samplingRule", "ruleName"],
+                    nested.clone(),
+                ),
+                (
+                    "a member that is not a map of strings",
+                    vec!["weights"],
+                    scalars.clone(),
+                ),
+                (
+                    "a body that is no map at all",
+                    vec!["attributes"],
+                    vec![0x01],
+                ),
+            ];
+            for (asked, path, held) in reads_nothing {
+                assert!(
+                    submitted_map_entries_at(&held, &path).is_none(),
+                    "case {case}, {asked}: expected nothing to be read"
+                );
+            }
         }
     }
 

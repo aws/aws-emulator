@@ -347,12 +347,15 @@ impl<O: Operation> FrontDoor<O> {
     fn refusal(&self, svc: &dyn Service, req: &RtRequest) -> Option<RtResponse> {
         // The codec the request is SERVED in, resolved the way the framework's own
         // dispatch resolves it: the author's `override_protocol` when the service replaces
-        // the model-derived one, else the definition's. A door that read the request with a
-        // different codec from the operation behind it would find a different violation set
-        // — or none at all, for a service whose own codec is what reads its bodies.
+        // the model-derived one, else the one the definition selects FOR THIS REQUEST. A
+        // door that read the request with a different codec from the operation behind it
+        // would find a different violation set — or none at all, for a service whose own
+        // codec is what reads its bodies. The selection is per request because a service
+        // may declare several protocols and serves each request in the one it names, so the
+        // service's first-declared codec is only its own for a service that declares one.
         let protocol = svc
             .override_protocol()
-            .unwrap_or_else(|| svc.definition().protocol());
+            .unwrap_or_else(|| svc.definition().wire_protocol(req).protocol());
         // A door that quotes no value at all reads the cheaper walk: the fixed sentence
         // names neither the member nor the value, so no echo has to be restored.
         if self.wording.is_none() && self.uri_wording.is_none() {

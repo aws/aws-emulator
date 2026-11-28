@@ -105,11 +105,13 @@ impl<Op: Operation> ApplyingEveryModelledPattern<Op> {
     /// from the service definition is held across the caller's await.
     fn refusal(&self, svc: &dyn Service, req: &RtRequest) -> Option<RtResponse> {
         // The codec the request is SERVED in, resolved the way the framework's own dispatch
-        // resolves it: a layer that read the request with a different codec from the
-        // operation behind it would find a different violation set.
+        // resolves it — per REQUEST, because this model declares more than one protocol and
+        // each request is served in the one it names: a layer that read the request with a
+        // different codec from the operation behind it would find a different violation set,
+        // or none at all.
         let protocol = svc
             .override_protocol()
-            .unwrap_or_else(|| svc.definition().protocol());
+            .unwrap_or_else(|| svc.definition().wire_protocol(req).protocol());
         // Read first, and for most requests the whole of this layer's work: an operation
         // whose input declares no such expression, and a request whose values satisfy the
         // ones it does, is handed straight on.

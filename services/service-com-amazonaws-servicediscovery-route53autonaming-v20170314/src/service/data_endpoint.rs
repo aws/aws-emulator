@@ -183,15 +183,17 @@ impl<Op: Operation> AtTheDataEndpoint<Op> {
             return None;
         }
         // The codec the request is SERVED in, resolved the way the framework's own
-        // dispatch resolves it: a layer that read the request with a different codec from
-        // the operation behind it would find a different violation set.
+        // dispatch resolves it — per REQUEST, because this model declares more than one
+        // protocol and each request is served in the one it names: a layer that read the
+        // request with a different codec from the operation behind it would find a
+        // different violation set, or none at all.
         let protocol = svc
             .override_protocol()
-            .unwrap_or_else(|| svc.definition().protocol());
-        // Every member of this model travels in the request BODY: an `awsJson1_1` service
-        // declares no HTTP bindings at all (`smithy_query(query="operation")` reports the
-        // bindings of an RPC protocol inert), so the body half of the shared walk is the
-        // whole request. A model refresh that bound a member to the URI would leave that
+            .unwrap_or_else(|| svc.definition().wire_protocol(req).protocol());
+        // Every member of this model travels in the request BODY: both protocols it
+        // declares are RPC ones, which bind no member to the request itself
+        // (`smithy_query(query="operation")` reports the bindings of an RPC protocol
+        // inert), so the body half of the shared walk is the whole request. A model refresh that bound a member to the URI would leave that
         // member's refusal to the service's own seam, which is why the walk is named here
         // rather than assumed. Beside the constraints that walk applies are the ones it
         // declares and cannot — a `@pattern` its engine will not compile — which are

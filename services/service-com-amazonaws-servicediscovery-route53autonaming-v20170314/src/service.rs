@@ -109,7 +109,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // its text in the member this model declares. A key the model does not name
         // resolves to `None` here exactly as it does in the generated table, so the
         // router's routing-error path is unchanged.
-        let key = self.entry.protocol().routing_key(req).ok()?;
+        //
+        // The key is read with the codec THIS REQUEST is served in, which the framework's
+        // own dispatch selects per request: this model declares two protocols, and each
+        // names an operation somewhere else (one in a header, the other in the request
+        // path), so a key read with the service's first-declared codec alone would resolve
+        // for one of them and fail for the other — leaving every request in that protocol
+        // to the unwrapped table, answered in error bodies this service does not answer in.
+        let key = self
+            .entry
+            .wire_protocol(req)
+            .protocol()
+            .routing_key(req)
+            .ok()?;
         self.stated_error_bodies.get(key)
     }
 
