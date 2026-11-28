@@ -2136,13 +2136,12 @@ mod describe_launch_template_versions {
             );
         }
 
-        // A parameter no image publishes resolves to NOTHING, so neither writer stores a
-        // version naming one: both refuse it where it is written, which
+        // A parameter no image publishes resolves to NOTHING, and NEITHER WRITER resolves
+        // anything: both store such a value exactly as submitted — "the Systems Manager
+        // parameter will resolve to an AMI ID on launch" — which
         // `launch_template_ssm_alias_forms` owns as its own rule. What this operation is held
-        // to here is what it reports for a stored version carrying such a value — one written
-        // straight into the store, the way a version this emulator's writers decline to
-        // create can only come about: the parameter itself, whatever `ResolveAlias` asks,
-        // beside the versions that do resolve.
+        // to here is what it reports for a stored version carrying such a value: the
+        // parameter itself, whatever `ResolveAlias` asks, beside the versions that do resolve.
         let unresolvable = format!("{SSM_IMAGE_ALIAS_PREFIX}/aws/service/no/such/parameter");
         for writer in ["CreateLaunchTemplate", "CreateLaunchTemplateVersion"] {
             let params = match writer {
@@ -2157,11 +2156,20 @@ mod describe_launch_template_versions {
             };
             let (status, body) = api(&router, writer, &params).await;
             assert_eq!(
-                (status, error_code(&body)),
-                (400, "SsmInvalidParameter".to_string()),
-                "{writer} must refuse a parameter nothing resolves, got {status} with body \
+                status, 200,
+                "{writer} must store a parameter nothing resolves, got {status} with body \
                  {body}"
             );
+            // `CreateLaunchTemplateVersion` reports the version it created, so the stored
+            // value is read off its own answer; the create reports the template alone, and
+            // what IT stored is read back through the describe below.
+            if writer == "CreateLaunchTemplateVersion" {
+                assert_eq!(
+                    element(&body, "imageId").as_deref(),
+                    Some(unresolvable.as_str()),
+                    "{writer} must report the parameter it stored unresolved, got body {body}"
+                );
+            }
         }
 
         let (resolvable_parameter, resolvable_image) = published

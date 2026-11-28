@@ -28,9 +28,8 @@
 //! sentence asserted is written out as the recorded response gives it.
 //!
 //! A launch template's `ImageId` of the `resolve:ssm:` form belongs to NO refusal class of
-//! this suite: such a value is resolved against the account's image catalog where it is
-//! written and where a launch reads it, which is held to its own rule in
-//! [`super::launch_template_ssm_alias_forms`].
+//! this suite: such a value is stored as written and resolved only where a LAUNCH reads it,
+//! which is held to its own rule in [`super::launch_template_ssm_alias_forms`].
 
 use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, LONG_RESOURCE_ID_DIGITS,

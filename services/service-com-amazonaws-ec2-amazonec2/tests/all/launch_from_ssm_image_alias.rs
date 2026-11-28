@@ -14,8 +14,9 @@
 //!    the whole published catalog, read out of the store rather than written here, so every
 //!    name is covered rather than the one a request happened to carry;
 //! 2. ONLY A VALUE THAT NAMES AN AMI DIRECTLY IS READ AS AN ID: such a value is still held to
-//!    the issued-id form (`InvalidAMIID.Malformed`), while a parameter the account can see no
-//!    image under names no AMI at all (`InvalidAMIID.NotFound`);
+//!    the issued-id form (`InvalidAMIID.Malformed`), while a reference Parameter Store produces
+//!    no value for names no AMI at all and is refused as the invalid ALIAS it is
+//!    (`SsmInvalidParameter`);
 //! 3. THE EBS ATTACHMENT LIFECYCLE IS THE ONE PROJECTION OF ONE RECORD, end to end from such a
 //!    launch: `AttachVolume` records the attachment, so `DescribeVolumes` reports the volume
 //!    `in-use` with that attachment — `attaching` until the clock owes it `attached` — and the
@@ -207,7 +208,7 @@ async fn every_published_parameter_name_launches_from_the_ami_it_resolves_to() {
 
 /// RULE 2: which `ImageId` forms a launch takes and which it refuses — a value naming an AMI
 /// directly is still held to the issued-id form, the prefix alone names no parameter at all, and
-/// a parameter the account can see no image under names no AMI.
+/// a reference nothing resolves names no AMI.
 #[tokio::test]
 async fn a_launch_refuses_the_image_id_values_that_name_no_image() {
     let (router, engine) = emulator();
@@ -252,14 +253,14 @@ async fn a_launch_refuses_the_image_id_values_that_name_no_image() {
             "a parameter the catalog publishes no image under",
             format!("{SSM_IMAGE_ALIAS_PREFIX}{UNPUBLISHED_PARAMETER}"),
             400,
-            "InvalidAMIID.NotFound",
+            "SsmInvalidParameter",
             None,
         ),
         (
             "a published parameter name with one segment missing",
             format!("{SSM_IMAGE_ALIAS_PREFIX}/aws/service/ami-amazon-linux-latest"),
             400,
-            "InvalidAMIID.NotFound",
+            "SsmInvalidParameter",
             None,
         ),
     ];

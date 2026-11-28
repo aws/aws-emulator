@@ -2364,6 +2364,13 @@ pub use launch_template_warnings::*;
 pub mod launch_template_parameters;
 pub use launch_template_parameters::*;
 
+/// What an `ImageId` of the `resolve:ssm:` form resolves to, asked of the service that OWNS
+/// Systems Manager parameters — the one resolution of such a value in this crate, which the
+/// launch and the describe that reports a resolved alias both read through. Everything it
+/// declares is re-exported below.
+pub mod ssm_image_aliases;
+pub use ssm_image_aliases::*;
+
 /// The PRIMARY network interface a LAUNCH creates for the instance it stores, in the subnet
 /// the launch places it in — one method on the state, in a module of its own, beside the
 /// root volume the same launch creates.

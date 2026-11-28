@@ -5,16 +5,15 @@
 //! an `application/x-www-form-urlencoded` POST answered with XML — README.md / OPERATIONS.md
 //! "Wire protocol") through the crate's shared [`super::ec2_query`] harness.
 //!
-//! The rule under test: a WRITE of a launch template version RESOLVES such a value against
-//! the account's image catalog, the same catalog a launch from the stored version resolves it
-//! against — so a value naming a parameter that resolves to an AMI is accepted and STORED AS
-//! SUBMITTED, unresolved (the parameter "will resolve to an AMI ID on launch",
-//! `RequestLaunchTemplateData$ImageId`, so every reader of the version still reports the
-//! parameter), while a value naming a parameter this account resolves no AMI for is refused
-//! where it is written, as the invalid ALIAS it is — `SsmInvalidParameter`, whose fixed
-//! sentence names the parameters that resolved to nothing — and nothing is stored. Both
-//! writers — `CreateLaunchTemplate` and `CreateLaunchTemplateVersion` — apply it, so the two
-//! cannot disagree about which values a stored version may carry.
+//! The rule under test: "the Systems Manager parameter will resolve to an AMI ID ON LAUNCH"
+//! (`RequestLaunchTemplateData$ImageId`) — so a WRITE of a launch template version RESOLVES
+//! NOTHING: it stores the value exactly as submitted, whichever documented form it takes, and
+//! every reader of the version still reports the parameter. The resolution belongs to the
+//! LAUNCH, which turns the reference into the AMI the parameter it names holds and refuses a
+//! reference nothing resolves as the invalid ALIAS it is — `SsmInvalidParameter`, whose fixed
+//! sentence names the reference the request wrote. Both writers —
+//! `CreateLaunchTemplate` and `CreateLaunchTemplateVersion` — apply it, so the two cannot
+//! disagree about which values a stored version may carry.
 //!
 //! The rows are the alias forms that member documents — a public parameter, a parameter name
 //! of the account's own, that name with a version number or with a label, and the parameter
@@ -25,6 +24,12 @@
 //! generalises over (which form the value takes, and whether anything resolves it), so no row
 //! is the specification; the published name every row is compared against comes out of the
 //! store the handlers read rather than being written here.
+//!
+//! This emulator mounts Amazon EC2 ALONE here, so the only parameters a launch can resolve are
+//! the ones this service itself publishes into Parameter Store — the published image catalog.
+//! `core/router/tests/all/launch_template_ssm_parameter_image.rs` is where a parameter of the
+//! account's OWN, in each of these forms, is created through the service that owns parameters
+//! and resolved by the launch.
 //!
 //! `launch_template_published_ssm_alias` owns the whole published catalog as rows of the
 //! create's acceptance, and `launch_from_ssm_image_alias` owns what a LAUNCH does with each
@@ -112,8 +117,9 @@ fn published_parameter(engine: &engine::InMemoryEngine) -> (String, String) {
         .expect("the published image catalog must carry a parameter name")
 }
 
-/// One row: what it names, the `ImageId` the request carries, and whether the account
-/// resolves an AMI for the parameter it names — which is what decides the outcome.
+/// One row: what it names, the `ImageId` the request carries, and whether the parameters this
+/// emulator resolves carry the one it names — which is what decides the LAUNCH's outcome, the
+/// write taking every row alike.
 struct Form {
     case: String,
     submitted: String,
@@ -191,12 +197,6 @@ fn stored_image_id(
         .and_then(|stored| stored.data.image_id.clone())
 }
 
-/// How many launch templates the account holds, read out of the store: a refused write must
-/// leave this where it was.
-fn templates_held(engine: &engine::InMemoryEngine) -> usize {
-    engine.state::<Ec2State>().lock().launch_templates.len()
-}
-
 /// The `imageId` `DescribeLaunchTemplateVersions` reports for every version of a template,
 /// with no `ResolveAlias`: "if false, and if a Systems Manager parameter is specified for
 /// `ImageId`, the parameter is displayed in the response for `imageId`. Default: false".
@@ -219,19 +219,19 @@ async fn described_image_ids(
     elements(&body, "imageId")
 }
 
-/// Assert a refused write: the class EC2 answers for an alias it can resolve no AMI for, the
-/// sentence naming the PARAMETER the value named, and nothing stored.
-fn assert_refused(case: &str, submitted: &str, status: u16, body: &str) {
+/// Assert a refused LAUNCH: the class EC2 answers for a reference it can resolve no AMI for,
+/// and the sentence naming the REFERENCE the value carried.
+fn assert_launch_refused(case: &str, submitted: &str, status: u16, body: &str) {
     assert_eq!(
         (status, error_code(body)),
         (400, INVALID_ALIAS_CODE.to_string()),
         "case {case:?} ({submitted}): expected {INVALID_ALIAS_CODE}, got {status} with body \
          {body}"
     );
-    let parameter = submitted
+    let reference = submitted
         .strip_prefix(SSM_IMAGE_ALIAS_PREFIX)
         .unwrap_or(submitted);
-    let expected = format!("{INVALID_ALIASES_PREFIX}{parameter}");
+    let expected = format!("{INVALID_ALIASES_PREFIX}{reference}");
     assert_eq!(
         error_message(body),
         expected,
@@ -240,24 +240,20 @@ fn assert_refused(case: &str, submitted: &str, status: u16, body: &str) {
     );
 }
 
-/// RULE: `CreateLaunchTemplate` takes an `ImageId` in a documented `resolve:ssm:` form when
-/// the account resolves an AMI for the parameter it names — 200 with the launch template it
-/// stored, whose only version is both its default and its latest, keeping the value exactly
-/// as submitted — and refuses one it resolves nothing for, storing no template.
+/// RULE: `CreateLaunchTemplate` takes an `ImageId` in EVERY documented `resolve:ssm:` form —
+/// 200 with the launch template it stored, whose only version is both its default and its
+/// latest, keeping the value exactly as submitted — whether or not anything resolves the
+/// reference it names, because nothing is resolved by the write.
 #[tokio::test]
-async fn a_create_takes_the_forms_it_resolves_and_refuses_what_it_resolves_nothing_for() {
+async fn a_create_takes_every_documented_form_and_stores_it_unresolved() {
     let (router, engine) = super::ec2_query::emulator();
     let (published, _) = published_parameter(&engine);
     let first_version = FIRST_LAUNCH_TEMPLATE_VERSION.to_string();
 
     for (index, form) in alias_forms(&published).iter().enumerate() {
-        let Form {
-            case,
-            submitted,
-            resolved,
-        } = form;
+        let Form { case, submitted, .. } = form;
         let name = format!("alias.form.{index}");
-        let held_before = templates_held(&engine);
+        let held_before = engine.state::<Ec2State>().lock().launch_templates.len();
         let (status, body) = api(
             &router,
             "CreateLaunchTemplate",
@@ -268,19 +264,15 @@ async fn a_create_takes_the_forms_it_resolves_and_refuses_what_it_resolves_nothi
             ],
         )
         .await;
-        if !resolved {
-            assert_refused(case, submitted, status, &body);
-            assert_eq!(
-                templates_held(&engine),
-                held_before,
-                "case {case:?}: a refused create must store no template"
-            );
-            continue;
-        }
         assert_eq!(
             status, 200,
             "case {case:?} ({submitted}): expected HTTP 200 from CreateLaunchTemplate, got \
              {status} with body {body}"
+        );
+        assert_eq!(
+            engine.state::<Ec2State>().lock().launch_templates.len(),
+            held_before + 1,
+            "case {case:?}: the create must store exactly one more template"
         );
         let launch_template_id = element(&body, "launchTemplateId").unwrap_or_else(|| {
             panic!("case {case:?}: expected a <launchTemplateId>, got {body}")
@@ -315,10 +307,9 @@ async fn a_create_takes_the_forms_it_resolves_and_refuses_what_it_resolves_nothi
     }
 }
 
-/// The same rule for the OTHER writer: `CreateLaunchTemplateVersion` stores a value it
-/// resolves exactly as submitted and refuses one it resolves nothing for, leaving the
-/// template's versions as they were — so the two writers cannot disagree about which value a
-/// stored version may carry.
+/// The same rule for the OTHER writer: `CreateLaunchTemplateVersion` stores every documented
+/// form exactly as submitted, numbering one version per row — so the two writers cannot
+/// disagree about which value a stored version may carry.
 #[tokio::test]
 async fn a_version_create_takes_the_same_forms_the_create_takes() {
     let (router, engine) = super::ec2_query::emulator();
@@ -345,16 +336,10 @@ async fn a_version_create_takes_the_same_forms_the_create_takes() {
 
     let forms = alias_forms(&published);
     // The versions are "numbered in the order in which they are created"
-    // (`CreateLaunchTemplateVersion`), and a refused create numbers none, so the next number
-    // is tracked across the rows rather than derived from the row's position.
-    let mut next_number = FIRST_LAUNCH_TEMPLATE_VERSION + 1;
+    // (`CreateLaunchTemplateVersion`), so each row takes the next number.
     let mut stored_values: Vec<String> = Vec::new();
-    for form in &forms {
-        let Form {
-            case,
-            submitted,
-            resolved,
-        } = form;
+    for (next_number, form) in (FIRST_LAUNCH_TEMPLATE_VERSION + 1..).zip(forms.iter()) {
+        let Form { case, submitted, .. } = form;
         let (status, body) = api(
             &router,
             "CreateLaunchTemplateVersion",
@@ -365,10 +350,6 @@ async fn a_version_create_takes_the_same_forms_the_create_takes() {
             ],
         )
         .await;
-        if !resolved {
-            assert_refused(case, submitted, status, &body);
-            continue;
-        }
         assert_eq!(
             status, 200,
             "case {case:?} ({submitted}): expected HTTP 200 from \
@@ -392,11 +373,9 @@ async fn a_version_create_takes_the_same_forms_the_create_takes() {
              {held:?}"
         );
         stored_values.push(submitted.clone());
-        next_number += 1;
     }
 
-    // Every version the rows created reads back with its own value, none of them resolved —
-    // and no version carries a value a row was refused for.
+    // Every version the rows created reads back with its own value, none of them resolved.
     let reported = described_image_ids("every version", &router, &launch_template_id).await;
     for submitted in &stored_values {
         assert!(
@@ -404,25 +383,18 @@ async fn a_version_create_takes_the_same_forms_the_create_takes() {
             "expected {submitted:?} among the versions described, got {reported:?}"
         );
     }
-    for form in forms.iter().filter(|form| !form.resolved) {
-        assert!(
-            !reported.contains(&form.submitted),
-            "case {:?}: a refused version must not be stored, got {reported:?}",
-            form.case
-        );
-    }
 }
 
-/// RULE, second half: the parameter a STORED version carries is read by the launch as well —
-/// a launch from a template whose value the catalog resolves runs from that AMI, and the
-/// template itself stays exactly as it was stored.
+/// RULE, second half: the reference a STORED version carries is read by the LAUNCH — a launch
+/// from a template whose reference this emulator resolves runs from that AMI, one whose
+/// reference nothing resolves is refused as the invalid alias it is, and the template itself
+/// stays exactly as it was stored either way.
 #[tokio::test]
-async fn the_launch_resolves_the_parameter_a_stored_version_carries() {
+async fn the_launch_resolves_what_it_can_and_refuses_the_rest() {
     let (router, engine) = super::ec2_query::emulator();
     let (published, published_image) = published_parameter(&engine);
-    let submitted = alias(&published);
-    // An instance runs the machine code its AMI holds, so the version names a type whose
-    // architecture is that of the AMI the parameter resolves to.
+    // An instance runs the machine code its AMI holds, so a version that will really launch
+    // names a type whose architecture is that of the AMI the parameter resolves to.
     let instance_type = super::ec2_query::launch_type_for_image(
         &router,
         REGION,
@@ -434,49 +406,62 @@ async fn the_launch_resolves_the_parameter_a_stored_version_carries() {
     .map(|(_, instance_type)| instance_type.clone())
     .unwrap_or_else(|| INSTANCE_TYPE.to_string());
 
-    let (status, body) = api(
-        &router,
-        "CreateLaunchTemplate",
-        &[
-            p("LaunchTemplateName", "alias.launch.0"),
-            data("ImageId", submitted.clone()),
-            data("InstanceType", instance_type),
-        ],
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "the create must be served, got {status} with body {body}"
-    );
-    let launch_template_id = element(&body, "launchTemplateId")
-        .unwrap_or_else(|| panic!("expected a <launchTemplateId>, got {body}"));
+    for (index, form) in alias_forms(&published).iter().enumerate() {
+        let Form {
+            case,
+            submitted,
+            resolved,
+        } = form;
+        let (status, body) = api(
+            &router,
+            "CreateLaunchTemplate",
+            &[
+                p("LaunchTemplateName", format!("alias.launch.{index}")),
+                data("ImageId", submitted.clone()),
+                data("InstanceType", instance_type.clone()),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the create must be served, got {status} with body {body}"
+        );
+        let launch_template_id = element(&body, "launchTemplateId")
+            .unwrap_or_else(|| panic!("case {case:?}: expected a <launchTemplateId>, got {body}"));
 
-    let (status, launched) = api(
-        &router,
-        "RunInstances",
-        &[
-            p("LaunchTemplate.LaunchTemplateId", launch_template_id.clone()),
-            p("MinCount", "1"),
-            p("MaxCount", "1"),
-        ],
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "expected HTTP 200 from RunInstances, got {status} with body {launched}"
-    );
-    assert_eq!(
-        element(&launched, "imageId").as_deref(),
-        Some(published_image.as_str()),
-        "expected the launch to run from {published_image}, got {launched}"
-    );
+        let (status, launched) = api(
+            &router,
+            "RunInstances",
+            &[
+                p("LaunchTemplate.LaunchTemplateId", launch_template_id.clone()),
+                p("MinCount", "1"),
+                p("MaxCount", "1"),
+            ],
+        )
+        .await;
+        if *resolved {
+            assert_eq!(
+                status, 200,
+                "case {case:?}: expected HTTP 200 from RunInstances, got {status} with body \
+                 {launched}"
+            );
+            assert_eq!(
+                element(&launched, "imageId").as_deref(),
+                Some(published_image.as_str()),
+                "case {case:?}: expected the launch to run from {published_image}, got {launched}"
+            );
+        } else {
+            assert_launch_refused(case, submitted, status, &launched);
+        }
 
-    // The template is untouched by the launch: the value it stored is still the one
-    // submitted, read back through the describe.
-    let reported = described_image_ids("after the launch", &router, &launch_template_id).await;
-    assert_eq!(
-        reported,
-        vec![submitted.clone()],
-        "expected the stored version to still report {submitted:?}, got {reported:?}"
-    );
+        // The template is untouched by the launch, served or refused: the value it stored is
+        // still the one submitted, read back through the describe.
+        let reported = described_image_ids(case, &router, &launch_template_id).await;
+        assert_eq!(
+            reported,
+            vec![submitted.clone()],
+            "case {case:?}: expected the stored version to still report {submitted:?}, got \
+             {reported:?}"
+        );
+    }
 }

@@ -53,13 +53,14 @@
 //!
 //! An `ImageId` may name a Systems Manager parameter instead of an AMI — "alternatively, you
 //! can specify a Systems Manager parameter […] The Systems Manager parameter will resolve to
-//! an AMI ID on launch", written `resolve:ssm:<parameter>` — so such a value is resolved
-//! against the image catalogue ([`crate::state::ssm_image_alias_parameter`] and
-//! [`crate::state::ComAmazonawsEc2Amazonec2State::public_ssm_parameter_image_ids`], the one
-//! place this emulator records which AMI a parameter names) and the launch runs from the AMI
-//! it names, which is also the id the instance reports. Only a value that names an AMI
-//! DIRECTLY is held to the issued-id form; a parameter the account can see no image under is
-//! `InvalidAMIID.NotFound`.
+//! an AMI ID on launch", written `resolve:ssm:<reference>` — so such a value is read through
+//! the one reading of that form this crate has ([`crate::state::ssm_image_alias_parameter`])
+//! and resolved by the service that OWNS parameters
+//! ([`crate::state::resolved_image_alias`]): the launch runs from the AMI the parameter's
+//! value names, which is also the id the instance reports. A reference that store produces no
+//! value for names no AMI at all and is refused as the invalid ALIAS it is
+//! (`SsmInvalidParameter`); a value it resolves is held to the issued-id form exactly as a
+//! value naming an AMI directly is.
 //!
 //! An `InstanceType` outside the catalog the model publishes as that member's enum is refused
 //! at the BOUNDARY, before this handler runs, with the code and sentence EC2 words for the
@@ -385,11 +386,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::scaffolded::Scaffolded;
         use crate::state::{
-            architecture_for, availability_zones_in_region, echoed_resource_id,
+            architecture_for, availability_zones_in_region,
             iam_instance_profile_association_payload_bytes, invalid_ami_id_malformed_expecting_ami,
-            invalid_ami_id_not_found, issued_image_id_is_well_formed,
+            invalid_ssm_image_aliases, issued_image_id_is_well_formed,
             maximum_instance_count_below_minimum, private_dns_name,
             request_region, require_service_state, resolve_iam_instance_profile,
+            resolved_image_alias, AliasResolution,
             ssm_image_alias_parameter, validate_kernel_or_ramdisk_id,
             validate_tag_size,
             IamInstanceProfileAssociationSpec, InstanceDetail, InstanceDetailSpec, InstanceRecord,
@@ -606,7 +608,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // parameter will resolve to an AMI ID on launch" (`ImageId`): a value carrying the
         // `resolve:ssm:` prefix names a PARAMETER, not an AMI, so it is read through the one
         // reading of that form this crate has ([`crate::state::ssm_image_alias_parameter`])
-        // and resolved against the image catalogue below, once the store is open.
+        // and resolved below, by the service that OWNS parameters, before the store is opened.
         let image_alias = ssm_image_alias_parameter(&image_id).map(str::to_string);
         // "An AMI ID is required to launch an instance" (`RunInstancesRequest$ImageId`), and
         // the id's FORM is read before anything is looked up under it: a value EC2 could not
@@ -854,18 +856,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // those moves, so the image this launch resolves is the image a describe would report
         // at this instant either way.
         //
-        // The parameter an `ImageId` of the `resolve:ssm:` form names is resolved in the same
-        // read: "the Systems Manager parameter will resolve to an AMI ID on launch". The
-        // mapping is the image catalogue's own
-        // ([`crate::state::ComAmazonawsEc2Amazonec2State::public_ssm_parameter_image_ids`]),
-        // the one place this emulator records which AMI a parameter names, so the launch runs
-        // from the image `DescribeImages` reports under that parameter and the instance
-        // reports THAT id — not the parameter it was asked for. A parameter the account can
-        // see no image under names no AMI, which is the launch's `InvalidAMIID.NotFound`: the
-        // value is well formed and there is simply no image behind it — and the value that
-        // refusal names the caller back is cut to the same bound every echoed id of this crate
-        // is ([`crate::state::echoed_resource_id`]), a parameter name carrying no modelled
-        // length of its own.
+        // The parameter an `ImageId` of the `resolve:ssm:` form names is resolved BEFORE that
+        // guard is taken, by the service that OWNS Systems Manager parameters — "the Systems
+        // Manager parameter will resolve to an AMI ID on launch" — so no lock of this store is
+        // held while that service answers ([`crate::state::resolved_image_alias`]). The launch
+        // runs from the AMI the parameter's value names and the instance reports THAT id, not
+        // the parameter it was asked for; a reference that store produces no value for names no
+        // AMI at all, which is the invalid-ALIAS refusal
+        // ([`crate::state::invalid_ssm_image_aliases`], the sentence naming the reference the
+        // request wrote), and a value it resolves that is no AMI id is read as the id it is not
+        // ([`issued_image_id_is_well_formed`], the same screen a launch naming an AMI directly
+        // goes through). An emulator with no Systems Manager to ask resolves the published
+        // image catalog this service itself projects into that store, so a published parameter
+        // resolves either way.
+        let resolved_alias = match image_alias.as_deref() {
+            Some(reference) => Some(resolved_image_alias(ctx, &region, reference).await),
+            None => None,
+        };
+
+        // The AMI this launch runs from and the ROOT BLOCK DEVICE every instance of it would
+        // be created with, read under a guard of this store that is taken, read and GIVEN
+        // BACK here — because the keys that device names are asked of the service that owns
+        // them straight after, and no lock of this store is ever held while another service
+        // is called.
+        //
+        // These two reads therefore happen under their own guard, which materialises the
+        // transitions the clock owes before reading exactly as the main guard below does — a
+        // recycled AMI past its retention period and a `pending` AMI a copy produced are among
+        // those moves, so the image this launch resolves is the image a describe would report
+        // at this instant either way.
         //
         // "The block device mapping, which defines the EBS volumes and instance store volumes
         // to attach to the instance at launch" (`RunInstancesRequest$BlockDeviceMappings`):
@@ -877,19 +896,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let state = require_service_state(&*self.engine)?;
             let mut store = state.lock();
             store.materialize_due_transitions();
-            let image_id = match image_alias {
-                Some(parameter) => {
-                    match store
-                        .public_ssm_parameter_image_ids(::engine::emulator_account_id())
-                        .remove(&parameter)
-                    {
-                        Some(resolved) => resolved,
-                        None => {
-                            return Err(invalid_ami_id_not_found(&echoed_resource_id(&image_id)));
+            let image_id = match (image_alias.as_deref(), resolved_alias) {
+                (Some(reference), Some(resolution)) => {
+                    let resolved = match resolution {
+                        AliasResolution::Value(value) => value,
+                        AliasResolution::Unresolved => {
+                            return Err(invalid_ssm_image_aliases([reference]));
                         }
+                        AliasResolution::Unknown => store
+                            .public_ssm_parameter_image_ids(::engine::emulator_account_id())
+                            .remove(reference)
+                            .ok_or_else(|| invalid_ssm_image_aliases([reference]))?,
+                    };
+                    if !issued_image_id_is_well_formed(&resolved) {
+                        return Err(invalid_ami_id_malformed_expecting_ami(&resolved));
                     }
+                    resolved
                 }
-                None => image_id,
+                _ => image_id,
             };
             let root_block_device = store
                 .launch_root_block_device(
@@ -990,9 +1014,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // The parameter an `ImageId` of the `resolve:ssm:` form names was resolved above, with
-        // the root block device this launch creates, under the guard that was given back
-        // before the volumes' keys were asked about.
+        // The parameter an `ImageId` of the `resolve:ssm:` form names was resolved above, by
+        // the service that owns parameters, before any guard of this store was taken.
 
         // "The ID of the subnet to launch the instance into" (`RunInstancesRequest$SubnetId`)
         // — and a subnet belongs to ONE Availability Zone, so a launch that named a subnet

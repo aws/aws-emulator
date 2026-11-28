@@ -2274,33 +2274,6 @@ impl ComAmazonawsEc2Amazonec2State {
         }
         resolved
     }
-
-    /// The refusal an `ImageId` a launch template version would store earns when it names a
-    /// Systems Manager parameter this account resolves NO AMI for, or `None` when the value
-    /// names an AMI directly or names a parameter the catalog resolves.
-    ///
-    /// EC2 resolves such a value when the version is WRITTEN as well as when an instance is
-    /// launched from it, so a template cannot be stored naming a parameter that resolves to
-    /// nothing: the refusal is the one EC2 states about an ALIAS it could not resolve
-    /// ([`invalid_ssm_image_aliases`]), made against the same catalog
-    /// ([`Self::public_ssm_parameter_image_ids`]) the launch resolves the stored value against,
-    /// so the write and the launch cannot disagree about which values name an image — the write
-    /// refuses exactly the values a launch from it would find nothing behind.
-    pub fn rejected_ssm_image_alias<E>(
-        &self,
-        account: &str,
-        image_id: Option<&str>,
-    ) -> Option<Scaffolded<E>> {
-        let image_id = image_id?;
-        let parameter = ssm_image_alias_parameter(image_id)?;
-        if self
-            .public_ssm_parameter_image_ids(account)
-            .contains_key(parameter)
-        {
-            return None;
-        }
-        Some(invalid_ssm_image_aliases([parameter]))
-    }
 }
 
 /// The prefix an `ImageId` carries when it names a Systems Manager parameter instead of an
@@ -2312,20 +2285,18 @@ impl ComAmazonawsEc2Amazonec2State {
 /// (`RequestLaunchTemplateData$ImageId`).
 pub const SSM_IMAGE_ALIAS_PREFIX: &str = "resolve:ssm:";
 
-/// The Systems Manager parameter name `image_id` is an alias for, or `None` when it names an
+/// The Systems Manager parameter REFERENCE `image_id` carries, or `None` when it names an
 /// AMI directly.
 ///
 /// The ONE reading of that value in this crate: the launch that resolves a parameter to the
-/// AMI it names and the describe that reports what a stored one resolves to cannot read the
-/// same value two ways. The parameter the value carries is resolved against the image
-/// catalogue ([`ComAmazonawsEc2Amazonec2State::public_ssm_parameter_image_ids`]), which is
-/// the one place this emulator records which AMI a parameter names.
+/// AMI it names, the describe that reports what a stored one resolves to and the services that
+/// CONSUME a launch template cannot read the same value two ways.
 ///
-/// Whatever follows the prefix is the parameter name, so the documented `<name>:<version-number>`
-/// and `<name>:<label>` forms are read as names of their own and resolve to no AMI here: this
-/// emulator records one AMI per published parameter and no versions or labels of it, and a value
-/// that named a version would otherwise be answered with an image chosen for a version nothing
-/// published.
+/// Whatever follows the prefix is the reference, handed on as written: a name, a name with a
+/// `:<version-number>` or `:<label>` selector, or the parameter's ARN in any of those three
+/// shapes — every form the member documents. Which parameter and which version of it a
+/// reference names is the reading of the service that OWNS parameters, so nothing here
+/// enumerates the forms ([`resolved_image_alias`], where such a reference is resolved).
 pub fn ssm_image_alias_parameter(image_id: &str) -> Option<&str> {
     image_id
         .strip_prefix(SSM_IMAGE_ALIAS_PREFIX)

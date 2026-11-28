@@ -111,6 +111,12 @@ pub mod iam_instance_profiles;
 /// volume, so the launch places nothing.
 pub mod volume_encryption_keys;
 
+/// What the `ImageId` of a group's launch source resolves to when it names a Systems Manager
+/// parameter: a reference Amazon EC2 stores verbatim and this service, as the consumer of the
+/// template, is what resolves — against the store of the service that OWNS parameters, so a
+/// reference nothing resolves places nothing.
+pub mod ssm_image_aliases;
+
 /// The service-linked role a group calls other Amazon Web Services under: the role the
 /// request named, or the one this service binds the group to when it named none.
 pub mod service_linked_role;

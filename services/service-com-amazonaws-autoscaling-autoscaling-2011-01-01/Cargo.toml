@@ -66,6 +66,14 @@ service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = t
 # write and `kms:DescribeKey` reports (`state::volume_encryption_keys`), the way the stores
 # above are read.
 service-com-amazonaws-kms-trentservice = { workspace = true }
+# A launch template's `ImageId` may name a Systems Manager parameter rather than an AMI, and
+# that parameter is the service that OWNS parameters' own resource: "the Systems Manager
+# parameter will resolve to an AMI ID on launch", so the AMI a group launches is resolved in
+# the store `ssm:PutParameter` writes and `ssm:GetParameter` reports
+# (`state::ssm_image_aliases`), the way the stores above are read. The integration tests mount
+# that service beside this one for the same reason, and because the instance-profile
+# association a group's launch writes is what its agent registers a managed node with.
+service-com-amazonaws-ssm-amazonssm = { workspace = true }
 # `service-common` carries the ONE reading of which IAM entity a caller-supplied IAM ARN
 # names, which that instance-profile ARN is read through, and the ONE in-process
 # EventBridge client an emulated service publishes an event through.
@@ -113,11 +121,6 @@ service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 # configuration publishes to an SNS topic, and the delivery is asserted on the SQS queue
 # subscribed to that topic.
 service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
-# Systems Manager is mounted beside them because the instance-profile association a group's
-# launch writes is what its agent registers a managed node with: whether a group's instance
-# becomes one is read where a client reads it, through that service's own
-# `DescribeInstanceInformation`.
-service-com-amazonaws-ssm-amazonssm = { workspace = true }
 # `RunInstances$UserData` and `RequestLaunchTemplateData$UserData` are base64, and the suite
 # whose group must hold instances a Classic Load Balancer's health checks ANSWER launches them
 # from a template carrying the program that starts their server.

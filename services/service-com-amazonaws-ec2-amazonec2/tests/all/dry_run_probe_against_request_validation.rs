@@ -309,8 +309,8 @@ async fn a_launch_probe_is_answered_after_the_request_and_before_the_launch_is_a
                 param("MinCount", "1"),
                 param("MaxCount", "1"),
             ],
-            probe_code: "InvalidAMIID.NotFound",
-            without_the_flag: WithoutTheFlag::Refused("InvalidAMIID.NotFound"),
+            probe_code: "SsmInvalidParameter",
+            without_the_flag: WithoutTheFlag::Refused("SsmInvalidParameter"),
         },
         Row {
             case: "a placement group the account holds none of",

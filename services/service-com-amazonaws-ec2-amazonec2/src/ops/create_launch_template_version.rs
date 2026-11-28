@@ -310,20 +310,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Every remaining check is READ-ONLY, and a replay clears them all by storing
         // nothing.
         if replayed.is_none() {
-            // An `ImageId` naming a Systems Manager parameter is stored AS GIVEN — "the
-            // Systems Manager parameter will resolve to an AMI ID on launch"
-            // (`RequestLaunchTemplateData$ImageId`), so a later launch resolves it again —
-            // but it is RESOLVED here, against the catalog that launch reads, exactly as
-            // `CreateLaunchTemplate` resolves the first version's: a value naming a
-            // parameter this account resolves no AMI for is refused now rather than stored
-            // for a launch that could never find an image behind it. The value judged is the
-            // one this version would STORE, so an inherited `ImageId` is judged too.
-            if let Some(refusal) = store.rejected_ssm_image_alias(
-                ::engine::emulator_account_id(),
-                spec.data.image_id.as_deref(),
-            ) {
-                return Err(refusal);
-            }
             if versions_held >= MAX_LAUNCH_TEMPLATE_VERSIONS {
                 return Err(launch_template_limit_exceeded(format!(
                     "Launch template '{launch_template_id}' holds \

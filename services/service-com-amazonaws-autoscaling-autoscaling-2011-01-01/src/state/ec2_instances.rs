@@ -172,13 +172,17 @@ pub fn launch<Eng: Send + Sync + 'static>(
     // the two stores are never held at once, the order every consumer of a group's
     // launch templates takes ([`super::iam_instance_profiles`]).
     let iam_instance_profile = launched_instance_profile(engine, request);
+    // And the AMI the launch source names THROUGH a Systems Manager parameter, resolved for
+    // the same reason: resolving it reads the store of the service that owns parameters
+    // ([`super::ssm_image_aliases`]).
+    let resolved_image = resolved_image_alias(engine, request);
     let Some(state) = ec2::service_state(engine) else {
         // No Amazon EC2 store on this engine is nowhere to launch an instance, so the
         // group is given none rather than an id nothing holds.
         return Vec::new();
     };
     let mut store = state.lock();
-    let parameters = launch_parameters(&store, request);
+    let parameters = launch_parameters(&store, request, resolved_image.as_deref());
     let placements = placements(&store, request);
     if placements.is_empty() {
         return Vec::new();
@@ -939,6 +943,7 @@ fn placements(
 fn launch_parameters(
     store: &ec2::ComAmazonawsEc2Amazonec2State,
     request: &LaunchRequest<'_>,
+    resolved_image: Option<&str>,
 ) -> LaunchParameters {
     if let Some(configuration) = request.launch_configuration {
         return LaunchParameters {
@@ -986,6 +991,16 @@ fn launch_parameters(
     let image_id = override_entry
         .and_then(|entry| entry.image_id.clone())
         .or_else(|| data.as_ref().and_then(|data| data.image_id.clone()));
+    // "The Systems Manager parameter will resolve to an AMI ID on launch"
+    // (`RequestLaunchTemplateData$ImageId`): a value naming a parameter is turned into the AMI
+    // the parameter holds by the launch, so the instance this group places runs — and reports
+    // — that AMI and never the reference the template stored. The resolution is the caller's,
+    // made against the store of the service that owns parameters before Amazon EC2's was
+    // locked ([`super::ssm_image_aliases::aliased_launch_image`]).
+    let image_id = match (resolved_image, image_id) {
+        (Some(resolved), Some(_)) => Some(resolved.to_string()),
+        (_, image_id) => image_id,
+    };
     // "The block device mapping" (`RequestLaunchTemplateData$BlockDeviceMappings`) a version
     // carries applies to every launch made from it, so the root volume an instance of this
     // group boots is the one that version describes: Amazon EC2's own reading of the
@@ -1545,6 +1560,17 @@ pub fn launch_failure_reason<Eng: Send + Sync + 'static>(
             unsatisfiable_requirements_message(),
         ));
     }
+    // The AMI the launch source names THROUGH a Systems Manager parameter, resolved at the
+    // instant of the launch by the service that OWNS parameters: "the Systems Manager
+    // parameter will resolve to an AMI ID on launch"
+    // (`RequestLaunchTemplateData$ImageId`), so a reference that store produces no value for
+    // leaves the launch with no AMI to run at all — an attempt Amazon EC2 Auto Scaling cannot
+    // make, which is a launch that FAILED, carrying Amazon EC2's own sentence for an alias it
+    // could not resolve ([`super::ssm_image_aliases::invalid_aliases_launch_failure`]). Asked
+    // before the architecture of that AMI is weighed, because there is no image to weigh.
+    if let Some(reason) = unresolved_image_alias_reason(engine, request) {
+        return Some(super::BlockedLaunch::failed(reason));
+    }
     // What Amazon EC2 refuses about the LAUNCH PARAMETERS this group would send it: an AMI
     // built for a processor architecture the instance type does not run cannot boot on that
     // type, so Amazon EC2 carries the launch out for nobody — the attempt is one Amazon EC2
@@ -1593,6 +1619,59 @@ pub fn launch_failure_reason<Eng: Send + Sync + 'static>(
     })
 }
 
+/// The image reference the group's launch source carries, as the launch source itself states
+/// it — the value an override names, or the launch-template version's own.
+///
+/// Read under a guard of Amazon EC2's store that is taken and GIVEN BACK here, because the
+/// parameter such a value may name is resolved against ANOTHER service's store straight after
+/// and no two of those stores are ever held at once. `None` for a launch source that names no
+/// image, and on an engine carrying no Amazon EC2 store at all.
+fn launch_source_image_id<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    request: &LaunchRequest<'_>,
+) -> Option<String> {
+    let state = ec2::service_state(engine)?;
+    let store = state.lock();
+    launch_parameters(&store, request, None).image_id
+}
+
+/// The AMI the launch source's image reference resolves to, for a source that names its image
+/// through a Systems Manager parameter — `None` for one that names an AMI directly, for a
+/// reference that resolves to nothing, and on an engine with no store to resolve it against.
+///
+/// What [`launch`] launches with and what [`architecture_mismatch_reason`] weighs, so the AMI
+/// a launch is judged on and the AMI it runs can never differ.
+fn resolved_image_alias<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    request: &LaunchRequest<'_>,
+) -> Option<String> {
+    let image_id = launch_source_image_id(engine, request)?;
+    match super::ssm_image_aliases::aliased_launch_image(engine, request.region, &image_id)? {
+        super::ssm_image_aliases::AliasedLaunchImage::Value(value) => Some(value),
+        super::ssm_image_aliases::AliasedLaunchImage::Unresolved => None,
+    }
+}
+
+/// Why Amazon EC2 would not carry out this launch at all: the Systems Manager parameter the
+/// launch source's `ImageId` names resolves to nothing, so there is no AMI to launch from.
+///
+/// `None` for a source that names an AMI directly, for a reference that resolves, and on an
+/// engine carrying no store of the service that owns parameters: a failure is grounded in what
+/// the account's state answered, never assumed.
+fn unresolved_image_alias_reason<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    request: &LaunchRequest<'_>,
+) -> Option<String> {
+    let image_id = launch_source_image_id(engine, request)?;
+    let reference = ec2::ssm_image_alias_parameter(&image_id)?;
+    match super::ssm_image_aliases::aliased_launch_image(engine, request.region, &image_id)? {
+        super::ssm_image_aliases::AliasedLaunchImage::Value(_) => None,
+        super::ssm_image_aliases::AliasedLaunchImage::Unresolved => Some(
+            super::ssm_image_aliases::invalid_aliases_launch_failure(reference),
+        ),
+    }
+}
+
 /// Why Amazon EC2 would not carry out this launch at all: the AMI the group's launch source
 /// names is built for a processor architecture the instance type it names does not run.
 ///
@@ -1610,9 +1689,13 @@ fn architecture_mismatch_reason<Eng: Send + Sync + 'static>(
     engine: &Eng,
     request: &LaunchRequest<'_>,
 ) -> Option<String> {
+    // Resolved before Amazon EC2's store is locked, for the reason [`launch`] resolves it
+    // there: the AMI weighed against the instance type is the AMI the launch would really run,
+    // which for a source naming a Systems Manager parameter is what that parameter holds.
+    let resolved_image = resolved_image_alias(engine, request);
     let state = ec2::service_state(engine)?;
     let store = state.lock();
-    let parameters = launch_parameters(&store, request);
+    let parameters = launch_parameters(&store, request, resolved_image.as_deref());
     let image_id = parameters.image_id.as_deref()?;
     // The type the launch would be made with, which for a source that names none is the type
     // Amazon EC2 gives a launch that names none — exactly what [`launch`] launches it as.

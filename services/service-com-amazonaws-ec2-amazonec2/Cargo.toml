@@ -121,6 +121,11 @@ aws-sdk-acm = { version = "1", default-features = false, features = ["rt-tokio",
 # permissions on it are KMS's own to judge, so a volume under a key that will not produce a
 # data key is withdrawn rather than created.
 aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# `state::ssm_image_aliases`: the AWS Systems Manager client an `ImageId` of the
+# `resolve:ssm:` form is resolved through, over the in-process callback into this same
+# emulator — the parameter such a value names is Parameter Store's own resource, so the launch
+# that turns it into an AMI id asks that service rather than keeping a second copy of it.
+aws-sdk-ssm = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 # `state::volume_notifications`: the EventBridge client an EBS volume's create outcome is
 # published through, over the in-process callback into this same emulator — the bus the event
 # reaches a client's rules on is that service's own. No network client feature is enabled: the

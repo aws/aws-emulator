@@ -16,8 +16,8 @@
 //!
 //! The PUBLIC-parameter form is the whole scope here. The `<name>:<version>`,
 //! `<name>:<label>` and parameter-ARN forms the same member documents name a parameter stored
-//! in or shared with the account rather than a published one, which this emulator resolves no
-//! catalogue for; `tests/all/launch_template_ssm_alias_forms.rs` owns the writer's acceptance
+//! in or shared with the account rather than a published one;
+//! `tests/all/launch_template_ssm_alias_forms.rs` owns the writer's acceptance
 //! of those forms and the deferral of every resolution to a launch, so this suite is not the
 //! whole cover for `RequestLaunchTemplateData$ImageId`'s alias forms.
 //!
