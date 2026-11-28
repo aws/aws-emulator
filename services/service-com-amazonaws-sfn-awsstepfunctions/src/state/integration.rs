@@ -657,10 +657,29 @@ impl Api {
 pub enum Family {
     /// `arn:aws:states:::<namespace>:<action>`, and the direct invocation of a Lambda
     /// FUNCTION's ARN, which is the same call the optimized `lambda:invoke` integration
-    /// makes.
+    /// makes — so a refusal of either is NAMED this way. WHICH client made the call is a
+    /// separate fact of the flavour ([`SdkClient`], [`Call::client`]).
     Optimized,
     /// `arn:aws:states:::aws-sdk:<sdk name>:<action>`.
     AwsSdk,
+}
+
+/// WHICH generation of client Step Functions made a `Task`'s call with, which is what
+/// decides the form a refusal of that call is rendered in
+/// ([`sdk_exception_message`]).
+///
+/// It is a fact of the INTEGRATION FLAVOUR the `Resource` named, not of the invoked
+/// service: one integration carries the client its own flavour is served through, and each
+/// generation of client renders a service exception its own way. The flavour a `Resource`
+/// names is read once, where the call is read ([`Call::client`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdkClient {
+    /// The current AWS SDK, whose exception message closes with ONE group of
+    /// comma-separated fields and a second group naming the attempts the call took.
+    Current,
+    /// The earlier generation of client, whose exception message closes with
+    /// semicolon-separated fields naming the error code and the proxy beside them.
+    Earlier,
 }
 
 /// The suffix the AWS SDKs give an error shape's own exception class.
@@ -1512,6 +1531,31 @@ impl Call {
     #[must_use]
     pub fn base_error(&self) -> String {
         self.api.base_error(self.family)
+    }
+
+    /// WHICH client this call was made with, which is what renders a refusal of it
+    /// ([`SdkClient`], [`sdk_exception_message`]).
+    ///
+    /// The AWS SDK family IS the current AWS SDK, whichever service it calls. Of the two
+    /// flavours a `Resource` names the SAME Lambda invocation by, the LEGACY one — the
+    /// function's own ARN as the `Resource`, whose request is the state's input as the
+    /// event ([`Call::invokes`]) — is made with that current SDK as well, while an
+    /// OPTIMIZED `arn:aws:states:::<namespace>:<action>` is made with the client Step
+    /// Functions' own integration with that service carries, every one of which is of the
+    /// earlier generation.
+    ///
+    /// What shows the split is the form a refusal of each closes with: a denied legacy
+    /// Lambda-ARN `Task` reports the current SDK's metadata — the service as that SDK's
+    /// own client names it ([`Api::sdk_error_prefix`]), the fields comma-separated, the
+    /// refused request, and the attempt count in a group of its own, with no error code
+    /// and no proxy beside them — while the same denial of the optimized integration
+    /// reports the earlier client's.
+    #[must_use]
+    pub fn client(&self) -> SdkClient {
+        match self.invokes.is_some() || matches!(self.family, Family::AwsSdk) {
+            true => SdkClient::Current,
+            false => SdkClient::Earlier,
+        }
     }
 
     /// The document the invoked operation receives as its INPUT, for a task whose state
@@ -2576,7 +2620,9 @@ fn direct_invocation(function: &str, shown: &str) -> Result<Call, String> {
     Ok(Call {
         api,
         // It is the same call on the same resource the OPTIMIZED `lambda:invoke`
-        // integration makes, so a refusal of it is named that family's way.
+        // integration makes, so a refusal of it is named that family's way — while the
+        // CLIENT this flavour is made with is the current AWS SDK, which is what renders
+        // that refusal's own metadata ([`Call::client`]).
         family: Family::Optimized,
         operation: LAMBDA_INVOKE_OPERATION.to_string(),
         rest: Some(rest),
@@ -3728,6 +3774,7 @@ pub async fn call_api_as(
                         Called {
                             api,
                             family: call.family,
+                            client: call.client(),
                             operation: &call.operation,
                         },
                         answered.status,
@@ -4048,6 +4095,7 @@ fn answer_of(
         api,
         family,
         operation,
+        ..
     } = called;
     let document: Option<Value> = if payload.is_empty() {
         None
@@ -4110,12 +4158,14 @@ fn answer_of(
 
 /// WHICH call an answer is being read for: the service whose API answered, the
 /// integration family whose `Resource` named the call — the two that together decide
-/// the error name a refusal is reported under ([`Api::task_error`]) — and the operation
-/// it was made on.
+/// the error name a refusal is reported under ([`Api::task_error`]) — the client that
+/// call was made with, which decides the form a refusal is rendered in
+/// ([`SdkClient`]), and the operation it was made on.
 #[derive(Debug, Clone, Copy)]
 struct Called<'a> {
     api: &'a Api,
     family: Family,
+    client: SdkClient,
     operation: &'a str,
 }
 
@@ -4170,33 +4220,34 @@ fn sdk_exception_cause(
 ) -> String {
     let Called {
         api,
-        family,
+        client,
         operation,
+        ..
     } = called;
     let message = match message.is_empty() {
         true => format!("{} refused the '{operation}' call with {code}", api.sdk_id),
         false => message.to_string(),
     };
-    sdk_exception_message(api, family, &message, code, status, request_id)
+    sdk_exception_message(api, client, &message, code, status, request_id)
 }
 
 /// One SDK exception as its own client renders it: the service's sentence, then the
 /// metadata the answer carried.
 ///
-/// Step Functions serves the two integration families through two different clients of
-/// the invoked service ([`Family`]), and each generation of client renders a service
-/// exception in its own form — so the cause carries the form the SERVING client wrote:
+/// Step Functions serves its integration flavours through different clients of the
+/// invoked service ([`SdkClient`], read off the call by [`Call::client`]), and each
+/// generation of client renders a service exception in its own form — so the cause
+/// carries the form the SERVING client wrote:
 ///
 /// * the current AWS SDK's message is the sentence followed by ONE parenthesised group of
 ///   COMMA-separated fields — the service as that SDK's own client names it
 ///   ([`Api::sdk_error_prefix`]), the status, and the refused request — and then a second
 ///   group naming how many attempts the call took ([`sdk_attempt_metadata`]). It names no
-///   error code and no proxy. It serves the AWS SDK family ([`current_sdk_serves`]);
-/// * an OPTIMIZED integration is served by the earlier generation of clients,
-///   whose message is the sentence followed by SEMICOLON-separated fields: the name that
-///   client carries ([`Api::sdk_client`]), the status, the code the answer named the
-///   class by, the refused request, and the proxy the call went through — there is none,
-///   so `Proxy: null`.
+///   error code and no proxy;
+/// * the EARLIER generation of clients writes the sentence followed by
+///   SEMICOLON-separated fields: the name that client carries ([`Api::sdk_client`]), the
+///   status, the code the answer named the class by, the refused request, and the proxy
+///   the call went through — there is none, so `Proxy: null`.
 ///
 /// Public to this crate because a refusal the emulator answers FOR the invoked service
 /// ([`super::task_authorization`]) is the same exception reaching the state the same
@@ -4205,15 +4256,17 @@ fn sdk_exception_cause(
 /// made has no request to name.
 pub fn sdk_exception_message(
     api: &Api,
-    family: Family,
+    client: SdkClient,
     message: &str,
     code: &str,
     status: u16,
     request_id: Option<&str>,
 ) -> String {
-    match current_sdk_serves(family) {
-        true => sdk_attempt_metadata(api.sdk_error_prefix, message, status, request_id),
-        false => {
+    match client {
+        SdkClient::Current => {
+            sdk_attempt_metadata(api.sdk_error_prefix, message, status, request_id)
+        }
+        SdkClient::Earlier => {
             let request = request_id.map_or_else(String::new, |id| format!("Request ID: {id}; "));
             format!(
                 "{message}{SDK_SERVICE_FIELD}{}{SDK_FIELD_SEPARATOR}{SDK_STATUS_FIELD}{status}\
@@ -4222,26 +4275,6 @@ pub fn sdk_exception_message(
             )
         }
     }
-}
-
-/// Whether the client Step Functions makes a `Task` of `family`'s call with is the CURRENT
-/// AWS SDK, whose rendering of an exception [`sdk_attempt_metadata`] writes.
-///
-/// The AWS SDK family IS that SDK, whichever service it calls. An OPTIMIZED integration is
-/// served by the client Step Functions' own integration with that service carries, and every
-/// one of those is of the EARLIER generation, so which rendering a cause carries follows from
-/// the family alone.
-///
-/// What shows that is the form a refusal of such a call closes with. A `Task` denied
-/// `lambda:InvokeFunction` reports a cause closing with the earlier client's metadata: the
-/// service as that client names it ([`Api::sdk_client`]), the fields semicolon-separated, the
-/// code the answer named the class by, the refused request and `Proxy: null`, with no attempt
-/// count beside them. That holds whether the `Resource` names the function's ARN or the
-/// optimized `lambda:invoke` integration, which are the same call; the same invocation named
-/// through the AWS SDK family (`arn:aws:states:::aws-sdk:lambda:invoke`) is made with the
-/// current SDK and carries its form instead.
-fn current_sdk_serves(family: Family) -> bool {
-    matches!(family, Family::AwsSdk)
 }
 
 /// The field an SDK exception's own metadata names the status the answer carried by.
@@ -4289,8 +4322,8 @@ const SDK_REQUEST_FIELD: &str = "Request ID: ";
 /// The refusal `cause` as the CURRENT AWS SDK renders it, for a cause the EARLIER
 /// generation of clients rendered.
 ///
-/// One answer, two renderings ([`sdk_exception_message`]): the client an optimized
-/// integration is served through states the metadata as semicolon-separated fields and
+/// One answer, two renderings ([`sdk_exception_message`]): the EARLIER generation of
+/// client states the metadata as semicolon-separated fields and
 /// names the service by its own client's name, while the current SDK states them
 /// comma-separated with the attempt count and names the service as that SDK does. What a
 /// TRACE of the call reports is the current SDK's rendering, because the segments a

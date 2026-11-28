@@ -41,13 +41,14 @@
 //! nothing here is a second copy of either. (That suite's own reader of a history's causes
 //! signs for the Region ITS harness runs in, so the reading below is this harness's.)
 //!
-//! The metadata a refusal of a Lambda call closes with is the EARLIER generation of
-//! client's: that client's own name for the service, the status, the code the answer named
+//! The metadata a refusal of an OPTIMIZED Lambda call closes with is the EARLIER generation
+//! of client's: that client's own name for the service, the status, the code the answer named
 //! the class by, the refused request and `Proxy: null`, semicolon-separated and with no
-//! attempt count, because that is the client Step Functions' Lambda integration is served
-//! through, whichever form the optimized `Resource` named the invocation in. The same call
-//! named through the AWS SDK family is made with the current SDK, whose group of
-//! comma-separated fields names no error code and counts the attempts instead. The class the
+//! attempt count, because that is the client Step Functions' optimized Lambda integration is
+//! served through, whichever form its `Parameters` named the function in. The same call named
+//! through the AWS SDK family, and the LEGACY form whose `Resource` IS the function's ARN, are
+//! made with the current SDK, whose group of comma-separated fields names no error code and
+//! counts the attempts instead. The class the
 //! task reports is the invoked service's base exception for a code no shape of the invoked
 //! operation's model declares: the recorded cause of such a refusal names that base
 //! exception beside this rendering, so the two stand together.
@@ -85,7 +86,8 @@ const NOT_FOUND_CODE: &str = "ResourceNotFoundException";
 const LAMBDA_BASE_EXCEPTION: &str = "Lambda.AWSLambdaException";
 
 /// The name the client the OPTIMIZED Lambda integration is served through gives the service,
-/// and the name the current AWS SDK's own client gives it for the AWS SDK family.
+/// and the name the current AWS SDK's own client gives it — for the AWS SDK family and for
+/// the legacy form whose `Resource` is the function's own ARN.
 const LAMBDA_CLIENT: &str = "AWSLambda";
 /// See [`LAMBDA_CLIENT`].
 const LAMBDA_SDK_CLIENT: &str = "Lambda";
@@ -217,12 +219,13 @@ async fn a_refused_task_reports_the_invoked_services_own_answer() {
         },
         Row {
             // The direct form — the `Resource` IS the function — is the same call on the
-            // same resource, so it stands in for the same answer.
+            // same resource, so it stands in for the same answer; the client THAT form is
+            // made with is the current SDK, which names the service its own way.
             case: "the function's own ARN as the Resource",
             resource: denied_function.clone(),
             parameters: json!({}),
             error: LAMBDA_BASE_EXCEPTION,
-            client: LAMBDA_CLIENT,
+            client: LAMBDA_SDK_CLIENT,
             code: REFUSAL_CODE,
             status: FORBIDDEN,
             refused: Some((INVOKE_ACTION, denied_function.clone())),
@@ -274,6 +277,18 @@ async fn a_refused_task_reports_the_invoked_services_own_answer() {
             parameters: json!({ "FunctionName": granted_function.clone(), "Payload": {} }),
             error: "Lambda.ResourceNotFoundException",
             client: LAMBDA_CLIENT,
+            code: NOT_FOUND_CODE,
+            status: NOT_FOUND,
+            refused: None,
+        },
+        Row {
+            // The same answer to the LEGACY form of that call, which is made with the
+            // current SDK: one answer, rendered by whichever client asked for it.
+            case: "the same answer to the function's own ARN as the Resource",
+            resource: granted_function.clone(),
+            parameters: json!({}),
+            error: "Lambda.ResourceNotFoundException",
+            client: LAMBDA_SDK_CLIENT,
             code: NOT_FOUND_CODE,
             status: NOT_FOUND,
             refused: None,

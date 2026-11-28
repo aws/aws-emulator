@@ -523,6 +523,7 @@ fn an_answer_is_the_result_or_the_error_the_service_named() {
             Called {
                 api,
                 family: Family::Optimized,
+                client: SdkClient::Earlier,
                 operation: "PutItem",
             },
             status,
@@ -602,6 +603,7 @@ fn a_query_compatible_refusal_is_named_by_its_shape_and_reports_its_legacy_code(
             Called {
                 api,
                 family: Family::Optimized,
+                client: SdkClient::Earlier,
                 operation: "SendMessage",
             },
             400,

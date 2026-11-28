@@ -125,9 +125,9 @@ pub(crate) fn masked(cause: &str) -> String {
 /// of those is the EARLIER generation of client, whose message closes with
 /// SEMICOLON-separated fields: that client's own name, the status, the code the answer named
 /// the class by, the refused request, and the proxy the call went through (there is none, so
-/// `Proxy: null`), and no attempt count. The Lambda integration is one of them, whether the
-/// `Resource` names the optimized `lambda:invoke` or the function's own ARN, which is the
-/// same call.
+/// `Proxy: null`), and no attempt count. The LEGACY flavour of the Lambda integration — the
+/// function's own ARN as the `Resource` — is made with the current SDK instead, so of the two
+/// `Resource` forms that make the same invocation each carries its own client's rendering.
 ///
 /// `service` is the name the client of `resource`'s own integration gives the invoked
 /// service, which is not the same name for both generations.
@@ -137,9 +137,11 @@ pub(crate) fn refusal_metadata(
     code: &str,
     status: u16,
 ) -> String {
-    // The AWS SDK family is that SDK whichever service it calls; every optimized
-    // `Resource`, Lambda's included, is served by the earlier generation of client instead.
-    match resource.contains(":aws-sdk:") {
+    // The AWS SDK family is that SDK whichever service it calls, and so is the legacy
+    // flavour of the Lambda integration, whose `Resource` is the function's own ARN; every
+    // optimized `arn:aws:states:::<namespace>:<action>` is served by the earlier generation
+    // of client instead.
+    match resource.contains(":aws-sdk:") || resource.contains(":function:") {
         true => format!(
             " (Service: {service}, Status Code: {status}, Request ID: {REQUEST_ID}) \
              (SDK Attempt Count: 1)"

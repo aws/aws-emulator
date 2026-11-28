@@ -126,8 +126,8 @@ use ::std::sync::Arc;
 use ::service_common::iam_authorization::{self as iam, Decision};
 
 use super::integration::{
-    access_requests, Activities, Addressing, Api, Call, Denied, ExpressMachines, Failed, Family,
-    Handovers, MapRuns, RoleGate, TASK_FAILED_ERROR,
+    access_requests, Activities, Addressing, Api, Call, Denied, ExpressMachines, Failed, Handovers,
+    MapRuns, RoleGate, SdkClient, TASK_FAILED_ERROR,
 };
 
 /// The GLOBAL service principal Step Functions assumes a state machine's execution
@@ -523,7 +523,7 @@ pub fn role_gate<Eng: Send + Sync + 'static>(
                 target_policy.as_deref(),
                 Answered {
                     api: call.api,
-                    family: call.family,
+                    client: call.client(),
                     code,
                     status,
                 },
@@ -967,7 +967,7 @@ pub fn job_report_denial<Eng: Send + Sync + 'static>(
         target_policy.as_deref(),
         Answered {
             api: call.api,
-            family: call.family,
+            client: call.client(),
             code,
             status,
         },
@@ -1084,7 +1084,7 @@ fn refusal(
     let sentence = not_authorized(iam, acts, action, resource, target_policy, evidence)?;
     Some(super::integration::sdk_exception_message(
         answered.api,
-        answered.family,
+        answered.client,
         &sentence,
         answered.code,
         answered.status,
@@ -1093,16 +1093,16 @@ fn refusal(
 }
 
 /// The answer this gate stands in for, as the state sees it: WHOSE answer it is — the
-/// invoked service, and the integration family whose client the call was made with,
-/// which together decide how the exception is rendered
-/// ([`super::integration::sdk_exception_message`]) — and the code and status that answer
-/// carries.
+/// invoked service, and the CLIENT the call was made with, which decides how the
+/// exception is rendered ([`super::integration::sdk_exception_message`]) — and the code
+/// and status that answer carries.
 #[derive(Debug, Clone, Copy)]
 struct Answered<'a> {
     /// The service whose API refused the call.
     api: &'a Api,
-    /// The family whose `Resource` named the call, which is the client it was made with.
-    family: Family,
+    /// The client the integration the `Resource` named is served through, which is the
+    /// one that renders the refusal ([`super::integration::Call::client`]).
+    client: SdkClient,
     /// The code the answer names the class by.
     code: &'a str,
     /// The status it carries.

@@ -175,8 +175,8 @@ fn denying(action: &str, resource: &str) -> Value {
 }
 
 /// The rows: every document set that withholds the call, over both forms of the Lambda
-/// invocation, a second service's optimized integration, and the AWS SDK family as the
-/// control.
+/// invocation — each served by its own client, so each carrying its own rendering — a
+/// second service's optimized integration, and the AWS SDK family as the control.
 fn rows(function_arn: &str) -> Vec<Row> {
     let other_function = format!("arn:aws:lambda:{REGION}:{ACCOUNT}:function:not-the-one");
     let queue_url = format!("https://sqs.{REGION}.amazonaws.com/{ACCOUNT}/intake");
@@ -210,11 +210,14 @@ fn rows(function_arn: &str) -> Vec<Row> {
             action: INVOKE_ACTION,
             target: function_arn.to_string(),
             error: "Lambda.AWSLambdaException",
-            sdk_client: "AWSLambda",
+            // The LEGACY flavour is made with the current AWS SDK, which names the
+            // service as its own client does and counts the attempts instead of
+            // naming the answered code.
+            sdk_client: "Lambda",
             code: ACCESS_DENIED_CODE,
             status: FORBIDDEN,
             failure_event: EVENT_LAMBDA_FUNCTION_FAILED,
-            renders_code: true,
+            renders_code: false,
         },
         Row {
             case: "a role whose only grant is of another service's action",
@@ -255,11 +258,11 @@ fn rows(function_arn: &str) -> Vec<Row> {
             action: INVOKE_ACTION,
             target: function_arn.to_string(),
             error: "Lambda.AWSLambdaException",
-            sdk_client: "AWSLambda",
+            sdk_client: "Lambda",
             code: ACCESS_DENIED_CODE,
             status: FORBIDDEN,
             failure_event: EVENT_LAMBDA_FUNCTION_FAILED,
-            renders_code: true,
+            renders_code: false,
         },
         Row {
             // Another service's optimized integration: the code the history carries is the

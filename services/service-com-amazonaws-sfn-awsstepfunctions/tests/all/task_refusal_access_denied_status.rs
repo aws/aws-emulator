@@ -128,7 +128,8 @@ async fn a_refused_task_reports_the_invoked_services_own_status() {
         Row {
             // The direct form — the `Resource` IS the function — is the same call on the
             // same resource, so it stands in for the same answer; the work it names is
-            // reported in the Lambda event family.
+            // reported in the Lambda event family, and it is made with the CURRENT AWS
+            // SDK, which names the service as that SDK's own client does.
             case: "the same invocation named by the function's own ARN",
             resource: function_arn.clone(),
             parameters: json!({}),
@@ -136,7 +137,7 @@ async fn a_refused_task_reports_the_invoked_services_own_status() {
             target: function_arn,
             because: unstated(invoke_action),
             refusal_error: "Lambda.AWSLambdaException",
-            sdk_client: "AWSLambda",
+            sdk_client: "Lambda",
             code: ACCESS_DENIED_CODE,
             status: FORBIDDEN,
             failure_event: EVENT_LAMBDA_FUNCTION_FAILED,

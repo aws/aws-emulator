@@ -83,10 +83,18 @@ const UNRELATED_ACTION: &str = "logs:PutLogEvents";
 /// exception, which is what a refusal `Invoke` models no error of its own arrives under.
 const REFUSED_ERROR: &str = "Lambda.AWSLambdaException";
 
-/// The name the metadata of that refusal gives the invoked service, as the client Step
-/// Functions' Lambda integration is served through writes it: the earlier generation of
-/// client, whose own name the service carries and whose fields are separated by semicolons.
-const REFUSED_SERVICE: &str = "Service: AWSLambda;";
+/// The field the metadata of that refusal OPENS with, as the client that made the call
+/// writes it: the optimized integration is served by the earlier generation of client,
+/// whose own name the service carries and whose fields are separated by semicolons, while
+/// the LEGACY form — the function's own ARN as the `Resource` — is made with the current AWS
+/// SDK, which names the service as that SDK's own client does and separates its fields with
+/// commas.
+fn refused_service(form: Form) -> &'static str {
+    match form {
+        Form::FunctionArn => "Service: Lambda,",
+        Form::Optimized => "Service: AWSLambda;",
+    }
+}
 
 /// The status that answer came back with: an authorization refusal of `Invoke` is the
 /// service-common `AccessDeniedException`, served as a Forbidden.
@@ -687,7 +695,8 @@ async fn either_document_in_force_decides_a_task_states_invocation() {
                 );
                 let sentence = format!(
                     " is not authorized to perform: {INVOKE_ACTION} on resource: {function_arn} \
-                     {because} ({REFUSED_SERVICE}"
+                     {because} ({}",
+                    refused_service(row.form)
                 );
                 assert!(
                     cause.contains(&sentence),
