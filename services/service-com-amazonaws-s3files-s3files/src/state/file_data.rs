@@ -34,7 +34,8 @@
 //!
 //! Beside them the object carries the FILE-SYSTEM attributes of the file it was written
 //! from, as user metadata: who the file belongs to, the permissions it carries, its three
-//! POSIX timestamps, the file system that wrote it (with the generation and inode of the
+//! POSIX times — each the whole `(tv_sec, tv_nsec)` pair the file system holds for the entry
+//! ([`posix_timestamp`]) — the file system that wrote it (with the generation and inode of the
 //! entry) and the agent that performed the write. They are the provenance a
 //! permission-preserving restore reads back off the object, so they are stamped from the
 //! tree's own record of the entry rather than from anything a caller stated. The entry's
@@ -107,9 +108,10 @@ pub const FILE_GROUP_METADATA: &str = "file-group";
 /// which is how a POSIX mode is written: `0100644` for a regular file a write created).
 pub const FILE_PERMISSIONS_METADATA: &str = "file-permissions";
 
-/// ... when the file was created, last read and last written, each as the POSIX timestamp of
-/// the entry: seconds since the epoch ([`posix_timestamp`]). The creation time is the instant
-/// the entry came into being, which a later write of the same file does not move.
+/// ... when the file was created, last read and last written, each as the POSIX time of the
+/// entry: the whole pair the file system holds for it, seconds and nanoseconds since the epoch
+/// ([`posix_timestamp`]). The creation time is the instant the entry came into being, which a
+/// later write of the same file does not move.
 pub const FILE_BIRTH_TIME_METADATA: &str = "file-btime";
 pub const FILE_ACCESS_TIME_METADATA: &str = "file-atime";
 pub const FILE_MODIFIED_TIME_METADATA: &str = "file-mtime";
@@ -465,19 +467,29 @@ fn generation_of(file_system_id: &str) -> u64 {
     hasher.finish()
 }
 
-/// `at` as a POSIX timestamp of a file: SECONDS since the epoch, the unit a file's own
-/// timestamps are counted in (`st_atime`, `st_mtime` and the birth time beside them) — the same
-/// RAW POSIX form the owner, the group and the permissions beside it carry, so one restore
-/// reads the whole set the same way.
+/// One of an entry's three times as the stamp an object carries it under: the WHOLE time the
+/// file system holds for that entry, which is a `(tv_sec, tv_nsec)` pair — `st_atim`, `st_mtim`
+/// and the birth time beside them are each one — written as SECONDS since the epoch, a point,
+/// and the NANOSECONDS inside that second, zero-padded to the nine digits that field counts.
 ///
-/// The second is the one the instant LIES IN: a count of seconds is truncated towards the
-/// epoch, never rounded up, so a stamp never names a second the entry had not reached. An
-/// instant before the epoch names no POSIX second at all and is stamped as the epoch itself.
+/// It is the same RAW POSIX form the owner, the group and the permissions beside it carry, so
+/// one permission-preserving restore reads the whole set the same way; and it is the whole of
+/// what the file system holds, so the sub-second part the tree recorded for the entry reaches
+/// the object instead of being dropped by the stamp.
+///
+/// Both fields name what the instant LIES IN: the seconds are truncated towards the epoch,
+/// never rounded up, and the nanoseconds are the remainder inside that second, so a stamp never
+/// names a time the entry had not reached. An instant before the epoch names no POSIX time at
+/// all and is stamped as the epoch itself.
 fn posix_timestamp(at: SystemTime) -> String {
-    at.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .to_string()
+    let since_epoch = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{}.{:09}",
+        since_epoch.as_secs(),
+        since_epoch.subsec_nanos()
+    )
 }
 
 #[cfg(test)]
@@ -486,35 +498,45 @@ mod tests {
 
     use super::{posix_timestamp, EntryTable, ROOT_INODE};
 
-    /// RULE: a file's timestamp is stamped as the POSIX second the instant lies in — the
-    /// second it reached, never the next one.
+    /// The stamp the epoch itself carries, which is also what an instant before it is stamped
+    /// as.
+    const EPOCH_STAMP: &str = "0.000000000";
+
+    /// RULE: a file's time is stamped as the whole POSIX pair the instant lies in — the second
+    /// it reached and the nanoseconds inside that second — with neither field rounded up.
     #[test]
-    fn a_posix_timestamp_names_the_second_the_instant_lies_in() {
+    fn a_posix_timestamp_names_the_second_and_the_nanoseconds_the_instant_lies_in() {
         // The rows span the sub-second part of the instant, which is what the rule generalises
-        // over: none at all, the first nanosecond of the second, one past half a second (so a
-        // stamp that rounded up would be told apart from one that does not) and the last
-        // nanosecond below the next second.
+        // over: none at all, the first nanosecond of the second (so a field that needs every
+        // one of its nine digits is told apart from one that drops them), one past half a
+        // second (so a stamp that rounded the second up would be told apart from one that does
+        // not) and the last nanosecond below the next second.
         let rows = [
-            ("a whole second", 1_700_000_000_u64, 0_u32, "1700000000"),
+            (
+                "a whole second",
+                1_700_000_000_u64,
+                0_u32,
+                "1700000000.000000000",
+            ),
             (
                 "one nanosecond past the second",
                 1_700_000_000,
                 1,
-                "1700000000",
+                "1700000000.000000001",
             ),
             (
                 "one nanosecond past half a second",
                 1_700_000_000,
                 500_000_001,
-                "1700000000",
+                "1700000000.500000001",
             ),
             (
                 "the last nanosecond below the next second",
                 1_700_000_000,
                 999_999_999,
-                "1700000000",
+                "1700000000.999999999",
             ),
-            ("the epoch itself", 0, 0, "0"),
+            ("the epoch itself", 0, 0, EPOCH_STAMP),
         ];
         for (case, seconds, nanoseconds, expected) in rows {
             let at = SystemTime::UNIX_EPOCH + Duration::new(seconds, nanoseconds);
@@ -526,13 +548,13 @@ mod tests {
         }
     }
 
-    /// RULE: an instant BEFORE the epoch names no POSIX second, so it is stamped as the epoch
+    /// RULE: an instant BEFORE the epoch names no POSIX time, so it is stamped as the epoch
     /// rather than as a count no reader of this set can take.
     #[test]
     fn an_instant_before_the_epoch_is_stamped_as_the_epoch() {
         let stamped = posix_timestamp(SystemTime::UNIX_EPOCH - Duration::from_nanos(1));
         assert_eq!(
-            stamped, "0",
+            stamped, EPOCH_STAMP,
             "case \"an instant before the epoch\": expected the epoch's own stamp, got \
              {stamped:?}"
         );

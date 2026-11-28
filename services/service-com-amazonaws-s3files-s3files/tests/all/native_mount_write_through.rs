@@ -102,6 +102,10 @@ const CHECKSUM_CHECK_VALUE: u64 = 0xAE8B_1486_0A79_9888;
 /// runs, so nothing here waits for it or bounds a wait by it.
 const STAMP_WINDOW: Duration = Duration::from_secs(3600);
 
+/// How many digits the NANOSECOND field of a POSIX time carries: a count of nanoseconds inside
+/// one second runs from 0 to 999999999, so the field is nine digits wide, zero-padded.
+const NANOSECOND_DIGITS: usize = 9;
+
 /// How much of one machine's own tree this suite gives a case. Far above what a case writes.
 const MACHINE_LIMITS: VolumeLimits = VolumeLimits {
     files: 64,
@@ -473,12 +477,23 @@ fn entry(metadata: &BTreeMap<String, String>, name: &str) -> String {
     metadata.get(name).cloned().unwrap_or_default()
 }
 
-/// The instant `stamped` names, as the POSIX second since the epoch it counts — and `None`
-/// for text that is no such count at all. The timestamps an object carries for the entry it
-/// was written from are raw POSIX ones, the form the owner, the group and the mode beside them
-/// carry.
+/// The POSIX time `stamped` names, as the pair a file system holds for an entry: the second
+/// since the epoch it counts and the nanoseconds inside that second — and `None` for text that
+/// is no such pair at all. The times an object carries for the entry it was written from are
+/// raw POSIX ones, the whole `(tv_sec, tv_nsec)` pair, in the form the owner, the group and the
+/// mode beside them carry: the seconds, a point, and the nanoseconds in the nine digits that
+/// field counts.
+fn stamped_time(stamped: &str) -> Option<(u64, u32)> {
+    let (seconds, nanoseconds) = stamped.split_once('.')?;
+    if nanoseconds.len() != NANOSECOND_DIGITS {
+        return None;
+    }
+    Some((seconds.parse().ok()?, nanoseconds.parse().ok()?))
+}
+
+/// The second of the POSIX time `stamped` names, and `None` for text that names no such time.
 fn stamped_second(stamped: &str) -> Option<u64> {
-    stamped.parse().ok()
+    stamped_time(stamped).map(|(seconds, _)| seconds)
 }
 
 /// RULE: a file written through a mount of a file system is an object of the bucket the file
@@ -1135,3 +1150,126 @@ async fn two_clients_of_one_file_system_read_each_others_files() {
         String::from_utf8_lossy(&body)
     );
 }
+
+/// RULE: each of the three times an object carries for the file it was written from names the
+/// WHOLE time the file system holds for that entry — the second since the epoch and the
+/// nanoseconds inside that second, in the raw POSIX form the owner, the group and the mode
+/// beside it carry — so a reader of the set gets the entry's time at the precision a file's
+/// times are kept at rather than a stamp with its sub-second part dropped.
+#[tokio::test]
+async fn an_objects_file_times_carry_the_seconds_and_the_nanoseconds_of_the_entry() {
+    let aws = Aws::new();
+    let (subnet_id, vpc_id) = aws.account_subnet().await;
+    let bucket = "s3files-file-time-form";
+    let bucket_arn = aws.bucket(bucket).await;
+    // Scoped to a prefix, so the key the stamps are read back off is the prefixed one.
+    let prefix = "team/";
+    let file_system_id = aws.file_system(&bucket_arn, prefix).await;
+    aws.mount_target(&file_system_id, &subnet_id).await;
+
+    let client = aws.client(SystemTime::now(), Some(&vpc_id));
+    let mut machine = Machine::new();
+    assert_eq!(
+        run(
+            &*client,
+            &mut machine,
+            &format!("mount -t s3files {file_system_id}:/ {MOUNT_POINT} -o {MOUNT_OPTIONS}")
+        ),
+        SUCCESS,
+        "the mount of file system {file_system_id} must succeed"
+    );
+
+    // The second the writes below start at, which is what pins the instant each stamp names to
+    // the write it came from: a stamp of anything else could not lie in the window from here to
+    // a generously later second. Nothing waits for that window to pass.
+    let writing_from = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("the clock is past the epoch")
+        .as_secs();
+    let stamped_window = writing_from..=writing_from.saturating_add(STAMP_WINDOW.as_secs());
+
+    // The rows differ in what the file holds, how deep under the mount point it lies and what
+    // its name states — what the rule generalises over — because the times stamped are the
+    // ENTRY's, whatever the entry holds and wherever it is.
+    let rows = [
+        ("a text file at the mount root", "stamped.txt", "first bytes"),
+        ("an empty file one directory down", "day/empty.txt", ""),
+        (
+            "a file whose name states no media type, two directories down",
+            "day/hour/payload",
+            "a longer run of bytes than the row above it holds",
+        ),
+        (
+            "a structured document one directory down",
+            "day/report.json",
+            "{\"rows\":2}",
+        ),
+    ];
+
+    // The nanosecond field each row's three stamps carried, so the set of them says whether the
+    // sub-second part of an entry's time reaches the object at all.
+    let mut nanosecond_fields: Vec<(&str, u32)> = Vec::new();
+    for (case, path, payload) in rows {
+        let written = format!("{MOUNT_POINT}/{path}");
+        if let Some(directory) = ::service_common::posix_shell_volume::parent_path(&written) {
+            assert!(
+                machine.make_directories(&directory),
+                "case {case:?}: the directories above {written:?} must be creatable"
+            );
+        }
+        assert!(
+            machine.write(&written, payload),
+            "case {case:?}: the write of {written:?} through the mount must happen"
+        );
+        let key = format!("{prefix}{path}");
+        let metadata = aws.object_metadata(bucket, &key).await;
+        for name in [
+            state::FILE_BIRTH_TIME_METADATA,
+            state::FILE_ACCESS_TIME_METADATA,
+            state::FILE_MODIFIED_TIME_METADATA,
+        ] {
+            let stamped = entry(&metadata, name);
+            // The whole POSIX pair: text carrying no nanosecond field at all is not one, and is
+            // a failed case rather than a stamp read as seconds.
+            let time = stamped_time(&stamped);
+            assert!(
+                time.is_some_and(|(seconds, nanoseconds)| stamped_window.contains(&seconds)
+                    && nanoseconds < 1_000_000_000),
+                "case {case:?}: expected {name} to carry a POSIX second inside \
+                 {stamped_window:?} and a {NANOSECOND_DIGITS}-digit nanosecond field inside \
+                 that second, got {stamped:?}"
+            );
+            nanosecond_fields.push((case, time.unwrap_or_default().1));
+        }
+        // One write leaves the entry read and written at the one instant the tree recorded for
+        // it, so those two stamps name that same instant to the nanosecond, and the entry was
+        // created no later than it was written.
+        let (birth, access, modified) = (
+            entry(&metadata, state::FILE_BIRTH_TIME_METADATA),
+            entry(&metadata, state::FILE_ACCESS_TIME_METADATA),
+            entry(&metadata, state::FILE_MODIFIED_TIME_METADATA),
+        );
+        assert_eq!(
+            access, modified,
+            "case {case:?}: expected the entry read and written at one instant, got \
+             {access:?} and {modified:?}"
+        );
+        assert!(
+            stamped_time(&birth) <= stamped_time(&modified),
+            "case {case:?}: expected the entry to be written no earlier than it was created, \
+             got {birth:?} and {modified:?}"
+        );
+    }
+
+    // The nanosecond field is the entry's own sub-second part, not a fixed filler: across the
+    // rows above — each written at its own instant of a clock that counts far finer than a
+    // second — at least one of them is past the start of its second.
+    assert!(
+        nanosecond_fields
+            .iter()
+            .any(|(_, nanoseconds)| *nanoseconds > 0),
+        "case \"the nanosecond field of every stamp of every row\": expected at least one to \
+         carry the sub-second part of its own write, got {nanosecond_fields:?}"
+    );
+}
+
