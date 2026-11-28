@@ -53,3 +53,27 @@ Smithy evidence cited: TransactWriteItems errors -> TransactionCanceledException
 4. Read the HTTP status and the error body: AWS answers 400 with __type ...#TransactionCanceledException, a top-level Message 'Transaction cancelled, please refer cancellation reasons for specific reasons [ValidationError]' and CancellationReasons [{Code: 'ValidationError', Message: 'Item size to update has exceeded the maximum allowed size'}]; the emulator answers 400 with __type com.amazon.coral.validate#ValidationException and no Message/CancellationReasons members.
 5. Repeat with the Update targeting a key that does not yet exist (the fixture's second leg, task#6) — same divergence.
 6. Re-replay fixture transact-write-items-update-over-size-limit-cancellation-reason steps task#4 and task#6 to confirm the fix.
+
+## Resolution
+
+Closed by DRIFT, then PINNED. The reconciliation this issue asks for landed on mainline after
+the commit it was filed against (`c00b6f0`): WHO answers for a crossing of the item-size quota
+on the transactional `Update` path now follows WHICH ceiling the update path held the request to
+(`crossed_the_item_quota` /`state::charged_beyond_the_item` in
+`services/service-com-amazonaws-dynamodb-dynamodb-20120810/`). A request the update path charges
+nothing of its own beside the bytes the item it leaves stores was held to the quota's own count,
+so the only thing a crossing can be is the item having become too large — the circumstance
+`TransactionCanceledException` documents — and the transaction is CANCELLED with that action's
+reason; a request charged a ceiling of its own (the part of the item its clauses leave alone
+below its floor, a further clause's frame) was held to a ceiling under the quota that no stored
+item can lift, so a crossing there is a fact of the request and the CALL is refused, which is
+the direction the behavioural units pull.
+
+Both of this issue's replay keys (`$.CancellationReasons`, `$.Message`) replay `fixed`: all nine
+steps of the fixture pass, task#4 and task#6 included. No handler change was needed, so the fix
+this report carries is the suite that pins the rule against regression:
+`tests/all/transactional_quota_cancellation_envelope.rs` drives the whole cancellation envelope
+(status, `__type`, the top-level sentence over the bracketed per-slot codes, and the ordered
+`CancellationReasons` with `None` for every blameless slot) over the clause that carries the item
+across, the table's key schema, the local-index entry the quota counts beside the item, and where
+the offending slots sit in the request — with the served side of the boundary beside it.
