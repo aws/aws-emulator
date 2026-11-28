@@ -3788,11 +3788,7 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
         service(
             "sagemaker",
             "Amazon SageMaker",
-            vec![
-                quota("ml.m5.xlarge for notebook instance usage", 2.0),
-                quota("ml.m5.xlarge for endpoint usage", 2.0),
-                quota("Maximum number of training jobs", 100.0),
-            ],
+            sagemaker_quotas(),
         ),
         service(
             "scheduler",

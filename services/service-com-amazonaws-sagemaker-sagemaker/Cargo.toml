@@ -108,6 +108,12 @@ service-com-amazonaws-ecr-amazonec2containerregistry-v20150921 = { workspace = t
 # build-time code of its own beyond the generated service scaffolding every service crate here
 # builds.
 service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
+# The account's own Service Quotas: how many instances this account may run across all of its
+# HyperPod clusters is an ADJUSTABLE account-level quota, so `BatchAddClusterNodes` reads the
+# value in force out of the store `GetServiceQuota` answers from and
+# `RequestServiceQuotaIncrease` writes an approved increase into
+# (`state::cluster_instance_entitlement`).
+service-com-amazonaws-servicequotas-servicequotasv20190624 = { workspace = true }
 # The account's own KMS records: an Amazon S3 object a job's work reads may be SEALED under a
 # KMS key, and whether the job's execution role may perform that object's `kms:Decrypt` is
 # decided by the service that HOLDS the key, its policy and its grants

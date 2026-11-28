@@ -67,7 +67,19 @@ async fn create_cluster(emulator: &Emulator, name: &str, groups: &[(&str, &str)]
     let created = emulator
         .ok(
             "CreateCluster",
-            &json!({"ClusterName": name, "InstanceGroups": instance_groups}),
+            // The cluster is orchestrated by Amazon EKS, which is what lets the volume rows
+            // below attach at all: both node-storage operations document "Your cluster must
+            // use EKS as the orchestration and be in the InService state" on `ClusterArn`
+            // (smithy_query query="doc" shape=AttachClusterNodeVolumeRequest member=ClusterArn).
+            &json!({
+                "ClusterName": name,
+                "InstanceGroups": instance_groups,
+                "Orchestrator": {
+                    "Eks": {
+                        "ClusterArn": format!("arn:aws:eks:{REGION}:{ACCOUNT}:cluster/hyperpod"),
+                    },
+                },
+            }),
         )
         .await;
     str_field(&created, "ClusterArn")

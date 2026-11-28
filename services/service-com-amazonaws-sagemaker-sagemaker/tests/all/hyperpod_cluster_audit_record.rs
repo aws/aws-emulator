@@ -251,6 +251,8 @@ pub(crate) fn seed_not_due(emulator: &Emulator, name: &str) -> String {
             // A cluster holds the nodes `BatchAddClusterNodes` added to it; a seeded one
             // has none, the same as one `CreateCluster` just made.
             nodes: std::collections::BTreeMap::new(),
+            // No node is launched yet either, so there is no placement to resolve.
+            group_placements: std::collections::BTreeMap::new(),
             node_additions: std::collections::BTreeMap::new(),
         },
     );

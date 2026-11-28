@@ -175,7 +175,19 @@ pub(crate) async fn in_service_cluster(
     let created = emulator
         .ok(
             "CreateCluster",
-            &json!({ "ClusterName": cluster, "InstanceGroups": instance_groups }),
+            // Orchestrated by Amazon EKS: the node-storage operations the suites built on
+            // this fixture exercise document "Your cluster must use EKS as the orchestration
+            // and be in the InService state" on their `ClusterArn` (smithy_query query="doc"
+            // shape=AttachClusterNodeVolumeRequest member=ClusterArn).
+            &json!({
+                "ClusterName": cluster,
+                "InstanceGroups": instance_groups,
+                "Orchestrator": {
+                    "Eks": {
+                        "ClusterArn": format!("arn:aws:eks:us-east-1:{ACCOUNT}:cluster/hyperpod"),
+                    },
+                },
+            }),
         )
         .await;
     let arn = str_field(&created, "ClusterArn");

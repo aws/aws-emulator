@@ -3,8 +3,11 @@
 //! @op BatchAddClusterNodes
 //! IMPLEMENTED: resolves the `ClusterName` (name or ARN) in `crate::state`, refuses a
 //! cluster that does not exist with the modelled `ResourceNotFound`, replays a
-//! `ClientToken` the cluster already remembers, and otherwise adds the requested nodes
-//! to each named instance group — reporting a group it cannot add to in `Failed` with
+//! `ClientToken` the cluster already remembers, weighs the whole batch against the
+//! instances the account's live clusters already hold — refusing it with the modelled
+//! `ResourceLimitExceeded` when that is past the account's applied Service Quotas value —
+//! and otherwise adds the requested nodes to each named instance group, placed in the
+//! zones their group runs in, reporting a group it cannot add to in `Failed` with
 //! the modelled error code rather than failing the whole batch. This is the ONLY file to
 //! touch for this operation.
 //!
@@ -224,6 +227,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(|| crate::scaffolded::Scaffolded::validation(crate::state::NO_STATE))?;
 
         let now = ::std::time::SystemTime::now();
+        // The value the account's instances-across-clusters quota is in force at, read from
+        // the service that OWNS quotas before this service's store is locked, so a client
+        // that has had the quota raised may scale out up to the raised value
+        // (`crate::state::cluster_instance_entitlement`).
+        let region = crate::state::request_region(ctx);
+        let entitlement =
+            crate::state::cluster_instance_entitlement(&*self.engine, &region, now);
         let mut store = state.lock();
         // The cluster is this call's subject, so a name or ARN this account holds no
         // cluster for is the modelled `ResourceNotFound` and no node is added.
@@ -259,27 +269,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Ok(replay(cluster, &record));
         }
 
-        // The whole batch is sized against the per-cluster bound BEFORE anything is
-        // added, so a refused batch adds no node at all.
-        let requested: usize = input
+        // The whole batch is sized against the ACCOUNT's instance quota BEFORE anything is
+        // added, so a refused batch adds no node, moves no target count and leaves the node
+        // list exactly as it was. The bound is the account's published limit on the
+        // instances it may run across ALL of its clusters, measured against what every live
+        // cluster of the account currently holds — not a per-cluster ceiling — so a
+        // scale-out past it is refused with the modelled `ResourceLimitExceeded` naming
+        // that quota (`crate::state::cluster_instance_quota_exceeded`).
+        let requested: i64 = input
             .nodes_to_add
             .iter()
-            .map(|spec| usize::try_from(spec.increment_target_count_by).unwrap_or_default())
+            .map(|spec| i64::from(spec.increment_target_count_by.max(0)))
             .sum();
-        if cluster.nodes.len() + requested > crate::state::CLUSTER_NODE_QUOTA {
+        if let Some(refusal) = store.cluster_instance_quota_exceeded(now, requested, entitlement) {
             return Err(BatchAddClusterNodesErrorModeled::ResourceLimitExceeded(
                 ResourceLimitExceeded {
-                    message: Some(format!(
-                        "The service limit for nodes in cluster {} is {}, with current \
-                         utilization of {} and a request delta of {requested}.",
-                        cluster.arn,
-                        crate::state::CLUSTER_NODE_QUOTA,
-                        cluster.nodes.len()
-                    )),
+                    message: Some(refusal),
                 },
             )
             .into());
         }
+        // Re-borrowed: the account-wide reading above weighs every cluster the account
+        // holds, so it takes the whole store rather than this one cluster.
+        let Some(cluster) = store.cluster_by_name_or_arn_mut(&input.cluster_name) else {
+            return Err(BatchAddClusterNodesErrorModeled::ResourceNotFound(ResourceNotFound {
+                message: Some(crate::state::cluster_not_found(&input.cluster_name)),
+            })
+            .into());
+        };
 
         let mut record = crate::state::NodeAdditionRecord {
             added: Vec::new(),
@@ -293,10 +310,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 record.failed.push(failure(
                     spec,
                     ERROR_INSTANCE_GROUP_NOT_FOUND,
-                    format!(
-                        "Cluster {} has no instance group {:?}.",
-                        cluster.arn, spec.instance_group_name
-                    ),
+                    crate::state::instance_group_not_found(&spec.instance_group_name),
                 ));
                 continue;
             };
@@ -333,15 +347,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .or_else(|| admitted.first())
                 .or_else(|| requested_types.first())
                 .cloned();
-            // Where they are placed: the first zone the request targeted. A group's own
-            // zones follow from the subnets of its VPC configuration, which this
-            // emulator does not resolve, so a request that targets none records none.
-            let zone = spec
+            // Where they are launched. `AvailabilityZones` is documented as what a request
+            // uses "to target node placement in specific availability zones within a
+            // flexible instance group", so a request that targets zones is honoured — with
+            // the zone ID the owning service paired with the name where the group runs in
+            // that zone — and one that targets none takes the group's OWN placement: the
+            // zones of the subnets its VPC configuration puts it in, resolved when the
+            // cluster was created (`crate::state::cluster_placement`). The zones are taken
+            // in turn from the node the group already holds onwards, so an addition spreads
+            // over the group's zones exactly as its provisioning does.
+            let targeted = spec
                 .availability_zones
                 .as_ref()
                 .and_then(|zones| zones.first())
                 .cloned();
-            for _ in 0..increment {
+            let ordinal = cluster.nodes_in_group(&spec.instance_group_name);
+            for added in 0..increment {
+                let placement = match &targeted {
+                    Some(zone_name) => cluster
+                        .group_zone_named(&spec.instance_group_name, zone_name)
+                        .or_else(|| Some(crate::state::ClusterZone {
+                            name: zone_name.clone(),
+                            id: None,
+                        })),
+                    None => cluster.node_placement(
+                        &spec.instance_group_name,
+                        ordinal + usize::try_from(added).unwrap_or_default(),
+                    ),
+                };
                 let logical_id = crate::state::mint_node_logical_id();
                 cluster.nodes.insert(
                     logical_id.clone(),
@@ -352,7 +385,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         instance_group_name: group.instance_group_name.clone(),
                         instance_type: instance_type.clone(),
                         status: crate::state::NODE_STATUS_PENDING.to_string(),
-                        availability_zone: zone.clone(),
+                        availability_zone: placement.as_ref().map(|zone| zone.name.clone()),
+                        availability_zone_id: placement.and_then(|zone| zone.id),
                         threads_per_core: group.threads_per_core,
                         launch_time: now,
                         running_at: crate::state::transition_owed_at(now),

@@ -10,7 +10,9 @@
 //! documented precondition with a 400 `ValidationException`
 //! — then resolves the node by `NodeId` inside that cluster, refusing a `NodeId` that
 //! names no node of that cluster the modelled `ResourceNotFound` too, under the node
-//! lookup's own sentence, and attaches the volume, answering the
+//! lookup's own sentence; a cluster whose ORCHESTRATION is not Amazon EKS then fails the
+//! other half of that documented precondition with a 400 `ValidationException`, and
+//! otherwise the volume is attached, answering the
 //! attachment it already holds when the same volume is attached again. The
 //! already-attached-elsewhere check is scoped to the cluster the `ClusterArn` names,
 //! which is the only cluster this request addresses: this emulator models no EBS volume
@@ -229,6 +231,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let cluster_arn = cluster.arn.clone();
+        // Whether the cluster's ORCHESTRATION can take a volume change at all, which is the
+        // other half of `ClusterArn`'s documented precondition. It is judged AFTER the node
+        // reference, because the reference is to a RESOURCE: a `NodeId` that names no node
+        // of the cluster is answered the modelled not-found whatever the cluster is
+        // orchestrated by, and only a request whose every reference resolves is then held to
+        // what the cluster can do. Nothing is attached either way
+        // (`crate::state::cluster_requires_eks_orchestration`).
+        let eks_orchestrated = cluster.is_eks_orchestrated();
         // An EBS volume attaches to one instance at a time, so the node holding this
         // volume — if any node does — is found BEFORE the target node is borrowed to
         // write, which keeps this handler to one mutable lookup.
@@ -258,6 +268,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .into());
         };
+        // The node resolved, so the cluster's own ability to serve a volume change is what
+        // is left of the documented precondition: a cluster not orchestrated by Amazon EKS
+        // is one Slurm runs, and a volume change is not an operation it supports, so
+        // nothing is attached (`crate::state::VOLUME_OPERATIONS_NOT_SUPPORTED`).
+        if !eks_orchestrated {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                crate::state::VOLUME_OPERATIONS_NOT_SUPPORTED,
+            ));
+        }
         // A volume another node of this cluster holds is not available for this one, and
         // the operation models no error for that.
         if let Some((holder_logical_id, holder_label)) = holder {

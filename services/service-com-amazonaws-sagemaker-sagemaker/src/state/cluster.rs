@@ -346,6 +346,21 @@ pub fn cluster_rejects_node_change(arn: &str) -> String {
     format!("Cluster {arn} is in a termination state that cannot be modified.")
 }
 
+/// How a node-STORAGE operation states that the cluster it was asked to act on cannot take a
+/// volume change, because it is not orchestrated by Amazon EKS: both of them document "Your
+/// cluster must use EKS as the orchestration and be in the `InService` state" on `ClusterArn`,
+/// and a HyperPod cluster that is not EKS-orchestrated is one the Slurm workload manager runs.
+///
+/// RECORDED wording, entirely fixed text with no variable part: the refusal is about the
+/// CLASS of cluster rather than about any one cluster or request member, so nothing is
+/// interpolated into it. Stated once here so `AttachClusterNodeVolume` and
+/// `DetachClusterNodeVolume` cannot word the one precondition differently. Neither models an
+/// error for it — each models `ResourceNotFound`, which a cluster a describe still reports is
+/// not — so the refusal travels as the 400 `ValidationException` the refusal channel
+/// provides, like the `InService` half beside it.
+pub const VOLUME_OPERATIONS_NOT_SUPPORTED: &str =
+    "Volume operations are not supported for Slurm clusters";
+
 /// Why the `requested` instances a cluster's groups ask for are more than SageMaker
 /// provisions for ONE cluster, or `None` when the cluster fits.
 ///
@@ -446,6 +461,15 @@ pub struct Cluster {
     /// holds none: its groups' instances are minted when it reaches `InService`, by
     /// [`Cluster::settle_status`].
     pub nodes: BTreeMap<String, ClusterNode>,
+    /// The Availability Zones each of this cluster's instance groups launches its nodes
+    /// in, keyed by the group's name.
+    ///
+    /// Resolved from the subnets the groups run under when the cluster was created
+    /// ([`crate::state::cluster_group_placements`]) and stored here, so every node of a
+    /// group takes its placement from the one resolution and each reader of that node —
+    /// `DescribeClusterNode`'s `Placement` and the `AvailabilityZones` of a
+    /// `BatchAddClusterNodes` entry — reports the same zone.
+    pub group_placements: BTreeMap<String, Vec<ClusterZone>>,
     /// What a `BatchAddClusterNodes` `ClientToken` replays: the outcome of the first call
     /// carrying that token. Keyed by the token.
     pub node_additions: BTreeMap<String, NodeAdditionRecord>,
@@ -565,10 +589,13 @@ impl Cluster {
                 .filter(|node| node.instance_group_name == group_name)
                 .count();
             let declared_count = usize::try_from(instance_count).unwrap_or_default();
-            for _ in held..declared_count {
+            for ordinal in held..declared_count {
                 if self.nodes.len() >= CLUSTER_NODE_QUOTA {
                     return;
                 }
+                // Where this instance is launched: the zone of the subnet its group runs
+                // under, resolved when the cluster was created.
+                let placement = self.node_placement(&group_name, ordinal);
                 let logical_id = mint_node_logical_id();
                 self.nodes.insert(
                     logical_id.clone(),
@@ -580,9 +607,8 @@ impl Cluster {
                         instance_group_name: group_name.clone(),
                         instance_type: instance_type.clone(),
                         status: NODE_STATUS_RUNNING.to_string(),
-                        // A group's zones follow from the subnets of its VPC
-                        // configuration, which this emulator does not resolve.
-                        availability_zone: None,
+                        availability_zone: placement.as_ref().map(|zone| zone.name.clone()),
+                        availability_zone_id: placement.and_then(|zone| zone.id),
                         threads_per_core,
                         launch_time: now,
                         running_at: now,
@@ -595,6 +621,77 @@ impl Cluster {
                 );
             }
         }
+    }
+
+    /// Whether this cluster uses Amazon EKS as its ORCHESTRATION, i.e. its orchestrator is
+    /// an Amazon EKS cluster.
+    ///
+    /// `Orchestrator` carries "exactly one orchestrator configuration: either `Eks` or
+    /// `Slurm`" (`CreateCluster$Orchestrator`), so a cluster is EKS-orchestrated exactly
+    /// when the configuration it was created with is the EKS one — a cluster orchestrated
+    /// by Slurm is not, and neither is one that names no orchestrator at all, since
+    /// nothing then names an EKS cluster for its nodes to be managed by.
+    ///
+    /// The storage operations of a node are the ones this decides: both
+    /// `AttachClusterNodeVolume$ClusterArn` and `DetachClusterNodeVolume$ClusterArn`
+    /// document "Your cluster must use EKS as the orchestration and be in the `InService`
+    /// state", so the one predicate answers for both.
+    pub fn is_eks_orchestrated(&self) -> bool {
+        self.orchestrator
+            .as_ref()
+            .is_some_and(|orchestrator| orchestrator.eks.is_some())
+    }
+
+    /// The zone the node with ordinal `ordinal` among the nodes of the instance group
+    /// `group_name` is launched in, or `None` when this cluster resolved no placement for
+    /// that group at all.
+    ///
+    /// The group's resolved zones are taken IN TURN, so a group placed across the subnets
+    /// of several zones spreads its instances over them instead of stacking every one in
+    /// the first: a group's nodes are launched into "the availability zones" its
+    /// configuration puts it in, not into one of them.
+    pub fn node_placement(&self, group_name: &str, ordinal: usize) -> Option<ClusterZone> {
+        let zones = self.group_placements.get(group_name)?;
+        if zones.is_empty() {
+            return None;
+        }
+        zones.get(ordinal % zones.len()).cloned()
+    }
+
+    /// How many nodes of the instance group `group_name` this cluster already holds, which
+    /// is the ordinal the NEXT node of that group takes ([`Cluster::node_placement`]).
+    pub fn nodes_in_group(&self, group_name: &str) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| node.instance_group_name == group_name)
+            .count()
+    }
+
+    /// The zone of `group_name` whose NAME is `zone_name`, so a node an add request placed
+    /// in a zone it named by name still reports the ID the owning service paired with it.
+    pub fn group_zone_named(&self, group_name: &str, zone_name: &str) -> Option<ClusterZone> {
+        self.group_placements
+            .get(group_name)?
+            .iter()
+            .find(|zone| zone.name == zone_name)
+            .cloned()
+    }
+
+    /// The instances this cluster CURRENTLY holds, the utilisation its account's instance
+    /// quota is measured against ([`ComAmazonawsSagemakerSagemakerState::cluster_instances_held`]).
+    ///
+    /// The nodes the cluster holds once it is provisioned, and — for one still coming up,
+    /// which holds none yet — the instances its groups have already committed: both are
+    /// capacity the account has taken, and the two counts agree for every cluster past
+    /// provisioning, because a group's count moves with the nodes added to or removed from
+    /// it.
+    pub fn instances_held(&self) -> i64 {
+        let provisioned = i64::try_from(self.nodes.len()).unwrap_or(i64::MAX);
+        let committed: i64 =
+            cluster_instance_demand(&self.instance_groups, &self.restricted_instance_groups)
+                .values()
+                .sum();
+        provisioned.max(committed)
     }
 
     /// The training plans this cluster's capacity is reserved against, in first-seen
@@ -692,6 +789,21 @@ pub const ALL_NODES_FAILED_VALIDATION: &str =
 pub const INSTANCE_NOT_IN_CLUSTER: &str = "The instance does not exist in the specified cluster.";
 /// See [`INSTANCE_NOT_IN_CLUSTER`].
 pub const NODE_NOT_IN_CLUSTER: &str = "The node does not exist in the specified cluster.";
+
+/// How a batch node operation words a specification that names an instance group the cluster
+/// does not hold — the per-entry sentence that travels beside
+/// `BatchAddClusterNodesErrorCode`'s `InstanceGroupNotFound`.
+///
+/// The group is named AS THE REQUEST NAMED IT, in parentheses, and the rest is fixed text:
+/// the entry is about one group of the request, so the sentence points the caller at its own
+/// input rather than at the cluster. Stated once here so every operation reporting this one
+/// condition words it the same way.
+pub fn instance_group_not_found(instance_group_name: &str) -> String {
+    format!(
+        "Instance group provided as part of the request ({instance_group_name}) does not \
+         exist. Please check the input and try again."
+    )
+}
 
 /// How a batch node operation refuses a request NONE of whose identifiers names a node of
 /// the cluster at all — a client working from a stale node list, say.
@@ -807,6 +919,53 @@ impl ComAmazonawsSagemakerSagemakerState {
                     *delta,
                 )
             })
+        })
+    }
+
+    /// How many instances the account's LIVE HyperPod clusters currently hold — the
+    /// utilisation [`CLUSTER_INSTANCES_QUOTA`] is measured against.
+    ///
+    /// Counted over every cluster the account still has: one whose teardown has begun, one
+    /// that failed, and one the clock has already released hold no capacity any more, so
+    /// each is left out and the instances it held are available to the account again. What
+    /// each remaining cluster contributes is what it holds ([`Cluster::instances_held`]).
+    pub fn cluster_instances_held(&self, now: SystemTime) -> i64 {
+        self.clusters
+            .values()
+            .filter(|cluster| {
+                !cluster.is_released(now)
+                    && !cluster.is_deleting()
+                    && cluster.status != CLUSTER_STATUS_FAILED
+            })
+            .map(Cluster::instances_held)
+            .sum()
+    }
+
+    /// Why the account cannot put `delta` more instances into its HyperPod clusters, or
+    /// `None` when the whole ask fits inside `limit`.
+    ///
+    /// `limit` is the value the account's own instances-across-clusters quota is in force at
+    /// ([`cluster_instance_entitlement`]), never a number this service decides. The bound is
+    /// the ACCOUNT's, not one cluster's: it is measured against what every live cluster of
+    /// the account already holds, so the answer to a scale-out does not depend on which
+    /// cluster asks. The sentence is [`account_quota_exceeded`]'s, naming the published
+    /// quota and counted in [`INSTANCES_UNIT`], like every other published account bound
+    /// this service evaluates.
+    pub fn cluster_instance_quota_exceeded(
+        &self,
+        now: SystemTime,
+        delta: i64,
+        limit: i64,
+    ) -> Option<String> {
+        let in_use = self.cluster_instances_held(now);
+        (in_use + delta > limit).then(|| {
+            account_quota_exceeded(
+                CLUSTER_INSTANCES_QUOTA_NAME,
+                INSTANCES_UNIT,
+                limit,
+                in_use,
+                delta,
+            )
         })
     }
 }

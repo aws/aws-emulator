@@ -1240,6 +1240,18 @@ pub use domain_identifiers::*;
 pub mod ec2_volumes;
 pub use ec2_volumes::*;
 
+/// WHERE a HyperPod cluster's nodes are launched — the Availability Zone of the subnet each
+/// instance group runs under, resolved against the service that owns the subnet: see
+/// `state/cluster_placement.rs`.
+pub mod cluster_placement;
+pub use cluster_placement::*;
+
+/// How many instances the account may run across ALL of its HyperPod clusters — the
+/// adjustable Service Quotas value a node addition is weighed against: see
+/// `state/cluster_instance_entitlement.rs`.
+pub mod cluster_instance_entitlement;
+pub use cluster_instance_entitlement::*;
+
 /// The Studio USER PROFILE slice — the profile `CreateUserProfile` writes and
 /// `DescribeUserProfile` replays, which is also the owner a Studio app hangs off: see
 /// `state/user_profile.rs`.
@@ -2333,9 +2345,14 @@ pub struct ClusterNode {
     /// `InstanceType`, which the model makes mutually exclusive.
     pub instance_type: Option<String>,
     pub status: String,
-    /// Where the node was placed: the zone the add request targeted, since a group's
-    /// zones follow from its VPC configuration, which this emulator does not resolve.
+    /// Where the node was launched: the zone of the subnet its instance group runs under,
+    /// resolved when the cluster was provisioned ([`cluster_placement`]), or the zone an
+    /// add request targeted when it named one. Every reader of the node reports this one
+    /// placement.
     pub availability_zone: Option<String>,
+    /// The ID of that zone, where the service that owns the subnet paired one with its
+    /// name; `None` when it did not, since the pairing is not derived here.
+    pub availability_zone_id: Option<String>,
     pub threads_per_core: Option<i32>,
     pub launch_time: SystemTime,
     pub running_at: SystemTime,

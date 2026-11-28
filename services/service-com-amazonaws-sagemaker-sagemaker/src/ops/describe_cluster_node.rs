@@ -3,7 +3,9 @@
 //! @op DescribeClusterNode
 //! IMPLEMENTED: replays one node of the cluster `ClusterName` names (by name or ARN),
 //! picked by `NodeId` or `NodeLogicalId`, materialising the `Pending` -> `Running`
-//! transition the clock already owes it, and refuses a node reference that resolves to no
+//! transition the clock already owes it, reporting the `Placement` the node was launched in
+//! (the zone of the subnet its instance group runs under, resolved when the cluster was
+//! provisioned), and refuses a node reference that resolves to no
 //! node with the node lookup's own sentence under the modelled `ResourceNotFound`, whichever
 //! half of the reference — the cluster or the node inside it — could not be resolved.
 //! This is the ONLY file to touch for this operation.
@@ -222,13 +224,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 private_primary_ip: None,
                 private_primary_ipv6: None,
                 private_dns_hostname: None,
-                placement: node
-                    .availability_zone
-                    .clone()
-                    .map(|zone| ClusterInstancePlacement {
+                // Where the node is launched: the zone of the subnet its instance group
+                // runs under, resolved when the cluster was provisioned, with the zone ID
+                // the service that owns the subnet paired with it.
+                placement: node.availability_zone.clone().map(|zone| {
+                    ClusterInstancePlacement {
                         availability_zone: Some(zone),
-                        availability_zone_id: None,
-                    }),
+                        availability_zone_id: node.availability_zone_id.clone(),
+                    }
+                }),
                 current_image_id: None,
                 desired_image_id: None,
                 current_image_release_version: None,

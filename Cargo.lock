@@ -21254,6 +21254,7 @@ dependencies = [
  "service-com-amazonaws-kms-trentservice",
  "service-com-amazonaws-lambda-awsgirapiservice",
  "service-com-amazonaws-s3-amazons3",
+ "service-com-amazonaws-servicequotas-servicequotasv20190624",
  "service-com-amazonaws-sqs-amazonsqs",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
  "service-common",

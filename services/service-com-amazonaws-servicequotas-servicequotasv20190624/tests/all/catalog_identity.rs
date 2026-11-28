@@ -1044,6 +1044,7 @@ const CITED_AWS_QUOTA_CODES: &[(&str, &str)] = &[
     ("s3", "L-B461D596"),
     ("s3", "L-DC2B2D3D"),
     ("s3", "L-FAABEEBA"),
+    ("sagemaker", "L-3308CCC7"),
     ("scheduler", "L-1DC60392"),
     ("scheduler", "L-53944E21"),
     ("scheduler", "L-66629D52"),

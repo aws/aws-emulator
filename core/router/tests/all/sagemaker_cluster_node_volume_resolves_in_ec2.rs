@@ -192,6 +192,18 @@ async fn in_service_cluster(router: &MultiServiceRouter, name: &str) -> String {
                     engine::EMULATOR_ACCOUNT_ID
                 ),
             }],
+            // Orchestrated by Amazon EKS, which is the other half of the precondition the
+            // attach documents on `ClusterArn`: "Your cluster must use EKS as the
+            // orchestration and be in the InService state" (smithy_query query="doc"
+            // shape=AttachClusterNodeVolumeRequest member=ClusterArn).
+            "Orchestrator": {
+                "Eks": {
+                    "ClusterArn": format!(
+                        "arn:aws:eks:{REGION}:{}:cluster/hyperpod",
+                        engine::EMULATOR_ACCOUNT_ID
+                    ),
+                },
+            },
         }),
     )
     .await;

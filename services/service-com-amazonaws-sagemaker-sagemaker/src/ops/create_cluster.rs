@@ -245,6 +245,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let now = ::std::time::SystemTime::now();
 
+        // WHERE this cluster's nodes will be launched: each instance group runs under a VPC
+        // configuration — its own `OverrideVpcConfig`, else the cluster's `VpcConfig` — and
+        // a node is launched into a subnet of it, so the zone every node of a group reports
+        // is the zone of that subnet. The subnets are Amazon EC2's resources, so the zones
+        // are resolved against the service that OWNS them, before the store is locked and
+        // with no guard held across the await (see `crate::state::cluster_placement`), and
+        // stored on the cluster: the nodes themselves are minted when the cluster reaches
+        // `InService`, and a reporting call resolves nothing of its own.
+        let group_placements = crate::state::cluster_group_placements(
+            ctx,
+            &region,
+            input.vpc_config.as_ref(),
+            input.instance_groups.as_deref().unwrap_or_default(),
+            input.restricted_instance_groups.as_deref().unwrap_or_default(),
+        )
+        .await;
+
         let mut store = state.lock();
         // The deletions the clock already completed are materialised first, so the name
         // and the quota slot a gone cluster held are free again: the release was due at
@@ -350,10 +367,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 in_service_at: crate::state::transition_owed_at(now),
                 // No deletion has been asked for, so the clock owes this cluster none.
                 removal_due_at: None,
-                // A cluster is created with no nodes: provisioning the instances a group
-                // asks for is work this emulator does not do, so the nodes a cluster
-                // holds are the ones `BatchAddClusterNodes` added to it.
+                // A cluster is STORED with no node: the instances its groups declare come up
+                // WITH the cluster, so they are minted at the instant it reaches `InService`
+                // (`state::Cluster::settle_status`), each in the zone resolved above.
                 nodes: ::std::collections::BTreeMap::new(),
+                // The zones the groups' nodes are launched in, resolved above against the
+                // service that owns their subnets.
+                group_placements,
                 node_additions: ::std::collections::BTreeMap::new(),
             },
         );
