@@ -62,6 +62,9 @@ pub mod catalog_views;
 /// The DIALECT one database's engine speaks, as the service that owns it states
 /// it.
 pub mod dialect;
+/// The CONCURRENCY CONTROL of a database whose engine resolves two writers
+/// optimistically: a snapshot per transaction and a conflict settled at commit.
+pub mod optimistic_writers;
 /// What one session on either wire shares: its settings, its transaction and
 /// the server's own commands.
 pub mod session;
@@ -69,6 +72,27 @@ pub mod session;
 pub mod sql_engine;
 
 pub use dialect::{DialectReading, Refusal, SqlDialect};
+pub use optimistic_writers::{OpenTransaction, OptimisticWriters};
+
+/// How a database's engine resolves two sessions writing the same row at the
+/// same time, which is a fact about the PRODUCT behind the endpoint and so the
+/// owning service's to state ([`ServedDatabase::concurrency`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Concurrency {
+    /// The engine HOLDS a row a transaction has written against every other
+    /// session until that transaction ends, which is what the engine behind this
+    /// endpoint does of its own accord: one transaction per database at a time,
+    /// so a second writer waits for the first to end and both commits then
+    /// stand.
+    #[default]
+    SharedTransaction,
+    /// The engine holds NOTHING: each transaction runs on the database as it
+    /// stood when it opened, a second writer's statement answers at once, and
+    /// the commit whose rows another transaction changed first is refused
+    /// `serialization_failure` ([`optimistic_writers`]).
+    Optimistic,
+}
+
 /// The host a MySQL refusal names as the client's own.
 ///
 /// MySQL's `ER_ACCESS_DENIED_ERROR` names the account AND the host the login
@@ -215,6 +239,18 @@ pub trait ServedDatabase: Send + Sync + 'static {
         None
     }
 
+    /// How the engine of this resource resolves two sessions writing the same
+    /// row at the same time ([`Concurrency`]).
+    ///
+    /// A fact about the PRODUCT behind the endpoint, which is what a client sees
+    /// the difference of: a product whose engine holds the row makes the second
+    /// writer wait, and one that resolves writers optimistically answers it at
+    /// once and refuses one of the two commits. A service that states nothing is
+    /// served the engine's own answer ([`Concurrency::SharedTransaction`]).
+    fn concurrency(&self) -> Concurrency {
+        Concurrency::default()
+    }
+
     /// Whether the CREDENTIAL this login presented is one the owning service
     /// accepts, for a database whose service holds no secret to compare it with.
     ///
@@ -341,6 +377,12 @@ pub struct SessionContext {
     /// The connection ids this endpoint has handed out, counted on from the
     /// last one.
     next_connection_id: Arc<AtomicU32>,
+    /// The OPTIMISTIC concurrency control of this database, for a resource whose
+    /// engine resolves two writers that way ([`Concurrency::Optimistic`]), and
+    /// `None` for one served the engine's own shared transaction. Shared by
+    /// every session on the endpoint, because what two writers conflict over is
+    /// the one database behind it.
+    optimistic: Option<Arc<OptimisticWriters>>,
 }
 
 impl SessionContext {
@@ -381,6 +423,13 @@ impl SessionContext {
     #[must_use]
     pub fn dialect(&self) -> Option<Arc<dyn SqlDialect>> {
         self.served.dialect()
+    }
+
+    /// The optimistic concurrency control of this database, where its engine
+    /// resolves two writers that way ([`ServedDatabase::concurrency`]).
+    #[must_use]
+    pub fn optimistic(&self) -> Option<Arc<OptimisticWriters>> {
+        self.optimistic.clone()
     }
 
     /// What the owning service says about the credential this login presented
@@ -772,11 +821,16 @@ pub async fn open_sql_wire_plane_published_on<Eng: Send + Sync + 'static>(
         DatabaseEngine::open()
             .map_err(|error| format!("the SQL engine could not be started: {}", error.message))?,
     );
+    // How the product behind this endpoint resolves two writers, which the
+    // owning service states ([`ServedDatabase::concurrency`]). Read once here:
+    // it is a fact about the engine the resource runs and not about one session.
+    let optimistic = served.concurrency() == Concurrency::Optimistic;
     let context = SessionContext {
         served,
         database: Arc::clone(&database),
         upgrader: listeners.tls_upgrader().ok(),
         next_connection_id: Arc::new(AtomicU32::new(1)),
+        optimistic: optimistic.then(|| OptimisticWriters::on(Arc::clone(&database))),
     };
     // ONE protocol handler, served at both ends of the endpoint: the listener
     // the core accepts a client's connections on, and the connections an

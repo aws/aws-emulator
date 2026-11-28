@@ -17,6 +17,7 @@
 //! ([`crate::sqlite_confinement`]) plus the few server functions a database
 //! engine answers from the calling session's own view ([`EngineView`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,24 @@ const MAX_SQL_BYTES: i32 = 256 * 1024;
 
 /// The most bytes one value may hold.
 const MAX_VALUE_BYTES: i32 = 1024 * 1024;
+
+/// The most rows of ONE statement's writes the engine records.
+///
+/// CHOSEN, for the same reason [`MAX_RESULT_ROWS`] is: the account of which rows
+/// a statement changed is held in this process's memory, and it is not bounded by
+/// the answer's own ceilings — the hook fires for the rows a statement WRITES and
+/// not for the rows it answers with. A statement whose writes outgrow this is
+/// INTERRUPTED and reported as refused, and the engine rolls an interrupted
+/// statement back, so nothing it wrote stands.
+pub const MAX_RECORDED_ROWS: usize = 200_000;
+
+/// How many BYTES of that account one statement may hold.
+///
+/// CHOSEN beside the row count and for the same reason [`MAX_RESULT_BYTES`] sits
+/// beside [`MAX_RESULT_ROWS`]: what is held in this process's memory is charged
+/// in bytes, so a statement cannot reach the row count through rows that each
+/// cost more than the last. Whichever bound it reaches first interrupts it.
+pub const MAX_RECORDED_BYTES: usize = 16 * 1024 * 1024;
 
 /// The most columns one answer may carry.
 ///
@@ -114,6 +133,10 @@ pub struct ResultSet {
 pub enum EngineErrorKind {
     Syntax,
     UndefinedObject,
+    /// A TYPE a declaration named that this engine does not have, which is a
+    /// different condition from a relation that is not there: PostgreSQL's
+    /// `undefined_object` rather than its `undefined_table`.
+    UndefinedType,
     /// An object the database already holds, which the statement would create a
     /// second of.
     DuplicateObject,
@@ -126,6 +149,11 @@ pub enum EngineErrorKind {
     LimitExceeded,
     FeatureNotSupported,
     InsufficientPrivilege,
+    /// Two transactions wrote the same row, and this one is the one that is not
+    /// allowed to stand — the failure an engine that resolves concurrent writers
+    /// OPTIMISTICALLY reports instead of holding the row against the second
+    /// writer ([`super::optimistic_writers`]).
+    SerializationFailure,
     Internal,
 }
 
@@ -171,6 +199,102 @@ pub struct EngineView {
     /// The row id the session's last insert minted, which is what
     /// `last_insert_id()` answers for THIS session.
     pub last_insert_id: i64,
+    /// The settings the session holds, by name as the session named them, which
+    /// is what `current_setting()` answers — the server's own view of a
+    /// configuration parameter, read per statement like everything else here.
+    pub settings: Vec<(String, String)>,
+}
+
+impl EngineView {
+    /// The value this session holds for the setting `name`, compared
+    /// case-insensitively because a configuration parameter's name is.
+    #[must_use]
+    pub fn setting(&self, name: &str) -> Option<&str> {
+        self.settings
+            .iter()
+            .find(|(held, _)| held.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// One row the engine changed: the table it is in and the engine's own row id
+/// for it.
+///
+/// The table's name is held BEHIND a shared pointer, so the rows of one relation
+/// share one copy of its name however many of them a statement changes and
+/// however long the name is.
+pub type ChangedRow = (Arc<str>, i64);
+
+/// What one statement's writes are RECORDED in while it runs: the rows the
+/// engine reported, each naming its relation through one shared copy of that
+/// relation's name, and what the account holds so far.
+#[derive(Debug, Default)]
+struct RecordedWrites {
+    /// The rows, in the order the engine reported them.
+    rows: Vec<ChangedRowRecord>,
+    /// The relations those rows are in, one shared copy of each name.
+    tables: Vec<Arc<str>>,
+    /// How many bytes the account holds: the names once each, and the rows.
+    bytes: usize,
+}
+
+/// How many bytes one recorded row holds: the shared pointer to its relation's
+/// name, the row id and the flag beside them, as this process lays them out.
+const RECORDED_ROW_BYTES: usize = std::mem::size_of::<ChangedRowRecord>();
+
+impl RecordedWrites {
+    /// Record that the engine changed the row `rowid` of `table`, and answer
+    /// whether the account is still whole — `false` once it has reached a bound,
+    /// which is what the statement is interrupted on.
+    fn note(&mut self, created: bool, table: &str, rowid: i64) -> bool {
+        if self.rows.len() >= MAX_RECORDED_ROWS || self.bytes >= MAX_RECORDED_BYTES {
+            return false;
+        }
+        let held = match self.tables.iter().find(|held| &***held == table) {
+            Some(held) => Arc::clone(held),
+            None => {
+                let held: Arc<str> = Arc::from(table);
+                self.bytes = self.bytes.saturating_add(table.len());
+                self.tables.push(Arc::clone(&held));
+                held
+            }
+        };
+        self.bytes = self.bytes.saturating_add(RECORDED_ROW_BYTES);
+        self.rows.push(ChangedRowRecord {
+            created,
+            row: (held, rowid),
+        });
+        true
+    }
+}
+
+/// One row the engine reported changed, and whether the statement CREATED it —
+/// which the database did not hold before the statement ran.
+#[derive(Debug, Clone)]
+pub struct ChangedRowRecord {
+    /// Whether this row is one the statement created.
+    pub created: bool,
+    /// The row itself.
+    pub row: ChangedRow,
+}
+
+/// What one statement did to the database, as the ENGINE itself reports it: the
+/// rows it changed (its update hook) and whether it wrote at all.
+///
+/// What a concurrency control that resolves two writers needs to know about a
+/// statement ([`super::optimistic_writers`]), read off the engine rather than
+/// off the statement's text.
+///
+/// Bounded by [`MAX_RECORDED_ROWS`]: a statement whose writes would outgrow the
+/// account of them is interrupted and refused, so this never holds more than
+/// that many rows.
+#[derive(Debug, Clone, Default)]
+pub struct StatementWrites {
+    /// Whether the statement wrote at all — the engine's own answer, which is
+    /// also true of the DDL that declares a relation.
+    pub wrote: bool,
+    /// The rows it changed, in the order the engine reported them.
+    pub rows: Vec<ChangedRowRecord>,
 }
 
 /// The names [`DatabaseEngine`] registers on each database's connection, which
@@ -186,6 +310,7 @@ const SERVER_FUNCTIONS: &[&str] = &[
     "current_database",
     "current_catalog",
     "current_schema",
+    "current_setting",
     "user",
     "current_user",
     "current_role",
@@ -243,25 +368,120 @@ impl DatabaseEngine {
     /// calling thread, so a caller on an async runtime calls it from the
     /// blocking pool ([`super::session`] does).
     pub fn execute_as(&self, view: &mut EngineView, sql: &str) -> Result<ResultSet, EngineError> {
+        self.execute_recording(view, sql)
+            .map(|(result, _wrote)| result)
+    }
+
+    /// [`Self::execute_as`], answering what the statement DID to the database
+    /// beside what it answered: the rows the engine reported it changed, and
+    /// whether it wrote at all ([`StatementWrites`]).
+    ///
+    /// What a concurrency control that resolves two writers is built on
+    /// ([`super::optimistic_writers`]): the account of a statement's writes is
+    /// the engine's own, taken while the statement runs, and not a reading of
+    /// the statement's text.
+    ///
+    /// BLOCKING, for the same reason [`Self::execute_as`] is.
+    pub fn execute_recording(
+        &self,
+        view: &mut EngineView,
+        sql: &str,
+    ) -> Result<(ResultSet, StatementWrites), EngineError> {
         let mut connection = self
             .connection
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         *self.view.lock().unwrap_or_else(PoisonError::into_inner) = view.clone();
+        // Every row the engine changes while this statement runs, as the engine
+        // reports it. The rows of the TEMPORARY schema are left out: a catalog
+        // view materialised for a statement is not a row of the database.
+        //
+        // BOUNDED in ROWS and in BYTES ([`MAX_RECORDED_ROWS`],
+        // [`MAX_RECORDED_BYTES`]), because the account would otherwise be the
+        // unbounded part of a statement whose answer, pages, values and running
+        // time are all capped: past either bound the hook stops recording and
+        // raises the flag the progress handler below INTERRUPTS the statement on.
+        // The engine rolls an interrupted statement back, so what is reported is
+        // a refusal and not a partial account of writes that stood.
+        //
+        // Each relation's NAME is held once per statement and shared by every row
+        // of it, so the cost of one row is the row and not the length of the name
+        // its relation was declared under.
+        let reported: Arc<Mutex<RecordedWrites>> = Arc::new(Mutex::new(RecordedWrites::default()));
+        let outgrew = Arc::new(AtomicBool::new(false));
+        let noted = Arc::clone(&reported);
+        let noted_overflow = Arc::clone(&outgrew);
+        let _ = connection.update_hook(Some(
+            move |action, schema: &str, table: &str, rowid: i64| {
+                if schema != MAIN_SCHEMA {
+                    return;
+                }
+                let mut held = noted.lock().unwrap_or_else(PoisonError::into_inner);
+                if !held.note(
+                    matches!(action, ::rusqlite::hooks::Action::SQLITE_INSERT),
+                    table,
+                    rowid,
+                ) {
+                    noted_overflow.store(true, Ordering::Relaxed);
+                }
+            },
+        ));
+        // The engine is interrupted when the statement outlives its budget or
+        // outgrows the account of its writes: the handler is asked every
+        // `PROGRESS_STEPS` steps, so a statement that runs long or writes past
+        // the bound is stopped by the engine itself rather than held here.
         let deadline = Instant::now() + STATEMENT_DEADLINE;
-        // The engine is interrupted when the statement outlives its budget: the
-        // handler is asked every `PROGRESS_STEPS` steps, so a statement that
-        // runs long is stopped by the engine itself rather than held here.
-        let _ =
-            connection.progress_handler(PROGRESS_STEPS, Some(move || Instant::now() >= deadline));
+        let stop = Arc::clone(&outgrew);
+        let _ = connection.progress_handler(
+            PROGRESS_STEPS,
+            Some(move || Instant::now() >= deadline || stop.load(Ordering::Relaxed)),
+        );
         let answer = run_statement(&connection, sql);
+        let _ = connection.update_hook(None::<fn(::rusqlite::hooks::Action, &str, &str, i64)>);
         let _ = connection.progress_handler(PROGRESS_STEPS, None::<fn() -> bool>);
-        if let Ok(result) = &answer {
-            if result.last_insert_id != 0 {
-                view.last_insert_id = result.last_insert_id;
-            }
+        if outgrew.load(Ordering::Relaxed) {
+            return Err(too_many_changed_rows());
         }
-        answer
+        let (result, wrote) = answer?;
+        if result.last_insert_id != 0 {
+            view.last_insert_id = result.last_insert_id;
+        }
+        let rows = std::mem::take(
+            &mut *reported
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+        .rows;
+        Ok((result, StatementWrites { wrote, rows }))
+    }
+
+    /// A COPY of this database: a second engine, bounded and confined exactly as
+    /// this one is, holding the rows and the schema this one holds now.
+    ///
+    /// Made by the engine's own online-backup API, page for page, so what the
+    /// copy holds is this database and not a re-derivation of it. What needs one
+    /// is a transaction that runs on the database as it stood when the
+    /// transaction opened ([`super::optimistic_writers`]).
+    ///
+    /// BLOCKING, for the same reason [`Self::execute_as`] is.
+    pub fn copy(&self) -> Result<Self, EngineError> {
+        let source = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let view = Arc::new(Mutex::new(EngineView::default()));
+        let mut destination = open_confined_database(&view)?;
+        {
+            let backup =
+                ::rusqlite::backup::Backup::new(&source, &mut destination).map_err(unavailable)?;
+            // One step for the whole database: it is in memory, so there is no
+            // other writer to yield to and nothing to wait for.
+            backup.step(-1).map_err(unavailable)?;
+        }
+        Ok(Self {
+            connection: Mutex::new(destination),
+            view,
+        })
     }
 
     /// Whether the engine has NO transaction open — which is what tells a
@@ -298,8 +518,15 @@ impl DatabaseEngine {
     }
 }
 
-/// Run one statement on `connection`.
-fn run_statement(connection: &Connection, sql: &str) -> Result<ResultSet, EngineError> {
+/// The schema a database's OWN rows are in, as the engine names it beside the
+/// temporary one a materialised catalog view lives in.
+const MAIN_SCHEMA: &str = "main";
+
+/// Run one statement on `connection`, answering what it answered and whether it
+/// WROTE — the engine's own reading of the statement, which is what decides
+/// whose the connection's counters are and whether a transaction has to carry
+/// the statement over when it commits.
+fn run_statement(connection: &Connection, sql: &str) -> Result<(ResultSet, bool), EngineError> {
     let mut statement = connection.prepare(sql).map_err(engine_error)?;
     let columns: Vec<Column> = statement
         .columns()
@@ -309,13 +536,17 @@ fn run_statement(connection: &Connection, sql: &str) -> Result<ResultSet, Engine
         })
         .collect();
     if columns.is_empty() {
+        let writes = !statement.readonly();
         let affected = statement.raw_execute().map_err(engine_error)?;
-        return Ok(ResultSet {
-            columns,
-            rows: Vec::new(),
-            affected: u64::try_from(affected).unwrap_or_default(),
-            last_insert_id: connection.last_insert_rowid(),
-        });
+        return Ok((
+            ResultSet {
+                columns,
+                rows: Vec::new(),
+                affected: u64::try_from(affected).unwrap_or_default(),
+                last_insert_id: connection.last_insert_rowid(),
+            },
+            writes,
+        ));
     }
     let mut rows = Vec::new();
     let mut bytes_held = 0usize;
@@ -356,12 +587,32 @@ fn run_statement(connection: &Connection, sql: &str) -> Result<ResultSet, Engine
     } else {
         (0, 0)
     };
-    Ok(ResultSet {
-        columns,
-        rows,
-        affected,
-        last_insert_id,
-    })
+    Ok((
+        ResultSet {
+            columns,
+            rows,
+            affected,
+            last_insert_id,
+        },
+        writes,
+    ))
+}
+
+/// The refusal of a statement that changed more rows than this endpoint keeps an
+/// account of ([`MAX_RECORDED_ROWS`]).
+///
+/// The statement was interrupted while it ran, so the engine has rolled it back:
+/// what the client is told is that the write was refused, and the database holds
+/// what it held before.
+fn too_many_changed_rows() -> EngineError {
+    EngineError::new(
+        EngineErrorKind::LimitExceeded,
+        format!(
+            "the statement changes more rows than this endpoint writes in one statement \
+             ({MAX_RECORDED_ROWS}, or {} MiB of them); write it in smaller statements",
+            MAX_RECORDED_BYTES / (1024 * 1024)
+        ),
+    )
 }
 
 /// The refusal of an answer larger than this endpoint serves.
@@ -678,6 +929,36 @@ fn register_server_functions(
             })
             .map_err(unavailable)?;
     }
+    // `current_setting(name)`: the value the SESSION holds for a configuration
+    // parameter, which is the server's own answer and the one a `SHOW` of the
+    // same name reports. A parameter the session holds no value for is the
+    // server's own "unrecognized configuration parameter", not a null: a client
+    // that asks for one it cannot have is told so — unless it asked with the
+    // second argument PostgreSQL defines for exactly that ("if missing_ok is
+    // true, an error is not thrown when the setting does not exist and NULL is
+    // returned", its "System Information Functions"), and then it is answered the
+    // null it asked for.
+    for arity in [1, 2] {
+        let held = Arc::clone(view);
+        connection
+            .create_scalar_function(
+                "current_setting",
+                arity,
+                FunctionFlags::SQLITE_UTF8,
+                move |context| {
+                    let asked = context.get::<String>(0)?;
+                    let missing_ok = arity == 2 && context.get::<bool>(1).unwrap_or(false);
+                    match read(&held).setting(&asked) {
+                        Some(value) => Ok(Some(value.to_string())),
+                        None if missing_ok => Ok(None),
+                        None => Err(::rusqlite::Error::UserFunctionError(
+                            format!("unrecognized configuration parameter \"{asked}\"").into(),
+                        )),
+                    }
+                },
+            )
+            .map_err(unavailable)?;
+    }
     Ok(())
 }
 
@@ -880,6 +1161,10 @@ mod tests {
             user: "dbadmin".to_string(),
             connection_id: 7,
             last_insert_id: 0,
+            settings: vec![(
+                "default_transaction_isolation".to_string(),
+                "read committed".to_string(),
+            )],
         }
     }
 

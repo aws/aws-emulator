@@ -436,6 +436,7 @@ mod tests {
             user: "dbadmin".to_string(),
             connection_id: 1,
             last_insert_id: 0,
+            settings: Vec::new(),
         }
     }
 

@@ -231,7 +231,8 @@ async fn serve_session(
         database,
         context.take_connection_id(),
     )
-    .with_dialect(context.dialect());
+    .with_dialect(context.dialect())
+    .with_optimistic(context.optimistic());
     send(&mut conn, b'R', &0i32.to_be_bytes()).await?;
     for (name, value) in [
         ("server_version", session.server_version().to_string()),
@@ -528,6 +529,10 @@ fn sqlstate(wire: EngineWire, kind: EngineErrorKind) -> &'static str {
     match kind {
         EngineErrorKind::Syntax => "42601",
         EngineErrorKind::UndefinedObject => "42P01",
+        // `undefined_object`: the TYPE a declaration named is not one this
+        // engine has, which is not the same condition as a relation that is not
+        // there.
+        EngineErrorKind::UndefinedType => "42704",
         // `duplicate_object`: an object of that name is already there.
         EngineErrorKind::DuplicateObject => "42710",
         EngineErrorKind::UniqueViolation => "23505",
@@ -539,6 +544,11 @@ fn sqlstate(wire: EngineWire, kind: EngineErrorKind) -> &'static str {
         EngineErrorKind::LimitExceeded => "54000",
         EngineErrorKind::FeatureNotSupported => "0A000",
         EngineErrorKind::InsufficientPrivilege => "42501",
+        // `serialization_failure`: the class PostgreSQL's "Appendix A. Error
+        // Codes" names for a transaction that cannot be allowed to stand beside
+        // the ones that already have, which is what an engine resolving two
+        // writers optimistically refuses the losing commit under.
+        EngineErrorKind::SerializationFailure => "40001",
         EngineErrorKind::Internal => "XX000",
     }
 }

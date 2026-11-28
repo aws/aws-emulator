@@ -14565,6 +14565,7 @@ dependencies = [
  "service-com-amazonaws-kms-trentservice",
  "service-common",
  "sha2 0.10.9",
+ "sqlparser",
  "tokio",
  "tokio-rustls",
  "tracing",

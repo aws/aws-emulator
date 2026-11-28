@@ -251,7 +251,8 @@ async fn serve_login(
         login.user.clone(),
         database,
         connection_id,
-    );
+    )
+    .with_optimistic(context.optimistic());
     let deprecate_eof = capabilities & CLIENT_DEPRECATE_EOF != 0;
     write_ok(&mut conn, sequence.wrapping_add(1), &session, 0, 0).await?;
 
@@ -646,6 +647,9 @@ fn statement_error(kind: EngineErrorKind) -> (u16, &'static str) {
     match kind {
         EngineErrorKind::Syntax => (1064, "42000"),
         EngineErrorKind::UndefinedObject => (1146, "42S02"),
+        // `ER_PARSE_ERROR`: a type this server does not have is a declaration it
+        // cannot read, which is how MySQL reports one.
+        EngineErrorKind::UndefinedType => (1064, "42000"),
         // `ER_TABLE_EXISTS_ERROR`: an object of that name is already there.
         EngineErrorKind::DuplicateObject => (1050, "42S01"),
         EngineErrorKind::UniqueViolation => (1062, "23000"),
@@ -661,6 +665,10 @@ fn statement_error(kind: EngineErrorKind) -> (u16, &'static str) {
         // `ER_NOT_SUPPORTED_YET`.
         EngineErrorKind::FeatureNotSupported => (1235, "42000"),
         EngineErrorKind::InsufficientPrivilege => (1227, "42000"),
+        // `ER_LOCK_DEADLOCK`, whose SQLSTATE is the standard's serialization
+        // failure: the condition a transaction that cannot stand beside the ones
+        // that already have is rolled back under, and the one a client retries.
+        EngineErrorKind::SerializationFailure => (1213, "40001"),
     }
 }
 

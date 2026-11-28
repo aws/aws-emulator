@@ -175,7 +175,12 @@ http-body-util = "0.1"
 # library over data: it opens no listener (the core owns the socket), writes no host file
 # (every database is opened in memory, with its temp store in memory too) and spawns
 # nothing.
+# `backup` is SQLite's own online-backup API, which is what COPYING one database is: a
+# transaction of a database whose engine resolves two writers OPTIMISTICALLY
+# (`sql_wire_planes::optimistic_writers`) runs on a page-for-page copy of the database taken
+# when the transaction opened, so what it writes is in that copy until it commits.
 rusqlite = { version = "0.41", features = [
+    "backup",
     "bundled",
     "column_decltype",
     "functions",

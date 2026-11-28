@@ -31,6 +31,27 @@
 //! query fields are read with the tree's own reading of a presigned request's
 //! query ([`::service_common::query_parameter`]).
 //!
+//! What a presigned credential's own contents are is therefore the whole of the
+//! decision, and every field of it is held to what AWS put there:
+//!
+//! * the ALGORITHM, which is the one a presigned AWS request is signed under;
+//! * the CREDENTIAL SCOPE, which names the access key the token was signed with,
+//! the date it was signed on, a Region, this service's own signing name and the
+//! `aws4_request` terminator — a scope naming another service's signing name is
+//! not a credential for a cluster, whatever it is otherwise;
+//! * the SIGNATURE, which is the hex of a SHA-256 HMAC and nothing else;
+//! * the signing INSTANT, which may not be further ahead of this clock than the
+//! skew AWS allows a signed request, and the LIFETIME above.
+//!
+//! What it does NOT do is recompute the signature, for the same reason the Amazon
+//! RDS endpoint's token does not
+//! (`services/service-com-amazonaws-rds-amazonrdsv19/src/state/data_plane/iam_auth_token.rs`):
+//! the signing key belongs to the credential the token was presigned with, and
+//! the listener the session arrived on resolves none. The other half of the
+//! decision is the DATABASE's — the role the token names has to be one the
+//! cluster holds ([`role_does_not_exist`]) — so a token alone admits nobody to a
+//! role that does not exist.
+//!
 //! Amazon RDS reads a token of its OWN beside this one
 //! (`services/service-com-amazonaws-rds-amazonrdsv19/src/state/data_plane/iam_auth_token.rs`),
 //! and what the two decide is not the same question: an RDS token names the
@@ -74,6 +95,26 @@ const SIGNATURE_FIELD: &str = "X-Amz-Signature";
 /// The algorithm a presigned AWS request names, and the only one a token is
 /// signed under.
 const SIGNING_ALGORITHM: &str = "AWS4-HMAC-SHA256";
+
+/// The signing name a cluster's auth token is presigned for, which is the
+/// service its credential scope names (`<akid>/<date>/<region>/dsql/aws4_request`).
+const TOKEN_SIGNING_SERVICE: &str = "dsql";
+
+/// The terminator a SigV4 credential scope ends with.
+const SCOPE_TERMINATOR: &str = "aws4_request";
+
+/// How many characters a SigV4 signature is: the lower-case hex of a SHA-256
+/// HMAC.
+const SIGNATURE_CHARS: usize = 64;
+
+/// How far ahead of this clock a token's signing instant may be: the skew AWS
+/// allows a signed request, so a client whose clock runs slightly fast still
+/// authenticates, and one dated far in the future does not.
+const MAX_CLOCK_SKEW: Duration = Duration::from_secs(15 * 60);
+
+/// The form of the date a credential scope carries, which is the day of the
+/// instant `X-Amz-Date` names.
+const SCOPE_DATE_FORMAT: &str = "%Y%m%d";
 
 /// How a connection that is not accepted is refused: the `SQLSTATE` for a
 /// credential that does not authorize the session it asked for
@@ -127,6 +168,16 @@ pub fn admits(
         return Err(access_denied(Some(format!(
             "Signature expired: {} is now earlier than {}",
             amz_date(expires_at),
+            amz_date(now)
+        ))));
+    }
+    // ... and a token signed further ahead of this clock than the skew AWS
+    // allows a signed request is no credential either: a lifetime that has not
+    // begun authenticates nothing.
+    if token.signed_at > now + MAX_CLOCK_SKEW {
+        return Err(access_denied(Some(format!(
+            "Signature not yet current: {} is still later than {}",
+            amz_date(token.signed_at),
             amz_date(now)
         ))));
     }
@@ -217,22 +268,24 @@ impl AuthToken {
             return None;
         }
         let field = |name: &str| ::service_common::query_parameter(query, name);
-        // Signed under AWS's own algorithm, by a credential naming a scope, with
-        // a signature over it: the three a presigned request always carries.
+        // Signed under AWS's own algorithm, by a credential naming a scope of
+        // this service's own, with a signature over it: the three a presigned
+        // request always carries, each held to the form AWS gives it.
         if field(ALGORITHM_FIELD) != Some(SIGNING_ALGORITHM) {
             return None;
         }
-        if field(CREDENTIAL_FIELD).is_none_or(str::is_empty) {
+        let signed_at = amz_instant(field(DATE_FIELD)?)?;
+        if !names_this_services_scope(field(CREDENTIAL_FIELD)?, signed_at) {
             return None;
         }
-        if field(SIGNATURE_FIELD).is_none_or(str::is_empty) {
+        if !is_a_sigv4_signature(field(SIGNATURE_FIELD)?) {
             return None;
         }
         let lifetime = Duration::from_secs(field(EXPIRES_FIELD)?.parse::<u64>().ok()?);
         Some(Self {
             action: field(ACTION_FIELD)?.to_string(),
             host,
-            signed_at: amz_instant(field(DATE_FIELD)?)?,
+            signed_at,
             lifetime,
         })
     }
@@ -248,6 +301,54 @@ impl AuthToken {
             .checked_add(self.lifetime)
             .unwrap_or(self.signed_at)
     }
+}
+
+/// Whether `credential` is a SigV4 credential scope of THIS service's, for a
+/// request signed at `signed_at`: an access key id, the day that instant falls
+/// on, a Region, this service's signing name and the `aws4_request` terminator.
+///
+/// A scope naming another service's signing name is a credential for that
+/// service and not for a cluster, and one naming another day is not the scope
+/// the request's own `X-Amz-Date` is signed under — neither is a token this
+/// endpoint was presented with.
+///
+/// The value is read as the query carries it, which is how the tree reads a
+/// presigned query ([`::service_common::query_parameter`]), so the scope's own
+/// separators arrive percent-escaped from a client that escaped them: they are
+/// decoded by the framework's own decoder
+/// ([`::smithy_server_runtime::percent_decode`]) rather than by a substitution
+/// written here.
+fn names_this_services_scope(credential: &str, signed_at: SystemTime) -> bool {
+    let unescaped = ::smithy_server_runtime::percent_decode(credential);
+    let parts: Vec<&str> = unescaped.split('/').collect();
+    let [key_id, date, region, service, terminator] = parts.as_slice() else {
+        return false;
+    };
+    !key_id.is_empty()
+        && *date == scope_date(signed_at)
+        && !region.is_empty()
+        && *service == TOKEN_SIGNING_SERVICE
+        && *terminator == SCOPE_TERMINATOR
+}
+
+/// Whether `signature` is a SigV4 signature: the lower-case hex of a SHA-256
+/// HMAC, and nothing else.
+fn is_a_sigv4_signature(signature: &str) -> bool {
+    signature.len() == SIGNATURE_CHARS
+        && signature
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+}
+
+/// The day `instant` falls on, as a credential scope writes it.
+fn scope_date(instant: SystemTime) -> String {
+    let seconds = instant
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default();
+    ::chrono::DateTime::from_timestamp(i64::try_from(seconds).unwrap_or(i64::MAX), 0)
+        .map(|at| at.format(SCOPE_DATE_FORMAT).to_string())
+        .unwrap_or_default()
 }
 
 /// The instant an `X-Amz-Date` names, or `None` when the value is not one.
@@ -282,14 +383,19 @@ mod tests {
     }
 
     /// A token presigned for `action` against `host`, signed at `at` for
-    /// `lifetime` seconds — the form the client-side presigner answers.
+    /// `lifetime` seconds — the form the client-side presigner answers, with the
+    /// credential scope of the day it was signed on and a signature of the shape
+    /// a SigV4 signature has.
     fn token(action: &str, host: &str, at: SystemTime, lifetime: u64) -> String {
         format!(
             "{host}/?Action={action}&X-Amz-Algorithm={SIGNING_ALGORITHM}\
-             &X-Amz-Credential=AKIAEXAMPLE%2F20260101%2Fus-east-1%2Fdsql%2Faws4_request\
+             &X-Amz-Credential=AKIAEXAMPLE%2F{}%2Fus-east-1%2F{TOKEN_SIGNING_SERVICE}\
+             %2F{SCOPE_TERMINATOR}\
              &X-Amz-Date={}&X-Amz-Expires={lifetime}&X-Amz-SignedHeaders=host\
-             &X-Amz-Signature=0123456789abcdef",
-            amz_date(at)
+             &X-Amz-Signature={}",
+            scope_date(at),
+            amz_date(at),
+            "0".repeat(SIGNATURE_CHARS)
         )
     }
 
@@ -375,8 +481,9 @@ mod tests {
     }
 
     /// RULE: the refusal is Aurora DSQL's own sentence, and the hint says which
-    /// of the token's facts failed — the action-to-user mapping, or the lifetime
-    /// that has run out.
+    /// of the token's facts failed — the action-to-user mapping, the lifetime
+    /// that has run out, or a signing instant further ahead of this clock than a
+    /// signed request's skew.
     #[test]
     fn a_refusal_carries_the_fixed_sentence_and_the_hint_for_its_cause() {
         let at = signed_at();
@@ -412,6 +519,43 @@ mod tests {
             "case mismapped: expected {ACCESS_DENIED_MESSAGE:?}, got {:?}",
             mismapped.message
         );
+
+        // A token signed further ahead of this clock than the skew a signed
+        // request is allowed: its lifetime has not begun, so it authenticates
+        // nothing.
+        let ahead = at + MAX_CLOCK_SKEW + Duration::from_secs(60);
+        let not_yet = admits(&token(ADMIN_ACTION, HOST, ahead, 900), ADMIN_USER, HOST, at)
+            .expect_err("a token signed past the allowed skew is refused");
+        assert_eq!(
+            not_yet.hint.as_deref(),
+            Some(
+                format!(
+                    "Signature not yet current: {} is still later than {}",
+                    amz_date(ahead),
+                    amz_date(at)
+                )
+                .as_str()
+            ),
+            "case not yet current: the hint must name the instant it was signed at, got {:?}",
+            not_yet.hint
+        );
+        assert_eq!(
+            not_yet.message, ACCESS_DENIED_MESSAGE,
+            "case not yet current: expected {ACCESS_DENIED_MESSAGE:?}, got {:?}",
+            not_yet.message
+        );
+        // ... while one inside that skew still authenticates, which is what the
+        // skew is for.
+        let inside = admits(
+            &token(ADMIN_ACTION, HOST, at + Duration::from_secs(60), 900),
+            ADMIN_USER,
+            HOST,
+            at,
+        );
+        assert!(
+            inside.is_ok(),
+            "case inside the skew: a clock slightly ahead must still authenticate, got {inside:?}"
+        );
     }
 
     /// RULE: a password that is not a token, and a token presigned against
@@ -437,11 +581,40 @@ mod tests {
             ),
             (
                 "a token carrying no signature",
-                full.replace("&X-Amz-Signature=0123456789abcdef", ""),
+                full.replace(&format!("&X-Amz-Signature={}", "0".repeat(SIGNATURE_CHARS)), ""),
+            ),
+            (
+                "a token whose signature is not a SigV4 signature",
+                full.replace(&"0".repeat(SIGNATURE_CHARS), "0123456789abcdef"),
+            ),
+            (
+                "a token whose signature carries what hex does not",
+                full.replace(&"0".repeat(SIGNATURE_CHARS), &"Z".repeat(SIGNATURE_CHARS)),
             ),
             (
                 "a token signed under another algorithm",
                 full.replace(SIGNING_ALGORITHM, "AWS4-ECDSA-P256-SHA256"),
+            ),
+            (
+                "a token whose scope names another service",
+                full.replace(
+                    &format!("%2F{TOKEN_SIGNING_SERVICE}%2F"),
+                    "%2Frds-db%2F",
+                ),
+            ),
+            (
+                "a token whose scope names another day than its own signing instant",
+                full.replace(&format!("%2F{}%2F", scope_date(at)), "%2F20200101%2F"),
+            ),
+            (
+                "a token whose scope is not a credential scope at all",
+                full.replace(
+                    &format!(
+                        "AKIAEXAMPLE%2F{}%2Fus-east-1%2F{TOKEN_SIGNING_SERVICE}%2F{SCOPE_TERMINATOR}",
+                        scope_date(at)
+                    ),
+                    "AKIAEXAMPLE",
+                ),
             ),
             (
                 "a token carrying no lifetime",

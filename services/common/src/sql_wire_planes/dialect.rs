@@ -101,6 +101,18 @@ pub trait SqlDialect: Send + Sync + 'static {
         None
     }
 
+    /// The settings a session on this engine STARTS with, beside the ones the
+    /// wire itself publishes — the configuration parameters whose default is
+    /// this product's rather than the engine's.
+    ///
+    /// A client reads one with `SHOW <name>` and `current_setting('<name>')`, and
+    /// branches on it: the isolation level a transaction runs at unless it asks
+    /// for another is the product's own answer, not a value this endpoint may
+    /// guess. A service that states none leaves the wire's own set.
+    fn session_settings(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// The DATABASE USER a session that logged on as `login` runs as.
     ///
     /// The name a credential logs on under is not always the name of the
@@ -210,6 +222,81 @@ pub fn respell_session_keywords(sql: &str) -> Option<String> {
 /// The index of the first token at or after `from` that is not white space.
 fn next_significant(tokens: &[TokenWithSpan], from: usize) -> Option<usize> {
     (from..tokens.len()).find(|index| !matches!(tokens[*index].token, Token::Whitespace(_)))
+}
+
+/// Re-spell every reference to a relation of the SCHEMA `schema` as the ONE
+/// quoted identifier the engine holds that relation under
+/// (`information_schema.tables` -> `"information_schema.tables"`), or `None`
+/// where the statement names none.
+///
+/// The engine behind an endpoint holds ONE database and no schemas
+/// ([`super::sql_engine`]), so a relation of a schema is held under its
+/// qualified name as a single identifier — which is how the catalog views are
+/// materialised ([`super::catalog_views::rebuild`]). A client writes the
+/// qualified form, and unquoted that would address a schema the engine does not
+/// have, so the one spelling is read as the other.
+///
+/// Read off the TOKEN stream the wire's own dialect produces, exactly as
+/// [`respell_session_keywords`] is, so the schema's name inside a string
+/// literal, a quoted identifier, a dollar-quoted body or a comment stays part of
+/// that literal, identifier, body or comment — and a name already written as one
+/// quoted identifier is left alone. What is answered is the CLIENT's own text
+/// with those references replaced and every other byte as it was.
+#[must_use]
+pub fn respell_schema_relations(sql: &str, schema: &str) -> Option<String> {
+    let dialect = PostgreSqlDialect {};
+    let tokens = Tokenizer::new(&dialect, sql).tokenize_with_location().ok()?;
+    // The byte ranges to replace, in the order they appear, and the quoted
+    // identifier each becomes.
+    let mut replaced: Vec<(usize, usize, String)> = Vec::new();
+    let mut cursor = Cursor::new(sql);
+    let mut qualified = false;
+    for (index, token) in tokens.iter().enumerate() {
+        let names_the_schema = match &token.token {
+            Token::Word(word) => word
+                .quote_style
+                .is_none()
+                .then(|| word.value.clone())
+                .filter(|written| written.eq_ignore_ascii_case(schema)),
+            _ => None,
+        };
+        if let Some(written) = names_the_schema.filter(|_| !qualified) {
+            // `<schema> . <relation>`, which is the only form that addresses a
+            // relation of it; the word on its own is left as the client wrote it.
+            let dot = next_significant(&tokens, index + 1)
+                .filter(|next| matches!(tokens[*next].token, Token::Period));
+            let relation = dot
+                .and_then(|dot| next_significant(&tokens, dot + 1))
+                .and_then(|next| match &tokens[next].token {
+                    Token::Word(word) => Some((next, word.value.clone())),
+                    _ => None,
+                });
+            if let Some((end_index, relation)) = relation {
+                let from = cursor.offset_of(token.span.start.line, token.span.start.column)?;
+                let end = cursor.offset_of(
+                    tokens[end_index].span.end.line,
+                    tokens[end_index].span.end.column,
+                )?;
+                let held = format!("{written}.{relation}").replace('"', "\"\"");
+                replaced.push((from, end, format!("\"{held}\"")));
+            }
+        }
+        if !matches!(token.token, Token::Whitespace(_)) {
+            qualified = matches!(token.token, Token::Period);
+        }
+    }
+    if replaced.is_empty() {
+        return None;
+    }
+    let mut respelled = String::with_capacity(sql.len());
+    let mut from = 0usize;
+    for (start, end, held) in replaced {
+        respelled.push_str(sql.get(from..start)?);
+        respelled.push_str(&held);
+        from = end;
+    }
+    respelled.push_str(sql.get(from..)?);
+    Some(respelled)
 }
 
 /// A position in a text, moved forward to the tokenizer's locations — a 1-based
@@ -384,6 +471,82 @@ mod tests {
                      own, got {respelled:?}"
                 );
             }
+        }
+    }
+
+    /// RULE: a relation of a SCHEMA is re-spelled as the one quoted identifier
+    /// the engine holds it under, and nothing else about the statement is
+    /// touched.
+    ///
+    /// The rows span what the rule generalises over: the views of the schema, the
+    /// case a client writes them in, several references in one statement, a name
+    /// of the schema that addresses no relation of it, and the schema's name
+    /// inside a literal, an identifier, a comment or another name's qualifier.
+    #[test]
+    fn only_a_relation_of_the_schema_is_respelled() {
+        let schema = "information_schema";
+        for (case, sql, expected) in [
+            (
+                "a read of one view",
+                "SELECT table_name FROM information_schema.tables",
+                Some("SELECT table_name FROM \"information_schema.tables\"".to_string()),
+            ),
+            (
+                "the same, in upper case",
+                "SELECT * FROM INFORMATION_SCHEMA.COLUMNS",
+                Some("SELECT * FROM \"INFORMATION_SCHEMA.COLUMNS\"".to_string()),
+            ),
+            (
+                "two references in one statement",
+                "SELECT (SELECT count(*) FROM information_schema.tables), \
+                 (SELECT count(*) FROM information_schema.columns)",
+                Some(
+                    "SELECT (SELECT count(*) FROM \"information_schema.tables\"), \
+                     (SELECT count(*) FROM \"information_schema.columns\")"
+                        .to_string(),
+                ),
+            ),
+            (
+                "a predicate after it",
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'orders'",
+                Some(
+                    "SELECT count(*) FROM \"information_schema.tables\" WHERE table_name = \
+                     'orders'"
+                        .to_string(),
+                ),
+            ),
+            (
+                "the schema named on its own",
+                "SELECT information_schema FROM t",
+                None,
+            ),
+            (
+                "the name inside a string literal",
+                "INSERT INTO t (note) VALUES ('information_schema.tables')",
+                None,
+            ),
+            (
+                "the name inside a quoted identifier",
+                "SELECT * FROM \"information_schema.tables\"",
+                None,
+            ),
+            (
+                "the name inside a comment",
+                "SELECT 1 -- information_schema.tables\n",
+                None,
+            ),
+            (
+                "a column of a table named the same",
+                "SELECT t.information_schema.tables FROM t",
+                None,
+            ),
+            ("a statement naming no schema at all", "SELECT * FROM t", None),
+        ] {
+            let respelled = respell_schema_relations(sql, schema);
+            assert_eq!(
+                respelled, expected,
+                "case {case:?}: expected {expected:?} for {sql:?}, got {respelled:?}"
+            );
         }
     }
 }

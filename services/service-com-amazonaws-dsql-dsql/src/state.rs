@@ -100,6 +100,11 @@ pub mod connection_auth;
 pub mod cluster_data_plane;
 pub use cluster_data_plane::ClusterDataPlane;
 
+/// The SQL a session on a cluster's endpoint speaks: Aurora DSQL's dialect, the
+/// isolation it reports and the features it does not implement.
+pub mod cluster_sql;
+pub use cluster_sql::ClusterSql;
+
 /// The ADVANCED MONITORING a cluster collects: the metric groups enabled on it, as a
 /// create asks for them, an update replaces them and a read reports them.
 pub mod metric_groups;

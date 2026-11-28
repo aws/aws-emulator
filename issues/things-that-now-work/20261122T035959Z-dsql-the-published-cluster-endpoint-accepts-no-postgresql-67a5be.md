@@ -8,6 +8,46 @@ Issue-Commit: c65ba2a529bc0d324725a72f916017f9d3d2f141
 
 # dsql: the published cluster endpoint accepts no PostgreSQL wire connection, so the OCC write-conflict check times out at connect
 
+## Resolution
+
+The cause is FIXED as far as this service crate serves it: the address a cluster publishes
+now answers the PostgreSQL wire AND serves the Aurora DSQL SEMANTICS this report enumerates.
+
+* The wire itself and the auth-token login were opened by
+  `issues/things-that-now-work/20261121T070609Z-dsql-no-postgresql-wire-listener-answers-the-published.md`
+  (`src/state/cluster_data_plane.rs` over `services/common/src/sql_wire_planes`): a core-owned
+  listener on the emulator's own interface, the in-band `SSLRequest` upgrade run by the core's
+  TLS upgrader, one in-process SQL engine per cluster, `current_user` -> `admin` on database
+  `postgres`.
+* A cluster's engine now resolves two writers OPTIMISTICALLY
+  (`services/common/src/sql_wire_planes/optimistic_writers.rs`, stated per service through
+  `ServedDatabase::concurrency`): each transaction runs on a page-for-page copy of the database
+  taken when it opened, so a second `UPDATE` of the same row answers at once instead of waiting,
+  exactly one of the two commits stands, and the loser is refused SQLSTATE `40001` with Aurora
+  DSQL's own sentence `change conflicts with another transaction (OC000)` at severity `ERROR`,
+  leaving no effect — after which the same write, run serially, commits.
+* A session reports this engine's own isolation (`default_transaction_isolation` /
+  `transaction_isolation` -> `repeatable read`, through `SHOW` and `current_setting()`) and a
+  `version()` sentence naming the PostgreSQL version the cluster publishes
+  (`src/state/cluster_sql.rs`).
+* A feature this engine does not implement is refused under its own class and creates nothing:
+  the whole `serial` family (`type "<name>" does not exist`, `42704`), a TEMPORARY relation and
+  a `CREATE SEQUENCE` (`0A000`), with `information_schema` reporting only the relations the
+  cluster really holds.
+
+Pinned by `services/service-com-amazonaws-dsql-dsql/tests/all/cluster_sql_semantics.rs` (over the
+wire, in one process) and by the unit cases of `optimistic_writers.rs`, `cluster_sql.rs` and
+`sql_wire_planes/dialect.rs`.
+
+What REMAINS for this check, and it is not this service crate's to serve: the recorded client
+dials the published host on PostgreSQL's port 5432, and the cluster's wire answers on the port
+the CORE assigned its listener. `Listeners::tcp_plaintext` (`vendor/server/src/listeners.rs:230`,
+and the binds behind it at lines 88-107) takes no requested port, a service crate may not bind a
+socket of its own, and `vendor/` is read-only from a service fix. That gap is filed as
+`issues/things-that-do-not-work/20261122T190000Z-dsql-the-served-cluster-data-plane-is-not-reachable-on-postgresqls-port.md`,
+which carries its own replay key and the core change it needs; until it lands this check still
+times out inside its connect-retry loop, with every assertion behind the connect now served.
+
 > _Note: this issue was identified against the code base at commit `c65ba2a529bc0d324725a72f916017f9d3d2f141`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation

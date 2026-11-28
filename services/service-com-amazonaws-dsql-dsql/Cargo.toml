@@ -33,6 +33,11 @@ hex = { workspace = true }
 # endpoint is served on: the PostgreSQL wire, the confined in-process SQL engine and the
 # listener the core opens for it. `iam_policy` is the one canonical LAYOUT an attached
 # policy document is reported in, which `GetClusterPolicy` hands a stored document back in.
+# `cluster_sql`: a statement a session sends is READ as Aurora DSQL's dialect — the construct
+# this engine does not implement, and whether the statement references the standard catalog —
+# with the maintained parser of the wire's own SQL dialect, at the version every other service
+# in this workspace reads SQL with, rather than by a scan written here.
+sqlparser = "0.59"
 service-common = { path = "../common" }
 # The instant an auth token was signed at and the one its lifetime runs out at, which the
 # token writes in the ISO 8601 basic form a presigned AWS request carries.

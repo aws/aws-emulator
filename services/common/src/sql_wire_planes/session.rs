@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::dialect::{self, DialectReading, Refusal, SqlDialect};
+use super::optimistic_writers::{OpenTransaction, OptimisticWriters};
 use super::sql_engine::{
     self, Cell, Column, DatabaseEngine, EngineError, EngineErrorKind, EngineView, ResultSet,
 };
@@ -107,6 +108,15 @@ pub struct Session {
     /// supplies none, and then every statement goes to the engine as the client
     /// wrote it.
     dialect: Option<Arc<dyn SqlDialect>>,
+    /// The OPTIMISTIC concurrency control of the database, for a resource whose
+    /// engine resolves two writers that way ([`super::Concurrency`]): then this
+    /// session's transaction is its OWN — a snapshot of the database taken when
+    /// it opened — rather than the engine's one shared transaction. `None` leaves
+    /// the engine's own.
+    optimistic: Option<Arc<OptimisticWriters>>,
+    /// The transaction this session has open on its own snapshot, where it has
+    /// one. Dropping it is the whole of rolling it back.
+    open: Option<OpenTransaction>,
 }
 
 impl Session {
@@ -126,6 +136,7 @@ impl Session {
             user: user.clone(),
             connection_id,
             last_insert_id: 0,
+            settings: Vec::new(),
         };
         let mut session = Self {
             engine,
@@ -136,10 +147,13 @@ impl Session {
             autocommit: true,
             in_transaction: false,
             dialect: None,
+            optimistic: None,
+            open: None,
         };
         for (name, value) in session.server_settings() {
             session.settings.insert(name, value);
         }
+        session.publish_settings();
         session
     }
 
@@ -149,6 +163,16 @@ impl Session {
     pub fn with_dialect(mut self, dialect: Option<Arc<dyn SqlDialect>>) -> Self {
         self.dialect = dialect;
         self.publish_version_sentence();
+        // The settings this PRODUCT starts a session with, which are not always
+        // the engine's own defaults ([`SqlDialect::session_settings`]): a client
+        // reads them with `SHOW` and `current_setting()`, and what they say is
+        // the product's.
+        if let Some(dialect) = &self.dialect {
+            for (name, value) in dialect.session_settings() {
+                self.settings.insert(name, value);
+            }
+        }
+        self.publish_settings();
         // The database user this session RUNS AS, which is the user the engine's
         // session functions answer: a login name the product resolves to
         // another user is resolved here, once, and nothing downstream sees the
@@ -157,6 +181,25 @@ impl Session {
             self.view.user = dialect.session_user(&self.view.user);
         }
         self
+    }
+
+    /// This session, with its transactions resolved by the OPTIMISTIC
+    /// concurrency control of its database where its engine has one
+    /// ([`super::SessionContext::optimistic`]).
+    #[must_use]
+    pub fn with_optimistic(mut self, optimistic: Option<Arc<OptimisticWriters>>) -> Self {
+        self.optimistic = optimistic;
+        self
+    }
+
+    /// Put the settings this session holds into the view the engine's server
+    /// functions read, which is what `current_setting()` answers from.
+    fn publish_settings(&mut self) {
+        self.view.settings = self
+            .settings
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
     }
 
     /// Put the sentence `version()` answers into the view the engine's server
@@ -293,6 +336,13 @@ impl Session {
     /// the wire's spelling and then as the ENGINE's own dialect, and do what
     /// that reading asks for.
     async fn run_statement(&mut self, statement: &str) -> Result<Answer, EngineError> {
+        // A session that is not in autocommit is inside a transaction from its
+        // first statement on, and under an optimistic concurrency control that
+        // transaction is the SNAPSHOT every part of this statement — the
+        // dialect's reading included — then runs on, so it is opened first.
+        if self.optimistic.is_some() && !self.autocommit && self.open.is_none() {
+            self.open_a_transaction().await?;
+        }
         // The PostgreSQL session functions are reserved words on that wire and
         // functions on this engine, so the one spelling is read as the other
         // before anything else looks at the statement.
@@ -317,12 +367,16 @@ impl Session {
     ///
     /// Off the async worker, because the reading may put a catalogue of the
     /// product's own on the engine, and engine work is blocking.
+    ///
+    /// The engine it is handed is the one this statement will RUN on: the
+    /// session's own transaction where it has one, so a catalogue the reading
+    /// materialises is there for the statement that reads it.
     async fn read_as_the_dialect(
         &mut self,
         dialect: &Arc<dyn SqlDialect>,
         statement: String,
     ) -> Result<DialectReading, EngineError> {
-        let engine = Arc::clone(&self.engine);
+        let engine = Arc::clone(self.statement_engine());
         let dialect = Arc::clone(dialect);
         let mut view = self.view.clone();
         let (reading, view) = off_the_async_worker(move || {
@@ -332,6 +386,15 @@ impl Session {
         .await?;
         self.view = view;
         Ok(reading)
+    }
+
+    /// The engine this session's next statement runs on: its own transaction's
+    /// snapshot where it has one open, and the shared database otherwise.
+    fn statement_engine(&self) -> &Arc<DatabaseEngine> {
+        match &self.open {
+            Some(transaction) => transaction.engine(),
+            None => &self.engine,
+        }
     }
 
     /// `SET <name> = <value>`, and the forms each engine spells it in
@@ -374,7 +437,7 @@ impl Session {
             // Turning autocommit on ends the transaction the session was in,
             // committing what it had done — which is what both servers do.
             if on && !self.autocommit && self.in_transaction {
-                self.engine_statement("COMMIT").await?;
+                self.end_transaction("COMMIT").await?;
             }
             self.autocommit = on;
         }
@@ -385,6 +448,7 @@ impl Session {
             ));
         }
         self.settings.insert(name, value);
+        self.publish_settings();
         Ok(Answer::done("SET", 0, 0))
     }
 
@@ -404,7 +468,7 @@ impl Session {
             ));
         }
         if lowered == "tables" {
-            let engine = Arc::clone(&self.engine);
+            let engine = Arc::clone(self.statement_engine());
             let names = off_the_async_worker(move || engine.table_names()).await?;
             return Ok(Answer::rows(
                 "SHOW",
@@ -465,12 +529,44 @@ impl Session {
     /// every session on it, so a transaction another session of the same
     /// database has open is one this `BEGIN` must not try to nest inside.
     async fn begin(&mut self) -> Result<Answer, EngineError> {
+        // Under an optimistic concurrency control the transaction is this
+        // SESSION's own: a snapshot of the database taken here, which is what
+        // every statement of it then reads and writes. A `BEGIN` while one is
+        // already open leaves it as it is, exactly as the shared-transaction
+        // path below does.
+        if self.optimistic.is_some() {
+            if self.open.is_none() {
+                self.open_a_transaction().await?;
+            }
+            self.in_transaction = true;
+            return Ok(Answer::done("BEGIN", 0, 0));
+        }
         if self.in_transaction || !self.engine_is_autocommit().await {
             self.in_transaction = true;
             return Ok(Answer::done("BEGIN", 0, 0));
         }
         self.engine_statement("BEGIN").await?;
         Ok(Answer::done("BEGIN", 0, 0))
+    }
+
+    /// Open this session's own transaction on the database's optimistic
+    /// concurrency control: a snapshot of the database as it stands now.
+    ///
+    /// Off the async worker, because copying the database is engine work.
+    async fn open_a_transaction(&mut self) -> Result<(), EngineError> {
+        let Some(writers) = self.optimistic.clone() else {
+            return Ok(());
+        };
+        let mut view = self.view.clone();
+        let (opened, view) = off_the_async_worker(move || {
+            let opened = writers.begin(&mut view);
+            (opened, view)
+        })
+        .await?;
+        self.view = view;
+        self.open = Some(opened?);
+        self.in_transaction = true;
+        Ok(())
     }
 
     /// Whether the engine has NO transaction open at all, read off the engine
@@ -486,6 +582,28 @@ impl Session {
     /// answers when this session has none open.
     async fn end_transaction(&mut self, verb: &str) -> Result<Answer, EngineError> {
         let verb = if verb == "END" { "COMMIT" } else { verb };
+        // The session's OWN transaction: a `COMMIT` asks the concurrency control
+        // to carry its writes over, which is where a conflict with another
+        // writer is refused, and a `ROLLBACK` is the drop of its snapshot.
+        // Either way the transaction is over, which is what a server's status
+        // flag reports next — including after a commit that was refused.
+        if let Some(writers) = self.optimistic.clone() {
+            let Some(transaction) = self.open.take() else {
+                return Ok(Answer::done(verb, 0, 0));
+            };
+            self.in_transaction = false;
+            if verb == "COMMIT" {
+                let mut view = self.view.clone();
+                let (committed, view) = off_the_async_worker(move || {
+                    let committed = writers.commit(transaction, &mut view);
+                    (committed, view)
+                })
+                .await?;
+                self.view = view;
+                committed?;
+            }
+            return Ok(Answer::done(verb, 0, 0));
+        }
         if !self.in_transaction {
             return Ok(Answer::done(verb, 0, 0));
         }
@@ -504,9 +622,16 @@ impl Session {
         // first statement on, which is what makes its later `ROLLBACK` put
         // those rows back.
         if !self.autocommit && !self.in_transaction {
-            self.engine_statement("BEGIN").await?;
+            if self.optimistic.is_some() {
+                self.open_a_transaction().await?;
+            } else {
+                self.engine_statement("BEGIN").await?;
+            }
         }
-        let result = self.on_the_engine(sql.to_string()).await?;
+        let result = match self.optimistic.clone() {
+            Some(writers) => self.on_its_own_transaction(&writers, sql.to_string()).await?,
+            None => self.on_the_engine(sql.to_string()).await?,
+        };
         let (verb, _) = split_verb(statement);
         let verb = command_tag_verb(statement, &verb);
         // The row id belongs to the statement that minted one: a server reports
@@ -527,6 +652,42 @@ impl Session {
     async fn engine_statement(&mut self, statement: &str) -> Result<(), EngineError> {
         self.on_the_engine(statement.to_string()).await?;
         Ok(())
+    }
+
+    /// Run `sql` under the database's optimistic concurrency control: inside the
+    /// transaction this session has open, and on the shared database itself
+    /// — as its own commit — when it has none.
+    ///
+    /// Off the async worker, like every other statement: the transaction is
+    /// moved there and back, because the engine work is what holds it.
+    async fn on_its_own_transaction(
+        &mut self,
+        writers: &Arc<OptimisticWriters>,
+        sql: String,
+    ) -> Result<ResultSet, EngineError> {
+        let mut view = self.view.clone();
+        match self.open.take() {
+            Some(mut transaction) => {
+                let (answered, transaction, view) = off_the_async_worker(move || {
+                    let answered = transaction.run(&mut view, &sql);
+                    (answered, transaction, view)
+                })
+                .await?;
+                self.open = Some(transaction);
+                self.view = view;
+                answered
+            }
+            None => {
+                let writers = Arc::clone(writers);
+                let (answered, view) = off_the_async_worker(move || {
+                    let answered = writers.run_committed(&mut view, &sql);
+                    (answered, view)
+                })
+                .await?;
+                self.view = view;
+                answered
+            }
+        }
     }
 
     /// Run `sql` on the engine, off the async worker, and carry back what it
@@ -559,7 +720,10 @@ impl Session {
 /// await, so it goes to the blocking pool.
 impl Drop for Session {
     fn drop(&mut self) {
-        if !self.in_transaction {
+        // A session whose transaction is its OWN holds the only copy of what it
+        // wrote, so dropping it IS the rollback: the shared database was never
+        // left mid-transaction.
+        if self.optimistic.is_some() || !self.in_transaction {
             return;
         }
         let engine = Arc::clone(&self.engine);

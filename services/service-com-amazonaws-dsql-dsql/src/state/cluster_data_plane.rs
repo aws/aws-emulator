@@ -35,11 +35,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use ::service_common::sql_wire_planes::{
-    self, DatabaseFacts, EngineWire, PresentedLogin, ServedDatabase, ServingState, StatedRefusal,
+    self, Concurrency, DatabaseFacts, EngineWire, PresentedLogin, ServedDatabase, ServingState,
+    SqlDialect, StatedRefusal,
 };
 
 use super::connection_auth;
-use super::{ComAmazonawsDsqlDsqlState, STATUS_ACTIVE, STATUS_IDLE};
+use super::{ClusterSql, ComAmazonawsDsqlDsqlState, STATUS_ACTIVE, STATUS_IDLE};
 
 /// The SigV4 signing name of this service, which is what names the service
 /// answering at an address it opened for an in-process client.
@@ -129,6 +130,25 @@ impl ServedDatabase for StoredClusterFacts {
             master_database_name: connection_auth::CLUSTER_DATABASE.to_string(),
             server_version: SERVER_VERSION.to_string(),
         })
+    }
+
+    /// The DIALECT the engine behind a cluster's endpoint speaks: Aurora DSQL's
+    /// ([`ClusterSql`]).
+    fn dialect(&self) -> Option<Arc<dyn SqlDialect>> {
+        Some(Arc::new(ClusterSql))
+    }
+
+    /// How a cluster's engine resolves two sessions writing the same row at the
+    /// same time: OPTIMISTICALLY.
+    ///
+    /// Aurora DSQL holds no row against a writer — each transaction runs on the
+    /// snapshot taken when it began, so the second writer's statement answers at
+    /// once rather than waiting — and settles the two at COMMIT, where the
+    /// transaction whose rows the other changed first is refused
+    /// `serialization_failure` and leaves no effect. That is the cluster's own
+    /// concurrency control, and this is where the plane states it.
+    fn concurrency(&self) -> Concurrency {
+        Concurrency::Optimistic
     }
 
     fn verified_login(&self, login: &PresentedLogin<'_>) -> Option<Result<(), StatedRefusal>> {

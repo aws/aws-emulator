@@ -18,6 +18,11 @@
 //! `CreateCluster` call below, on the core's own loopback interface, and the
 //! client is written against the wire itself rather than against an in-process
 //! shortcut — so what is driven is the protocol a stock libpq client speaks.
+//!
+//! That client half is shared: `cluster_sql_semantics` drives the SQL SEMANTICS
+//! of a session — the isolation a cluster reports, its optimistic write
+//! conflicts and the features it does not implement — over the same
+//! [`login`]/[`PostgresSession`] client and the same [`Cluster`].
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -30,16 +35,16 @@ use crate::harness::Dsql;
 
 /// The database role a cluster has from the moment it is created, and the one
 /// database it holds.
-const ADMIN_USER: &str = "admin";
-const CLUSTER_DATABASE: &str = "postgres";
+pub(crate) const ADMIN_USER: &str = "admin";
+pub(crate) const CLUSTER_DATABASE: &str = "postgres";
 
 /// How long a case waits for a cluster to reach a status before it gives up:
 /// far longer than the span this service owes a transition in, so the wait is on
 /// the CONDITION and not on a clock.
-const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+pub(crate) const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// How often a wait looks again.
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// The sentence a connection this cluster does not accept is refused with, and
 /// the `SQLSTATE` it carries.
@@ -47,18 +52,18 @@ const ACCESS_DENIED: &str = "unable to accept connection, access denied";
 const ACCESS_DENIED_STATE: &str = "28000";
 
 /// One emulator, the engine its store lives in, and one cluster on it.
-struct Cluster {
-    dsql: Dsql,
+pub(crate) struct Cluster {
+    pub(crate) dsql: Dsql,
     engine: Arc<engine::InMemoryEngine>,
-    identifier: String,
+    pub(crate) identifier: String,
     /// The host the control plane published as the cluster's `endpoint`, which
     /// is what an auth token for this cluster is presigned against.
-    endpoint: String,
+    pub(crate) endpoint: String,
 }
 
 impl Cluster {
     /// Create a cluster and read back the endpoint it published.
-    async fn created() -> Self {
+    pub(crate) async fn created() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let dsql = Dsql::sharing(&engine, "us-east-1");
         let created = dsql.create(json!({"deletionProtectionEnabled": false})).await;
@@ -84,7 +89,7 @@ impl Cluster {
     /// Wait until `GetCluster` reports `status`, then answer the endpoint the
     /// cluster publishes. The wait is on the status itself, bounded by a
     /// deadline far past the span the service owes the transition in.
-    async fn waited_for(&self, status: &str) -> String {
+    pub(crate) async fn waited_for(&self, status: &str) -> String {
         let deadline = SystemTime::now() + SETTLE_DEADLINE;
         loop {
             let read = self.dsql.get(&self.identifier).await;
@@ -109,7 +114,7 @@ impl Cluster {
     /// only place this emulator can report it: the model's `endpoint` member
     /// carries a host and no port (`^[a-zA-Z0-9.-]+$`), and the core assigns
     /// every listener's port itself.
-    fn served_port(&self) -> u16 {
+    pub(crate) fn served_port(&self) -> u16 {
         let state = service_com_amazonaws_dsql_dsql::state::service_state(&*self.engine)
             .expect("the shared engine vends this service's store");
         let held = state.lock();
@@ -518,16 +523,32 @@ async fn the_endpoint_admits_a_session_only_while_the_cluster_is_up() {
 /// An auth token for `action` against `host`, signed at `at` for `lifetime` —
 /// the presigned request the client-side presigner
 /// (`GenerateDbConnectAdminAuthToken` / `GenerateDbConnectAuthToken`) answers,
-/// which a client sends as the PostgreSQL password.
-fn auth_token(action: &str, host: &str, at: SystemTime, lifetime: Duration) -> String {
+/// which a client sends as the PostgreSQL password. The credential scope names
+/// the day it was signed on and this service's own signing name, and the
+/// signature has the shape a SigV4 signature has, which is what the cluster
+/// holds a presented token to.
+pub(crate) fn auth_token(action: &str, host: &str, at: SystemTime, lifetime: Duration) -> String {
     format!(
         "{host}/?Action={action}&X-Amz-Algorithm=AWS4-HMAC-SHA256\
-         &X-Amz-Credential=AKIDTESTTESTTESTTEST%2F20260101%2Fus-east-1%2Fdsql%2Faws4_request\
+         &X-Amz-Credential=AKIDTESTTESTTESTTEST%2F{}%2Fus-east-1%2Fdsql%2Faws4_request\
          &X-Amz-Date={}&X-Amz-Expires={}&X-Amz-SignedHeaders=host\
          &X-Amz-Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        scope_date(at),
         amz_date(at),
         lifetime.as_secs()
     )
+}
+
+/// The day `at` falls on, as a SigV4 credential scope writes it.
+fn scope_date(at: SystemTime) -> String {
+    let seconds = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("an instant after the epoch")
+        .as_secs();
+    ::chrono::DateTime::from_timestamp(i64::try_from(seconds).expect("the instant fits"), 0)
+        .expect("the instant is a date")
+        .format("%Y%m%d")
+        .to_string()
 }
 
 /// `at` in the ISO 8601 basic form a presigned AWS request writes an instant in.
@@ -547,7 +568,7 @@ fn amz_date(at: SystemTime) -> String {
 /// How a session is opened: in the clear, or with the wire's own in-band TLS
 /// upgrade on the same port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Transport {
+pub(crate) enum Transport {
     Plaintext,
     Tls,
 }
@@ -562,23 +583,26 @@ type Client = Box<dyn Connection>;
 /// A refusal the server sent: the severity, the SQLSTATE a client branches on,
 /// the sentence it reports and the hint beside it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Refusal {
-    severity: String,
-    code: String,
-    message: String,
-    hint: String,
+pub(crate) struct Refusal {
+    pub(crate) severity: String,
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) hint: String,
 }
 
 /// One result set a client read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Rows {
+pub(crate) struct Rows {
     columns: Vec<String>,
-    rows: Vec<Vec<Option<String>>>,
+    pub(crate) rows: Vec<Vec<Option<String>>>,
+    /// The `CommandComplete` tag the statement finished with, which carries the
+    /// verb and the count a server reports for it (`UPDATE 1`).
+    pub(crate) tag: String,
 }
 
 impl Rows {
     /// The one value a single-row, single-column answer carries.
-    fn only(&self) -> Option<&str> {
+    pub(crate) fn only(&self) -> Option<&str> {
         self.rows
             .first()
             .and_then(|row| row.first())
@@ -588,7 +612,7 @@ impl Rows {
 
 /// A session a client has opened, and the parameters the backend reported while
 /// it opened.
-struct PostgresSession {
+pub(crate) struct PostgresSession {
     conn: Client,
     parameters: Vec<(String, String)>,
 }
@@ -607,7 +631,7 @@ impl std::fmt::Debug for PostgresSession {
 
 impl PostgresSession {
     /// The value the backend reported for the parameter `name`.
-    fn parameter(&self, name: &str) -> Option<String> {
+    pub(crate) fn parameter(&self, name: &str) -> Option<String> {
         self.parameters
             .iter()
             .find(|(held, _)| held == name)
@@ -615,7 +639,7 @@ impl PostgresSession {
     }
 
     /// Run one simple query and read everything the server answers for it.
-    async fn query(&mut self, sql: &str) -> Result<Rows, Refusal> {
+    pub(crate) async fn query(&mut self, sql: &str) -> Result<Rows, Refusal> {
         let mut message = Vec::new();
         put_cstring(&mut message, sql);
         send(&mut self.conn, b'Q', &message).await;
@@ -666,9 +690,12 @@ impl PostgresSession {
                     answer.rows.push(row);
                 }
                 b'E' => refusal = Some(read_refusal(&body)),
+                // CommandComplete: the verb and the count the statement ended
+                // with.
+                b'C' => answer.tag = read_cstring(&body, 0).0,
                 // ReadyForQuery ends the exchange.
                 b'Z' => break,
-                // CommandComplete, EmptyQueryResponse, NoticeResponse.
+                // EmptyQueryResponse, NoticeResponse.
                 _ => {}
             }
         }
@@ -681,7 +708,7 @@ impl PostgresSession {
 
 /// Open a session on the cluster endpoint at `port`, as libpq does: the optional
 /// `SSLRequest` first, then the startup message, then the password.
-async fn login(
+pub(crate) async fn login(
     case: &str,
     port: u16,
     transport: Transport,
