@@ -60,7 +60,7 @@
 //!   ISO-8601 format.
 //! * `lastUpdatedAt` (Timestamp) — The date and time that the auth policy was last updated,
 //!   in ISO-8601 format.
-//! * `policy` (AuthPolicyString, len ..36864) — The auth policy.
+//! * `policy` (AuthPolicyString, len ..102400) — The auth policy.
 //! * `state` (AuthPolicyState, one of: Active | Inactive) — The state of the auth policy. The
 //!   auth policy is only active when the auth type is set to AWS_IAM. If you provide a
 //!   policy, then authentication and authorization decisions are made based on this policy

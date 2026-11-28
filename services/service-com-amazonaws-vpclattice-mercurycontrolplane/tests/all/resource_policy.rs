@@ -567,8 +567,9 @@ const STATE_INACTIVE: &str = "Inactive";
 const AUTH_TYPE_AWS_IAM: &str = "AWS_IAM";
 const AUTH_TYPE_NONE: &str = "NONE";
 
-/// The `@length` ceiling the model puts on `AuthPolicyString` (`len ..36864`).
-const AUTH_POLICY_MAX_LENGTH: usize = 36_864;
+/// The `@length` ceiling the model puts on `AuthPolicyString`
+/// (`smithy_query(query="shape",shape="AuthPolicyString")`: `len ..102400`).
+const AUTH_POLICY_MAX_LENGTH: usize = 102_400;
 
 /// AWS's refusal of a `policy` that is not a policy document at all.
 const MALFORMED_AUTH_POLICY_MESSAGE: &str = "Not a valid policy";

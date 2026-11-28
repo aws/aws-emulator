@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-vpclattice-mercurycontr
 pub struct UpdateResourceGatewayInput {
     pub resource_gateway_identifier: String,
     pub security_group_ids: Option<Vec<String>>,
+    pub resource_config_dns_resolution: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.vpclattice#UpdateResourceGatewayResponse")]
@@ -29,5 +30,6 @@ pub struct UpdateResourceGatewayOutput {
     pub subnet_ids: Option<Vec<String>>,
     pub security_group_ids: Option<Vec<String>>,
     pub ip_address_type: Option<String>,
+    pub resource_config_dns_resolution: Option<String>,
 }
 

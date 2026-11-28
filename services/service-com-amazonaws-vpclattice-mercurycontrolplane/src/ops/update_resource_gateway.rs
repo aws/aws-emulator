@@ -53,6 +53,12 @@
 //!
 //! ## Input
 //!
+//! * `resourceConfigDnsResolution` (ResourceConfigDnsResolution, one of: IN_VPC | PUBLIC) —
+//!   Indicates how DNS is resolved for resource configurations associated with this resource
+//!   gateway. IN_VPC - DNS resolution occurs privately within the resource gateway's VPC. Use
+//!   this when your resource domain names are hosted in private Route 53 hosted zones or
+//!   on-premises DNS servers reachable from the VPC. PUBLIC - DNS resolution occurs against
+//!   public DNS resolvers. Use this when your resource domain names are publicly resolvable.
 //! * `resourceGatewayIdentifier` (ResourceGatewayIdentifier, len 17..2048, pattern
 //!   ^((rgw-[0-9a-z]{17})|(arn:[a-z0-9\-]+:vpc-lattice:[a-zA-Z0-9\-]+:\d{12}:resourcegateway/rgw-[0-9a-z]{17}))$)
 //!   **required** — The ID or ARN of the resource gateway.
@@ -70,6 +76,9 @@
 //!   the resource gateway.
 //! * `name` (ResourceGatewayName, len 3..40, pattern
 //!   ^(?!rgw-)(?![-])(?!.*[-]$)(?!.*[-]{2})[a-z0-9-]+$) — The name of the resource gateway.
+//! * `resourceConfigDnsResolution` (ResourceConfigDnsResolution, one of: IN_VPC | PUBLIC) —
+//!   The DNS resolution type for resource configurations that are associated with this
+//!   resource gateway.
 //! * `securityGroupIds` (SecurityGroupList) — The IDs of the security groups associated with
 //!   the resource gateway.
 //! * `status` (ResourceGatewayStatus, one of: ACTIVE | CREATE_FAILED | CREATE_IN_PROGRESS |

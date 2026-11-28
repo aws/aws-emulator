@@ -51,7 +51,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /authpolicy/{resourceIdentifier} -> 200`
 - **Traits:** @readonly
 - **Input:** `resourceIdentifier` (string, len 17..200, pattern ^((((sn)|(svc)|(rcfg))-[0-9a-z]{17})|(arn(:[a-z0-9]+([.-][a-z0-9]+)*){2}(:([a-z0-9]+([.-][a-z0-9]+)*)?){2}:((servicenetw …, @httpLabel, required)
-- **Output:** `policy` (string, len ..36864), `state` (string, one of: Active | Inactive), `createdAt` (timestamp), `lastUpdatedAt` (timestamp)
+- **Output:** `policy` (string, len ..102400), `state` (string, one of: Active | Inactive), `createdAt` (timestamp), `lastUpdatedAt` (timestamp)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## GetResourcePolicy
@@ -81,8 +81,8 @@ contents — read that shape in the model above when you need its own members.
 ## PutAuthPolicy
 
 - **Route:** `PUT /authpolicy/{resourceIdentifier} -> 200`
-- **Input:** `resourceIdentifier` (string, len 17..200, pattern ^((((sn)|(svc)|(rcfg))-[0-9a-z]{17})|(arn(:[a-z0-9]+([.-][a-z0-9]+)*){2}(:([a-z0-9]+([.-][a-z0-9]+)*)?){2}:((servicenetw …, @httpLabel, required), `policy` (string, len ..36864, required)
-- **Output:** `policy` (string, len ..36864), `state` (string, one of: Active | Inactive)
+- **Input:** `resourceIdentifier` (string, len 17..200, pattern ^((((sn)|(svc)|(rcfg))-[0-9a-z]{17})|(arn(:[a-z0-9]+([.-][a-z0-9]+)*){2}(:([a-z0-9]+([.-][a-z0-9]+)*)?){2}:((servicenetw …, @httpLabel, required), `policy` (string, len ..102400, required)
+- **Output:** `policy` (string, len ..102400), `state` (string, one of: Active | Inactive)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## PutResourcePolicy
@@ -294,8 +294,8 @@ contents — read that shape in the model above when you need its own members.
 ## UpdateResourceGateway
 
 - **Route:** `PATCH /resourcegateways/{resourceGatewayIdentifier} -> 200`
-- **Input:** `resourceGatewayIdentifier` (string, len 17..2048, pattern ^((rgw-[0-9a-z]{17})|(arn:[a-z0-9\-]+:vpc-lattice:[a-zA-Z0-9\-]+:\d{12}:resourcegateway/rgw-[0-9a-z]{17}))$, @httpLabel, required), `securityGroupIds` (list<string>)
-- **Output:** `name` (string, len 3..40, pattern ^(?!rgw-)(?![-])(?!.*[-]$)(?!.*[-]{2})[a-z0-9-]+$), `id` (string, len 21..21, pattern ^rgw-[0-9a-z]{17}$), `arn` (string, len 20..2048, pattern ^arn:[a-z0-9\-]+:vpc-lattice:[a-zA-Z0-9\-]+:\d{12}:resourcegateway/rgw-[0-9a-z]{17}$), `status` (string, one of: ACTIVE | CREATE_FAILED | CREATE_IN_PROGRESS | DELETE_FAILED | DELETE_IN_PROGRESS | UPDATE_FAILED | UPDATE_IN_PROGRESS), `vpcId` (string, len 5..50, pattern ^vpc-(([0-9a-z]{8})|([0-9a-z]{17}))$), `subnetIds` (list<string>), `securityGroupIds` (list<string>), `ipAddressType` (string, one of: IPV4 | IPV6)
+- **Input:** `resourceGatewayIdentifier` (string, len 17..2048, pattern ^((rgw-[0-9a-z]{17})|(arn:[a-z0-9\-]+:vpc-lattice:[a-zA-Z0-9\-]+:\d{12}:resourcegateway/rgw-[0-9a-z]{17}))$, @httpLabel, required), `securityGroupIds` (list<string>), `resourceConfigDnsResolution` (string, one of: IN_VPC | PUBLIC)
+- **Output:** `name` (string, len 3..40, pattern ^(?!rgw-)(?![-])(?!.*[-]$)(?!.*[-]{2})[a-z0-9-]+$), `id` (string, len 21..21, pattern ^rgw-[0-9a-z]{17}$), `arn` (string, len 20..2048, pattern ^arn:[a-z0-9\-]+:vpc-lattice:[a-zA-Z0-9\-]+:\d{12}:resourcegateway/rgw-[0-9a-z]{17}$), `status` (string, one of: ACTIVE | CREATE_FAILED | CREATE_IN_PROGRESS | DELETE_FAILED | DELETE_IN_PROGRESS | UPDATE_FAILED | UPDATE_IN_PROGRESS), `vpcId` (string, len 5..50, pattern ^vpc-(([0-9a-z]{8})|([0-9a-z]{17}))$), `subnetIds` (list<string>), `securityGroupIds` (list<string>), `ipAddressType` (string, one of: IPV4 | IPV6), `resourceConfigDnsResolution` (string, one of: IN_VPC | PUBLIC)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DeleteResourceGateway

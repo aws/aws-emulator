@@ -52,7 +52,7 @@
 //!
 //! ## Input
 //!
-//! * `policy` (AuthPolicyString, len ..36864) **required** — The auth policy. The policy
+//! * `policy` (AuthPolicyString, len ..102400) **required** — The auth policy. The policy
 //!   string in JSON must not contain newlines or blank lines.
 //! * `resourceIdentifier` (ResourceIdentifier, len 17..200, pattern
 //!   ^((((sn)|(svc)|(rcfg))-[0-9a-z]{17})|(arn(:[a-z0-9]+([.-][a-z0-9]+)*){2}(:([a-z0-9]+([.-][a-z0-9]+)*)?){2}:((servicenetw
@@ -61,7 +61,7 @@
 //!
 //! ## Output
 //!
-//! * `policy` (AuthPolicyString, len ..36864) — The auth policy. The policy string in JSON
+//! * `policy` (AuthPolicyString, len ..102400) — The auth policy. The policy string in JSON
 //!   must not contain newlines or blank lines.
 //! * `state` (AuthPolicyState, one of: Active | Inactive) — The state of the auth policy. The
 //!   auth policy is only active when the auth type is set to AWS_IAM. If you provide a
