@@ -7,6 +7,35 @@ Issue-Commit: 18a314cdb2529802996db00768c0e97bdee3f604
 
 # The IAM-authorization lifecycle on a deployed REST stage reaches no verdict — a signed execute-api GET on an AWS_IAM method never settles on either the 403 AccessDeniedException or the granted 200
 
+> _Resolution: the cause as REPORTED — "one of those [two signed execute-api invokes] never
+> converges", i.e. the stage keeps answering something other than the graded answer or never
+> answers at all — is not present at this commit, and
+> `core/router/tests/all/apigateway_session_signed_stage_target.rs` now pins the whole graded
+> path on an emulator whose request authentication is ON, which is the one condition no
+> neighbouring suite drove: the invoke is signed with the credential STS minted for an
+> assumed-role session (its session token presented, its secret held only by the emulator's own
+> credential store), over the request target NORMALISED the way every AWS SDK signer normalises
+> it before signing, while the wire carries the target as written — including the recorded case's
+> doubled slash after the stage. Over that estate the stage answers in milliseconds, in every
+> spelling of the target (plain, doubled after the stage, doubled inside the path, both, trailing
+> slash) and for each of the three grants (`GET` on the stage, another verb only, none): a
+> session no document allows is refused `403` with `x-amzn-ErrorType: AccessDeniedException` and
+> the sentence `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized to
+> perform: execute-api:Invoke on resource: <the method ARN the target selected> because no
+> identity-based policy allows the execute-api:Invoke action`, and the session that holds the
+> grant is served the method's integration — including an `AWS_PROXY` one, whose function is
+> invoked as API Gateway's own service principal and so runs for a caller holding nothing but the
+> invoke grant. Both suite tests together take 2.5 s. What remains of the recorded failure is the
+> harness's own WALL CLOCK, as the earlier report of this same replay key found
+> (`20261110T155738Z-apigateway-dynamodb-iam-lambda-the-rest-api-iam.md`): this five-phase
+> scenario pays its client's own poll intervals — a `table_exists`/`table_not_exists` waiter looks
+> again only every 20 s, around a created and a deleted table's `CREATING`/`DELETING` spans that
+> the project's own transition rule requires, and the check's `_await` helper sleeps between
+> probes — and the report states no AWS-published latency for any step, so no AWS rule shortens
+> it and nothing on the emulator's side of it is left to shorten: the whole lifecycle, the
+> teardown included, settles in seconds against the assembled emulator
+> (`core/router/tests/all/apigateway_iam_authorization_debug_lifecycle.rs`)._
+
 > _Note: this issue was identified against the code base at commit `18a314cdb2529802996db00768c0e97bdee3f604`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation
