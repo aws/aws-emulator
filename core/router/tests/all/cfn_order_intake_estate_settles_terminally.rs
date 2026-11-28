@@ -61,7 +61,12 @@ use crate::query_wire::{elements, members_of, opt_element, outputs_of};
 /// Every TERMINAL member of `com.amazonaws.cloudformation#StackStatus` — the whole enum less the
 /// members whose names end in `_IN_PROGRESS`. Source:
 /// `smithy_query(query="shape",shape="StackStatus")`.
-const TERMINAL_STATUSES: [&str; 13] = [
+///
+/// `pub(crate)` because the sibling suite
+/// [`crate::sam_order_intake_estate_settles_and_serves`] states the same rule about a template
+/// the AWS SAM macro processes first: one catalogue for both, so neither can drift from the
+/// modelled enum.
+pub(crate) const TERMINAL_STATUSES: [&str; 13] = [
     "CREATE_FAILED",
     "CREATE_COMPLETE",
     "ROLLBACK_FAILED",
@@ -547,7 +552,12 @@ async fn create_stack(
 /// deploy path answering while an operation is open, not only about the status eventually
 /// changing. The wait is on that CONDITION rather than on a fixed span, so it ends as soon as the
 /// stack has settled.
-async fn settled_status(
+///
+/// `pub(crate)` here and on the three readers below for the reason [`TERMINAL_STATUSES`] is: the
+/// sibling suite [`crate::sam_order_intake_estate_settles_and_serves`] states the same rule about
+/// a template the AWS SAM macro processes first, so it polls and reads exactly this way. One copy
+/// for both, so neither can drift.
+pub(crate) async fn settled_status(
     router: &MultiServiceRouter,
     case: &str,
     identifier: &str,
@@ -589,23 +599,28 @@ async fn settled_status(
     }
 }
 
-/// The `(ResourceStatus, PhysicalResourceId)` the stack reports for each logical id of a
-/// `DescribeStackResources` answer, read from the member that carries all three so a status is
+/// The `(ResourceType, ResourceStatus, PhysicalResourceId)` the stack reports for each logical id
+/// of a `DescribeStackResources` answer, read from the member that carries all four so a status is
 /// never read off another resource's entry.
-fn reported_resources(xml: &str) -> BTreeMap<String, (String, String)> {
+pub(crate) fn reported_resources(xml: &str) -> BTreeMap<String, (String, String, String)> {
     members_of(xml)
         .into_iter()
         .filter_map(|member| {
             let logical = elements(member, "LogicalResourceId").into_iter().next()?;
-            let status = elements(member, "ResourceStatus")
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            let physical = elements(member, "PhysicalResourceId")
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            Some((logical, (status, physical)))
+            let first = |name: &str| {
+                elements(member, name)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+            };
+            Some((
+                logical,
+                (
+                    first("ResourceType"),
+                    first("ResourceStatus"),
+                    first("PhysicalResourceId"),
+                ),
+            ))
         })
         .collect()
 }
@@ -642,14 +657,18 @@ async fn recorded_reason(
 
 /// Every reason the stack recorded, for an assertion that has to say where a deployment failed
 /// instead.
-async fn recorded_reasons(router: &MultiServiceRouter, stack: &str) -> Vec<String> {
+pub(crate) async fn recorded_reasons(router: &MultiServiceRouter, stack: &str) -> Vec<String> {
     let (_, body) = cloudformation(router, "DescribeStackEvents", &[("StackName", stack)]).await;
     elements(&body, "ResourceStatusReason")
 }
 
 /// The `MetricAlarms` entry Amazon CloudWatch reports for `name`, or `None` where that service
 /// holds no alarm under it.
-async fn described_alarm(router: &MultiServiceRouter, case: &str, name: &str) -> Option<Value> {
+pub(crate) async fn described_alarm(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+) -> Option<Value> {
     let described = cw(
         router,
         case,
@@ -707,7 +726,7 @@ async fn every_declared_estate_settles_on_a_modelled_terminal_stack_status() {
             // identifier the owning service assigned: the status is not the whole of the answer.
             None => {
                 for logical in row.resources {
-                    let (status, physical) = reported
+                    let (_, status, physical) = reported
                         .get(*logical)
                         .cloned()
                         .unwrap_or_else(|| panic!(
