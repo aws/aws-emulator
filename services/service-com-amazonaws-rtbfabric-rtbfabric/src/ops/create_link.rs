@@ -198,12 +198,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A link joins two gateways, so the direction is a fact about which kind of
         // gateway opened it — read from which store holds the calling id, not from
-        // anything in the request.
-        let direction = if store.requester_gateways.contains_key(&input.gateway_id) {
-            crate::state::LINK_DIRECTION_REQUEST
-        } else if store.responder_gateways.contains_key(&input.gateway_id) {
-            crate::state::LINK_DIRECTION_RESPONSE
-        } else {
+        // anything in the request, through the crate's one statement of that reading.
+        let Some(direction) = store.gateway_link_direction(&input.gateway_id) else {
             return Err(CreateLinkErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string(),

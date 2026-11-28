@@ -703,6 +703,22 @@ impl ComAmazonawsRtbfabricRtbfabricState {
             || self.responder_gateways.contains_key(gateway_id)
     }
 
+    /// The `LinkDirection` a link opened on `gateway_id` carries: the direction is a
+    /// fact about which KIND of gateway the link was opened from, so it is read from
+    /// which store holds that id rather than from anything in a request.
+    ///
+    /// `None` when no stored gateway has that id, which is the not-found the caller
+    /// is answered with.
+    pub fn gateway_link_direction(&self, gateway_id: &str) -> Option<&'static str> {
+        if self.requester_gateways.contains_key(gateway_id) {
+            Some(LINK_DIRECTION_REQUEST)
+        } else if self.responder_gateways.contains_key(gateway_id) {
+            Some(LINK_DIRECTION_RESPONSE)
+        } else {
+            None
+        }
+    }
+
     /// Apply every status transition the clock has already made due.
     ///
     /// A reporting operation calls this before it answers: the change was owed

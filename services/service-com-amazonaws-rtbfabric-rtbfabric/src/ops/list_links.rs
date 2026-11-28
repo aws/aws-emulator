@@ -4,13 +4,23 @@
 //!
 //! Enumerates the links one gateway is an end of, a page at a time.
 //!
-//! The listing is scoped by the gateway in the URI: it reports every record of
-//! [`crate::state::ComAmazonawsRtbfabricRtbfabricState::links`] that gateway is an
-//! end of, each rendered from the stored record exactly as `GetLink` renders it —
-//! as addressed, reporting the gateway in the URI and that link's other end as its
-//! peer — so the listing and the single-link reader never disagree. Its only write is the
-//! status transition the clock had already made due at the same instant, which is
-//! what `GetLink` materialises too.
+//! The listing is scoped by the gateway in the URI, and it reports EVERY link that
+//! gateway holds: the records of
+//! [`crate::state::ComAmazonawsRtbfabricRtbfabricState::links`] it is an end of, and
+//! the links with one end outside the fabric that were opened on it —
+//! [`crate::state::ComAmazonawsRtbfabricRtbfabricState::outbound_external_links`] and
+//! [`crate::state::ComAmazonawsRtbfabricRtbfabricState::inbound_external_links`] —
+//! which are that gateway's links exactly as
+//! [`crate::state::ComAmazonawsRtbfabricRtbfabricState::link_counts`] counts them, so
+//! the page and the count this service reports for one gateway cannot disagree.
+//!
+//! Each entry is rendered from the stored record exactly as that record's own reader
+//! renders it — `GetLink` for a link between two gateways, as addressed (the gateway
+//! in the URI, and that link's other end as its peer), and
+//! `GetOutboundExternalLink` / `GetInboundExternalLink` for a link with one end
+//! outside the fabric — so the listing and the single-link readers never disagree.
+//! Its only write is the status transition the clock had already made due at the same
+//! instant, which is what those readers materialise too.
 //!
 //! ## Shape of an operation
 //!
@@ -219,12 +229,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // [`crate::state::LINK_QUOTA`] of them.
         let page_size = crate::state::page_size(input.max_results, None);
 
-        // Ordered by `linkId`, which is what this listing pages by.
-        let mut mine: Vec<&crate::state::Link> = store
-            .links
-            .values()
-            .filter(|link| link.has_end(&input.gateway_id))
-            .collect();
+        // Ordered by `linkId`, which is what this listing pages by. A link of any
+        // kind the gateway holds is one entry, so the three records are rendered
+        // into the one entry shape first and ordered together: one enumeration of
+        // the gateway's links, not one per map.
+        let mut mine: Vec<ListLinksResponseStructure> = links_of(&store, &input.gateway_id);
         mine.sort_unstable_by(|left, right| left.link_id.cmp(&right.link_id));
 
         // Where the cursor resumes, where the page ends and whether a token is
@@ -234,19 +243,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &token_key,
             &walk,
             &mine,
-            |link: &&crate::state::Link| link.link_id.as_str(),
+            |link: &ListLinksResponseStructure| link.link_id.as_str(),
             resume_after.as_deref(),
             page_size,
             now,
         );
-        let page: Vec<ListLinksResponseStructure> = reported
-            .iter()
-            .copied()
-            .map(|link| described(link, &input.gateway_id))
-            .collect();
 
         Ok(ListLinksOutput {
-            links: Some(page),
+            links: Some(reported.to_vec()),
             next_token,
         })
     }
@@ -261,6 +265,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// the shared page walk's own default, named here too so a caller reads the page
 /// it gets off the operation.
 pub use crate::state::DEFAULT_PAGE_SIZE;
+
+/// Every link `gateway_id` holds, as the listing describes them, in no particular
+/// order — the caller orders them by the id it pages by.
+///
+/// A link that gateway is an end of and a link it opened to an endpoint OUTSIDE the
+/// fabric are both links OF that gateway, so both are enumerated here: the store
+/// holds them in records of their own because an external link has no peer gateway,
+/// not because it is a lesser link.
+fn links_of(
+    store: &crate::state::ComAmazonawsRtbfabricRtbfabricState,
+    gateway_id: &str,
+) -> Vec<ListLinksResponseStructure> {
+    store
+        .links
+        .values()
+        .filter(|link| link.has_end(gateway_id))
+        .map(|link| described(link, gateway_id))
+        .chain(
+            store
+                .outbound_external_links
+                .values()
+                .filter(|link| link.gateway_id == gateway_id)
+                .map(|link| described_outbound(link, store)),
+        )
+        .chain(
+            store
+                .inbound_external_links
+                .values()
+                .filter(|link| link.gateway_id == gateway_id)
+                .map(|link| described_inbound(link, store)),
+        )
+        .collect()
+}
 
 /// One stored link as the listing describes it, addressed from `gateway_id`.
 ///
@@ -283,12 +320,85 @@ fn described(link: &crate::state::Link, gateway_id: &str) -> ListLinksResponseSt
         connectivity_type: Some(link.connectivity_type.clone()),
         link_id: link.link_id.clone(),
         tags: (!link.tags.is_empty()).then(|| link.tags.clone()),
-        // A public endpoint belongs to an outbound external link, which only
-        // `CreateOutboundExternalLink` mints; no link this store holds has one, so
-        // nothing is reported for it rather than a synthesised address.
+        // A public endpoint belongs to a link with one end outside the fabric; both
+        // ends of this one are gateways, so there is no address to report.
         public_endpoint: None,
         // Nothing has failed: a resource this emulator stores reaches no failed
         // status, so there is no cause of a failure to report.
         error_details: None,
     }
+}
+
+/// One stored OUTBOUND external link as the listing describes it: every member read
+/// back out of the record, exactly as `GetOutboundExternalLink` reads it — including
+/// the `publicEndpoint` the entry shape carries for precisely this link
+/// ("The public endpoint of the outbound link").
+fn described_outbound(
+    link: &crate::state::OutboundExternalLink,
+    store: &crate::state::ComAmazonawsRtbfabricRtbfabricState,
+) -> ListLinksResponseStructure {
+    ListLinksResponseStructure {
+        gateway_id: link.gateway_id.clone(),
+        peer_gateway_id: peer_of_external(link.gateway_id.as_str()),
+        status: link.status.clone(),
+        created_at: crate::state::timestamp(link.created_at),
+        updated_at: crate::state::timestamp(link.updated_at),
+        direction: store.gateway_link_direction(&link.gateway_id).map(str::to_string),
+        flow_modules: Some(link.flow_modules.clone()),
+        pending_flow_modules: Some(link.pending_flow_modules.clone()),
+        attributes: link.attributes.clone(),
+        log_settings: Some(link.log_settings.clone()),
+        connectivity_type: Some(link.connectivity_type.clone()),
+        link_id: link.link_id.clone(),
+        tags: (!link.tags.is_empty()).then(|| link.tags.clone()),
+        public_endpoint: Some(link.public_endpoint.clone()),
+        // Nothing has failed, exactly as for a link between two gateways: no record this
+        // store holds reaches a failed status, so there is no cause of a failure to report.
+        error_details: None,
+    }
+}
+
+/// One stored INBOUND external link as the listing describes it, read back out of the
+/// record exactly as `GetInboundExternalLink` reads it.
+///
+/// Its outside end is the `domainName` this service assigned it, which this entry
+/// shape has no member for — `publicEndpoint` is documented as the address of an
+/// OUTBOUND link — so nothing is reported there rather than a name under another
+/// member's meaning; `GetInboundExternalLink` is where that name is read.
+fn described_inbound(
+    link: &crate::state::InboundExternalLink,
+    store: &crate::state::ComAmazonawsRtbfabricRtbfabricState,
+) -> ListLinksResponseStructure {
+    ListLinksResponseStructure {
+        gateway_id: link.gateway_id.clone(),
+        peer_gateway_id: peer_of_external(link.gateway_id.as_str()),
+        status: link.status.clone(),
+        created_at: crate::state::timestamp(link.created_at),
+        updated_at: crate::state::timestamp(link.updated_at),
+        direction: store.gateway_link_direction(&link.gateway_id).map(str::to_string),
+        flow_modules: Some(link.flow_modules.clone()),
+        pending_flow_modules: Some(link.pending_flow_modules.clone()),
+        attributes: link.attributes.clone(),
+        log_settings: Some(link.log_settings.clone()),
+        connectivity_type: Some(link.connectivity_type.clone()),
+        link_id: link.link_id.clone(),
+        tags: (!link.tags.is_empty()).then(|| link.tags.clone()),
+        public_endpoint: None,
+        // Nothing has failed, exactly as for a link between two gateways: no record this
+        // store holds reaches a failed status, so there is no cause of a failure to report.
+        error_details: None,
+    }
+}
+
+/// What a link with one end OUTSIDE the fabric reports as its `peerGatewayId`: the
+/// gateway it was created on, which is the only gateway such a link has.
+///
+/// The member is `@required` and its target is a `GatewayId`, so an entry cannot omit
+/// it and cannot carry an address instead; and naming any OTHER gateway would claim a
+/// link between two gateways that this store does not hold. What tells an external
+/// entry apart is its `connectivityType` (`PUBLIC_EGRESS` or `EXTERNAL_INBOUND`,
+/// neither of which a link between two gateways carries) and, outbound, its
+/// `publicEndpoint`.
+fn peer_of_external(gateway_id: &str) -> String {
+    gateway_id.to_string()
 }
