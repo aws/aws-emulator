@@ -3058,6 +3058,59 @@ pub(crate) const BATCH_JOB_STATE_TIME_LIMIT_ACTION_MEMBERS: &[(&str, &str)] = &[
     ("State", "state"),
 ];
 
+/// One LIST-valued Batch property whose entries are modelled STRUCTURES: the property as the
+/// resource type spells it, the member the call takes it under, and the members of one entry.
+pub(crate) type BatchEntryList<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+/// The three list-valued properties of an `AWS::Batch::JobQueue`, which `CreateJobQueue` and
+/// `UpdateJobQueue` take under the same member names.
+pub(crate) const BATCH_JOB_QUEUE_ENTRY_LISTS: &[BatchEntryList<'static>] = &[
+    (
+        "ComputeEnvironmentOrder",
+        "computeEnvironmentOrder",
+        BATCH_COMPUTE_ENVIRONMENT_ORDER_MEMBERS,
+    ),
+    (
+        "ServiceEnvironmentOrder",
+        "serviceEnvironmentOrder",
+        BATCH_SERVICE_ENVIRONMENT_ORDER_MEMBERS,
+    ),
+    (
+        "JobStateTimeLimitActions",
+        "jobStateTimeLimitActions",
+        BATCH_JOB_STATE_TIME_LIMIT_ACTION_MEMBERS,
+    ),
+];
+
+/// The one list-valued property of an `AWS::Batch::ServiceEnvironment`, which
+/// `CreateServiceEnvironment` and `UpdateServiceEnvironment` likewise share.
+pub(crate) const BATCH_SERVICE_ENVIRONMENT_ENTRY_LISTS: &[BatchEntryList<'static>] =
+    &[("CapacityLimits", "capacityLimits", BATCH_CAPACITY_LIMIT_MEMBERS)];
+
+/// Carry each list-valued property of `lists` into `request` under its member name, every entry
+/// mapped member by member ([`mapped_members`]) rather than passed through — the entries being
+/// modelled structures whose members the type spells with an upper-case initial.
+///
+/// The ONE mapping of these properties, shared by the create of each of the two types and by
+/// the change applied to one that already exists ([`super::super::batch_in_place`]), so the two
+/// paths cannot drift. A property the declaration does not carry is not sent: on a create there
+/// is nothing to send, and on an update an omitted member is what means "no change".
+pub(crate) fn carry_batch_entry_lists(
+    properties: &Map<String, Value>,
+    lists: &[BatchEntryList<'_>],
+    request: &mut Map<String, Value>,
+) {
+    for (property, member, members) in lists {
+        if let Some(Value::Array(entries)) = properties.get(*property) {
+            let entries: Vec<Value> = entries
+                .iter()
+                .map(|entry| mapped_members(entry, members))
+                .collect();
+            request.insert((*member).to_string(), Value::Array(entries));
+        }
+    }
+}
+
 /// The `AWS::Batch::ServiceEnvironment` properties `CreateServiceEnvironment` takes whose
 /// value goes through unchanged under its lower-camel member name.
 ///
@@ -3192,31 +3245,7 @@ pub(crate) async fn create_job_queue(
         Value::String(batch_resource_name(&resource.physical_resource_id).to_string()),
     );
     copy_members(&properties, BATCH_JOB_QUEUE_MEMBERS, &mut request);
-    for (property, member, members) in [
-        (
-            "ComputeEnvironmentOrder",
-            "computeEnvironmentOrder",
-            BATCH_COMPUTE_ENVIRONMENT_ORDER_MEMBERS,
-        ),
-        (
-            "ServiceEnvironmentOrder",
-            "serviceEnvironmentOrder",
-            BATCH_SERVICE_ENVIRONMENT_ORDER_MEMBERS,
-        ),
-        (
-            "JobStateTimeLimitActions",
-            "jobStateTimeLimitActions",
-            BATCH_JOB_STATE_TIME_LIMIT_ACTION_MEMBERS,
-        ),
-    ] {
-        if let Some(Value::Array(entries)) = properties.get(property) {
-            let entries: Vec<Value> = entries
-                .iter()
-                .map(|entry| mapped_members(entry, members))
-                .collect();
-            request.insert(member.to_string(), Value::Array(entries));
-        }
-    }
+    carry_batch_entry_lists(&properties, BATCH_JOB_QUEUE_ENTRY_LISTS, &mut request);
     let tags = tags_as_map(&tags_of(&resource.properties, propagated));
     if !tags.is_empty() {
         request.insert("tags".to_string(), Value::Object(tags));
@@ -3289,13 +3318,7 @@ pub(crate) async fn create_service_environment(
         Value::String(batch_resource_name(&resource.physical_resource_id).to_string()),
     );
     copy_members(&properties, BATCH_SERVICE_ENVIRONMENT_MEMBERS, &mut request);
-    if let Some(Value::Array(limits)) = properties.get("CapacityLimits") {
-        let limits: Vec<Value> = limits
-            .iter()
-            .map(|limit| mapped_members(limit, BATCH_CAPACITY_LIMIT_MEMBERS))
-            .collect();
-        request.insert("capacityLimits".to_string(), Value::Array(limits));
-    }
+    carry_batch_entry_lists(&properties, BATCH_SERVICE_ENVIRONMENT_ENTRY_LISTS, &mut request);
     let tags = tags_as_map(&tags_of(&resource.properties, propagated));
     if !tags.is_empty() {
         request.insert("tags".to_string(), Value::Object(tags));

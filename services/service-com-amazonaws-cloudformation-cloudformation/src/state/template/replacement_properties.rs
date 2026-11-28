@@ -1071,6 +1071,19 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
             "OutpostArn",
             "SnapshotId",
         ],
+        // An AWS Batch JOB QUEUE keeps the KIND of queue it is: `jobQueueType` is a member of
+        // `CreateJobQueue` and of no part of `UpdateJobQueue` — which takes a queue's
+        // priority, state, scheduling policy and ordered lists and nothing else — so a
+        // declaration stating another kind asks for a DIFFERENT queue, which CloudFormation
+        // replaces. Every other property of the type reaches the queue in place
+        // ([`crate::state::provisioner::in_place_changes`]), and its NAME is in this position
+        // through [`name_is_create_only`].
+        BATCH_JOB_QUEUE => &["JobQueueType"],
+        // An AWS Batch SERVICE ENVIRONMENT is the same case: `serviceEnvironmentType` is a
+        // member of `CreateServiceEnvironment` alone, `UpdateServiceEnvironment` taking an
+        // environment's state and its capacity limits, so a declaration stating another type
+        // asks for a different environment.
+        BATCH_SERVICE_ENVIRONMENT => &["ServiceEnvironmentType"],
         _ => composite_identity_properties(resource_type),
     }
 }

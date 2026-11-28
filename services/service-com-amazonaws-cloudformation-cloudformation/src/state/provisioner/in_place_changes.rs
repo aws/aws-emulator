@@ -967,6 +967,30 @@ impl Provisioner {
                     .await
                     .map(Some)
             }
+            // Every property of an `AWS::Batch::JobQueue` that `UpdateJobQueue` takes a
+            // member for — its priority, its state, its scheduling policy and the three
+            // ordered lists — is applied to the queue AWS Batch already holds, addressed by
+            // the ARN this resource publishes, so the queue keeps that ARN and nothing that
+            // reads it is invalidated ([`batch_in_place::update_batch_job_queue`]). Its name
+            // and its `JobQueueType` are members of that call at no point, so a declaration
+            // restating either replaces the queue instead
+            // ([`super::super::template::replacement_properties`],
+            // [`super::super::template::name_is_create_only`]); its tags travel separately
+            // ([`Self::retag`]).
+            Self::BatchJobQueue => {
+                update_batch_job_queue(ctx, region, resource, declared).await
+            }
+            // The same reading of the other two Batch types whose configuration that service
+            // can rewrite where it stands: `UpdateServiceEnvironment` takes an environment's
+            // state and the capacity it is limited to, and `UpdateSchedulingPolicy` takes a
+            // policy's whole share policy — each addressed by the ARN the create minted,
+            // which the resource keeps.
+            Self::BatchServiceEnvironment => {
+                update_batch_service_environment(ctx, region, resource, declared).await
+            }
+            Self::BatchSchedulingPolicy => {
+                update_batch_scheduling_policy(ctx, region, resource, declared).await
+            }
             _ => Ok(None),
         }
     }

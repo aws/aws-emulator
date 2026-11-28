@@ -488,7 +488,11 @@ fn job_queue_of(arn: &str) -> &str {
 /// The declared properties of `structures` as their create takes them: each under the member
 /// it is, with every member name INSIDE it spelled as the API member it is
 /// ([`camel_cased`]). A property the template leaves out is not sent.
-fn carry_structures(
+///
+/// The ONE mapping of a Batch structure-valued property, shared by the create of a scheduling
+/// policy and a quota share here with the change applied to a policy that already exists
+/// ([`super::batch_in_place`]).
+pub(super) fn carry_structures(
     properties: &Map<String, Value>,
     structures: &[(&str, &str)],
     request: &mut Map<String, Value>,

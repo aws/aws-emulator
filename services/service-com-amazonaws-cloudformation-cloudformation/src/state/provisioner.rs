@@ -3731,6 +3731,12 @@ use application_insights::*;
 use auto_scaling_policies::*;
 use auto_scaling_group_children::*;
 use batch_job_definitions::*;
+/// The AWS Batch IN-PLACE arms: applying a changed declaration to the job queue, service
+/// environment or scheduling policy a stack already created, through the one call AWS Batch
+/// publishes for reconfiguring each where it stands — beside the creates, deletes and reads
+/// of those types ([`network_and_delivery`], [`batch_share_policies`]).
+mod batch_in_place;
+use batch_in_place::*;
 pub(crate) use batch_share_policies::*;
 use compute_fleet::*;
 pub(crate) use network_and_delivery::*;
