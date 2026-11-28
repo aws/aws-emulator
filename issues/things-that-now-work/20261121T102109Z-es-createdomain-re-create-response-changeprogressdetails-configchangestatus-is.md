@@ -67,3 +67,32 @@ Smithy cited: com.amazonaws.opensearch#ChangeProgressDetails{ChangeId: GUID, Mes
 3. Cause 1: read $.DomainStatus.ChangeProgressDetails.ConfigChangeStatus on that create response — it must be 'Initializing', not 'Pending'.
 4. Cause 2: compare $.DomainStatus.ModifyingProperties element-by-element against the recorded response: the AccessPolicies entry's PendingValue must echo the submitted principal unrewritten; the AdvancedSecurityOptions sub-property entries must carry PendingValue 'false'; the TAGS entry must be present at its AWS position as PLAIN_TEXT with an empty PendingValue; and ClusterConfig.ColdStorageOptions / AutomatedSnapshotPauseOptions must be present instead of AutoTuneOptions / CognitoOptions / DeploymentStrategyOptions at those indices.
 5. The step should pass against the recorded response.
+
+## Disposition
+
+Cause 2 is served by this code base and is now pinned on the axis this report is about (a create
+under a name the service has held before); cause 1 is DECLINED as a per-run value.
+
+* Cause 2 — the `ModifyingProperties` projection of the re-create matches the recorded entry set,
+  order, per-entry `PendingValue`/`ValueType` and the submitted access-policy principal: the
+  projection is built from the service's property enumeration and the document is stored verbatim
+  (`src/service/domain_configuration.rs`), and a replay of the bound step reports no
+  `ModifyingProperties` key for it. What was missing was a test on the RE-CREATE axis — every
+  existing suite measures the projection on a name the service never held — so
+  `tests/all/re_created_domain_change_projection.rs` now holds the projection of a create under a
+  re-used name to a first create's, property for property, over a table of name histories and two
+  create bodies.
+* Cause 1 — `$.DomainStatus.ChangeProgressDetails.ConfigChangeStatus`, this report's only replay
+  key — DECLINED. Which state of its own apply workflow the service has reached when it serialises
+  a create response is a per-run race rather than a rule, and the corpus records both sides of it
+  for the IDENTICAL key: `Pending` on five creates (see
+  `20261029T190009Z-es-domainstatus-and-domainconfig-responses-omit-modeled-option.md`, cause 1 and
+  its evidence line "expected 'Pending', got 'ApplyingChanges'"), `Completed` on another re-create
+  (`20261104T094756Z-es-domain-existence-and-read-paths-answer-the.md`, cause 1) and `Initializing`
+  on this one step. The emulator reports a modelled `ConfigChangeStatus` member for the state the
+  change is really in, the same value on every path that reports that change, advancing it as the
+  clock makes the change due; answering `Initializing` on every create would fit this one recording
+  and break the five that record `Pending`. The invariants the value does owe — a modelled member,
+  one status per change per instant, moving only forward, `Completed` once the change has landed,
+  and independent of whether the name was held before — are pinned by the new suite and by
+  `tests/all/change_progress/change_status_reported_consistently.rs`.

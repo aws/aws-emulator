@@ -52,7 +52,10 @@ const MASTER_PASSWORD: &str = "Master-pass-1!";
 /// An access policy naming the account as the bare account id a caller writes it as —
 /// the form the document has to come back in, since the service holds the document the
 /// caller submitted rather than one it re-authored.
-fn submitted_policy() -> String {
+///
+/// This suite owns that document: a sibling suite that needs the same submitted policy
+/// reaches it here rather than growing a second copy of it.
+pub(crate) fn submitted_policy() -> String {
     format!(
         "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\"Principal\":\
          {{\"AWS\":\"{}\"}},\"Action\":\"es:*\",\"Resource\":\"*\"}}]}}",

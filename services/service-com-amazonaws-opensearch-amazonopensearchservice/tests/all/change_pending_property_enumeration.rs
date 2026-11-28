@@ -47,14 +47,9 @@ const REPORTED_ONLY_BY_A_DESCRIPTOR: [&str; 4] = [
 /// `MasterUserOptions$MasterUserPassword`'s modelled length (8..128).
 const MASTER_PASSWORD: &str = "Master-pass-1!";
 
-/// An access policy naming the account as the bare account id a caller writes it as.
-fn submitted_policy() -> String {
-    format!(
-        "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\"Principal\":\
-         {{\"AWS\":\"{}\"}},\"Action\":\"es:*\",\"Resource\":\"*\"}}]}}",
-        ::engine::emulator_account_id()
-    )
-}
+// An access policy naming the account as the bare account id a caller writes it as: the
+// document `crate::change_property_enumeration` owns, reached rather than copied.
+use crate::change_property_enumeration::submitted_policy;
 
 /// One create to make: the case it stands for and the body to send, less the domain name.
 fn rows() -> Vec<(&'static str, Value)> {
