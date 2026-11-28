@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateEvent
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateEvent`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateEvent::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Appends an event to a space's event log and answers the stored record's identifiers.
+//! The service owns three of them: the `eventId`, the `sessionId` when the request names
+//! none, and the `eventTimestamp` when the request omits it.
 //!
 //! ## Shape of an operation
 //!
@@ -193,18 +188,172 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateEvent` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateEventErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateEvent"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateEventErrorModeled::InternalServerException(
+                crate::state::store_unreachable("CreateEvent"),
+            )
+            .into());
+        };
+
+        let now = ::std::time::SystemTime::now();
+        // "When the event occurred. The default is the time that the service receives
+        // the request."
+        let event_timestamp_millis = input
+            .event_timestamp
+            .as_ref()
+            .map_or_else(
+                || crate::state::epoch_millis_of(now),
+                crate::state::epoch_millis,
+            );
+
+        let metadata: ::std::collections::BTreeMap<String, String> =
+            input.metadata.unwrap_or_default().into_iter().collect();
+        crate::state::check_metadata_keys(metadata.keys())
+            .map_err(CreateEventErrorModeled::ValidationException)?;
+        crate::state::check_payload(&input.payload)
+            .map_err(CreateEventErrorModeled::ValidationException)?;
+
+        let fingerprint = crate::state::create_event_fingerprint(
+            &input.space_id,
+            &input.actor_id,
+            input.session_id.as_deref(),
+            &input.payload,
+            &metadata,
+            input.infer,
+        );
+
+        let mut store = state.lock();
+        store.settle_due(now);
+
+        // The space must exist and must have finished provisioning: "Call GetSpace until
+        // the status is ACTIVE, and then use the space."
+        match store.spaces.get(&input.space_id) {
+            None => {
+                return Err(CreateEventErrorModeled::ResourceNotFoundException(
+                    crate::state::space_not_found(&input.space_id),
+                )
+                .into())
+            }
+            Some(space) if !space.accepts_events() => {
+                return Err(CreateEventErrorModeled::ConflictException(
+                    crate::state::space_busy(space),
+                )
+                .into())
+            }
+            Some(_) => {}
+        }
+
+        // An `@idempotencyToken` replay. "Within 2 hours of the first request, a retry
+        // with the same token and the same request, including the same sessionId,
+        // returns the same event. If you omit sessionId, the service generates a new one
+        // on each attempt, so a retry fails with ConflictException."
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(record) = store.create_event_tokens.get(token) {
+                if !record.named_session || record.fingerprint != fingerprint {
+                    return Err(CreateEventErrorModeled::ConflictException(
+                        crate::state::token_reused(token, &record.event_id),
+                    )
+                    .into());
+                }
+                if let Some(stored) = store
+                    .spaces
+                    .get(&record.space_id)
+                    .and_then(|space| space.events.get(&record.event_id))
+                {
+                    return Ok(CreateEventOutput {
+                        event: stored.detail(),
+                    });
+                }
+            }
+        }
+
+        // "If you omit it, the service generates a session ID and returns it."
+        let session_id = match input.session_id.clone() {
+            Some(named) => named,
+            None => store.mint_session_id(),
+        };
+
+        let Some(space) = store.spaces.get_mut(&input.space_id) else {
+            return Err(CreateEventErrorModeled::ResourceNotFoundException(
+                crate::state::space_not_found(&input.space_id),
+            )
+            .into());
+        };
+
+        // "A space can use at most 50 distinct metadata keys across all of its events
+        // and memories. A request that would add a key beyond that fails with
+        // ValidationException."
+        let mut metadata_keys = space.metadata_keys.clone();
+        metadata_keys.extend(metadata.keys().cloned());
+        if metadata_keys.len() > crate::state::MAX_METADATA_KEYS_PER_SPACE {
+            return Err(CreateEventErrorModeled::ValidationException(
+                crate::state::invalid_field(
+                    "metadata",
+                    format!(
+                        "Space {} would use more than {} distinct metadata keys. Reuse an \
+                         existing key instead.",
+                        space.space_id,
+                        crate::state::MAX_METADATA_KEYS_PER_SPACE
+                    ),
+                    "fieldValidationFailed",
+                ),
+            )
+            .into());
+        }
+        if space.events.len() >= crate::state::MAX_EVENTS_PER_SPACE {
+            return Err(CreateEventErrorModeled::ValidationException(
+                crate::state::invalid_field(
+                    "spaceId",
+                    format!(
+                        "Space {} already holds the maximum of {} events.",
+                        space.space_id,
+                        crate::state::MAX_EVENTS_PER_SPACE
+                    ),
+                    "other",
+                ),
+            )
+            .into());
+        }
+
+        let (event_id, seq) = space.mint_event_id();
+        space.metadata_keys = metadata_keys;
+        space.events.insert(
+            event_id.clone(),
+            crate::state::StoredEvent {
+                event_id: event_id.clone(),
+                space_id: space.space_id.clone(),
+                actor_id: input.actor_id,
+                session_id,
+                event_timestamp_millis,
+                payload: input.payload,
+                metadata,
+                seq,
+            },
+        );
+
+        // The answer is read back OUT of the record just appended.
+        let Some(event) = space.events.get(&event_id).map(|stored| stored.detail()) else {
+            return Err(CreateEventErrorModeled::InternalServerException(
+                crate::state::store_unreachable("CreateEvent"),
+            )
+            .into());
+        };
+        let space_id = space.space_id.clone();
+
+        if let Some(token) = input.client_token {
+            store.remember_create_event_token(
+                token,
+                crate::state::CreateEventToken {
+                    space_id,
+                    event_id,
+                    named_session: input.session_id.is_some(),
+                    fingerprint,
+                    recorded_at: now,
+                },
+            );
+        }
+
+        Ok(CreateEventOutput { event })
     }
 }

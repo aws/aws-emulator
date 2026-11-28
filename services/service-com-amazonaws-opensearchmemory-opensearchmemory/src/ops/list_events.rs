@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListEvents
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListEvents`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListEvents::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Pages a session's stored events in `eventTimestamp` order. The cursor is a position
+//! in the requested ordering ([`crate::state::encode_page_token`]), so the next page
+//! continues exactly where the previous one stopped.
 //!
 //! ## Shape of an operation
 //!
@@ -181,18 +176,131 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListEvents` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListEventsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListEvents"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListEventsErrorModeled::InternalServerException(
+                crate::state::store_unreachable("ListEvents"),
+            )
+            .into());
+        };
+
+        // "The order of the results by eventTimestamp: ASC or DESC. The default is DESC,
+        // most recent first."
+        let order = input.sort_order.clone().unwrap_or_else(|| "DESC".to_string());
+        let descending = order != "ASC";
+        let page_size = usize::try_from(
+            input
+                .max_results
+                .unwrap_or(crate::state::DEFAULT_LIST_EVENTS_PAGE_SIZE)
+                .clamp(crate::state::MIN_PAGE_SIZE, crate::state::MAX_PAGE_SIZE),
+        )
+        .unwrap_or(1);
+
+        let after = input.event_timestamp_after.as_ref().map(crate::state::epoch_millis);
+        let before = input.event_timestamp_before.as_ref().map(crate::state::epoch_millis);
+        // "If it's later than eventTimestampBefore, the request fails with
+        // ValidationException."
+        if let (Some(after), Some(before)) = (after, before) {
+            if after > before {
+                return Err(ListEventsErrorModeled::ValidationException(
+                    crate::state::invalid_field(
+                        "eventTimestampAfter",
+                        "eventTimestampAfter must not be later than eventTimestampBefore.",
+                        "fieldValidationFailed",
+                    ),
+                )
+                .into());
+            }
+        }
+
+        let scope = crate::state::list_events_scope(
+            &input.space_id,
+            &input.actor_id,
+            &input.session_id,
+            &order,
+        );
+        let resume = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => match crate::state::decode_page_token(&scope, token) {
+                Some(position) => Some(position),
+                None => {
+                    return Err(ListEventsErrorModeled::ValidationException(
+                        crate::state::invalid_field(
+                            "nextToken",
+                            "nextToken is not a token this service issued for this listing.",
+                            "invalidNextToken",
+                        ),
+                    )
+                    .into())
+                }
+            },
+        };
+
+        let filters = input.metadata_filters.unwrap_or_default();
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_due(now);
+
+        let Some(space) = store
+            .spaces
+            .get(&input.space_id)
+            .filter(|space| space.serves_events())
+        else {
+            return Err(ListEventsErrorModeled::ResourceNotFoundException(
+                crate::state::space_not_found(&input.space_id),
+            )
+            .into());
+        };
+
+        let mut matching: Vec<&crate::state::StoredEvent> = space
+            .events
+            .values()
+            .filter(|event| event.actor_id == input.actor_id)
+            .filter(|event| event.session_id == input.session_id)
+            // Both bounds are INCLUSIVE, per the members' own docs.
+            .filter(|event| after.is_none_or(|after| event.event_timestamp_millis >= after))
+            .filter(|event| before.is_none_or(|before| event.event_timestamp_millis <= before))
+            // "Returns only events whose metadata contains every one of these
+            // key-value pairs."
+            .filter(|event| {
+                filters.iter().all(|(key, value)| {
+                    event.metadata.get(key).is_some_and(|stored| stored == value)
+                })
+            })
+            .collect();
+        matching.sort_by_key(|event| event.sort_key());
+        if descending {
+            matching.reverse();
+        }
+
+        // Resume STRICTLY after the position the cursor names, in the requested order,
+        // whether or not the event at that position still exists.
+        let rest: Vec<&crate::state::StoredEvent> = matching
+            .into_iter()
+            .filter(|event| {
+                resume.is_none_or(|position| {
+                    if descending {
+                        event.sort_key() < position
+                    } else {
+                        event.sort_key() > position
+                    }
+                })
+            })
+            .collect();
+
+        let events: Vec<EventSummary> = rest
+            .iter()
+            .take(page_size)
+            .map(|event| event.summary())
+            .collect();
+        // A cursor is issued only when a matching event is left after this page, so an
+        // exhausted listing never hands one out.
+        let next_token = (rest.len() > page_size)
+            .then(|| rest.get(page_size.saturating_sub(1)))
+            .flatten()
+            .map(|last| crate::state::encode_page_token(&scope, last.sort_key()));
+
+        Ok(ListEventsOutput { events, next_token })
     }
 }

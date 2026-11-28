@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteSpace
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteSpace`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteSpace::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Starts the delete: the space is reported `DELETING`, and the purge the clock owes
+//! comes due one [`crate::state::TRANSITION_SPAN`] later, after which `GetSpace`
+//! answers `ResourceNotFoundException`. Nothing sleeps for it.
 //!
 //! ## Shape of an operation
 //!
@@ -166,18 +161,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteSpace` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteSpaceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteSpace"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteSpaceErrorModeled::InternalServerException(
+                crate::state::store_unreachable("DeleteSpace"),
+            )
+            .into());
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_due(now);
+
+        let Some(space) = store.spaces.get_mut(&input.space_id) else {
+            return Err(DeleteSpaceErrorModeled::ResourceNotFoundException(
+                crate::state::space_not_found(&input.space_id),
+            )
+            .into());
+        };
+
+        match space.status {
+            // "A space that is CREATING or UPDATING can't be deleted until that
+            // finishes: the request fails with ConflictException."
+            crate::state::SpaceStatus::Creating | crate::state::SpaceStatus::Updating => {
+                return Err(DeleteSpaceErrorModeled::ConflictException(
+                    crate::state::space_busy(space),
+                )
+                .into())
+            }
+            // "Deleting a space that is already DELETING returns DELETING again."
+            crate::state::SpaceStatus::Deleting => {}
+            _ => {
+                space.status = crate::state::SpaceStatus::Deleting;
+                space.pending = Some(crate::state::PendingSpaceChange {
+                    due: now + crate::state::TRANSITION_SPAN,
+                    target: crate::state::SpaceStatus::Deleted,
+                });
+            }
+        }
+
+        Ok(DeleteSpaceOutput {
+            space_id: space.space_id.clone(),
+            status: space.status.as_str().to_string(),
+        })
     }
 }

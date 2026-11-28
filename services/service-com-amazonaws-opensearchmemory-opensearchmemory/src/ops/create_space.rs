@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateSpace
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateSpace`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateSpace::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Mints a space, stores it, and answers from the stored record. The space is reported
+//! `CREATING`, and the `CREATING` -> `ACTIVE` move the clock owes comes due one
+//! [`crate::state::TRANSITION_SPAN`] later — nothing sleeps for it.
 //!
 //! ## Shape of an operation
 //!
@@ -201,18 +196,123 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateSpace` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateSpaceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateSpace"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateSpaceErrorModeled::InternalServerException(
+                crate::state::store_unreachable("CreateSpace"),
+            )
+            .into());
+        };
+
+        // Everything whose size the caller chose is resolved BEFORE the shared store is
+        // locked, so no such work runs inside the critical section.
+        let strategies =
+            crate::state::resolve_memory_strategies(input.memory_strategies.unwrap_or_default())
+                .map_err(CreateSpaceErrorModeled::ValidationException)?;
+        crate::state::check_extraction_model_id(input.extraction_model_id.as_deref())
+            .map_err(CreateSpaceErrorModeled::ValidationException)?;
+
+        let tags = input.tags.unwrap_or_default();
+        let fingerprint = crate::state::create_space_fingerprint(
+            &input.name,
+            &strategies,
+            input.event_expiry_days,
+            input.memory_expiry_days,
+            input.extraction_model_id.as_deref(),
+            input.encryption_configuration.as_ref(),
+            &tags,
+        );
+
+        // The ARN names the region the request was signed for and the emulator's
+        // canonical account id. It is STORED on the record, so every later read reports
+        // the same ARN however that read is signed.
+        let region = emulator_server::sigv4_credential_scope(&ctx.parts().headers)
+            .map(|scope| scope.region)
+            .unwrap_or_else(|| crate::state::DEFAULT_REGION.to_string());
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_due(now);
+
+        // An `@idempotencyToken` replay: the same token with the same parameters answers
+        // the space the FIRST request created; with different parameters it conflicts.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(record) = store.create_space_tokens.get(token) {
+                if record.fingerprint != fingerprint {
+                    return Err(CreateSpaceErrorModeled::ConflictException(
+                        crate::state::token_reused(token, &record.space_id),
+                    )
+                    .into());
+                }
+                if let Some(space) = store.spaces.get(&record.space_id) {
+                    return Ok(space.create_output());
+                }
+            }
+        }
+
+        // "A name for the space, unique within your account in the Region. If another
+        // space already has the name, the request fails with ConflictException."
+        if let Some(existing) = store.spaces.values().find(|space| space.name == input.name) {
+            return Err(CreateSpaceErrorModeled::ConflictException(
+                crate::state::duplicate_space_name(&input.name, &existing.space_id),
+            )
+            .into());
+        }
+        if store.spaces.len() >= crate::state::MAX_SPACES {
+            return Err(CreateSpaceErrorModeled::ServiceQuotaExceededException(
+                crate::state::space_quota_exceeded(),
+            )
+            .into());
+        }
+
+        let space_id = store.mint_space_id();
+        let space = crate::state::Space {
+            arn: crate::state::space_arn(&region, &space_id),
+            space_id: space_id.clone(),
+            name: input.name,
+            // "The operation returns before provisioning finishes, with status
+            // CREATING": the move to ACTIVE is owed at `pending.due`.
+            status: crate::state::SpaceStatus::Creating,
+            status_reason: None,
+            created_at_millis: crate::state::epoch_millis_of(now),
+            memory_strategies: strategies,
+            event_expiry_days: input.event_expiry_days,
+            memory_expiry_days: input.memory_expiry_days,
+            extraction_model_id: input.extraction_model_id,
+            encryption_configuration: input.encryption_configuration,
+            tags,
+            events: ::std::collections::BTreeMap::new(),
+            metadata_keys: ::std::collections::BTreeSet::new(),
+            pending: Some(crate::state::PendingSpaceChange {
+                due: now + crate::state::TRANSITION_SPAN,
+                target: crate::state::SpaceStatus::Active,
+            }),
+            next_event_seq: 0,
+        };
+
+        // The response is read back OUT of the record that was stored, never assembled
+        // from the request.
+        store.spaces.insert(space_id.clone(), space);
+        let output = store
+            .spaces
+            .get(&space_id)
+            .map(crate::state::Space::create_output)
+            .ok_or_else(|| {
+                CreateSpaceErrorModeled::InternalServerException(crate::state::store_unreachable(
+                    "CreateSpace",
+                ))
+            })?;
+
+        if let Some(token) = input.client_token {
+            store.remember_create_space_token(
+                token,
+                crate::state::CreateSpaceToken {
+                    space_id,
+                    fingerprint,
+                    recorded_at: now,
+                },
+            );
+        }
+
+        Ok(output)
     }
 }
