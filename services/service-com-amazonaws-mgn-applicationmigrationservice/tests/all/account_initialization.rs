@@ -88,13 +88,15 @@ impl Answer {
 
 /// One emulator holding BOTH services on one engine: this service, and the IAM service
 /// that owns the resources an initialization establishes.
-struct Emulator {
-    router: MultiServiceRouter,
+pub(crate) struct Emulator {
+    /// The router both services are mounted on, shared with the sibling suite that SERVES
+    /// it on a socket to read the bytes a client really gets.
+    pub(crate) router: MultiServiceRouter,
     engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -226,7 +228,7 @@ impl Emulator {
     /// every further role — the quota its own `CreateRole` and `CreateServiceLinkedRole`
     /// refuse past. `held` names roles to put among them, for a profile that must hold
     /// one.
-    fn fill_role_quota(&self, held: &[&str]) {
+    pub(crate) fn fill_role_quota(&self, held: &[&str]) {
         let store = self.iam_store();
         let mut store = store.lock();
         // The account already holds the roles AWS created WITH it — the service-linked role
@@ -256,7 +258,7 @@ impl Emulator {
 
     /// Fill the account's IAM instance profiles to
     /// [`iam::MAX_INSTANCE_PROFILES_PER_ACCOUNT`], so IAM refuses every further profile.
-    fn fill_instance_profile_quota(&self) {
+    pub(crate) fn fill_instance_profile_quota(&self) {
         let store = self.iam_store();
         let mut store = store.lock();
         for index in 0..iam::MAX_INSTANCE_PROFILES_PER_ACCOUNT {
@@ -281,7 +283,7 @@ impl Emulator {
 
     /// Put an instance profile holding the role of the same name into IAM's store, as if
     /// an earlier initialization had established it.
-    fn seed_instance_profiles(&self, names: &[&str]) {
+    pub(crate) fn seed_instance_profiles(&self, names: &[&str]) {
         let store = self.iam_store();
         let mut store = store.lock();
         for (index, name) in names.iter().enumerate() {

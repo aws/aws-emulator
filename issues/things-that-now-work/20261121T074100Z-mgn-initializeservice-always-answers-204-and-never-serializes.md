@@ -61,3 +61,31 @@ Model support: InitializeService http {POST /InitializeService, code 204}; error
 3. Observe step task#1: POST /InitializeService against the mgn endpoint.
 4. The emulator answers HTTP 204, empty body, no x-amzn-errortype and no Content-Length; the recorded AWS response is HTTP 400 with x-amzn-errortype: ValidationException, a Content-Length, and a com.amazon.mgn#ValidationException body (reason OTHER).
 5. After the fix, re-replay mgn-account-bootstrap#task#1 and confirm the 400 / ValidationException response with the errortype and Content-Length headers.
+
+## Resolution (Cause 1 of 1 declined; the rule it is about is implemented and now pinned on the wire)
+
+The handler defect this report describes no longer exists: `InitializeService` establishes the
+account's service-linked role and the two server instance profiles in the IAM service that owns
+them, records the account as initialized only once IAM reports all three, and answers an attempt
+IAM refuses with the modelled `ValidationException` — HTTP 400, `x-amzn-errortype:
+ValidationException`, a body carrying the `__type` discriminator, the modelled `reason`, and the
+sentence naming WHICH of those resources could not be created, framed with that body's own
+`content-length`. That was implemented under the related report
+`20261104T132908Z-mgn-initializeservice-always-answers-204-success-and-never.md`, after the commit
+this one was filed against.
+
+The cause is DECLINED because the recorded 400 is a fact about the RECORDED account's IAM (its
+service-linked role and instance profiles could not be created there), while this emulator's IAM
+holds no such obstruction: the same call establishes them and concludes with the 204 the model
+states for the success. Refusing a request whose work actually succeeded would be a refusal fitted
+to one recording. Every deterministic condition that does make the establishment fail is served as
+the modelled refusal: the account at IAM's role quota (`Failed to create SLR or instance
+profiles`, the recorded sentence), at its instance-profile quota (`Failed to create instance
+profiles`), and an account holding the profiles but unable to hold the role (`Failed to create
+SLR`). The replay key `mgn|InitializeService|4xx->2xx|$headers.content-length` therefore remains
+unmatched by design.
+
+What this change added: `tests/all/initialization_refusal_on_the_wire.rs`, which serves the two
+services on a loopback port and reads the raw bytes, pinning status, `x-amzn-errortype`, the error
+body and a `content-length` equal to the body that arrived (never the recording's byte count) over
+a table of the three obstruction kinds plus the unobstructed success.
