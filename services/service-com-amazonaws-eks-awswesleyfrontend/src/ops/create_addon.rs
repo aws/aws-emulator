@@ -923,6 +923,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let live = guard.association_arns_owned_by(&record.arn);
         let addon = record.to_addon(&live);
         guard.addons.insert(addon_key, record);
+        // Nothing below reads the store under this guard, and the carrier started next
+        // takes its own.
+        drop(guard);
+
+        // The CloudWatch agent this add-on installs collects the cluster's Container
+        // Insights performance on its own interval and delivers it to CloudWatch Logs,
+        // whether or not anybody calls Amazon EKS again — so the install hands that
+        // collection to a task of this service's own
+        // ([`state::container_insights::drive_container_insights`]). The reads that
+        // materialise this add-on's own status settle the same work, so a client that
+        // polls the add-on and one that only watches the log group see the same records.
+        if input.addon_name == state::CONTAINER_INSIGHTS_ADDON {
+            state::container_insights::drive_container_insights(
+                ctx.callback(),
+                &self.engine,
+                &region,
+            );
+        }
 
         Ok(CreateAddonOutput {
             addon: Some(addon),

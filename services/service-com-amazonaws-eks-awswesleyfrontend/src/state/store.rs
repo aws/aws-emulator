@@ -159,6 +159,28 @@ pub struct ComAmazonawsEksAwswesleyfrontendState {
     /// hold open; dropping an entry closes that cluster's port, which is what
     /// `DeleteCluster` does.
     pub kubernetes_api: BTreeMap<(String, String), kubernetes_api::KubernetesApiPlane>,
+    /// When the CloudWatch agent of each cluster last collected that cluster's
+    /// Container Insights performance, by the cluster's `(region, name)` key
+    /// ([`container_insights`]).
+    ///
+    /// It is what keeps the agent to its own collection interval however often a
+    /// pass runs: a cluster whose stamp is younger than that interval owes no
+    /// collection yet. One entry per COLLECTING cluster, so
+    /// [`MAX_STORED_CLUSTERS`] bounds it, and the entry of a cluster this store no
+    /// longer holds is forgotten with the cluster.
+    pub container_insights_collected: BTreeMap<(String, String), SystemTime>,
+    /// The Regions whose Container Insights collections a task of this service is
+    /// already carrying, each with the instant that task last ran a pass
+    /// ([`container_insights::drive_container_insights`]).
+    ///
+    /// The claim is what keeps one carrier per Region: it is taken by the install
+    /// that starts the task, refreshed by that task and released when it ends, so
+    /// this map is empty whenever no Region of this store is collecting — and a
+    /// claim nothing has refreshed is one whose holder is gone, which a later
+    /// install takes over. A Region collects only while it holds a cluster running
+    /// the add-on, so [`MAX_STORED_CLUSTERS`] bounds how many entries — and so how
+    /// many tasks — this can hold.
+    pub container_insights_carriers: BTreeMap<String, SystemTime>,
     // An asynchronous update is not a field here — it lives on the cluster it
     // updates ([`ClusterRecord::updates`]).
 }
@@ -183,6 +205,8 @@ impl Default for ComAmazonawsEksAwswesleyfrontendState {
             cluster_deletions: BTreeMap::new(),
             cluster_delete_claims: ::std::collections::BTreeSet::new(),
             kubernetes_api: BTreeMap::new(),
+            container_insights_collected: BTreeMap::new(),
+            container_insights_carriers: BTreeMap::new(),
         }
     }
 }

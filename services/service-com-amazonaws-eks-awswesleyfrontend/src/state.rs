@@ -4653,6 +4653,10 @@ mod cluster_insights;
 mod cluster_parameters;
 mod cluster_record;
 mod cluster_validation;
+// The Container Insights data plane names its own `settle` and `drive`, which say what
+// they are only under the module that owns them, so it is a module rather than a glob
+// re-export — like the other data-plane slices below.
+pub mod container_insights;
 mod control_plane_logs;
 mod control_plane_scaling_tiers;
 mod derived_identifiers;
@@ -4719,6 +4723,9 @@ pub use cluster_insights::*;
 pub use cluster_parameters::*;
 pub use cluster_record::*;
 pub use cluster_validation::*;
+pub use container_insights::{
+    performance_log_group, settle_container_insights, CONTAINER_INSIGHTS_ADDON,
+};
 pub use control_plane_logs::*;
 pub use derived_identifiers::*;
 pub use eks_anywhere_subscriptions::*;

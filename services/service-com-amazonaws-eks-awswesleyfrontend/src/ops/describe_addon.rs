@@ -167,6 +167,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // What the CloudWatch agent of a cluster of this Region still OWES CloudWatch
+        // Logs — the Container Insights performance its collection interval has made due
+        // — is delivered before the add-on is read. The agent runs because the add-on is
+        // `ACTIVE`, and it collects on its own interval whether or not anybody called, so
+        // this read materialises what the clock already owed (see
+        // [`crate::state::settle_container_insights`]). A cluster running no agent owes
+        // nothing and nothing is asked of CloudWatch Logs.
+        crate::state::settle_container_insights(ctx.callback(), &*self.engine, &region).await;
+
         let mut guard = store.lock();
         guard.materialize_due_transitions(SystemTime::now());
 
