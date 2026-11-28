@@ -9,9 +9,9 @@
 //! table walk, a batched or transactional request) names the member by its WIRE spelling and
 //! echoes NO value, while a CONTROL-PLANE listing names it by the lowerCamel path the
 //! request validator builds and DOES echo the rejected value. One member is recorded on BOTH
-//! sides of that line: the page size the item reads SHARE with the listings, which both item
-//! reads state in the wire form and a listing in the validator's — and the walk's own
-//! parallel-scan bounds stay in the wire form with it.
+//! sides of that line, and it splits the two item reads apart: the page size the KEYED read
+//! states in the wire form is stated by the table WALK — and by the listings — in the
+//! validator's, while the walk's own parallel-scan bounds stay in the wire form.
 //!
 //! Nothing in the model distinguishes the two forms: `Query$Limit` and `Scan$Limit` target the
 //! same shape with the same trait, and `ListBackups$Limit`/`ListTables$Limit` declare the same
@@ -123,30 +123,51 @@ async fn refusal(
     message(&body)
 }
 
-/// RULE: BOTH item reads state the page size they share by its wire spelling, with none of
-/// the rejected value echoed — whatever the value is.
+/// RULE: the page size the two item reads share is stated in the form each of them gives that
+/// member — the KEYED read by its wire spelling with none of the rejected value echoed, the
+/// table WALK by the validator's path with that value quoted — whatever the value is.
 #[tokio::test]
-async fn both_item_requests_state_one_page_size_bound_the_one_way() {
+async fn each_item_request_states_the_shared_page_size_bound_its_own_way() {
     let router = seeded().await;
 
-    let expected = envelope(&[wire_clause("Limit", &at_least(1))]);
     for rejected in REJECTED_PAGE_SIZES {
-        for (case, operation, request) in [
-            ("a keyed read's page size", "Query", keyed(rejected)),
-            ("a table walk's page size", "Scan", walk(rejected)),
-        ] {
-            let stated = refusal(&router, case, operation, request).await;
-            assert_eq!(
-                stated, expected,
-                "case {case:?} ({operation}, Limit {rejected}): expected the message \
-                 {expected:?}, got {stated:?}"
-            );
-            assert!(
-                !stated.contains(&rejected.to_string()),
-                "case {case:?} ({operation}, Limit {rejected}): this form echoes no part of \
-                 the rejected value, got {stated:?}"
-            );
-        }
+        let keyed_expected = envelope(&[wire_clause("Limit", &at_least(1))]);
+        let stated = refusal(
+            &router,
+            "a keyed read's page size",
+            "Query",
+            keyed(rejected),
+        )
+        .await;
+        assert_eq!(
+            stated, keyed_expected,
+            "case \"a keyed read's page size\" (Query, Limit {rejected}): expected the message \
+             {keyed_expected:?}, got {stated:?}"
+        );
+        assert!(
+            !stated.contains(&rejected.to_string()),
+            "case \"a keyed read's page size\" (Query, Limit {rejected}): this form echoes no \
+             part of the rejected value, got {stated:?}"
+        );
+
+        let walk_expected = envelope(&[echoing_clause("limit", rejected, &at_least(1))]);
+        let stated = refusal(
+            &router,
+            "a table walk's page size",
+            "Scan",
+            walk(rejected),
+        )
+        .await;
+        assert_eq!(
+            stated, walk_expected,
+            "case \"a table walk's page size\" (Scan, Limit {rejected}): expected the message \
+             {walk_expected:?}, got {stated:?}"
+        );
+        assert_ne!(
+            stated, keyed_expected,
+            "case \"a table walk's page size\" (Scan, Limit {rejected}): the walk does not take \
+             the keyed read's form, got {stated:?}"
+        );
     }
 }
 
@@ -154,7 +175,8 @@ async fn both_item_requests_state_one_page_size_bound_the_one_way() {
 /// the walk's parallel-scan bounds at either end of their ranges, a batched request map and a
 /// transactional item list below their `@length` minima — and a request outside two bounds at
 /// once states one clause per member, each in the form that member is given, inside the envelope
-/// that counts them.
+/// that counts them, so the walk's page size keeps its own form beside a parallel-scan bound in
+/// the wire form.
 #[tokio::test]
 async fn every_other_bound_of_an_item_request_takes_that_same_form() {
     let router = seeded().await;
@@ -207,7 +229,7 @@ async fn every_other_bound_of_an_item_request_takes_that_same_form() {
             "Scan",
             json!({"TableName": TABLE, "Limit": 0, "TotalSegments": 0}),
             envelope(&[
-                wire_clause("Limit", &at_least(1)),
+                echoing_clause("limit", 0, &at_least(1)),
                 wire_clause("TotalSegments", &at_least(1)),
             ]),
         ),
@@ -216,7 +238,7 @@ async fn every_other_bound_of_an_item_request_takes_that_same_form() {
             "Scan",
             json!({"TableName": TABLE, "Limit": -3, "Segment": -1}),
             envelope(&[
-                wire_clause("Limit", &at_least(1)),
+                echoing_clause("limit", -3, &at_least(1)),
                 wire_clause("Segment", &at_least(0)),
             ]),
         ),

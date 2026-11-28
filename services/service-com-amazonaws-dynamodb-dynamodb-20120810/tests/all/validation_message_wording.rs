@@ -215,14 +215,14 @@ async fn a_constraint_violation_is_stated_in_the_validation_envelope() {
         ),
         (
             // The same bound, on the same member name, through the table WALK, which states
-            // that member in the SAME item-request form — nothing of an item read is stated in
-            // the request validator's form, while the control-plane listing below states that
-            // same member name in it
+            // that member in the request VALIDATOR's own form — the one member of an item
+            // read's input recorded that way, and the form the control-plane listing below
+            // states the same member name in
             // (`tests/all/page_size_clause_forms.rs` pins the forms per operation and member).
             "the same bound on another item request's Limit",
             "Scan",
             json!({"TableName": "Music", "Limit": 0}),
-            "1 validation error detected: Value at 'Limit' failed to satisfy constraint: \
+            "1 validation error detected: Value '0' at 'limit' failed to satisfy constraint: \
              Member must have value greater than or equal to 1"
                 .to_string(),
         ),

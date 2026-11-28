@@ -9,7 +9,7 @@
 //!
 //! * the ITEM-REQUEST form names the member by its WIRE spelling and echoes no value (`Value at
 //!   'TotalSegments' failed to satisfy constraint: …`, and `Value at 'Limit' …` for the page
-//!   size either item read carries);
+//!   size the KEYED read carries);
 //! * the REQUEST-VALIDATOR form names it by the lowerCamel path the request validator builds
 //!   and echoes the rejected value (`Value '0' at 'limit' failed to satisfy constraint: …`).
 //!
@@ -19,8 +19,9 @@
 //! `@range{min:1,max:1000000}` and `Scan$Segment` `@range{min:0,max:999999}`
 //! (`smithy_query(query="operation", operation="Scan")`) — and `Query$Limit` targets the very
 //! same shape as the walk's page size (`smithy_query(query="operation", operation="Query")`),
-//! which BOTH item reads state in the item-request form while a control-plane listing states
-//! it, of the same violation class, in the other form. So the form has to be read
+//! yet the keyed read states it in the item-request form while the walk states it, and a
+//! control-plane listing states the same violation class, in the other form. So the form has to
+//! be read
 //! off the operation being served and the member the clause is about, which is what the rows
 //! below read back.
 //!
@@ -104,8 +105,8 @@ async fn refusal(
     message(&body)
 }
 
-/// RULE: BOTH item reads state their page size by its wire spelling with nothing echoed,
-/// whatever value was rejected, while a control-plane listing states the
+/// RULE: the KEYED read states its page size by the member's wire spelling with nothing echoed,
+/// whatever value was rejected, while the table WALK and a control-plane listing state the
 /// SAME member name breaking the SAME kind of bound with the rejected value echoed under the
 /// validator's path.
 #[tokio::test]
@@ -116,6 +117,29 @@ async fn one_member_name_is_stated_in_the_form_each_operation_gives_it() {
     // below, a handful below, and the smallest value a 32-bit member carries.
     for rejected in [0_i64, -1, -9, -2_147_483_648] {
         let expected = envelope(&[wire_clause("Limit", &at_least(1))]);
+        let case = "a keyed read's page size";
+        let stated = refusal(
+            &router,
+            case,
+            "Query",
+            json!({"TableName": TABLE, "Limit": rejected,
+                   "KeyConditionExpression": "pk = :p",
+                   "ExpressionAttributeValues": {":p": {"S": "one"}}}),
+        )
+        .await;
+        assert_eq!(
+            stated, expected,
+            "case {case:?} (Query, Limit {rejected}): expected {expected:?}, got {stated:?}"
+        );
+        assert!(
+            !stated.contains(&format!("'{rejected}'")),
+            "case {case:?} (Query, Limit {rejected}): this form echoes no part of the rejected \
+             value, got {stated:?}"
+        );
+
+        // The other form, over the same member name and the same broken bound: the table walk
+        // and a control-plane listing both echo the rejected value under the validator's path.
+        let expected = envelope(&[echoing_clause("limit", rejected, &at_least(1))]);
         for (case, operation, request) in [
             (
                 "a table walk's page size",
@@ -123,11 +147,9 @@ async fn one_member_name_is_stated_in_the_form_each_operation_gives_it() {
                 json!({"TableName": TABLE, "Limit": rejected}),
             ),
             (
-                "a keyed read's page size",
-                "Query",
-                json!({"TableName": TABLE, "Limit": rejected,
-                       "KeyConditionExpression": "pk = :p",
-                       "ExpressionAttributeValues": {":p": {"S": "one"}}}),
+                "a control-plane listing's page size",
+                "ListBackups",
+                json!({"Limit": rejected}),
             ),
         ] {
             let stated = refusal(&router, case, operation, request).await;
@@ -136,33 +158,14 @@ async fn one_member_name_is_stated_in_the_form_each_operation_gives_it() {
                 "case {case:?} ({operation}, Limit {rejected}): expected {expected:?}, got \
                  {stated:?}"
             );
-            assert!(
-                !stated.contains(&format!("'{rejected}'")),
-                "case {case:?} ({operation}, Limit {rejected}): this form echoes no part of \
-                 the rejected value, got {stated:?}"
-            );
         }
-
-        let listing = refusal(
-            &router,
-            "a control-plane listing's page size",
-            "ListBackups",
-            json!({"Limit": rejected}),
-        )
-        .await;
-        let expected = envelope(&[echoing_clause("limit", rejected, &at_least(1))]);
-        assert_eq!(
-            listing, expected,
-            "case \"a control-plane listing's page size\" (Limit {rejected}): expected \
-             {expected:?}, got {listing:?}"
-        );
     }
 }
 
 /// RULE: the walk's OTHER members keep the item-request form — so it states its parallel-scan
 /// bounds by their wire spelling at either end of their ranges, and a request outside two of its
 /// bounds at once states one clause per member, each in the form that member is given, inside the
-/// one envelope that counts them.
+/// one envelope that counts them: the page size echoing its value, the parallel-scan bound not.
 #[tokio::test]
 async fn every_other_member_of_the_walk_keeps_its_operations_form() {
     let router = seeded().await;
@@ -192,7 +195,7 @@ async fn every_other_member_of_the_walk_keeps_its_operations_form() {
             "the page size and the segment count at once",
             json!({"TableName": TABLE, "Limit": 0, "TotalSegments": 0}),
             envelope(&[
-                wire_clause("Limit", &at_least(1)),
+                echoing_clause("limit", 0, &at_least(1)),
                 wire_clause("TotalSegments", &at_least(1)),
             ]),
         ),
@@ -200,7 +203,7 @@ async fn every_other_member_of_the_walk_keeps_its_operations_form() {
             "the page size and the segment at once",
             json!({"TableName": TABLE, "Limit": -3, "Segment": -1}),
             envelope(&[
-                wire_clause("Limit", &at_least(1)),
+                echoing_clause("limit", -3, &at_least(1)),
                 wire_clause("Segment", &at_least(0)),
             ]),
         ),

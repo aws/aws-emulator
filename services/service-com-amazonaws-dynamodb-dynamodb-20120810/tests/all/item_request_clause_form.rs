@@ -12,7 +12,8 @@
 //!   constraint: Member must have value greater than or equal to 1`);
 //! * a CONTROL-PLANE listing names it by the lowerCamel
 //!   path the request validator builds and DOES echo the rejected value (`Value '0' at 'limit'
-//!   failed to satisfy constraint: …`).
+//!   failed to satisfy constraint: …`), and so does the ONE member of an item request recorded
+//!   that way: the table WALK's page size.
 //!
 //! Nothing in the model distinguishes the two: `Query$Limit` and `Scan$Limit` both target
 //! `PositiveIntegerObject` with `@range{min:1}`, `ListBackups$Limit` targets
@@ -114,10 +115,10 @@ async fn refusal(
     message(&body)
 }
 
-/// RULE: BOTH item reads state the page size they share in the wire form that
-/// echoes no value — whatever value was rejected. Nothing in the model tells them apart from
-/// a control-plane listing's page size, which takes the other form, so each is read back here
-/// beside the other.
+/// RULE: the KEYED read states the page size it shares with the table walk in the wire form
+/// that
+/// echoes no value — whatever value was rejected — while the WALK and a control-plane listing,
+/// whose page sizes nothing in the model tells apart from it, both take the other form.
 #[tokio::test]
 async fn an_item_requests_page_size_is_stated_by_its_wire_name_whatever_the_value() {
     let router = seeded().await;
@@ -126,44 +127,45 @@ async fn an_item_requests_page_size_is_stated_by_its_wire_name_whatever_the_valu
     // below, and the smallest value a 32-bit member carries.
     for rejected in [0_i64, -1, -9, -2_147_483_648] {
         let expected = wire_form("Limit", &at_least(1));
+        let case = "a keyed read";
+        let stated = refusal(&router, case, "Query", keyed(rejected)).await;
+        assert_eq!(
+            stated, expected,
+            "case {case:?} (Query, Limit {rejected}): expected the message \
+             {expected:?}, got {stated:?}"
+        );
+        assert!(
+            !stated.contains(&format!("'{rejected}'")),
+            "case {case:?} (Query, Limit {rejected}): expected the rejected value \
+             absent from the message, got {stated:?}"
+        );
+
+        // The contrast, in the other form: the table walk's page size and a control-plane
+        // listing's — the same member name and the same violation class — echo the value
+        // under the validator's path.
+        let expected = echoing_form("limit", rejected, &at_least(1));
         for (case, operation, request) in [
-            ("a keyed read", "Query", keyed(rejected)),
             ("a table walk", "Scan", walk(rejected)),
+            (
+                "a control-plane listing",
+                "ListBackups",
+                json!({"Limit": rejected}),
+            ),
         ] {
             let stated = refusal(&router, case, operation, request).await;
             assert_eq!(
                 stated, expected,
-                "case {case:?} ({operation}, Limit {rejected}): expected the message \
-                 {expected:?}, got {stated:?}"
-            );
-            assert!(
-                !stated.contains(&format!("'{rejected}'")),
-                "case {case:?} ({operation}, Limit {rejected}): expected the rejected value \
-                 absent from the message, got {stated:?}"
+                "case {case:?} ({operation}, Limit {rejected}): expected the \
+                 message {expected:?}, got {stated:?}"
             );
         }
-
-        // The contrast, in the other form: a control-plane listing's page size of the same
-        // name and the same violation class echoes the value under the validator's path.
-        let listed = refusal(
-            &router,
-            "a control-plane listing",
-            "ListBackups",
-            json!({"Limit": rejected}),
-        )
-        .await;
-        let expected = echoing_form("limit", rejected, &at_least(1));
-        assert_eq!(
-            listed, expected,
-            "case \"a control-plane listing\" (ListBackups, Limit {rejected}): expected the \
-             message {expected:?}, got {listed:?}"
-        );
     }
 }
 
 /// RULE: every other bounded member of an item request takes that same wire form — the walk's
 /// parallel-scan bounds at either end of their ranges, and a batched or transactional
-/// collection below its own minimum.
+/// collection below its own minimum — so the walk's page size is the one member of that input
+/// recorded otherwise.
 #[tokio::test]
 async fn every_member_of_an_item_request_takes_the_same_form() {
     let router = seeded().await;

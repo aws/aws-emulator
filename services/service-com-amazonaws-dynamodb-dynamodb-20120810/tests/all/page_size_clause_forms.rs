@@ -15,10 +15,11 @@
 //! Nothing about the model chooses between them: `Query$Limit` and `Scan$Limit` both target
 //! `PositiveIntegerObject` with `@range{min:1}`
 //! (`smithy_query(query="operation", operation="Query,Scan")`), and `ListBackups$Limit` targets
-//! `BackupsInputLimit` with `@range{min:1,max:100}`, yet BOTH item reads state that member — and
+//! `BackupsInputLimit` with `@range{min:1,max:100}`, yet the KEYED read states that member — and
 //! the table walk's own parallel-scan bounds, `TotalSegments`
 //! (`@range{min:1,max:1000000}`) and `Segment` (`@range{min:0,max:999999}`) — in the
-//! item-request form, while the control-plane listings state theirs in the request-validator
+//! item-request form, while the WALK's page size and the control-plane listings' state theirs in
+//! the request-validator
 //! form. So the form is a fact of the served OPERATION and of the MEMBER
 //! the clause is about, which is what these rows read back: one member name, one trait, two
 //! sentences.
@@ -117,24 +118,24 @@ fn rows() -> Vec<Row> {
         },
         Row {
             // The SAME member name breaking the SAME bound of the SAME target shape as the
-            // two rows above, through the other item request, which states it the same way:
-            // the wire spelling with nothing echoed.
+            // two rows above, through the other item request, which states it the OTHER way:
+            // the validator's path with the rejected value echoed.
             case: "a table walk's page size one below that same minimum",
             operation: "Scan",
             request: json!({"TableName": TABLE, "Limit": 0}),
-            expected: envelope(&[wire_clause("Limit", &at_least(1))]),
+            expected: envelope(&[echoing_clause("limit", 0, &at_least(1))]),
         },
         Row {
             case: "the same member far below it, through the same walk",
             operation: "Scan",
             request: json!({"TableName": TABLE, "Limit": -7}),
-            expected: envelope(&[wire_clause("Limit", &at_least(1))]),
+            expected: envelope(&[echoing_clause("limit", -7, &at_least(1))]),
         },
         Row {
             case: "the same member one below it, through the same walk",
             operation: "Scan",
             request: json!({"TableName": TABLE, "Limit": -1}),
-            expected: envelope(&[wire_clause("Limit", &at_least(1))]),
+            expected: envelope(&[echoing_clause("limit", -1, &at_least(1))]),
         },
         Row {
             case: "the walk's segment count one past its maximum",
@@ -185,7 +186,7 @@ fn rows() -> Vec<Row> {
             operation: "Scan",
             request: json!({"TableName": TABLE, "Limit": 0, "TotalSegments": 0}),
             expected: envelope(&[
-                wire_clause("Limit", &at_least(1)),
+                echoing_clause("limit", 0, &at_least(1)),
                 wire_clause("TotalSegments", &at_least(1)),
             ]),
         },
@@ -244,7 +245,7 @@ async fn only_the_request_validator_form_repeats_the_rejected_value() {
             "Scan",
             json!({"TableName": TABLE, "Limit": 0}),
             "0",
-            false,
+            true,
         ),
         (
             "the walk's segment count",

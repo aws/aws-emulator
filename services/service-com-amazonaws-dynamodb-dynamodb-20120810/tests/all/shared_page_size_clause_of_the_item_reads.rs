@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The two ITEM READS word the page-size clause they SHARE the one way, and a CONTROL-PLANE
-//! listing words the same violation class its own way.
+//! The page size the two ITEM READS SHARE is worded by each of them in the form that operation
+//! gives it, and a CONTROL-PLANE listing words the same violation class in the walk's.
 //!
 //! `Query$Limit` and `Scan$Limit` are the same member name targeting the same shape under the
 //! same trait — `PositiveIntegerObject` with `@range{min:1}`
 //! (`smithy_query(query="operation", operation="Query,Scan")`) — so a page size below that
 //! minimum is one violation class on one member, and NOTHING in the model tells the two reads
-//! apart. They are recorded stating it in the ITEM-REQUEST form: the member by its WIRE
-//! spelling, with none of the rejected value echoed. `ListBackups$Limit` declares the same
-//! violation class on a member of the same name and is recorded stating it in the request
-//! validator's own form, naming the member by its lowerCamel path with the rejected value
-//! quoted — so the form is a fact of the served OPERATION and not of the member, which is
-//! asserted here as an EQUALITY between the two item reads' messages and an INEQUALITY against
-//! the listing's, beside the literal each one carries, so a build that collapses the listing's
-//! wording onto the reads' or splits the two reads apart fails here whichever wording it chose.
+//! apart. They are nevertheless recorded wording it differently: the KEYED read states the
+//! ITEM-REQUEST form, naming the member by its WIRE spelling with none of the rejected value
+//! echoed, while the table WALK states the request validator's own form, naming the member by
+//! its lowerCamel path with the rejected value quoted. `ListBackups$Limit` declares the same
+//! violation class on a member of the same name and is recorded in that second form too — so
+//! the form is a fact of the served OPERATION and the member, not of the member alone, which is
+//! asserted here as an INEQUALITY between the two item reads' messages and an EQUALITY of form
+//! between the walk's and the listing's, beside the literal each one carries, so a build that
+//! collapses the two reads onto one wording fails here whichever wording it chose.
 //!
 //! The sweep spans what the rule generalises over: the rejected value (zero, one below the
 //! minimum, a handful below, and both integral extremes a 32-bit member carries) and, for the
@@ -30,14 +31,15 @@ use crate::emulator::{call, describe_when_active, error_code, message, ok};
 /// needs.
 const TABLE: &str = "SharedPageSizeClause";
 
-/// The whole message either ITEM READ carries for a page size below the published minimum: the
+/// The whole message the KEYED read carries for a page size below the published minimum: the
 /// member as the model spells it, with nothing echoed.
-const ITEM_READ_FORM: &str = "1 validation error detected: Value at 'Limit' failed to satisfy \
-                              constraint: Member must have value greater than or equal to 1";
+const KEYED_READ_FORM: &str = "1 validation error detected: Value at 'Limit' failed to satisfy \
+                               constraint: Member must have value greater than or equal to 1";
 
-/// The whole message a control-plane LISTING carries for the same violation: the validator's
-/// lowerCamel path with the rejected value quoted, which is why it is built per value.
-fn listing_form(limit: i64) -> String {
+/// The whole message the table WALK and a control-plane LISTING carry for the same violation:
+/// the validator's lowerCamel path with the rejected value quoted, which is why it is built per
+/// value.
+fn echoing_form(limit: i64) -> String {
     format!(
         "1 validation error detected: Value '{limit}' at 'limit' failed to satisfy constraint: \
          Member must have value greater than or equal to 1"
@@ -91,52 +93,56 @@ async fn refused_page_size(
 }
 
 #[tokio::test]
-async fn both_item_reads_word_the_one_page_size_violation_the_same_way() {
+async fn each_item_read_words_the_one_page_size_violation_its_own_way() {
     let router = seeded().await;
 
     for limit in REJECTED {
         let keyed = refused_page_size(&router, "Query", limit).await;
         let walk = refused_page_size(&router, "Scan", limit).await;
-        assert_eq!(
+        assert_ne!(
             keyed, walk,
-            "case \"Limit {limit}\": the two item reads state one violation class on one \
-             member the one way, got {keyed:?} and {walk:?}"
+            "case \"Limit {limit}\": the two item reads word one violation class on one member \
+             differently, got {keyed:?} for both"
         );
-        for (operation, stated) in [("Query", &keyed), ("Scan", &walk)] {
-            assert_eq!(
-                stated, ITEM_READ_FORM,
-                "case \"{operation}, Limit {limit}\": the item read names the member as the \
-                 model spells it and echoes nothing, got {stated:?}"
-            );
-            assert!(
-                !stated.contains(&limit.to_string()),
-                "case \"{operation}, Limit {limit}\": this form echoes no part of the rejected \
-                 value, got {stated:?}"
-            );
-        }
+        assert_eq!(
+            keyed, KEYED_READ_FORM,
+            "case \"Query, Limit {limit}\": the keyed read names the member as the model spells \
+             it and echoes nothing, got {keyed:?}"
+        );
+        assert!(
+            !keyed.contains(&limit.to_string()),
+            "case \"Query, Limit {limit}\": this form echoes no part of the rejected value, got \
+             {keyed:?}"
+        );
+        assert_eq!(
+            walk,
+            echoing_form(limit),
+            "case \"Scan, Limit {limit}\": the walk names the member by the validator's path and \
+             quotes the rejected value, got {walk:?}"
+        );
     }
 }
 
 #[tokio::test]
-async fn a_control_plane_listing_words_its_own_page_size_the_other_way() {
+async fn a_control_plane_listing_words_its_page_size_the_walks_way() {
     let router = seeded().await;
 
-    // The contrast: `ListBackups$Limit` is a page size of the same name under the same kind of
-    // bound, and the listing states it by the validator's lowerCamel path WITH the rejected
-    // value — the form neither item read takes, so the equality above is not "every page-size
-    // clause is worded alike".
+    // The other half of the rule: `ListBackups$Limit` is a page size of the same name under the
+    // same kind of bound, and the listing states it by the validator's lowerCamel path WITH the
+    // rejected value — the walk's form, and not the keyed read's, so the inequality above is
+    // not "every page-size clause is worded differently" either.
     for limit in REJECTED {
         let stated = refused_page_size(&router, "ListBackups", limit).await;
         assert_eq!(
             stated,
-            listing_form(limit),
+            echoing_form(limit),
             "case \"ListBackups Limit {limit}\": expected {:?}, got {stated:?}",
-            listing_form(limit)
+            echoing_form(limit)
         );
         assert_ne!(
-            stated, ITEM_READ_FORM,
-            "case \"ListBackups Limit {limit}\": the listing's own form is not the item reads', \
-             got {stated:?}"
+            stated, KEYED_READ_FORM,
+            "case \"ListBackups Limit {limit}\": the listing's form is not the keyed read's, got \
+             {stated:?}"
         );
     }
 }
