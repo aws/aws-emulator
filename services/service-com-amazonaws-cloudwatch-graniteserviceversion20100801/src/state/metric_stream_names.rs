@@ -70,7 +70,7 @@ pub fn constraint_refusal(
     ::service_common::validation_message::aws_validation_refusal_over_elements_quoting(
         &Refusal::Invalid(broken),
         &[schema],
-        ::service_common::validation::whole_value_expression,
+        crate::service::published_pattern::quoted_pattern,
         |member| lists.get(member).cloned(),
     )
     .map(|refused| refused.message)

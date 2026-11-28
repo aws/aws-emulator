@@ -51,8 +51,7 @@ nix = { version = "0.31", default-features = false, features = ["resource"] }
 # `malachite-bigint` 0.x and resolves the newest on its own, which declares a `rust-version`
 # ahead of this project's toolchain and puts a SECOND copy of that arithmetic in the build
 # beside the one `rustpython-vm` itself is built against. Pinning the release the 0.6 line uses
-# keeps one implementation of guest integer arithmetic in the tree and the workspace
-# compiling, and states that resolution in a manifest rather than leaving it to the lockfile.
+# keeps one implementation of guest integer arithmetic in the tree and the workspace compiling.
 # Declared by this crate because this is where the substrate is contained, so the services that
 # embed it inherit the pin instead of each repeating it. Re-resolving the graph for this pin
 # also settles `prost-derive` 0.13.5's iterator-adaptor dependency on the `itertools` 0.10.5

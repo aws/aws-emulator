@@ -153,7 +153,7 @@ fn collection_refusal(
     // requirement in, whichever layer refused the request (`super::unanchored_pattern_refusal`).
     let message = service_common::validation_message::aws_validation_refusal_over_elements_stating(
         &stated,
-        service_common::validation::whole_value_expression,
+        super::published_pattern::quoted_pattern,
         |collection| lists.get(collection).cloned(),
         |collection| element_set_requirement(collection, input_schema),
     )?

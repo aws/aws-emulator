@@ -82,6 +82,7 @@ use std::sync::Arc;
 pub mod authorization;
 pub mod cbor_error_envelope;
 pub mod decimal_floats;
+pub mod published_pattern;
 pub mod query_compatible_errors;
 pub mod request_protocol;
 pub mod submitted_collection_refusal;
@@ -855,24 +856,21 @@ fn missing_required_member_refusal(
 ///
 /// A Smithy `@pattern` is a FIND, so the expression a member DECLARES and the expression its
 /// whole value has to satisfy are two different things, and the requirement this service
-/// states is the second — decided END BY END
-/// ([`service_common::validation::whole_value_expression`], the shared rendering of that
-/// dialect): an end the model ANCHORS carries its `^` / `$` away with it, because the anchor is
-/// how the model makes the match total there rather than part of the character grammar, while
-/// an end the model leaves OPEN admits any run of characters and is spelled with one. So a
-/// client that lifts the expression out of the message and re-validates locally gets the one
-/// the service publishes, for a member anchored at both ends and for one anchored at a single
-/// end alike. Everything else about the refusal — the envelope, the clause, the member path,
-/// the class — is the framework's and the shared renderer's, so this and the walk behind it
-/// cannot drift.
+/// states is the second — decided END BY END, with what the anchors enclosed quoted as the
+/// model wrote it ([`published_pattern::quoted_pattern`], this service's one reading of that
+/// question). So a client that lifts the expression out of the message and re-validates
+/// locally gets the one the service publishes, for a member anchored at both ends and for one
+/// anchored at a single end alike. Everything else about the refusal — the envelope, the
+/// clause, the member path, the class — is the framework's and the shared renderer's, so this
+/// and the walk behind it cannot drift.
 ///
 /// It holds for every member of this service whose model declares a `@pattern`, whatever the
-/// operation: the dataset identifier and the KMS key ARN the dataset operations take
-/// (`^…$`, quoted as the expression between the anchors) and the metric NAMESPACE a filter
-/// selects by (`^[^:]`, open at its close and so quoted with the run that end admits) are the
-/// recorded cases, and a member modelled with a pattern later is stated the same way without
-/// another line here. The CHECK always runs the model's pattern as written; only this
-/// rendering decides the ends.
+/// operation: the statistic an anomaly detection model is trained on, the dataset identifier
+/// and the KMS key ARN the dataset operations take (`^…$`, quoted as the expression between
+/// the anchors) and the metric NAMESPACE a filter selects by (`^[^:]`, open at its close and
+/// so quoted with the run that end admits) are the recorded cases, and a member modelled with
+/// a pattern later is stated the same way without another line here. The CHECK always runs
+/// the model's pattern as written; only this rendering decides the ends.
 fn unanchored_pattern_refusal(refusal: &Refusal) -> Option<Refused> {
     let Refusal::Invalid(violations) = refusal else {
         return None;
@@ -887,7 +885,7 @@ fn unanchored_pattern_refusal(refusal: &Refusal) -> Option<Refused> {
     }
     service_common::validation_message::aws_validation_refusal_with(
         refusal,
-        service_common::validation::whole_value_expression,
+        published_pattern::quoted_pattern,
     )
 }
 
@@ -1936,6 +1934,23 @@ impl ErasedOperation for TheModelledOperation {
                 None => svc.definition().routing_error_response(req),
             }
         })
+    }
+
+    /// Which schemes sign the request: the MODELLED operation's own, which this answers by
+    /// DEFERRING rather than by naming any — "`None` (an author-written operation) defers to
+    /// the modeled operation the request's routing key names"
+    /// ([`smithy_server_runtime::ErasedOperation::auth_schemes`]).
+    ///
+    /// Stated here rather than left to the trait's default so that what the whole table-routed
+    /// surface reports is explicit: this operation IS the generated table's operation for the
+    /// request's key ([`Self::run`]), and the key is a property of the request, which this
+    /// method is not handed — so the one answer that resolves to each modelled operation's own
+    /// schemes is the deferral, and naming a scheme list here would be this file asserting an
+    /// answer for all 55 operations that the model states per operation. The wrapper around it
+    /// ([`Metering::auth_schemes`]) forwards whatever this returns, so metering a call does not
+    /// change which schemes sign it either.
+    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
+        None
     }
 }
 

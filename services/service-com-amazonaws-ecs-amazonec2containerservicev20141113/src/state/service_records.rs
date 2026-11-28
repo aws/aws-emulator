@@ -351,15 +351,28 @@ impl ServiceRecord {
         )
     }
 
-    /// Append `events` to this service's event stream, keeping only the latest of them.
+    /// Append `events` to this service's event stream, keeping it in the order the events
+    /// HAPPENED in and keeping only the latest of them.
     ///
     /// `Service$events`: "The event stream for your service. A maximum of 100 of the latest
     /// events are displayed" — so only the latest are kept at all
     /// ([`MAX_SERVICE_EVENTS`]), which is also what keeps a long-lived service's record from
     /// growing without bound. The ONE place that trims the stream, so every writer of an
     /// event trims it the same way.
+    ///
+    /// Each entry is dated at the instant the thing it reports happened
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::mint_service_event`]), and
+    /// one pass materialises the transitions of several instants the clock already owed — so
+    /// the order the entries are RECORDED in is not the order they happened in. The stream is
+    /// therefore kept sorted by that instant, which is what makes the two readings of "the
+    /// latest" agree: the entries this trim drops are the OLDEST ones, and the stream a
+    /// response reports newest-first is in that order by the instant each event carries.
+    /// Entries of one instant keep the order they were recorded in, so a pass that reports
+    /// two steps of one transition reports them as it took them.
     pub fn record_events(&mut self, events: impl IntoIterator<Item = ServiceEventRecord>) {
         self.events.extend(events);
+        self.events
+            .sort_by_key(|event| (event.created_at.secs(), event.created_at.subsec_nanos()));
         if self.events.len() > MAX_SERVICE_EVENTS {
             let first_kept = self.events.len() - MAX_SERVICE_EVENTS;
             self.events.drain(..first_kept);
