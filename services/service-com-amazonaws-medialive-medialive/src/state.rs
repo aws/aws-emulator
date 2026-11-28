@@ -276,6 +276,13 @@ pub use pipeline_lists::{
     PUSH_DESTINATION_COUNT_MESSAGE,
 };
 
+/// The INGEST ENTRY slice: the one rule every write of an input's configuration
+/// validates each ENTRY of an ingest list against — an entry must name the
+/// endpoint it ingests from — plus the message that refusal carries.
+pub mod input_ingest_entries;
+
+pub use input_ingest_entries::{ingest_entry_error, missing_ingest_member_message};
+
 /// The channel DEFAULTS slice: the values the service applies to a channel's
 /// configuration as it stores it — the log level a request that chose none is
 /// stored with, and the collection members a request supplied nothing for, which
@@ -2961,6 +2968,9 @@ impl ComAmazonawsMedialiveMedialiveState {
     ///   whitelist that admits the system pushing to a pushed-to type
     ///   ([`PUSH_INGEST_PROTOCOLS`]), and the source URLs a pulled-from type
     ///   pulls ([`PULL_SOURCE_INPUT_TYPES`]).
+    /// * every ENTRY of an ingest list the configuration declares must name the
+    ///   endpoint that entry ingests from — a pull source's URL, a flow's ARN
+    ///   ([`input_ingest_entries`]).
     /// * the two cross-member rules the `Vpc` member's own doc states — it
     ///   "requires setting the roleArn property on Input creation" and is "not
     ///   compatible with the inputSecurityGroups property".
@@ -3053,6 +3063,13 @@ impl ComAmazonawsMedialiveMedialiveState {
         }
         if pulls_from_sources(input.input_type.as_deref()) && input.sources.is_empty() {
             return Some(required_for_input_type_message("sources", input_type));
+        }
+        // An ingest list the configuration DOES declare must name what each of
+        // its entries ingests from: an entry carrying only the credentials or
+        // the description of an endpoint names no endpoint, so nothing can be
+        // ingested through it ([`input_ingest_entries`]).
+        if let Some(message) = ingest_entry_error(input) {
+            return Some(message);
         }
         None
     }
