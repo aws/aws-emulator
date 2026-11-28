@@ -21,11 +21,13 @@
 //! types" list names). Adding a service here is a dependency in `Cargo.toml`, an
 //! [`OwnedType`] per resource type it owns and one block of [`indexed_resources`].
 //!
-//! [`SUPPORTED_TYPES`] is the other side of that boundary: the resource types an index here
-//! can hold at all — the ones below plus this service's own index and view — which is what
-//! `ListSupportedResourceTypes` reports and what a query's `resourcetype:` filter can match.
-//! Both readings come from the same rows, so the catalogue a caller is told about and the
-//! types it can actually find cannot disagree.
+//! [`INDEXED_TYPES`] is the other side of that boundary: the resource types an index here
+//! can hold at all — the ones below plus this service's own index and view — and so the
+//! types a query's `resourcetype:` filter can actually match here. It is a SUBSET of the
+//! catalogue [`super::supported_types`] publishes, which is the service-wide list of every
+//! type Resource Explorer supports and is what `ListSupportedResourceTypes` reports: what
+//! an index can hold is service metadata of Resource Explorer, not of this emulator's
+//! dependency list.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -57,9 +59,7 @@ impl OwnedType {
     /// (`SupportedResourceType$Service`): the first segment of the `<service>:<type>` key,
     /// which is the ARN service namespace resources of this type carry.
     pub fn service(&self) -> &'static str {
-        self.resource_type
-            .split_once(':')
-            .map_or(self.resource_type, |(service, _)| service)
+        super::supported_types::service_of(self.resource_type)
     }
 }
 
@@ -88,13 +88,17 @@ pub const OWN_VIEW: OwnedType = OwnedType {
     cfn_resource_type: "AWS::ResourceExplorer2::View",
 };
 
-/// Every resource type an index here can hold, which is every type this emulator's
-/// Resource Explorer supports: this service's own two, and one row per type of each owning
-/// service above.
+/// Every resource type an index here can hold: this service's own two, and one row per
+/// type of each owning service above.
 ///
-/// Ordered by the `<service>:<type>` key, so the catalogue a caller pages through is in a
-/// stable order that does not depend on which resources happen to exist.
-pub const SUPPORTED_TYPES: [OwnedType; 4] = [OWN_INDEX, OWN_VIEW, SNS_TOPIC, SQS_QUEUE];
+/// A SUBSET of [`super::supported_types::CATALOGUE`] — an index holding a resource of
+/// only some of the types Resource Explorer supports is a property of this emulator's
+/// dependency list, while the published catalogue is the service's own metadata.
+///
+/// Ordered by the `<service>:<type>` key, like the catalogue, so a listing derived from
+/// these rows is in a stable order that does not depend on which resources happen to
+/// exist.
+pub const INDEXED_TYPES: [OwnedType; 4] = [OWN_INDEX, OWN_VIEW, SNS_TOPIC, SQS_QUEUE];
 
 /// Every resource an owning service holds in `region`, in the form the index reports
 /// it.

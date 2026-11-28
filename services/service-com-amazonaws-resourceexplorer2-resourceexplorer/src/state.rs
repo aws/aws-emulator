@@ -39,6 +39,9 @@
 //!   operations cannot disagree about how an indexed resource is reported.
 //! * [`owners`] — the owning services whose resources a Region's index holds, read from
 //!   those services' own records at query time.
+//! * [`supported_types`] — the service-wide supported-type catalogue
+//!   `ListSupportedResourceTypes` publishes, which is static service metadata rather than
+//!   anything this store holds.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -51,6 +54,8 @@ mod setup_tasks;
 pub use setup_tasks::*;
 
 pub mod owners;
+
+pub mod supported_types;
 
 /// The ARN namespace, SigV4 signing name and endpoint prefix of this service, and
 /// therefore the `Service` of every resource it owns.
@@ -905,9 +910,9 @@ impl ComAmazonawsResourceexplorer2ResourceexplorerState {
             owning_account_id: account.clone(),
             region: index.region.clone(),
             service: SERVICE_NAMESPACE.to_string(),
-            // This service's own two types, read from the one catalogue
-            // (`owners::SUPPORTED_TYPES`) that `ListSupportedResourceTypes` reports, so a
-            // type a query can find is a type the catalogue names.
+            // This service's own two types, read from the one set of rows
+            // (`owners::INDEXED_TYPES`) a Region's index is built from, so a type a query
+            // can find is a type the published catalogue names.
             resource_type: owners::OWN_INDEX.resource_type.to_string(),
             cfn_resource_type: Some(owners::OWN_INDEX.cfn_resource_type.to_string()),
             last_reported_at: index.last_updated_at,

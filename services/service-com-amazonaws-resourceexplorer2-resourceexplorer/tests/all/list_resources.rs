@@ -1585,19 +1585,21 @@ async fn list_resources_and_search_report_the_same_index() {
     }
 }
 
-/// RULE: `ListSupportedResourceTypes` publishes the resource types a Region's index can
-/// hold — every type a query can report, each with the owning service and the
-/// CloudFormation type name of that kind — and nothing a query could never report; the
-/// catalogue is a published list, so it is the same whatever the account holds, and it pages
-/// like every other paginated listing of this service.
+/// RULE: `ListSupportedResourceTypes` publishes Resource Explorer's own service-wide
+/// catalogue — "all resource types currently supported by Amazon Web Services Resource
+/// Explorer", each row carrying the associated service, the `<service>:<type>` identifier
+/// and the CloudFormation type identifiers of that type — so the catalogue is a SUPERSET of
+/// the types any one index actually reports resources for, is the same whatever the account
+/// holds, and pages like every other paginated listing of this service.
 ///
-/// The rows the catalogue is checked against are the fixture's own indexed resources, read
-/// back through `ListResources`: the two sides are what must agree, so neither is asserted
-/// against a literal list. They span every owning service the index reads — this service's
-/// own index and views, an SQS queue, an SNS topic — and the page sizes span one entry at a
-/// time up to the whole catalogue at once.
+/// This suite checks the superset direction end to end: every type the fixture's own
+/// indexed resources are reported with is published, with that owning service and that
+/// CloudFormation type, while the catalogue goes on to publish types nothing in this
+/// emulator could ever report. The fixture's rows span every owning service the index reads
+/// — this service's own index and views, an SQS queue, an SNS topic — and the page sizes
+/// span one entry at a time up to the whole catalogue at once.
 #[tokio::test]
-async fn the_supported_resource_types_are_the_types_a_query_can_report() {
+async fn the_supported_resource_types_cover_every_type_a_query_can_report() {
     let fixture = Fixture::new().await;
 
     // The catalogue, read one whole page at a time.
@@ -1639,13 +1641,19 @@ async fn the_supported_resource_types_are_the_types_a_query_can_report() {
                 )
             });
         assert_eq!(
-            (&entry["Service"], &entry["CFNResourceTypes"]),
-            (
-                &json!(resource.service),
-                &json!([resource.cfn_resource_type])
-            ),
-            "case {case:?}: expected the owning service and CloudFormation type of this \
-             kind, got {entry}"
+            &entry["Service"],
+            &json!(resource.service),
+            "case {case:?}: expected the owning service of this kind, got {entry}"
+        );
+        let cfn = entry["CFNResourceTypes"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: expected a CFNResourceTypes list, got {entry}")
+            })
+            .clone();
+        assert!(
+            cfn.contains(&json!(resource.cfn_resource_type)),
+            "case {case:?}: expected the CloudFormation type of this kind among {cfn:?}"
         );
         covered += 1;
     }
@@ -1654,15 +1662,18 @@ async fn the_supported_resource_types_are_the_types_a_query_can_report() {
         fixture.indexed().len(),
         "every indexed resource's type is published"
     );
-    assert_eq!(
-        published.len(),
-        reported
-            .iter()
-            .map(|resource| resource["ResourceType"].clone().to_string())
-            .collect::<BTreeSet<String>>()
-            .len(),
-        "the catalogue publishes exactly the types a query can report, got {published:?} \
-         against {reported:?}"
+    // The catalogue is the SERVICE's list, not this emulator's: it publishes strictly more
+    // types than anything in this process can report a resource of.
+    let reportable: BTreeSet<String> = reported
+        .iter()
+        .map(|resource| resource["ResourceType"].clone().to_string())
+        .collect();
+    assert!(
+        published.len() > reportable.len(),
+        "the catalogue publishes every type Resource Explorer supports, which is more than \
+         the {} this emulator's index can report, got {}",
+        reportable.len(),
+        published.len()
     );
 
     // The page size cuts the catalogue and the token resumes it, for every size from one
@@ -1711,6 +1722,155 @@ async fn the_supported_resource_types_are_the_types_a_query_can_report() {
         )
         .await;
     answer.failed("a token this listing never issued", 400, "ValidationException");
+}
+
+/// RULE: the catalogue `ListSupportedResourceTypes` publishes is Resource Explorer's own
+/// fixed service metadata — one row per type the SERVICE supports, independent of what any
+/// account, Region or deployment holds — where `Service` is the first segment of the
+/// `<service>:<type>` identifier and `CFNResourceTypes` carries the CloudFormation type
+/// identifiers of that type; the catalogue is published in ascending `ResourceType` order,
+/// with no identifier listed twice.
+///
+/// The spot-checked rows are entries of Resource Explorer's published "Supported resource
+/// types" reference, chosen for the forms the rule generalises over and NOT for anything
+/// this emulator implements: a plain type of a service no crate here emulates
+/// (`ec2:instance`, `s3:bucket`, `lambda:function`, `iam:role`, `dynamodb:table`), one whose
+/// service namespace differs from its CloudFormation service (`acm` ->
+/// `AWS::CertificateManager::Certificate`, `airflow` -> `AWS::MWAA::Environment`), one whose
+/// identifier carries a path segment (`amplify:apps/branches`), one whose type name is
+/// camel-cased (`states:stateMachine`), and one type covering SEVERAL CloudFormation types
+/// (`datasync:location`). The invariants are then asserted over EVERY row, and the whole
+/// answer is compared against an emulator holding no index and no resources at all, which is
+/// what says the catalogue is not derived from state.
+#[tokio::test]
+async fn the_published_catalogue_is_resource_explorers_fixed_service_metadata() {
+    let fixture = Fixture::new().await;
+    let case = "the whole catalogue";
+    let answer = fixture
+        .emulator
+        .explorer(REGION, "ListSupportedResourceTypes", json!({}))
+        .await;
+    let published = answer.ok(case)["ResourceTypes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a ResourceTypes list, got {}", answer.body))
+        .clone();
+
+    // (the `<service>:<type>` identifier, its `Service`, its CloudFormation type identifiers)
+    let rows: Vec<(&str, &str, Vec<&str>)> = vec![
+        ("ec2:instance", "ec2", vec!["AWS::EC2::Instance"]),
+        ("s3:bucket", "s3", vec!["AWS::S3::Bucket"]),
+        ("lambda:function", "lambda", vec!["AWS::Lambda::Function"]),
+        ("iam:role", "iam", vec!["AWS::IAM::Role"]),
+        ("dynamodb:table", "dynamodb", vec!["AWS::DynamoDB::Table"]),
+        (
+            "acm:certificate",
+            "acm",
+            vec!["AWS::CertificateManager::Certificate"],
+        ),
+        ("airflow:environment", "airflow", vec!["AWS::MWAA::Environment"]),
+        ("amplify:apps/branches", "amplify", vec!["AWS::Amplify::Branch"]),
+        (
+            "states:stateMachine",
+            "states",
+            vec!["AWS::StepFunctions::StateMachine"],
+        ),
+        (
+            "datasync:location",
+            "datasync",
+            vec![
+                "AWS::DataSync::LocationEFS",
+                "AWS::DataSync::LocationFSxLustre",
+                "AWS::DataSync::LocationFSxONTAP",
+                "AWS::DataSync::LocationFSxOpenZFS",
+                "AWS::DataSync::LocationFSxWindows",
+                "AWS::DataSync::LocationHDFS",
+                "AWS::DataSync::LocationNFS",
+                "AWS::DataSync::LocationObjectStorage",
+                "AWS::DataSync::LocationS3",
+                "AWS::DataSync::LocationSMB",
+            ],
+        ),
+    ];
+    for (resource_type, service, cfn_resource_types) in rows {
+        let case = resource_type;
+        let entry = published
+            .iter()
+            .find(|candidate| candidate["ResourceType"] == json!(resource_type))
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: the catalogue must publish this supported type, and it \
+                     publishes {} entries",
+                    published.len()
+                )
+            });
+        assert_eq!(
+            entry["Service"],
+            json!(service),
+            "case {case:?}: expected the service associated with this type, got {entry}"
+        );
+        assert_eq!(
+            entry["CFNResourceTypes"],
+            json!(cfn_resource_types),
+            "case {case:?}: expected this type's CloudFormation identifiers, got {entry}"
+        );
+    }
+
+    // Every row, not only the ones named above, is well formed and in the published order.
+    let mut previous: Option<String> = None;
+    for entry in &published {
+        let identifier = entry["ResourceType"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a catalogue entry carries a ResourceType, got {entry}"))
+            .to_string();
+        let case = identifier.clone();
+        let (service, kind) = identifier
+            .split_once(':')
+            .unwrap_or_else(|| panic!("case {case:?}: a ResourceType is <service>:<type>"));
+        assert!(
+            !service.is_empty() && !kind.is_empty(),
+            "case {case:?}: both segments of a ResourceType carry text"
+        );
+        assert_eq!(
+            entry["Service"],
+            json!(service),
+            "case {case:?}: Service is the identifier's first segment, got {entry}"
+        );
+        let cfn = entry["CFNResourceTypes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: expected a CFNResourceTypes list, got {entry}"));
+        for identifier in cfn {
+            let identifier = identifier
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case:?}: a CloudFormation identifier is a string"));
+            assert!(
+                identifier.starts_with("AWS::") && identifier.split("::").count() == 3,
+                "case {case:?}: expected an AWS::<Service>::<Type> identifier, got \
+                 {identifier:?}"
+            );
+        }
+        if let Some(previous) = &previous {
+            assert!(
+                previous.as_str() < case.as_str(),
+                "case {case:?}: the catalogue is ascending by ResourceType with no duplicates, \
+                 got {previous:?} before it"
+            );
+        }
+        previous = Some(case);
+    }
+
+    // The same answer from an emulator that holds nothing at all: no index, no view, no
+    // resource of any owning service. A published catalogue is not an inventory.
+    let empty = Emulator::new();
+    let case = "an emulator holding nothing";
+    let answer = empty
+        .explorer(REGION, "ListSupportedResourceTypes", json!({}))
+        .await;
+    assert_eq!(
+        answer.ok(case)["ResourceTypes"],
+        json!(published),
+        "case {case:?}: expected the same published catalogue, got {}",
+        answer.body
+    );
 }
 
 /// The `Resources` list is a `BTreeMap`-free projection of persisted state, so two reads

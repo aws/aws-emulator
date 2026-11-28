@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListSupportedResourceTypes
-//! IMPLEMENTED: reports the resource types a Region's index can hold — the one catalogue in
-//! [`crate::state::owners::SUPPORTED_TYPES`] that the index itself is built from — one page
-//! at a time.
+//! IMPLEMENTED: publishes the resource types Resource Explorer supports — the service-wide
+//! catalogue in [`crate::state::supported_types::CATALOGUE`], ascending by `ResourceType`
+//! — one page at a time.
 //!
 //! ## Shape of an operation
 //!
@@ -161,22 +161,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the engine is bound here only to keep the constructor seam honest.
         let _ = &self.engine;
 
-        // "The list of resource types supported by Resource Explorer" is a CATALOGUE, not an
-        // inventory: it names the types an index can hold whether or not the account holds a
-        // resource of one. The catalogue read here is the same one
-        // `crate::state::indexed_resources` builds a Region's index from, so a type this
-        // operation publishes is a type a query can actually report.
-        let supported: Vec<SupportedResourceType> = crate::state::owners::SUPPORTED_TYPES
+        // "The list of resource types supported by Resource Explorer" is the SERVICE's own
+        // catalogue: "all resource types currently supported by Amazon Web Services Resource
+        // Explorer", which is every type an index is able to hold whether or not this
+        // account — or this deployment — holds a resource of one, so it is read from static
+        // service metadata and not from the set of types whose owners this crate can read
+        // (`crate::state::owners::INDEXED_TYPES`, a subset of these rows).
+        let supported: Vec<SupportedResourceType> = crate::state::supported_types::CATALOGUE
             .iter()
-            .map(|kind| SupportedResourceType {
-                service: Some(kind.service().to_string()),
-                resource_type: Some(kind.resource_type.to_string()),
+            .map(|published| SupportedResourceType {
+                service: Some(published.service().to_string()),
+                resource_type: Some(published.resource_type.to_string()),
                 // "The CloudFormation resource type identifiers for this resource type":
-                // each type here is registered under exactly one.
-                cfn_resource_types: Some(vec![kind.cfn_resource_type.to_string()]),
+                // a list, because one supported type can cover several of them.
+                cfn_resource_types: Some(
+                    published
+                        .cfn_resource_types
+                        .iter()
+                        .map(|cfn| (*cfn).to_string())
+                        .collect(),
+                ),
             })
             .collect();
 
+        // One page of that fixed table. Nothing here is sized from a request field: the
+        // vector above is as long as the static catalogue, `MaxResults` only narrows the
+        // slice `paginate` takes from it (clamped to the table's length), and a `NextToken`
+        // that does not decode to an offset inside it is answered with the modelled
+        // `ValidationException` rather than indexed with.
         let (page, next_token) = crate::state::paginate(
             &supported,
             Self::NAME,
