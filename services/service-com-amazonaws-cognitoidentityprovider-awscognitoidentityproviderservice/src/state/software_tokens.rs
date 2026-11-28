@@ -274,6 +274,19 @@ pub enum SoftwareTokenRegistration {
 /// exist for, and nothing of either.
 pub const NO_SOFTWARE_TOKEN_MESSAGE: &str = "Software Token MFA does not exist for the user.";
 
+/// The message a DELETE of a user's software token owes a user that holds none
+/// for it to take away ([`User::holds_software_token`]).
+///
+/// The call "deletes a user's registered time-based one-time password (TOTP)
+/// multi-factor authentication (MFA) factor" (`AdminDeleteSoftwareToken` in this
+/// service's model), so a user that holds no such factor names no resource for
+/// the call to act on: it is refused as the missing resource it is rather than
+/// reported as a deletion that happened. The sentence states the factor that is
+/// not configured and the user it is not configured for, and no value of either
+/// the request or this emulator's state appears in it.
+pub const SOFTWARE_TOKEN_MFA_NOT_CONFIGURED_MESSAGE: &str =
+    "Software token MFA has not been configured for this user.";
+
 impl User {
     /// The time step whose one-time password `user_code` is, for the
     /// authenticator this user associated a private key for as of `at`, and
@@ -335,7 +348,9 @@ impl User {
     /// it does ([`User::set_mfa_preference`]) — and a factor that is not
     /// activated is not one the user prefers, so a preference for it goes with
     /// it. A user that holds no software token is left untouched, its
-    /// `UserLastModifiedDate` included: there was nothing to delete.
+    /// `UserLastModifiedDate` included: there was nothing to delete, which the
+    /// `false` this reports is what the caller is refused for
+    /// ([`SOFTWARE_TOKEN_MFA_NOT_CONFIGURED_MESSAGE`]).
     pub fn delete_software_token(&mut self, now: SystemTime) -> bool {
         if !self.holds_software_token() {
             return false;

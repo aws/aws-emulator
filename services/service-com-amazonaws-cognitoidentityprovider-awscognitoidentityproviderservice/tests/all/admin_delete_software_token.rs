@@ -11,8 +11,9 @@
 //! register a new TOTP factor with `AssociateSoftwareToken`"
 //! (`AdminDeleteSoftwareToken` in this service's model), while every other factor
 //! the user holds is left exactly as it was.** A user that holds no software token
-//! at all is left untouched, and a pool or a user the request names and this
-//! emulator does not hold is refused for the resource that is missing.
+//! at all names no factor for the call to delete, so the call is REFUSED for the
+//! factor that is missing and leaves the user untouched, as is a pool or a user
+//! the request names and this emulator does not hold.
 //!
 //! Each row asserts what a LATER caller sees — `AdminGetUser` and
 //! `AdminGetUserAuthFactors` for the MFA configuration, `VerifySoftwareToken` for
@@ -54,6 +55,11 @@ const SOFTWARE_TOKEN: &str = "SOFTWARE_TOKEN";
 
 /// The wire error code of a request naming a resource this emulator does not hold.
 const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
+
+/// The sentence a delete of a software token the user does not hold is refused
+/// with, which states the factor that is not configured and names no value of the
+/// request.
+const NOT_CONFIGURED_MESSAGE: &str = "Software token MFA has not been configured for this user.";
 
 /// The wire error code of a request naming a user the pool does not hold.
 const USER_NOT_FOUND: &str = "UserNotFoundException";
@@ -487,36 +493,134 @@ async fn deleting_a_software_token_takes_the_whole_totp_factor_away() {
     }
 }
 
-#[tokio::test]
-async fn a_user_holding_no_software_token_is_left_exactly_as_it_was() {
-    let emulator = emulator();
-    let fixture = fixture(&emulator, "no-software-token-pool", VERIFIED_PHONE).await;
-    let (status, payload) =
-        set_preference(&emulator, &fixture.user_pool_id, "SMSMfaSettings", true).await;
-    assert_eq!(
-        status, 200,
-        "activating SMS message MFA must be served, got {status} with {payload}"
-    );
-    let asked = json!({ "UserPoolId": fixture.user_pool_id, "Username": USERNAME });
+/// One row of the refusal table: how the row's user comes to hold no software
+/// token, and what it holds BESIDE one.
+struct NoFactor {
+    case: &'static str,
+    /// The attributes the user is created with, which decide what other factor it
+    /// can receive.
+    attributes: &'static [(&'static str, &'static str)],
+    /// Whether SMS message MFA is activated for the user, so the row asserts that
+    /// another activated factor is no software token.
+    sms: bool,
+    /// How many whole setups a delete already took away before the refused call:
+    /// none for a user that never set an authenticator up, one for a user whose
+    /// factor a delete removed, and two for one that set a fresh factor up
+    /// afterwards and had that deleted as well.
+    setups_deleted: usize,
+}
 
-    // Twice over: a user that never set an authenticator up, and the same user
-    // after a delete has already taken one away. Neither holds a software token, so
-    // neither call has anything to delete.
-    for case in [
-        "a user that never set an authenticator up",
-        "a user whose software token a delete already took away",
-    ] {
+/// The rows differ along how the user came to hold no software token and along
+/// what it holds beside one.
+const NO_FACTOR_ROWS: &[NoFactor] = &[
+    NoFactor {
+        case: "a user that never set an authenticator up",
+        attributes: &[],
+        sms: false,
+        setups_deleted: 0,
+    },
+    NoFactor {
+        case: "a user holding SMS message MFA and no authenticator",
+        attributes: VERIFIED_PHONE,
+        sms: true,
+        setups_deleted: 0,
+    },
+    NoFactor {
+        case: "a user whose registered authenticator a delete already took away",
+        attributes: &[],
+        sms: false,
+        setups_deleted: 1,
+    },
+    NoFactor {
+        case: "a user whose second authenticator a second delete took away",
+        attributes: VERIFIED_PHONE,
+        sms: true,
+        setups_deleted: 2,
+    },
+];
+
+/// A user that holds no software token has none for this call to delete, so the
+/// call is refused for the missing factor — the class, the sentence and the error
+/// shape an SDK resolves from the header — and nothing of the user changes, which
+/// is what makes a following delete refuse as well.
+#[tokio::test]
+async fn deleting_a_software_token_the_user_does_not_hold_is_refused_for_the_missing_factor() {
+    for (index, row) in NO_FACTOR_ROWS.iter().enumerate() {
+        let case = row.case;
+        let emulator = emulator();
+        let fixture = fixture(
+            &emulator,
+            &format!("no-software-token-pool-{index}"),
+            row.attributes,
+        )
+        .await;
+        if row.sms {
+            let (status, payload) =
+                set_preference(&emulator, &fixture.user_pool_id, "SMSMfaSettings", true).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: activating SMS message MFA for a user with a verified phone \
+                 number must be served, got {status} with {payload}"
+            );
+        }
+        for round in 0..row.setups_deleted {
+            // A whole setup — a key, a code it emits and the registration that code
+            // completes — and then the delete that takes it away, so the refused
+            // call below is refused for a factor that is GONE rather than one that
+            // was never there.
+            let secret_code = associate(&emulator, case, &fixture.access_token).await;
+            let (status, payload) = verify(&emulator, &fixture.access_token, &secret_code).await;
+            assert_eq!(
+                (status, payload["Status"].as_str()),
+                (200, Some("SUCCESS")),
+                "case {case:?}, setup {round}: a code the stored key emits must register the \
+                 authenticator, got {status} with {payload}"
+            );
+            let (status, payload) = delete_software_token(&emulator, &fixture.user_pool_id).await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}, setup {round}: deleting the registered factor must be served, got \
+                 {status} with {payload}"
+            );
+        }
+
+        let asked = json!({ "UserPoolId": fixture.user_pool_id, "Username": USERNAME });
         let before = ok(&emulator, "AdminGetUser", &asked).await;
-        let (status, payload) = delete_software_token(&emulator, &fixture.user_pool_id).await;
+        // Driven through the harness that reports the response HEADERS too, so the
+        // error shape an AWS SDK resolves the exception type from is asserted
+        // beside the body (`crate::error_wire`).
+        let answered = crate::error_wire::call(
+            &emulator.router,
+            "AdminDeleteSoftwareToken",
+            &json!({ "UserPoolId": fixture.user_pool_id, "Username": USERNAME }),
+        )
+        .await;
         assert_eq!(
-            status, 200,
-            "case {case:?}: deleting a software token the user does not hold must be served, got \
-             {status} with {payload}"
+            (
+                answered.status,
+                error_code(&answered.payload),
+                error_message(&answered.payload)
+            ),
+            (400, RESOURCE_NOT_FOUND, NOT_CONFIGURED_MESSAGE),
+            "case {case:?}: expected a 400 {RESOURCE_NOT_FOUND} saying \
+             {NOT_CONFIGURED_MESSAGE:?}, got {} with {}",
+            answered.status,
+            answered.payload
         );
+        let named = format!("{RESOURCE_NOT_FOUND}:");
+        assert_eq!(
+            answered.errortype.as_deref(),
+            Some(named.as_str()),
+            "case {case:?}: expected the refusal to name {named:?} in its error-type header, got \
+             {:?}",
+            answered.errortype
+        );
+
         let after = ok(&emulator, "AdminGetUser", &asked).await;
         assert_eq!(
             after, before,
-            "case {case:?}: expected the user to be untouched, got {after} instead of {before}"
+            "case {case:?}: expected the refused call to leave the user untouched, got {after} \
+             instead of {before}"
         );
     }
 }

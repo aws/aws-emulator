@@ -9,6 +9,12 @@
 //! longer sign in with TOTP MFA and can set a fresh authenticator up with
 //! `AssociateSoftwareToken`.
 //!
+//! A user that holds no software token names no factor for the call to delete, so
+//! it is refused with `ResourceNotFoundException`
+//! ([`crate::state::SOFTWARE_TOKEN_MFA_NOT_CONFIGURED_MESSAGE`]) and nothing of
+//! the user changes: a caller can tell a factor that was taken away from one that
+//! was never there.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -183,10 +189,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // can be any of their alias attributes" (`Username`), which is the lookup
         // every administrative operation of this service resolves a user by.
         let user = pool.user_mut(&input.username).ok_or_else(user_not_found)?;
-        // What this call asserts is the factor the user holds AFTERWARDS, and the
-        // request names no token of its own, so a user that holds none is already
-        // in that state and is left exactly as it was.
-        let _held = user.delete_software_token(now);
+        // The call "deletes a user's REGISTERED time-based one-time password (TOTP)
+        // multi-factor authentication (MFA) factor" (this operation in the model),
+        // so a user that holds none names no resource for it to delete and is
+        // refused for the resource that is missing, with nothing of the user
+        // touched.
+        if !user.delete_software_token(now) {
+            return Err(software_token_mfa_not_configured());
+        }
 
         // This operation models no output member: what it asserts is the MFA
         // configuration a later read of the same user renders.
@@ -207,6 +217,17 @@ fn user_pool_not_found(user_pool_id: &str) -> AdminDeleteSoftwareTokenError {
 fn user_not_found() -> AdminDeleteSoftwareTokenError {
     AdminDeleteSoftwareTokenErrorModeled::UserNotFoundException(UserNotFoundException {
         message: Some(crate::state::USER_NOT_FOUND_MESSAGE.to_string()),
+    })
+    .into()
+}
+
+/// This operation's `ResourceNotFoundException` for a user that holds no software
+/// token for this call to delete. Carries the fixed message of
+/// [`crate::state::SOFTWARE_TOKEN_MFA_NOT_CONFIGURED_MESSAGE`], which names
+/// neither the user nor its pool.
+fn software_token_mfa_not_configured() -> AdminDeleteSoftwareTokenError {
+    AdminDeleteSoftwareTokenErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(crate::state::SOFTWARE_TOKEN_MFA_NOT_CONFIGURED_MESSAGE.to_string()),
     })
     .into()
 }
