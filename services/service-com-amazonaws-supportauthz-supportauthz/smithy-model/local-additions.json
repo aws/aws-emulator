@@ -1,0 +1,93 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "smithy.api#Unit": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.supportauthz#ActionSet": {
+      "type": "union",
+      "members": {
+        "allActions": {
+          "target": "smithy.api#Unit",
+          "traits": {
+            "smithy.api#documentation": "<p>Authorizes all available support actions.</p>"
+          }
+        },
+        "actions": {
+          "target": "com.amazonaws.supportauthz#Actions",
+          "traits": {
+            "smithy.api#documentation": "<p>A list of specific support actions to authorize. Maximum of 10 actions.</p>"
+          }
+        }
+      },
+      "traits": {
+        "smithy.api#documentation": "<p>The set of actions authorized by a permit. Specify either all actions or a list of specific actions.</p>"
+      }
+    },
+    "com.amazonaws.supportauthz#Actions": {
+      "type": "list",
+      "member": {
+        "target": "com.amazonaws.supportauthz#Action"
+      },
+      "traits": {
+        "smithy.api#length": {
+          "min": 1,
+          "max": 10
+        }
+      }
+    },
+    "com.amazonaws.supportauthz#Action": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": {
+          "min": 3,
+          "max": 255
+        },
+        "smithy.api#pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9_.-]+$"
+      }
+    },
+    "com.amazonaws.supportauthz#ResourceSet": {
+      "type": "union",
+      "members": {
+        "allResourcesInRegion": {
+          "target": "smithy.api#Unit",
+          "traits": {
+            "smithy.api#documentation": "<p>Authorizes the support operator to act on all resources in the Region.</p>"
+          }
+        },
+        "resources": {
+          "target": "com.amazonaws.supportauthz#Resources",
+          "traits": {
+            "smithy.api#documentation": "<p>A list of specific resource identifiers that the support operator is authorized to act upon. Maximum of 5 resources.</p>"
+          }
+        }
+      },
+      "traits": {
+        "smithy.api#documentation": "<p>The set of resources authorized by a permit. Specify either all resources in the Region or a list of specific resources.</p>"
+      }
+    },
+    "com.amazonaws.supportauthz#Resources": {
+      "type": "list",
+      "member": {
+        "target": "com.amazonaws.supportauthz#Resource"
+      },
+      "traits": {
+        "smithy.api#length": {
+          "min": 1,
+          "max": 5
+        }
+      }
+    },
+    "com.amazonaws.supportauthz#Resource": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": {
+          "min": 1,
+          "max": 512
+        },
+        "smithy.api#pattern": "^[a-zA-Z0-9:/_.-]+$"
+      }
+    }
+  }
+}

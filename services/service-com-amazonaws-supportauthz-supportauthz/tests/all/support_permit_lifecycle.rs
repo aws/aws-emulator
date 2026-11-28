@@ -1348,3 +1348,209 @@ async fn the_operations_this_slice_leaves_unimplemented_still_answer_501() {
         );
     }
 }
+
+/// Every permit operation is SERVED, from shapes this crate declares itself.
+///
+/// The four operations below are the ones the op-stub generator declines, so nothing in
+/// the generated surface carries their shapes: each is hand-authored, and so are the
+/// `Permit` shapes they exchange. This is what fails first if those declarations ever go
+/// out of scope again — the operations stop being bound and answer the framework's
+/// "modeled but not served" refusal instead of a permit.
+#[tokio::test]
+async fn every_permit_operation_is_served_rather_than_declined() {
+    let router = new_router();
+    let created = create(
+        &router,
+        &json!({
+            "name": "Served",
+            "permit": {
+                "actions": { "allActions": {} },
+                "resources": { "allResourcesInRegion": {} }
+            },
+            "signingKeyInfo": { "kmsKey": KMS_KEY }
+        }),
+    )
+    .await;
+    let arn = created.body["arn"].as_str().unwrap_or_default().to_string();
+
+    // (case, the reply)
+    let replies = [
+        ("CreateSupportPermit", created),
+        ("GetSupportPermit", get_permit(&router, "Served").await),
+        ("ListSupportPermits", list_permits(&router, "").await),
+        ("DeleteSupportPermit", delete_permit(&router, &arn).await),
+    ];
+
+    for (case, reply) in replies {
+        assert_eq!(
+            reply.status, 200,
+            "case {case:?}: expected the operation to be served with HTTP 200, got {reply:?}"
+        );
+        assert_ne!(
+            reply.error_type.as_deref(),
+            Some("NotImplemented"),
+            "case {case:?}: the operation must not answer the scaffold's 501, got {reply:?}"
+        );
+    }
+}
+
+/// A `Permit` union carries EXACTLY one member on the wire.
+///
+/// Both unions of a permit, the `Condition` entries under it and `signingKeyInfo` are
+/// declared in this crate's own source (the generator declines the operations that reach
+/// them), so the one-member rule is this service's to enforce. A body that sets none or
+/// two is refused, and nothing is stored for it.
+#[tokio::test]
+async fn a_permit_union_on_the_wire_must_carry_exactly_one_member() {
+    // (case, the member to replace under `permit`/`signingKeyInfo`, the replacement,
+    //  the expected status)
+    let rows: [(&str, &str, Value, u16); 11] = [
+        // The control row: one member set in every union.
+        ("one member in every union", "actions", json!({ "allActions": {} }), 200),
+        ("the other actions arm", "actions", json!({ "actions": ["s3:GetObject"] }), 200),
+        ("no member in actions", "actions", json!({}), 400),
+        (
+            "two members in actions",
+            "actions",
+            json!({ "allActions": {}, "actions": ["s3:GetObject"] }),
+            400,
+        ),
+        ("no member in resources", "resources", json!({}), 400),
+        (
+            "two members in resources",
+            "resources",
+            json!({ "allResourcesInRegion": {}, "resources": ["arn:aws:s3:::b"] }),
+            400,
+        ),
+        ("the other resources arm", "resources", json!({ "resources": ["arn:aws:s3:::b"] }), 200),
+        ("no member in a condition", "conditions", json!([{}]), 400),
+        (
+            "two members in a condition",
+            "conditions",
+            json!([{ "allowAfter": 1_700_000_000_i64, "allowBefore": 1_900_000_000_i64 }]),
+            400,
+        ),
+        (
+            "one member in a condition",
+            "conditions",
+            json!([{ "allowAfter": 1_700_000_000_i64 }]),
+            200,
+        ),
+        ("no member in signingKeyInfo", "signingKeyInfo", json!({}), 400),
+    ];
+
+    for (case, member, replacement, expected_status) in rows {
+        let router = new_router();
+        let mut body = json!({
+            "name": "UnionArity",
+            "permit": {
+                "actions": { "allActions": {} },
+                "resources": { "allResourcesInRegion": {} }
+            },
+            "signingKeyInfo": { "kmsKey": KMS_KEY }
+        });
+        if member == "signingKeyInfo" {
+            body["signingKeyInfo"] = replacement.clone();
+        } else {
+            body["permit"][member] = replacement.clone();
+        }
+
+        let reply = create(&router, &body).await;
+        assert_eq!(
+            reply.status, expected_status,
+            "case {case:?}: expected HTTP {expected_status} for {member} = {replacement}, \
+             got {reply:?}"
+        );
+
+        // A refused body stores nothing: the permit must not be readable afterwards.
+        let read = get_permit(&router, "UnionArity").await;
+        let expected_read = if expected_status == 200 { 200 } else { 404 };
+        assert_eq!(
+            read.status, expected_read,
+            "case {case:?}: expected HTTP {expected_read} reading the permit back, got {read:?}"
+        );
+    }
+}
+
+/// The overlay model restates the snapshot EXACTLY, and adds only the prelude shape the
+/// snapshot omits.
+///
+/// `smithy-model/local-additions.json` exists for one reason: the Smithy JSON AST does
+/// not serialize `smithy.api#Unit`, which both `Permit` unions target, so codegen cannot
+/// classify either union from the snapshot alone (see `smithy-model/LOCAL-ADDITIONS.md`).
+/// Every OTHER shape in the overlay is a restatement of the snapshot's own definition, so
+/// a refreshed snapshot that changes a member, a target or a constraint must fail here
+/// rather than leave the two definitions silently diverged.
+#[test]
+fn the_local_overlay_restates_the_upstream_model_and_adds_only_the_prelude_unit_shape() {
+    let shapes_of = |source: &str, label: &str| -> Map<String, Value> {
+        serde_json::from_str::<Value>(source)
+            .unwrap_or_else(|error| panic!("{label} must be JSON: {error}"))
+            .get("shapes")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_else(|| panic!("{label} must carry a shapes object"))
+    };
+
+    let snapshot = shapes_of(
+        include_str!("../../smithy-model/com-amazonaws-supportauthz-supportauthz.json"),
+        "the model snapshot",
+    );
+    let overlay = shapes_of(
+        include_str!("../../smithy-model/local-additions.json"),
+        "the overlay model",
+    );
+
+    // The one shape the overlay ADDS: the prelude structure with no members. It is in the
+    // overlay precisely because the snapshot does not serialize it.
+    assert_eq!(
+        overlay.get("smithy.api#Unit"),
+        Some(&json!({ "type": "structure", "members": {} })),
+        "the overlay must declare smithy.api#Unit as the structure with no members, got {:?}",
+        overlay.get("smithy.api#Unit")
+    );
+    assert!(
+        !snapshot.contains_key("smithy.api#Unit"),
+        "the snapshot now declares smithy.api#Unit, so the overlay should give way to it"
+    );
+
+    // Every other shape is a verbatim restatement of the snapshot's definition.
+    let restated: Vec<&String> = overlay
+        .keys()
+        .filter(|id| id.as_str() != "smithy.api#Unit")
+        .collect();
+    assert!(
+        restated.len() >= 6,
+        "expected the overlay to restate the two unions and the shapes their members \
+         target, got {restated:?}"
+    );
+    for id in restated {
+        assert_eq!(
+            overlay.get(id),
+            snapshot.get(id),
+            "case {id:?}: the overlay must restate the snapshot's definition exactly; \
+             overlay {:?}, snapshot {:?}",
+            overlay.get(id),
+            snapshot.get(id)
+        );
+    }
+
+    // And the two unions really are the shapes that need it: each has a member targeting
+    // the prelude shape.
+    for id in [
+        "com.amazonaws.supportauthz#ActionSet",
+        "com.amazonaws.supportauthz#ResourceSet",
+    ] {
+        let members = overlay
+            .get(id)
+            .and_then(|shape| shape.get("members"))
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("case {id:?}: the overlay must declare this union"));
+        assert!(
+            members
+                .values()
+                .any(|member| member.get("target") == Some(&json!("smithy.api#Unit"))),
+            "case {id:?}: expected a member targeting smithy.api#Unit, got {members:?}"
+        );
+    }
+}

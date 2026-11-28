@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use ::aws_smithy_types::DateTime;
 
-use crate::ops::types::{
+use crate::service::types_local::{
     ActionSet, Condition, Permit, ResourceSet, SigningKeyInfo, SupportPermitSummary,
 };
 

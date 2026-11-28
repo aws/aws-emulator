@@ -14,12 +14,8 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-pub mod create_support_permit_types;
-pub mod delete_support_permit_types;
 pub mod get_action_types;
-pub mod get_support_permit_types;
 pub mod list_actions_types;
-pub mod list_support_permits_types;
 pub mod list_tags_for_resource_types;
 pub mod reject_support_permit_request_types;
 pub mod shared_types;
@@ -27,17 +23,9 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use create_support_permit_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use delete_support_permit_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_action_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use get_support_permit_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_actions_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use list_support_permits_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

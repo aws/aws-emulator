@@ -5,8 +5,11 @@
 //! Hand-authored: the scaffold declined `CreateSupportPermit` (see
 //! `src/ops/SKIPPED_STUBS.md`), so these follow the shape the scaffold gives the
 //! rendered siblings in this directory. Each structure/union is declared exactly
-//! once across this service's `types/` modules, and `types/mod.rs` re-exports
-//! them all.
+//! once across this service's `types/` modules.
+//!
+//! This module is declared from `src/ops/types_local/mod.rs`, which re-exports it,
+//! rather than from the `@generated` `types/mod.rs` that the model update rewrites:
+//! see that file.
 #![allow(unused_imports)]
 
 use super::*;

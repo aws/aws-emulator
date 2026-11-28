@@ -47,6 +47,12 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The shapes of this operation the scaffold declines to render, declared from the
+// model in this crate's own source; `crate::service` is where that module is
+// declared, because the `@generated` `types/mod.rs` cannot keep a `mod` line.
+#[allow(unused_imports)]
+use crate::service::types_local::*;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-supportauthz-supportauthz.json");
@@ -95,9 +101,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
     const NAME: &'static str = "GetSupportPermit";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::GET_SUPPORT_PERMIT_INPUT_SCHEMA;
+        crate::service::types_local::GET_SUPPORT_PERMIT_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema =
-        super::types::GET_SUPPORT_PERMIT_OUTPUT_SCHEMA;
+        crate::service::types_local::GET_SUPPORT_PERMIT_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(

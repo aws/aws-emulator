@@ -27,11 +27,14 @@ handler returns an error, so it never has to construct a value.
 
 `CreateSupportPermit`, `DeleteSupportPermit`, `GetSupportPermit` and
 `ListSupportPermits` are now implemented in `ops/<op>.rs` and bound to the
-service: the decline reason was that `ActionSet` and `ResourceSet` each carry a
+service: the decline reason is that `ActionSet` and `ResourceSet` each carry a
 union member targeting the Smithy PRELUDE shape `smithy.api#Unit`, which the
-JSON AST does not serialize, so the generator could not type it. The model now
-carries the prelude's own definition of that shape and the four handlers are
-written by hand.
+JSON AST does not serialize, so the generator cannot type it. The model is left
+exactly as the update wrote it; that one prelude shape is declared beside it in
+`smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md`), the
+shapes the four operations exchange are hand-authored in `ops/types/`, and their
+`mod` lines live in `ops/types_local/mod.rs` — not in the `@generated`
+`ops/types/mod.rs`, which a refresh rewrites from the model.
 
 `ListSupportPermitRequests` is still unwired and answers the framework's
 unroutable-operation path; it will be filed as its own gap issue.

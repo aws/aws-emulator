@@ -45,6 +45,17 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+/// This service's hand-authored type modules — the shapes the scaffold op-stub
+/// generator cannot render, which its own note lists and explains.
+///
+/// They are declared from THIS file because this is the one module of the crate
+/// the scaffold emits once and never regenerates. `src/ops/types/mod.rs`, which
+/// declares every rendered type module, carries `@generated`: the model update
+/// rewrites it and lists only what the generator rendered, so a declaration added
+/// there does not survive a refresh.
+#[path = "ops/types_local/mod.rs"]
+pub mod types_local;
+
 /// The `com-amazonaws-supportauthz-supportauthz` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
