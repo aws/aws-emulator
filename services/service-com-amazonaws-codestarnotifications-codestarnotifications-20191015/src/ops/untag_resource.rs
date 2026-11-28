@@ -8,6 +8,10 @@
 //! adds one). The map `DescribeNotificationRule` and `ListTagsForResource` then report is
 //! what is left.
 //!
+//! A call that removed a key MODIFIED the rule, so it also moves the instant the rule
+//! reports as the one it was most recently updated at; a call that removed nothing
+//! modified nothing and moves nothing.
+//!
 //! The engine is held on `self` (constructor-injected); `ctx` carries request metadata
 //! only — the request's SigV4 scope is the region whose rules this endpoint addresses.
 //!
@@ -193,8 +197,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Removal is by KEY and nothing else: a key the rule carries leaves it with its
         // value, a key it does not carry leaves the map as it was (so the same request
         // repeated reaches the same state), and no other key is touched.
+        let mut removed = false;
         for key in &input.tag_keys {
-            rule.tags.remove(key);
+            removed |= rule.tags.remove(key).is_some();
+        }
+        // Removing a key MODIFIES the rule, so the instant it reports as the one it was
+        // most recently updated at moves to this write — the same step every other
+        // mutator of a stored rule in this crate takes. A call that removed nothing
+        // modified nothing, so that instant stays where it was.
+        if removed {
+            rule.last_modified_timestamp = st::now_timestamp();
         }
 
         Ok(UntagResourceOutput {})

@@ -10,6 +10,11 @@
 //! `ResourceNotFoundException` over the whole submitted ARN, whether the rule never
 //! existed or was deleted.
 //!
+//! A further RULE, asserted here over both tagging paths: a call that leaves the rule
+//! holding a different tag map MODIFIED the rule, so it moves the instant the rule reports
+//! as the one it was most recently updated at, while a call that leaves the map as it was
+//! moves nothing — and no report of the rule moves it at all.
+//!
 //! Each suite asserts that over a TABLE whose rows differ in what the rule generalises
 //! over — how many keys are supplied, whether they are new or already held, the shape of
 //! the key and the value — rather than pinning one recorded request.
@@ -23,6 +28,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use service_com_amazonaws_codestarnotifications_codestarnotifications_20191015 as codestar;
 
+use crate::list_tags_for_resource::untag_path;
 use crate::notification_rule_lifecycle::{error_code, message, string, tags_of, Emulator};
 
 /// A well-formed `CreateNotificationRule` body.
@@ -623,5 +629,381 @@ async fn a_rule_holds_a_bounded_number_of_tags() {
                 "case {case:?}: a refused call must store nothing, got {described}"
             );
         }
+    }
+}
+
+/// The two instants a rule reports, as `DescribeNotificationRule` states them:
+/// `(CreatedTimestamp, LastModifiedTimestamp)`. Both travel as epoch seconds, so one
+/// call's instant compares with another's as a number.
+async fn timestamps(emulator: &Emulator, case: &str, arn: &str) -> (f64, f64) {
+    let described = emulator
+        .ok(case, "/describeNotificationRule", &json!({ "Arn": arn }))
+        .await;
+    let read = |member: &str| {
+        described.get(member).and_then(Value::as_f64).unwrap_or_else(|| {
+            panic!("case {case:?}: the describe must report {member}, got {described}")
+        })
+    };
+    (read("CreatedTimestamp"), read("LastModifiedTimestamp"))
+}
+
+/// Tag the rule and return the status and body of the call.
+async fn tag(emulator: &Emulator, arn: &str, tags: &[(&str, &str)]) -> (u16, Value) {
+    emulator
+        .post(
+            "/tagResource",
+            &json!({
+                "Arn": arn,
+                "Tags": Value::Object(
+                    tags.iter()
+                        .map(|(key, value)| ((*key).to_string(), json!(value)))
+                        .collect(),
+                ),
+            }),
+        )
+        .await
+}
+
+/// One row of the tagging-bump table: the case, the tags the rule is created with, the
+/// tags the call supplies, the map the rule holds afterwards, and whether that map
+/// differs from the one it held — which is whether the call modified the rule.
+type BumpRow<'a> = (
+    &'a str,
+    &'a [(&'a str, &'a str)],
+    &'a [(&'a str, &'a str)],
+    &'a [(&'a str, &'a str)],
+    bool,
+);
+
+/// RULE: a call that leaves a rule holding a different tag map MODIFIED that rule, so the
+/// instant it reports as the one it was most recently updated at moves to that write
+/// (`LastModifiedTimestamp` is "the date and time the notification rule was most recently
+/// updated"); a call that leaves the map exactly as it was modified nothing, so that
+/// instant stays where it was. `CreatedTimestamp` never moves either way.
+///
+/// The rows differ in what the merge does to the stored map — a first key, several at
+/// once, a key beside the ones already held, a held key taking a new value, a key with an
+/// empty value — and in whether it changes the map at all: re-supplying the map the rule
+/// already holds, or a subset of it with the values it already carries, changes nothing.
+#[tokio::test]
+async fn tagging_that_changes_the_map_moves_the_rules_last_modified_instant() {
+    // (case, tags at create, tags supplied, the map held afterwards, the map changed)
+    let rows: &[BumpRow] = &[
+        (
+            "a first tag on an untagged rule",
+            &[],
+            &[("team", "dev")],
+            &[("team", "dev")],
+            true,
+        ),
+        (
+            "several tags at once",
+            &[],
+            &[("team", "dev"), ("env", "prod"), ("owner", "platform")],
+            &[("env", "prod"), ("owner", "platform"), ("team", "dev")],
+            true,
+        ),
+        (
+            "a new key beside the ones the rule holds",
+            &[("team", "dev")],
+            &[("env", "prod")],
+            &[("env", "prod"), ("team", "dev")],
+            true,
+        ),
+        (
+            "a key the rule already holds taking a new value",
+            &[("team", "dev")],
+            &[("team", "platform")],
+            &[("team", "platform")],
+            true,
+        ),
+        (
+            "a tag with an empty value",
+            &[("team", "dev")],
+            &[("marker", "")],
+            &[("marker", ""), ("team", "dev")],
+            true,
+        ),
+        (
+            "the map the rule already holds, re-supplied",
+            &[("team", "dev"), ("env", "prod")],
+            &[("team", "dev"), ("env", "prod")],
+            &[("env", "prod"), ("team", "dev")],
+            false,
+        ),
+        (
+            "a subset of the map, with the values it already carries",
+            &[("team", "dev"), ("env", "prod")],
+            &[("env", "prod")],
+            &[("env", "prod"), ("team", "dev")],
+            false,
+        ),
+    ];
+
+    let emulator = Emulator::new();
+
+    for (index, (case, initial, supplied, held, changed)) in rows.iter().enumerate() {
+        let created = emulator
+            .ok(
+                case,
+                "/createNotificationRule",
+                &create_body(&format!("bumped-{index}"), initial),
+            )
+            .await;
+        let arn = string(&created, "Arn");
+        let (created_before, modified_before) = timestamps(&emulator, case, &arn).await;
+
+        let (status, body) = tag(&emulator, &arn, supplied).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the tagging must succeed, got {status} with {body}"
+        );
+
+        let want = tag_map(held);
+        let (created_after, modified_after) = timestamps(&emulator, case, &arn).await;
+        let described = emulator
+            .ok(case, "/describeNotificationRule", &json!({ "Arn": arn }))
+            .await;
+        assert_eq!(
+            tags_of(&described),
+            want,
+            "case {case:?}: expected the rule to hold {want:?}, got {described}"
+        );
+
+        if *changed {
+            assert!(
+                modified_after > modified_before,
+                "case {case:?}: a changed tag map moves LastModifiedTimestamp, \
+                 got {modified_before} then {modified_after}"
+            );
+        } else {
+            assert_eq!(
+                modified_after, modified_before,
+                "case {case:?}: an unchanged tag map leaves LastModifiedTimestamp alone, \
+                 got {modified_before} then {modified_after}"
+            );
+        }
+        assert_eq!(
+            created_after, created_before,
+            "case {case:?}: CreatedTimestamp never moves, got {created_before} then {created_after}"
+        );
+    }
+}
+
+/// One row of the untagging-bump table: the case, the tags the rule holds, the keys the
+/// call names, the map left afterwards, and whether the call removed anything.
+type UntagBumpRow<'a> = (
+    &'a str,
+    &'a [(&'a str, &'a str)],
+    &'a [&'a str],
+    &'a [(&'a str, &'a str)],
+    bool,
+);
+
+/// RULE (the same one, through the removing path): a call that leaves a rule holding a
+/// different tag map moves the instant the rule reports as the one it was most recently
+/// updated at; a call that removes nothing leaves that instant alone.
+///
+/// The rows differ in how many of the named keys the rule holds — one of several, every
+/// one of them, a key named twice, a held key beside one the rule never held — and in
+/// whether anything is removed at all: a key the rule never held, and any key of a rule
+/// that holds none, remove nothing.
+#[tokio::test]
+async fn untagging_that_removes_a_key_moves_the_rules_last_modified_instant() {
+    // (case, tags held, keys named, the map left afterwards, something was removed)
+    let rows: &[UntagBumpRow] = &[
+        (
+            "one key of several",
+            &[("team", "dev"), ("env", "prod")],
+            &["team"],
+            &[("env", "prod")],
+            true,
+        ),
+        (
+            "every key the rule holds",
+            &[("team", "dev"), ("env", "prod")],
+            &["team", "env"],
+            &[],
+            true,
+        ),
+        (
+            "the same key named twice in one call",
+            &[("team", "dev"), ("env", "prod")],
+            &["team", "team"],
+            &[("env", "prod")],
+            true,
+        ),
+        (
+            "a held key beside one the rule never held",
+            &[("team", "dev"), ("env", "prod")],
+            &["env", "absent"],
+            &[("team", "dev")],
+            true,
+        ),
+        (
+            "a key the rule never held",
+            &[("team", "dev")],
+            &["absent"],
+            &[("team", "dev")],
+            false,
+        ),
+        (
+            "two keys the rule never held",
+            &[("team", "dev")],
+            &["absent", "also-absent"],
+            &[("team", "dev")],
+            false,
+        ),
+        (
+            "any key, on a rule that holds none",
+            &[],
+            &["team"],
+            &[],
+            false,
+        ),
+    ];
+
+    let emulator = Emulator::new();
+
+    for (index, (case, held, keys, left, removed)) in rows.iter().enumerate() {
+        let created = emulator
+            .ok(
+                case,
+                "/createNotificationRule",
+                &create_body(&format!("untag-bumped-{index}"), held),
+            )
+            .await;
+        let arn = string(&created, "Arn");
+        let (created_before, modified_before) = timestamps(&emulator, case, &arn).await;
+
+        let (status, body) = emulator.post(&untag_path(&arn, keys), &json!({})).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the untagging must succeed, got {status} with {body}"
+        );
+
+        let want = tag_map(left);
+        let (created_after, modified_after) = timestamps(&emulator, case, &arn).await;
+        let described = emulator
+            .ok(case, "/describeNotificationRule", &json!({ "Arn": arn }))
+            .await;
+        assert_eq!(
+            tags_of(&described),
+            want,
+            "case {case:?}: expected the rule to hold {want:?}, got {described}"
+        );
+
+        if *removed {
+            assert!(
+                modified_after > modified_before,
+                "case {case:?}: a removed key moves LastModifiedTimestamp, \
+                 got {modified_before} then {modified_after}"
+            );
+        } else {
+            assert_eq!(
+                modified_after, modified_before,
+                "case {case:?}: removing nothing leaves LastModifiedTimestamp alone, \
+                 got {modified_before} then {modified_after}"
+            );
+        }
+        assert_eq!(
+            created_after, created_before,
+            "case {case:?}: CreatedTimestamp never moves, got {created_before} then {created_after}"
+        );
+    }
+}
+
+/// RULE: the instant belongs to the RULE, not to one operation — so every modifying call
+/// moves it forward, whichever path writes, and a call that only REPORTS the rule leaves
+/// it (and everything else a later caller sees) alone.
+///
+/// The sequence mixes the tagging paths with the siblings that already moved it, so no
+/// step's bump is keyed to one operation; the reads between them must not move it.
+#[tokio::test]
+async fn every_modifying_call_moves_the_instant_and_no_read_does() {
+    let emulator = Emulator::new();
+    let created = emulator
+        .ok(
+            "sequence",
+            "/createNotificationRule",
+            &create_body("sequence", &[("team", "dev")]),
+        )
+        .await;
+    let arn = string(&created, "Arn");
+
+    // (what the step is called, the request line, the body) — one modifying call each,
+    // alternating between the tagging paths and the siblings.
+    let steps: Vec<(&str, String, Value)> = vec![
+        (
+            "tagResource adds a key",
+            "/tagResource".to_string(),
+            json!({ "Arn": arn, "Tags": { "env": "prod" } }),
+        ),
+        (
+            "subscribe attaches a target",
+            "/subscribe".to_string(),
+            json!({
+                "Arn": arn,
+                "Target": {
+                    "TargetType": "SNS",
+                    "TargetAddress": "arn:aws:sns:us-east-1:123456789012:sequence-topic",
+                },
+            }),
+        ),
+        (
+            "untagResource removes a key",
+            untag_path(&arn, &["env"]),
+            json!({}),
+        ),
+        (
+            "updateNotificationRule changes the status",
+            "/updateNotificationRule".to_string(),
+            json!({ "Arn": arn, "Status": "DISABLED" }),
+        ),
+        (
+            "tagResource replaces a value",
+            "/tagResource".to_string(),
+            json!({ "Arn": arn, "Tags": { "team": "platform" } }),
+        ),
+        (
+            "untagResource removes the last key",
+            untag_path(&arn, &["team"]),
+            json!({}),
+        ),
+    ];
+
+    let (created_at, mut previous) = timestamps(&emulator, "sequence", &arn).await;
+    for (case, path, body) in &steps {
+        let (status, answered) = emulator.post(path, body).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the call must succeed, got {status} with {answered}"
+        );
+        let (created_now, modified) = timestamps(&emulator, case, &arn).await;
+        assert!(
+            modified > previous,
+            "case {case:?}: the instant must move forward, got {previous} then {modified}"
+        );
+        assert_eq!(
+            created_now, created_at,
+            "case {case:?}: CreatedTimestamp never moves, got {created_at} then {created_now}"
+        );
+        previous = modified;
+
+        // A REPORT of the rule moves nothing a later caller sees.
+        for (report, report_path) in [
+            ("describeNotificationRule", "/describeNotificationRule"),
+            ("listTagsForResource", "/listTagsForResource"),
+        ] {
+            emulator
+                .ok(report, report_path, &json!({ "Arn": arn }))
+                .await;
+        }
+        let (_, after_reads) = timestamps(&emulator, case, &arn).await;
+        assert_eq!(
+            after_reads, previous,
+            "case {case:?}: reading the rule must not move the instant, \
+             got {previous} then {after_reads}"
+        );
     }
 }

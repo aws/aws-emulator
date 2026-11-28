@@ -7,6 +7,10 @@
 //! value), and the resulting map is what the operation answers with — the same map
 //! `DescribeNotificationRule` then reports.
 //!
+//! A call that leaves the rule holding a different map MODIFIED the rule, so it also moves
+//! the instant the rule reports as the one it was most recently updated at; a call that
+//! leaves the map exactly as it was modified nothing and moves nothing.
+//!
 //! The engine is held on `self` (constructor-injected); `ctx` carries request metadata
 //! only — the request's SigV4 scope is the region whose rules this endpoint addresses.
 //!
@@ -219,7 +223,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if merged.len() > st::MAX_TAGS_PER_RULE {
             return Err(over_tag_limit());
         }
-        rule.tags = merged;
+        // Tagging MODIFIES the rule, so a call that leaves it holding a different map
+        // moves the instant the rule reports as the one it was most recently updated at —
+        // the same step every other mutator of a stored rule in this crate takes. A call
+        // that leaves the map exactly as it was modified nothing, so it leaves that
+        // instant alone too, which is what keeps a repeated request at the same state.
+        if merged != rule.tags {
+            rule.tags = merged;
+            rule.last_modified_timestamp = st::now_timestamp();
+        }
 
         Ok(TagResourceOutput {
             // The resulting map, read back off the rule that now holds it rather than
