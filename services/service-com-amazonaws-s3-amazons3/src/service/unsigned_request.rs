@@ -28,13 +28,17 @@
 //! Two pieces answer that, and both are needed because the seam that states an operation's
 //! schemes ([`::smithy_server_runtime::ErasedOperation::auth_schemes`]) is handed no request:
 //!
-//! 1. [`ServedUnsigned`], the wrapper the operations of this service that DO judge the
-//!    anonymous principal are served behind ([`served_to_the_anonymous_caller`] is the
-//!    catalog). It states no auth scheme for a request that presents no credential — so such
-//!    a request reaches the handler, whose own authorization then answers it — and the
-//!    operation's own modelled schemes for every request that presents one, so a credentialed
-//!    request is verified exactly as before. Nothing is waved through: the handler behind it
-//!    authorizes the anonymous caller against what the bucket grants to everyone.
+//! 1. [`ServedUnsigned`], the wrapper the operations this service serves itself are served
+//!    behind. It states no auth scheme for a request the framework's own authenticator cannot
+//!    verify — so such a request reaches the handler, whose own authorization then answers it
+//!    — and the operation's own modelled schemes for every request that authenticator can
+//!    verify, so a header-signed request is verified exactly as before. Which requests those
+//!    are differs by surface: a request presenting NO credential reaches only the operations
+//!    that judge the anonymous principal themselves ([`served_to_the_anonymous_caller`] is the
+//!    catalog), while one presenting a credential in a presentation no authenticator can read
+//!    ([`Admission::OwnQueryCredential`]) reaches every operation served behind this wrapper,
+//!    because what admits it is the signature this service itself recomputed
+//!    ([`super::legacy_query_credential`]). Nothing is waved through either way.
 //! 2. [`remember`], which records WHICH surface the request being served is on, read once per
 //!    request by this service's routing seam (the seam the framework reaches with the whole
 //!    request, before it authenticates) and answered by [`admission`]. It is a request-scoped
@@ -67,6 +71,13 @@ pub(super) enum Admission {
     /// operation on at all — every request of it is the anonymous principal's, whatever
     /// credential it happens to carry, because a website endpoint reads none.
     WebsiteEndpoint,
+    /// The request presents a complete credential of ITS OWN, among its query parameters,
+    /// that no authenticator registered with the framework can read — the `AWSAccessKeyId` /
+    /// `Signature` / `Expires` presentation of a presigned URL. THIS SERVICE authenticates it
+    /// ([`super::legacy_query_credential`]), so the framework is told no scheme signs the
+    /// operation it addressed, and the signature the URL carries is recomputed by the routing
+    /// seam before that operation is served.
+    OwnQueryCredential,
 }
 
 thread_local! {
@@ -74,14 +85,41 @@ thread_local! {
     /// request.
     ///
     /// Not state: a request-scoped note, needed because the seam that states an operation's
-    /// auth schemes is handed no request. It is recorded for EVERY request this service
-    /// routes, so it can never be read as a previous request's.
-    static ADMISSION: Cell<Admission> = const { Cell::new(Admission::Credentialed) };
+    /// auth schemes is handed no request. Its value is the one the request being served
+    /// recorded, which three things together are what make true:
+    ///
+    /// * the DEFAULT is the surface that demands the model's own schemes
+    ///   ([`Admission::Credentialed`]), so a note nothing wrote waives nothing;
+    /// * it is FORGOTTEN at both ends of a dispatch — before this service routes a request
+    ///   (its protocol seam, the first thing the framework asks it per request) and again
+    ///   once the decision has been taken and the operation runs ([`ServedUnsigned::run`]) —
+    ///   so a request the routing seam never reached, or one that unwound before it did,
+    ///   reads the default rather than another request's note ([`forget`]);
+    /// * and it is RECORDED for every request this service routes, by the seam the framework
+    ///   reaches with the whole request before it authenticates it.
+    ///
+    /// So the only way the note can be wrong is conservative: the framework verifies a
+    /// signature this service would have admitted, which refuses a caller rather than
+    /// serving one.
+    static ADMISSION: Cell<Admission> = const { Cell::new(DEMANDS_THE_MODELS_SCHEMES) };
 }
+
+/// The surface the note holds when no request recorded one: the one whose operations state
+/// the schemes their model gives them, so nothing is admitted on an absent note.
+const DEMANDS_THE_MODELS_SCHEMES: Admission = Admission::Credentialed;
 
 /// Record that the request this thread is serving reached `admission`'s surface.
 pub(super) fn remember(admission: Admission) {
     ADMISSION.with(|note| note.set(admission));
+}
+
+/// Forget whatever note this thread holds, putting it back to the surface that admits nobody
+/// ([`DEMANDS_THE_MODELS_SCHEMES`]).
+///
+/// Called at both ends of one dispatch (see the note's own documentation), so no decision is
+/// ever taken on a value another request recorded.
+pub(super) fn forget() {
+    remember(DEMANDS_THE_MODELS_SCHEMES);
 }
 
 /// The surface [`remember`] recorded for the request this thread is serving.
@@ -135,25 +173,34 @@ pub(super) fn served_to_the_anonymous_caller(operation: &str) -> bool {
     SERVED_TO_THE_ANONYMOUS_CALLER.contains(&operation)
 }
 
-/// One operation of this service, served to the ANONYMOUS caller as well as to the
-/// credentialed one.
+/// One operation of this service, served to the callers THIS SERVICE admits as well as to the
+/// one the framework's own authenticator verifies: the ANONYMOUS principal, and the caller
+/// whose credential travels in a presentation no registered authenticator can read.
 ///
 /// The operation behind it is untouched — it owns deserialize -> validate -> handle ->
 /// serialize exactly as before, authorization included. What this wrapper adds is the one
-/// thing an operation cannot say for itself: that a request presenting NO credential has
-/// nothing for the signature boundary to verify, so it is admitted and judged by the handler's
-/// own authorization instead of being refused for a signature it never carried.
+/// thing an operation cannot say for itself: that the request being served presents nothing
+/// the signature boundary can verify, so it is admitted and judged by what this service
+/// decided about it instead of being refused for a signature the boundary could not read.
+///
+/// Nothing is waved through either way: an anonymous request is authorized by the handler
+/// against what the bucket grants to everyone, and a request presenting its own query
+/// credential has had that credential's signature recomputed by the routing seam
+/// ([`super::legacy_query_credential`]) before it reaches this wrapper.
 pub(super) struct ServedUnsigned {
+    /// The modelled name of the operation behind this wrapper, which is what decides whether
+    /// the ANONYMOUS caller reaches it ([`SERVED_TO_THE_ANONYMOUS_CALLER`] is the catalog).
+    operation: &'static str,
     served: Box<dyn ErasedOperation>,
 }
 
 impl ServedUnsigned {
-    /// Serve `served` to the anonymous caller as well. Takes the operation already wrapped in
-    /// whatever else this service serves it behind (its front door, its request counting, its
-    /// data-event record), so one operation is served once however the caller is
-    /// authenticated.
-    pub(super) fn new(served: Box<dyn ErasedOperation>) -> Self {
-        Self { served }
+    /// Serve `served`, the operation modelled as `operation`, to the callers above as well.
+    /// Takes the operation already wrapped in whatever else this service serves it behind (its
+    /// front door, its request counting, its data-event record), so one operation is served
+    /// once however the caller is authenticated.
+    pub(super) fn new(operation: &'static str, served: Box<dyn ErasedOperation>) -> Self {
+        Self { operation, served }
     }
 }
 
@@ -164,21 +211,40 @@ impl ErasedOperation for ServedUnsigned {
         req: &'r RtRequest,
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
+        // The admission decision has been taken by the time an operation runs: the framework
+        // read it before it dispatched. So the note is FORGOTTEN here, at the far end of the
+        // one dispatch that recorded it — nothing this request does from now on may be
+        // decided on it, and a later dispatch on this thread that never reaches this service's
+        // routing seam reads the surface that admits nobody instead.
+        forget();
         self.served.run(svc, req, ctx)
     }
 
-    /// No scheme at all for a request that presents no credential, and the wrapped operation's
-    /// own modelled schemes for every request that presents one.
+    /// No scheme at all for a request the framework's authenticator cannot verify, and the
+    /// wrapped operation's own modelled schemes for every request it can.
     ///
-    /// The anonymous caller signs nothing, so there is no signature to verify and no
-    /// credential to resolve: what it may do is the authorization question the handler behind
-    /// this wrapper answers from the bucket's own ACL, policy and Block Public Access
-    /// settings. A request that DID present a credential is verified under the model's own
-    /// schemes, so a wrong signature is still refused for the signature.
+    /// The caller presenting its OWN query credential is admitted for every operation served
+    /// behind this wrapper, because what admits it is the signature this service recomputed
+    /// ([`super::legacy_query_credential`]) rather than anything about the operation. The
+    /// ANONYMOUS caller signs nothing, so there is no signature to verify and no credential to
+    /// resolve: what it may do is the authorization question the handler behind this wrapper
+    /// answers from the bucket's own ACL, policy and Block Public Access settings — for the
+    /// operations this service serves that caller, and for no others, which is why the catalog
+    /// is consulted here.
+    ///
+    /// Every other request keeps the model's own schemes, so a wrong signature is still
+    /// refused for the signature: a request presenting a credential the framework CAN verify,
+    /// an anonymous one addressing an operation outside the catalog, and a request on the
+    /// WEBSITE ENDPOINT — which this wrapper never serves, because that surface's own
+    /// operation is what states how such a request is authenticated and this service's routing
+    /// seam resolves it ahead of every entry of the door table.
     fn auth_schemes(&self) -> Option<&'static [&'static str]> {
         match admission() {
-            Admission::Credentialed => self.served.auth_schemes(),
-            Admission::Anonymous | Admission::WebsiteEndpoint => Some(&[]),
+            Admission::OwnQueryCredential => Some(&[]),
+            Admission::Anonymous if served_to_the_anonymous_caller(self.operation) => Some(&[]),
+            Admission::Credentialed | Admission::Anonymous | Admission::WebsiteEndpoint => {
+                self.served.auth_schemes()
+            }
         }
     }
 }

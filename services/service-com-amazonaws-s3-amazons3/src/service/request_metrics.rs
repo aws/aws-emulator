@@ -779,21 +779,21 @@ fn meter<Eng, O>(
     table.add_operation(O::NAME, served_to_every_caller::<O>(entry));
 }
 
-/// `entry` wrapped so that the ANONYMOUS caller reaches it too, for the operations of this
-/// service that judge that caller themselves
-/// ([`super::unsigned_request::served_to_the_anonymous_caller`] is the catalog) — and `entry`
-/// unchanged for every other one, which keeps the refusal an unsigned request earns at the
-/// signature boundary.
+/// `entry` wrapped so that the callers THIS SERVICE admits reach it too — the ANONYMOUS caller
+/// for the operations that judge it themselves
+/// ([`super::unsigned_request::served_to_the_anonymous_caller`] is the catalog), and the caller
+/// whose credential travels in a presentation the framework's authenticator cannot read, whose
+/// signature this service recomputes itself
+/// ([`super::legacy_query_credential`]).
 ///
 /// Applied OUTSIDE the counting and the data-event record, because admitting the caller is what
 /// decides whether the request is served at all: an anonymous read that IS served is counted
 /// into the addressed bucket's request metrics and recorded as that object's data event exactly
 /// as the owner's own read is.
 fn served_to_every_caller<O: Operation>(entry: Box<dyn ErasedOperation>) -> Box<dyn ErasedOperation> {
-    if super::unsigned_request::served_to_the_anonymous_caller(O::NAME) {
-        return Box::new(super::unsigned_request::ServedUnsigned::new(entry));
-    }
-    entry
+    Box::new(super::unsigned_request::ServedUnsigned::new(
+        O::NAME, entry,
+    ))
 }
 
 #[cfg(test)]

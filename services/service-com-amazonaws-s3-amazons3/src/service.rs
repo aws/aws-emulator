@@ -95,6 +95,11 @@ pub mod expected_bucket_owner;
 // The refusal a request addressing a bucket by a name S3 can address no bucket by earns, for
 // every operation of this service but the create — see `service/invalid_bucket_name.rs`.
 pub mod invalid_bucket_name;
+// How a request whose credential travels among its OWN query parameters — the
+// `AWSAccessKeyId` / `Signature` / `Expires` presentation of a presigned URL, which no
+// authenticator registered with the framework can read — is authenticated by this service
+// itself; see `service/legacy_query_credential.rs`.
+pub mod legacy_query_credential;
 // What an update of one of an S3 Metadata configuration's tables must satisfy about the
 // configuration's journal table — see `service/metadata_tables.rs`.
 pub mod metadata_tables;
@@ -1609,6 +1614,17 @@ fn front_door<Eng: Send + Sync + 'static>(
         chunked_upload::REFUSE_MALFORMED_TRAILER,
         Box::new(chunked_upload::RefuseMalformedTrailer::new()),
     );
+    // And the refusals a request presenting its own QUERY CREDENTIAL earns, one entry per
+    // condition: the credential travels in a presentation no authenticator registered with
+    // the framework can read, so this service recomputes its signature itself and answers the
+    // request from here ([`legacy_query_credential`]). Held in this table for the same reason
+    // the refusals above are, and under keys of the same kind.
+    for (key, refusal) in legacy_query_credential::QUERY_CREDENTIAL_DENIED_KEYS {
+        table.add_operation(
+            key,
+            Box::new(legacy_query_credential::QueryCredentialDenied::new(refusal)),
+        );
+    }
     // And the refusal a request earns for the CREDENTIAL it presents — a session whose
     // principal no longer exists — held here for the same reason and under a key of the same
     // kind ([`withdrawn_credential`]): it stands in front of every operation of this service,
@@ -2434,6 +2450,15 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             None if unsigned_request::presents_no_credential(req) => {
                 unsigned_request::Admission::Anonymous
             }
+            // A credential the framework's own authenticator cannot read, whose signature this
+            // service can itself recompute: such a request is this service's to authenticate,
+            // so the framework is told no scheme signs the operation it addressed and the
+            // signature is recomputed below. One whose secret this process does not hold is
+            // NOT claimed here — it keeps the answer the boundary already gives it (see
+            // [`legacy_query_credential`]).
+            None if legacy_query_credential::authenticates(req) => {
+                unsigned_request::Admission::OwnQueryCredential
+            }
             None => unsigned_request::Admission::Credentialed,
         });
         // The WEBSITE ENDPOINT answers the requests addressed to a bucket's website host and
@@ -2446,6 +2471,23 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // never addressed it. See [`website_endpoint`].
         if website_endpoint::addressed_website_of(req).is_some() {
             return self.door.get(website_endpoint::WEBSITE_ENDPOINT);
+        }
+        // A request presenting its own QUERY CREDENTIAL is authenticated HERE, because no
+        // authenticator registered with the framework can read that presentation: the
+        // signature the URL carries is recomputed over the resource it addresses — the
+        // PATH-STYLE address of it ([`Self::path_style_path`]), which is the resource such a
+        // request signs in either address form — and a request whose window has passed, whose
+        // key id this emulator holds no secret for, or whose signature does not verify is
+        // refused for its credential, whichever operation its address names and before
+        // anything about the resource is read. See [`legacy_query_credential`].
+        if let Some(key) = legacy_query_credential::denial_key(
+            req,
+            &self.path_style_path(req),
+            ::std::time::SystemTime::now(),
+        ) {
+            if let Some(refusal) = self.door.get(key) {
+                return Some(refusal);
+            }
         }
         // A write whose body arrived in the `aws-chunked` transfer encoding without saying how
         // long its payload is states the length of the object it carries nowhere, so it is
@@ -2724,15 +2766,20 @@ impl<Eng: Send + Sync + 'static> ErasedServiceDefinition for EmulatedService<Eng
     /// Three answers, one per surface ([`unsigned_request::Admission`], recorded for every
     /// request by this service's routing seam before the framework authenticates it):
     ///
-    /// * a request presenting a CREDENTIAL gets the generated table, unchanged: it is the
-    ///   caller that credential names, and the operation the model's routing key names states
-    ///   the schemes its signature is verified under;
+    /// * a request presenting a CREDENTIAL the framework's own authenticator reads gets the
+    ///   generated table, unchanged: it is the caller that credential names, and the operation
+    ///   the model's routing key names states the schemes its signature is verified under;
     /// * a request presenting NONE gets this service's own door table, where the operations
     ///   that judge the ANONYMOUS principal themselves are served behind
     ///   [`unsigned_request::ServedUnsigned`] — so those state no scheme and are admitted to be
     ///   authorized by the bucket's own ACL, policy and Block Public Access settings, while
     ///   every other operation still states the model's SigV4 and the unsigned caller is still
     ///   refused before any handler runs;
+    /// * a request presenting its own QUERY CREDENTIAL, which that authenticator cannot read,
+    ///   gets the EMPTY table: what states how such a request is authenticated is the
+    ///   operation this service's routing seam resolved for it, which is either the refusal of
+    ///   that credential ([`legacy_query_credential`]) or the operation it addressed behind the
+    ///   wrapper that admits the caller whose signature this service recomputed itself;
     /// * a request on the WEBSITE ENDPOINT gets the EMPTY table, because the model declares no
     ///   operation on that surface at all: the same method and path mean something else there,
     ///   so the endpoint's own operation is what states how the request is authenticated
@@ -2745,7 +2792,8 @@ impl<Eng: Send + Sync + 'static> ErasedServiceDefinition for EmulatedService<Eng
         match unsigned_request::admission() {
             unsigned_request::Admission::Credentialed => self.entry.routing_table(),
             unsigned_request::Admission::Anonymous => &self.door,
-            unsigned_request::Admission::WebsiteEndpoint => &self.unmodelled_surface,
+            unsigned_request::Admission::OwnQueryCredential
+            | unsigned_request::Admission::WebsiteEndpoint => &self.unmodelled_surface,
         }
     }
 
@@ -2813,6 +2861,14 @@ impl<Eng: Send + Sync + 'static> ErasedServiceDefinition for EmulatedService<Eng
     }
 
     fn wire_protocol(&self, req: &RtRequest) -> smithy_server_runtime::WireProtocol<'_> {
+        // This is the FIRST thing the framework asks this service about a request it is about
+        // to serve, so it is where the request-scoped notes of the dispatch to come are put
+        // back to what they say about no request: the surface a request is admitted on
+        // ([`unsigned_request::forget`]) demands the model's own schemes until this service's
+        // routing seam records otherwise, so a dispatch that never reaches that seam — or one
+        // that unwound before it did — can never be authenticated on a note another request
+        // left behind.
+        unsigned_request::forget();
         // The TRAILER the body of this request arrived with, read once here for the reason
         // [`chunked_upload`] gives: the framework decides the protocol before it strips the
         // `aws-chunked` framing off the body, so this is the one seam this service is handed

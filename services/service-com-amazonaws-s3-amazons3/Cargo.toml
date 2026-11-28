@@ -74,6 +74,10 @@ base64 = "0.22"
 # And verifying the signature of that policy is the SigV4 key derivation, which is a chain
 # of HMAC-SHA256 over the secret of the credential the form named.
 hmac = "0.12"
+# The hash the OTHER presigned presentation signs with: the query-credential form's signature
+# is "the HMAC-SHA1 of the UTF-8 encoding of the StringToSign, base64-encoded"
+# (`src/service/legacy_query_credential.rs`).
+sha1 = "0.10"
 # The ARN pattern S3 publishes for a Lambda notification destination is a REGULAR
 # EXPRESSION, quoted verbatim in the refusal of a value that does not satisfy it
 # (`state::CLOUD_FUNCTION_ARN_PATTERN`), so the pattern as published is also what judges a
@@ -149,9 +153,8 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # The credential-scoped authorization suite enrols a virtual MFA device the way its holder
 # does, which means computing the one-time pass code that device emits — the HMAC-SHA-1 of its
-# time step (RFC 6238) over the base32 seed the create answered with. `hmac` is already a
-# dependency above; these two are what the test needs beside it.
-sha1 = "0.10"
+# time step (RFC 6238) over the base32 seed the create answered with. `hmac` and `sha1` are
+# already dependencies above; this is what the test needs beside them.
 data-encoding = "2"
 
 [lints]

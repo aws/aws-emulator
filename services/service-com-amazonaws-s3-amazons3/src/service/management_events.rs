@@ -348,18 +348,17 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
                 let name = <crate::ops::$module::$operation<Eng> as Operation>::NAME;
                 if let Some(kind) = recorded_class(name) {
                     let operation = crate::ops::$module::$operation::new(Arc::clone(engine));
-                    // A read this service serves the ANONYMOUS caller as well
+                    // Served behind the wrapper that admits the callers this service
+                    // authenticates itself — the ANONYMOUS one for the reads that judge it
                     // ([`super::unsigned_request::served_to_the_anonymous_caller`] is the
-                    // catalog) is served behind the wrapper that admits it, INSIDE the
-                    // recorder — so such a call is recorded exactly as a credentialed one is
-                    // and one operation is still served once.
-                    if super::unsigned_request::served_to_the_anonymous_caller(name) {
-                        table.serve_behind(operation, kind, |audited, _| {
-                            super::unsigned_request::ServedUnsigned::new(Box::new(audited))
-                        });
-                    } else {
-                        table.serve(operation, kind);
-                    }
+                    // catalog), and the one presenting a query credential no registered
+                    // authenticator can read
+                    // ([`super::legacy_query_credential`]) — INSIDE the recorder, so such a
+                    // call is recorded exactly as a header-signed one is and one operation is
+                    // still served once.
+                    table.serve_behind(operation, kind, |audited, _| {
+                        super::unsigned_request::ServedUnsigned::new(name, Box::new(audited))
+                    });
                 }
             )*
         }};
@@ -549,28 +548,21 @@ fn serve_counted_behind_door<Eng, O>(
     let kind = recorded_class(O::NAME)
         .expect("a listing of what a bucket holds is a management event of this service");
     let engine = Arc::clone(engine);
-    // A listing this service serves the ANONYMOUS caller as well — what a bucket's own `READ`
-    // grants to everyone ([`super::unsigned_request::served_to_the_anonymous_caller`] is the
-    // catalog) — is served behind the wrapper that admits it, outside the counting and the
-    // door and inside the recorder: admitting the caller decides whether the call is served at
-    // all, and a call that IS served is counted and recorded like any other.
-    if super::unsigned_request::served_to_the_anonymous_caller(O::NAME) {
-        table.serve_behind(operation, kind, move |audited, _| {
-            super::unsigned_request::ServedUnsigned::new(Box::new(
-                super::request_metrics::counted_behind_door(
-                    audited,
-                    &engine,
-                    super::request_metrics::RequestKind::List,
-                ),
-            ))
-        });
-        return;
-    }
+    // Served behind the wrapper that admits the callers this service authenticates itself —
+    // the ANONYMOUS caller for a listing that judges it, what a bucket's own `READ` grants to
+    // everyone ([`super::unsigned_request::served_to_the_anonymous_caller`] is the catalog),
+    // and the caller presenting a query credential no registered authenticator can read
+    // ([`super::legacy_query_credential`]) — outside the counting and the door and inside the
+    // recorder: admitting the caller decides whether the call is served at all, and a call
+    // that IS served is counted and recorded like any other.
     table.serve_behind(operation, kind, move |audited, _| {
-        super::request_metrics::counted_behind_door(
-            audited,
-            &engine,
-            super::request_metrics::RequestKind::List,
+        super::unsigned_request::ServedUnsigned::new(
+            O::NAME,
+            Box::new(super::request_metrics::counted_behind_door(
+                audited,
+                &engine,
+                super::request_metrics::RequestKind::List,
+            )),
         )
     });
 }
