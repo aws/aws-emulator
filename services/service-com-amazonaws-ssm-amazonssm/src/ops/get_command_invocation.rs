@@ -18,12 +18,12 @@
 //! reads that resolve a COMMAND rather than a pair answer ([`crate::ops::list_command_invocations`],
 //! [`crate::ops::cancel_command`]).
 //!
-//! Nothing in this emulator delivers a command to a node (see
-//! [`crate::state::commands`]), so an invocation reports the status it was minted with
-//! and no step of it has produced an exit code, output or an execution window: the
-//! response code is the documented "-1 … the command hasn't started running on the
-//! managed node" and each member the model documents as empty until a step runs is
-//! reported empty.
+//! What the agent in the node's guest RAN is what the per-run members report
+//! ([`crate::state::commands`] delivers a command to the node it was sent to): the exit status
+//! the script ended on and the two streams it wrote. Until the clock has made the invocation's
+//! move off `Pending` due, nothing has finished — the response code is then the documented
+//! "-1 … the command hasn't started running on the managed node" and each member the model
+//! documents as empty until a step runs is reported empty.
 //!
 //! ## Shape of an operation
 //!
@@ -314,7 +314,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(GetCommandInvocationOutput {
             command_id: Some(command.command_id.clone()),
             instance_id: Some(invocation.instance_id.clone()),
-            comment: command.comment.clone(),
+            // The members this read reports OF THE COMMAND are reported whether or not the
+            // send configured them, the way every other read of a command reports its whole
+            // configuration ([`crate::state::commands::CommandRecord::to_command`]): a send
+            // that carried no comment reports the empty string, and one that asked for no
+            // CloudWatch output reports that structure with its own members at their defaults
+            // — no log group named, and output not enabled. A client that reads the echo to
+            // confirm what the command was accepted with can then tell what the command was
+            // configured with from what this service did not report.
+            comment: Some(command.reported_comment()),
             document_name: Some(command.document_name.clone()),
             document_version: Some(command.document_version.clone()),
             // "The name of the plugin, or step name, for which details are reported": the
@@ -364,7 +372,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ),
             // The URLs name the files a plugin wrote to Amazon S3, of which there are none.
             standard_error_url: Some(String::new()),
-            cloud_watch_output_config: command.cloud_watch_output_config.clone(),
+            cloud_watch_output_config: Some(command.reported_cloud_watch_output_config()),
         })
     }
 }

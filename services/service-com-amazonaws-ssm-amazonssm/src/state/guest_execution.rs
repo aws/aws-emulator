@@ -40,6 +40,7 @@ use std::time::SystemTime;
 
 use ::service_com_amazonaws_ec2_amazonec2::state as ec2_store;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::aws_api::CallerIdentity;
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::vpc_network;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::AwsAccess;
 
 use crate::ops::types::DocumentParameter;
@@ -518,6 +519,12 @@ pub fn delivery_in_guest<Eng: Send + Sync + 'static>(
 ///   refused by the called service however the role's own policies read — which is what an
 ///   endpoint policy is for ([`::service_common::vpc_endpoint_calls`], where that decision
 ///   lives). A machine whose VPC holds no endpoint has no such control in force on it.
+/// * WHICH NETWORK that is. The machine stands inside a VPC, on the elastic network interfaces
+///   its launch attached, so a name a program of its guest looks up is asked of the DNS of THAT
+///   VPC and an address it reaches is an address of it — the one reading of a VPC's own network
+///   this workspace holds, built out of those interfaces ([`vpc_network::attachment_of`]). An
+///   instance whose interfaces place it in no VPC this emulator holds has no such network, and
+///   its programs resolve only what needs no zone of an account at all.
 ///
 /// Read ONCE per delivery, before the store that owns the guest is taken, and shared by every
 /// program installed in that guest — so the interpreter's own SDK call and the command line's
@@ -527,6 +534,9 @@ struct MachineAccess {
     credentials: ec2_store::GuestRoleCredentials,
     /// What its network carries, and `None` where no such control is in force.
     egress: Option<::std::sync::Arc<dyn ::service_common::vpc_endpoint_calls::CallEgress>>,
+    /// The VPC the machine stands IN, as its own interfaces place it there — and `None` for an
+    /// instance this emulator can place in no VPC.
+    attachment: Option<vpc_network::VpcAttachment>,
 }
 
 impl ::std::fmt::Debug for MachineAccess {
@@ -534,6 +544,7 @@ impl ::std::fmt::Debug for MachineAccess {
         formatter
             .debug_struct("MachineAccess")
             .field("egress", &self.egress)
+            .field("attachment", &self.attachment)
             .finish_non_exhaustive()
     }
 }
@@ -550,8 +561,11 @@ impl MachineAccess {
         )
     }
 
-    /// The SEAM an AWS SDK call made inside this guest is dispatched on: the in-process
-    /// callback, signed as the machine's own session and held to what its network carries.
+    /// The SEAM an AWS SDK call made inside this guest is dispatched on, and the NETWORK the
+    /// programs installed in that guest reach through it: the in-process callback, signed as the
+    /// machine's own session, held to what its network carries, and standing inside the machine's
+    /// own VPC — so a name one of those programs resolves is answered by that VPC's DNS, and an
+    /// address it opens a connection to is an address of that VPC.
     ///
     /// `None` where there is no seam at all — no async runtime to dispatch a call on — in which
     /// case a program simply has no SDK and says so.
@@ -569,7 +583,8 @@ impl MachineAccess {
                     session_token,
                 }))
                 .addressed_at(ctx.endpoint())
-                .leaving_through(self.egress.clone()),
+                .leaving_through(self.egress.clone())
+                .attached_in_vpc(self.attachment.clone()),
         )
     }
 }
@@ -600,7 +615,37 @@ fn machine_access<Eng: Send + Sync + 'static>(
             ::std::sync::Arc::new(egress)
                 as ::std::sync::Arc<dyn ::service_common::vpc_endpoint_calls::CallEgress>
         }),
+        attachment: node_attachment(engine, ctx, instance_id),
     })
+}
+
+/// The VPC the node `instance_id` names stands in, as the interfaces its launch attached place
+/// it there — and `None` for an instance whose interfaces this emulator can place in no VPC.
+///
+/// The attachment is the one reading of a VPC's own network this workspace holds
+/// ([`vpc_network::attachment_of`], which reads the account's EC2 inventory for the addresses,
+/// the ranges, the security groups and whether that VPC's DNS answers at all): the interfaces
+/// are the machine's, read off the store that owns them, so what a program of this guest
+/// resolves and reaches is the same network a query the guest's own resolver client sends is
+/// answered by.
+///
+/// LOCK ORDER: this takes the EC2 store's lock, gives it up, and is called BEFORE that store is
+/// taken for the run itself.
+fn node_attachment<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    instance_id: &str,
+) -> Option<vpc_network::VpcAttachment> {
+    let interface_ids: Vec<String> = {
+        let ec2 = ec2_store::service_state(engine)?;
+        let store = ec2.lock();
+        store
+            .instance_network_interfaces(instance_id)
+            .into_iter()
+            .filter_map(|interface| interface.network_interface_id)
+            .collect()
+    };
+    vpc_network::attachment_of(engine, &super::request_region(ctx.parts()), &interface_ids)
 }
 
 /// Perform `commands` in the guest of the instance `instance_id` names, with `delivery` as

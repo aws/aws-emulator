@@ -830,7 +830,7 @@ impl CommandRecord {
             command_id: Some(self.command_id.clone()),
             document_name: Some(self.document_name.clone()),
             document_version: Some(self.document_version.clone()),
-            comment: Some(self.comment.clone().unwrap_or_default()),
+            comment: Some(self.reported_comment()),
             expires_after: Some(wire_instant(self.expires_after())),
             parameters: (!self.parameters.is_empty()).then(|| {
                 self.parameters
@@ -861,9 +861,7 @@ impl CommandRecord {
             notification_config: Some(reported_notification_config(
                 self.notification_config.as_ref(),
             )),
-            cloud_watch_output_config: Some(reported_cloud_watch_output_config(
-                self.cloud_watch_output_config.as_ref(),
-            )),
+            cloud_watch_output_config: Some(self.reported_cloud_watch_output_config()),
             timeout_seconds: Some(self.timeout_seconds),
             // `AlarmConfiguration`'s own members carry the defaults the model declares for
             // them, so the structure a send configured no alarm with is the defaulted one:
@@ -884,6 +882,25 @@ impl CommandRecord {
             has_cancel_command_signature: Some(false),
             interactive: Some(false),
         }
+    }
+
+    /// The `Comment` every read of this command reports: "the comment text for the command",
+    /// which is the empty string for a send that carried none — a read reports the command's
+    /// WHOLE configuration ([`Self::to_command`] carries the rule and the reason).
+    ///
+    /// Read here by every projection of a command, so the command reads
+    /// ([`Self::to_command`]), the invocation reads ([`Self::to_command_invocation`]) and
+    /// [`crate::ops::get_command_invocation`] cannot disagree about what a command with no
+    /// comment reports.
+    pub fn reported_comment(&self) -> String {
+        self.comment.clone().unwrap_or_default()
+    }
+
+    /// The `CloudWatchOutputConfig` every read of this command reports, read the same way: the
+    /// structure with its own members at their defaults for a send that configured no CloudWatch
+    /// output — no log group named, and output not enabled.
+    pub fn reported_cloud_watch_output_config(&self) -> CloudWatchOutputConfig {
+        reported_cloud_watch_output_config(self.cloud_watch_output_config.as_ref())
     }
 
     /// Whether the filter `key`=`value` selects ONE invocation of this command.
@@ -909,6 +926,12 @@ impl CommandRecord {
     /// The modelled `CommandInvocation` for one node's invocation of this command — the
     /// command's own members plus that invocation's status.
     ///
+    /// The projection is COMPLETE, for the reason [`Self::to_command`] states: the members an
+    /// invocation carries OF THE COMMAND are reported whether or not the send configured them,
+    /// so a send that carried no comment, named no service role and asked for neither
+    /// notifications nor CloudWatch output is reported with the empty string and with each
+    /// configuration structure at its own defaults rather than with those members omitted.
+    ///
     /// `details` is what "If set this returns the response of the command executions and any
     /// command output" (`ListCommandInvocationsRequest$Details`) asks for: the per-step
     /// results of the invocation, which are reported only for a step that has RUN
@@ -924,7 +947,7 @@ impl CommandRecord {
             command_id: Some(self.command_id.clone()),
             instance_id: Some(invocation.instance_id.clone()),
             instance_name: invocation.instance_name.clone(),
-            comment: self.comment.clone(),
+            comment: Some(self.reported_comment()),
             document_name: Some(self.document_name.clone()),
             document_version: Some(self.document_version.clone()),
             requested_date_time: Some(wire_instant(self.requested_at)),
@@ -945,9 +968,11 @@ impl CommandRecord {
                     })
                 })
                 .flatten(),
-            service_role: self.service_role.clone(),
-            notification_config: self.notification_config.clone(),
-            cloud_watch_output_config: self.cloud_watch_output_config.clone(),
+            service_role: Some(self.service_role.clone().unwrap_or_default()),
+            notification_config: Some(reported_notification_config(
+                self.notification_config.as_ref(),
+            )),
+            cloud_watch_output_config: Some(self.reported_cloud_watch_output_config()),
         }
     }
 

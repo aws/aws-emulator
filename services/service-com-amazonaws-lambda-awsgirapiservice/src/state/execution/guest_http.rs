@@ -973,14 +973,22 @@ def _resolved(host):
     address in, and an answer it cannot be asked for at all is a name that resolved to
     nothing, which is what the caller reports.
     """
+    answered = _resolution(host)
+    held = answered.get("addresses")
+    return held if isinstance(held, list) else []
+
+
+def _resolution(host):
+    """The WHOLE answer this environment's resolver gives for `host`: the addresses, the
+    canonical name the lookup ended at and the aliases it passed through — and an empty
+    answer for a name it holds no address under."""
     try:
         answered = _net_asked("resolve", {"host": host})
     except gaierror:
-        return []
+        return {}
     except OSError:
-        return []
-    held = answered.get("addresses")
-    return held if isinstance(held, list) else []
+        return {}
+    return answered if isinstance(answered, dict) else {}
 
 
 def getnameinfo(*_arguments, **_keywords):
@@ -1003,7 +1011,36 @@ def gethostbyname(name):
 
 
 def gethostbyname_ex(name):
-    return (str(name), [], [gethostbyname(name)])
+    """The whole answer to a name: the canonical name it resolved to, the aliases it stands
+    behind, and every IPv4 address held under the canonical name.
+
+    A name standing at an ALIAS resolves to the name that alias stands for, so the canonical
+    name is that one and the names the lookup passed through are the aliases — which is what
+    this reports, out of the one answer the environment's resolver gave
+    ([`_resolution`]). A name it holds no address under raises what a resolver raises for a
+    name that does not exist, as `gethostbyname` does.
+    """
+    named = str(name)
+    if named.lower() in _LOOPBACK_NAMES:
+        return (named, [], [_LOOPBACK_ADDRESS])
+    if _is_ipv4_address(named):
+        return (named, [], [named])
+    answered = _resolution(named)
+    held = answered.get("addresses")
+    addresses = [
+        entry.get("address") or ""
+        for entry in (held if isinstance(held, list) else [])
+        if entry.get("family") != "inet6"
+    ]
+    if not addresses:
+        raise gaierror(EAI_NONAME, "Name or service not known")
+    aliases = answered.get("aliases")
+    canonical = answered.get("canonical")
+    return (
+        canonical if isinstance(canonical, str) and canonical else named,
+        list(aliases) if isinstance(aliases, list) else [],
+        addresses,
+    )
 
 
 def gethostbyaddr(*_arguments, **_keywords):

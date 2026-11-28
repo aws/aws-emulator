@@ -145,6 +145,66 @@ const RESPONSE_SERVER_FAILURE: u8 = 2;
 /// See [`RESPONSE_NO_ERROR`].
 const RESPONSE_NAME_ERROR: u8 = 3;
 
+/// What the DNS of a VPC answered one name with ([`VpcAttachment::answered_name`]): the names
+/// the reply chained the question on to, and the addresses it carried.
+#[derive(Debug, Clone, Default)]
+pub struct AnsweredName {
+    /// The names the reply chained the question on to, in the order it chained them — empty
+    /// for a name it answered without an alias.
+    pub chain: Vec<String>,
+    /// The addresses the reply carried, IPv4 first, as a resolver that prefers them answers.
+    pub addresses: Vec<IpAddr>,
+}
+
+/// The reply to ONE question, read apart ([`VpcAttachment::answered_of_type`]).
+#[derive(Debug, Clone, Default)]
+struct AnsweredRecords {
+    /// The addresses the answer section carried.
+    addresses: Vec<IpAddr>,
+    /// Its alias records: the name each was held under, and the name it stands for.
+    aliases: Vec<(String, String)>,
+}
+
+/// The names a reply chains a question about `name` on to, walked off its alias records: each
+/// alias stands for a name, and the name it stands for may itself stand at one.
+///
+/// Bounded by the records the reply carried, so a chain that comes back to a name it already
+/// passed through — which is what a zone holding a loop of aliases answers — ends there instead
+/// of being walked for ever.
+fn chained_names(name: &str, aliases: &[(String, String)]) -> Vec<String> {
+    let mut walked: Vec<String> = Vec::new();
+    let mut current = normalized_name(name);
+    while let Some((_, stands_for)) = aliases
+        .iter()
+        .find(|(held, _)| normalized_name(held) == current)
+    {
+        let next = normalized_name(stands_for);
+        if next == current || walked.contains(&next) {
+            break;
+        }
+        walked.push(next.clone());
+        current = next;
+        if walked.len() >= aliases.len() {
+            break;
+        }
+    }
+    walked
+}
+
+/// `name` as names are compared: without the trailing dot that spells the root explicitly, and
+/// case-folded — a name is compared without regard to case (RFC 4343).
+///
+/// The one folding this module reads a name through, which the name service above it reads a
+/// host through as well ([`super::guest_resolver`], after taking off the brackets an address
+/// literal may be written in) — so what counts as the same name cannot drift between the two.
+pub(super) fn normalized_name(name: &str) -> String {
+    let named = name.trim();
+    named
+        .strip_suffix('.')
+        .unwrap_or(named)
+        .to_ascii_lowercase()
+}
+
 /// ONE interface of the attachment: the private address EC2 handed it, and the range of the
 /// subnet it sits in.
 #[derive(Debug, Clone, Copy)]
@@ -581,11 +641,48 @@ impl VpcAttachment {
         resolved
     }
 
+    /// What the VPC's own DNS server answers for `name`, ASKED OF IT the way a client asks:
+    /// the names the reply CHAINS the question on to, in the order it chained them, and the
+    /// addresses it carried.
+    ///
+    /// A resolver answers a question about a name an alias stands at with the alias record and
+    /// the records of the name it stands for, so what a client learns is the name the chain ENDS
+    /// at beside the addresses — the canonical name a lookup asking for the whole answer reports
+    /// ([`super::guest_resolver`]). A chain whose last name the reply carried no address for is
+    /// left for the caller to go on asking about, which is what a stub resolver does with one.
+    ///
+    /// Empty on both counts for a name the server holds nothing under; see [`Self::addresses_of`],
+    /// which is this answer's addresses alone.
+    #[must_use]
+    pub fn answered_name(&self, name: &str) -> AnsweredName {
+        let mut addresses: Vec<IpAddr> = Vec::new();
+        let mut aliases: Vec<(String, String)> = Vec::new();
+        for kind in [TYPE::A, TYPE::AAAA] {
+            let answered = self.answered_of_type(name, kind);
+            addresses.extend(answered.addresses);
+            for alias in answered.aliases {
+                if !aliases.contains(&alias) {
+                    aliases.push(alias);
+                }
+            }
+        }
+        AnsweredName {
+            chain: chained_names(name, &aliases),
+            addresses,
+        }
+    }
+
     /// The addresses of ONE family the server answers for `name`: the records of the reply to a
     /// question of that type.
     fn answered_addresses(&self, name: &str, kind: TYPE) -> Vec<IpAddr> {
+        self.answered_of_type(name, kind).addresses
+    }
+
+    /// The reply to a question of ONE type, read apart: the addresses it carried and the alias
+    /// records it answered with, each as the name it was held under and the name it stands for.
+    fn answered_of_type(&self, name: &str, kind: TYPE) -> AnsweredRecords {
         let Ok(asked) = Name::new(name) else {
-            return Vec::new();
+            return AnsweredRecords::default();
         };
         let mut query = Packet::new_query(LOOKUP_QUERY_ID);
         query.set_flags(PacketFlag::RECURSION_DESIRED);
@@ -596,28 +693,33 @@ impl VpcAttachment {
             false,
         ));
         let Ok(bytes) = query.build_bytes_vec() else {
-            return Vec::new();
+            return AnsweredRecords::default();
         };
         let Some(reply) = self.resolved(&bytes) else {
-            return Vec::new();
+            return AnsweredRecords::default();
         };
         let Ok(answered) = Packet::parse(&reply) else {
-            return Vec::new();
+            return AnsweredRecords::default();
         };
         if answered.rcode() != RCODE::NoError {
-            return Vec::new();
+            return AnsweredRecords::default();
         }
-        answered
-            .answers
-            .iter()
-            .filter_map(|record| match &record.rdata {
-                RData::A(A { address }) => Some(IpAddr::V4(Ipv4Addr::from(*address))),
-                RData::AAAA(AAAA { address }) => {
-                    Some(IpAddr::V6(::std::net::Ipv6Addr::from(*address)))
+        let mut read = AnsweredRecords::default();
+        for record in &answered.answers {
+            match &record.rdata {
+                RData::A(A { address }) => {
+                    read.addresses.push(IpAddr::V4(Ipv4Addr::from(*address)));
                 }
-                _other => None,
-            })
-            .collect()
+                RData::AAAA(AAAA { address }) => read
+                    .addresses
+                    .push(IpAddr::V6(::std::net::Ipv6Addr::from(*address))),
+                RData::CNAME(CNAME(stands_for)) => read
+                    .aliases
+                    .push((record.name.to_string(), stands_for.to_string())),
+                _other => {}
+            }
+        }
+        read
     }
 
     /// What the Resolver rules in force in this VPC do with one question, and `None` for a
@@ -745,7 +847,7 @@ impl VpcAttachment {
 
     /// What the resolver holds for ONE question.
     fn answer_for(&self, asked: &Name<'_>, kind: QTYPE) -> Answer {
-        let name = asked.to_string().trim_end_matches('.').to_ascii_lowercase();
+        let name = normalized_name(&asked.to_string());
         let internal = ec2::private_dns_domain(&self.region).to_ascii_lowercase();
         if let Some(labels) = name.strip_suffix(&format!(".{REVERSE_ZONE}")) {
             return self.reverse_answer(asked, labels, kind, &internal);

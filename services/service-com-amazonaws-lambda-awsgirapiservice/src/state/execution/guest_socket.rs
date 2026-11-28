@@ -948,17 +948,20 @@ fn nothing_answers(inside: Option<&VpcAttachment>, host: &str) -> Failure {
 
 /// The addresses a NAME has, as the resolver of this execution environment answers it
 /// ([`super::guest_resolver`]) — one entry per address, naming the family it belongs to, in
-/// the order the resolver answers them.
+/// the order the resolver answers them, beside the CANONICAL name the lookup ended at and the
+/// aliases it passed through on the way, which is the rest of what a lookup asking for the
+/// whole answer reports.
 ///
 /// A name that resolver holds no address under is answered as a name that does not exist,
 /// which is what the guest raises for one.
 fn resolved_name(inside: Option<&VpcAttachment>, asked: &Value) -> Result<Value, Failure> {
     let host = host_of(asked);
-    let addresses = super::guest_resolver::addresses_of(inside, &host);
-    if addresses.is_empty() {
+    let resolved = super::guest_resolver::resolution_of(inside, &host);
+    if resolved.addresses.is_empty() {
         return Err(Failure::unresolved());
     }
-    let answered: Vec<Value> = addresses
+    let answered: Vec<Value> = resolved
+        .addresses
         .iter()
         .map(|address| {
             json!({
@@ -967,7 +970,11 @@ fn resolved_name(inside: Option<&VpcAttachment>, asked: &Value) -> Result<Value,
             })
         })
         .collect();
-    Ok(json!({ "addresses": answered }))
+    Ok(json!({
+        "addresses": answered,
+        "canonical": resolved.canonical,
+        "aliases": resolved.aliases,
+    }))
 }
 
 /// Whether `address` is the interface the core binds its listeners on, as the operator chose
