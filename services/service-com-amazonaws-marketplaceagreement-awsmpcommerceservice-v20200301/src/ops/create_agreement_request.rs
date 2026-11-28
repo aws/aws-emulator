@@ -212,6 +212,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // `acceptorContact`: "Don't provide this parameter if the intent is
+        // `AMEND`." An amendment modifies an agreement that already records the
+        // acceptor's contact, so the member names a contact for an agreement
+        // this request does not create; the model publishes its own reason for
+        // the member being wrong (`INVALID_ACCEPTOR_CONTACT`).
+        if input.intent == crate::state::INTENT_AMEND && input.acceptor_contact.is_some() {
+            return Err(CreateAgreementRequestErrorModeled::ValidationException(
+                crate::state::validation_exception(
+                    "INVALID_ACCEPTOR_CONTACT",
+                    "acceptorContact",
+                ),
+            )
+            .into());
+        }
+
         // `sourceAgreementIdentifier`: "This parameter is required for all
         // non-NEW intents (i.e., AMEND or REPLACE). Don't provide this parameter
         // if the intent is NEW."
@@ -279,32 +294,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .as_deref()
             .and_then(|key| store.idempotency.get(key).cloned())
             .and_then(|id| store.agreement_requests.get(&id))
-            .map(|request| {
-                (
-                    request.id.clone(),
-                    request.charge_summary.clone(),
-                    request.matches_create(&input),
-                )
-            });
-        if let Some((id, charge_summary, matches)) = replayed {
+            .map(|request| (request.clone(), request.matches_create(&input)));
+        if let Some((request, matches)) = replayed {
             if !matches {
                 return Err(CreateAgreementRequestErrorModeled::ConflictException(
                     crate::state::conflict(
                         crate::state::RESOURCE_TYPE_AGREEMENT_REQUEST,
-                        &id,
+                        &request.id,
                         format!(
-                            "clientToken {:?} already created agreement request {id} with \
+                            "clientToken {:?} already created agreement request {} with \
                              different content",
-                            input.client_token.as_deref().unwrap_or_default()
+                            input.client_token.as_deref().unwrap_or_default(),
+                            request.id
                         ),
                     ),
                 )
                 .into());
             }
-            return Ok(CreateAgreementRequestOutput {
-                agreement_request_id: Some(id),
-                charge_summary: Some(charge_summary),
-            });
+            // The quote the first create computed, as the request now stands:
+            // the same id, the same charges and the same requirement, so a
+            // retried create reports the quote it already made rather than a
+            // second one.
+            return Ok(answer(&request));
         }
 
         // An amendment or replacement "acts upon" an agreement that must exist:
@@ -363,6 +374,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &input.intent,
             input.source_agreement_identifier.as_deref(),
         );
+        // The proposal this quote is for, built the ONE way the acceptance of it
+        // builds the agreement's own (`crate::state::proposal_summary_of`): the
+        // proposal the request named, and the resources and offer set of the
+        // agreement it acts upon.
+        let proposal_summary = crate::state::proposal_summary_of(
+            input.agreement_proposal_identifier.as_deref(),
+            input
+                .source_agreement_identifier
+                .as_deref()
+                .and_then(|source| store.agreements.get(source)),
+        );
+        // Whether the buyer organization's published approval policy makes
+        // approval of this quote mandatory, decided once here from what the quote
+        // commits (`crate::state::agreement_approvals`) so every later report of
+        // this request states the requirement it was created under.
+        let approval_requirement = crate::state::agreement_approvals::approval_requirement(
+            crate::state::agreement_approvals::committed_units(&charge_summary),
+        );
         let id = store.mint_agreement_request_id();
         let request = crate::state::AgreementRequest {
             id: id.clone(),
@@ -371,22 +400,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             source_agreement_identifier: input.source_agreement_identifier,
             agreement_proposal_identifier: input.agreement_proposal_identifier,
             tax_configuration: input.tax_configuration,
-            charge_summary: charge_summary.clone(),
+            acceptor_contact: input.acceptor_contact.map(crate::state::Sensitive::new),
+            charge_summary,
+            proposal_summary,
+            agreement_type: crate::state::AGREEMENT_TYPE.to_string(),
+            catalog: crate::state::CATALOG.to_string(),
+            // "DRAFT – The agreement request has been created but not yet
+            // submitted for approval."
+            status: crate::state::REQUEST_STATUS_DRAFT.to_string(),
+            approval_requirement: approval_requirement.to_string(),
+            // No approval of this request has collected one yet.
+            purchase_orders: Vec::new(),
             client_token: input.client_token,
             // Nothing is accepted until `AcceptAgreementRequest` runs.
             accepted_agreement_id: None,
             accepted_at: None,
             created_at: now,
+            updated_at: now,
         };
+        let answered = answer(&request);
         store.agreement_requests.insert(id.clone(), request);
         if let Some(key) = token {
             store.idempotency.insert(key, id.clone());
         }
         crate::state::audit("CreateAgreementRequest", "created", &id, ctx.parts());
 
-        Ok(CreateAgreementRequestOutput {
-            agreement_request_id: Some(id),
-            charge_summary: Some(charge_summary),
-        })
+        Ok(answered)
+    }
+}
+
+/// The quote `request` stands at, as this operation answers it.
+///
+/// Every member is READ from the stored request — the id it was minted under, the
+/// type and status it carries, whether its approval is required, the charges its
+/// terms imply and when it was created — so a create and the replay of its
+/// `clientToken` answer the same quote.
+fn answer(request: &crate::state::AgreementRequest) -> CreateAgreementRequestOutput {
+    CreateAgreementRequestOutput {
+        agreement_request_id: Some(request.id.clone()),
+        agreement_type: Some(request.agreement_type.clone()),
+        charge_summary: Some(request.quote()),
+        status: Some(request.status.clone()),
+        approval_requirement: Some(request.approval_requirement.clone()),
+        created_at: Some(::aws_smithy_types::DateTime::from(request.created_at)),
     }
 }

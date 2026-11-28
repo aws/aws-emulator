@@ -11,6 +11,13 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-marketplaceagreement-awsmpcommerceservice-v20200301.json");
 
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#AgreementApprovalPurchaseOrder")]
+#[derive(Debug, Clone, Default)]
+pub struct AgreementApprovalPurchaseOrder {
+    pub charge_id: String,
+    pub purchase_order_reference: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
@@ -76,35 +83,101 @@ pub struct PurchaseOrder {
     pub purchase_order_reference: Option<String>,
 }
 
-// `PartialEq` on the three term configurations a `RequestedTerm` can carry, and on the
-// dimensions one of them holds: a create whose `@idempotencyToken` already named a
-// quote compares the stored request against the submitted one by value (see
-// `RequestedTerm`). Nothing else about these shapes changes.
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ServiceQuotaExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceQuotaExceededException {
+    pub request_id: Option<String>,
+    pub message: Option<String>,
+    pub quota_code: Option<String>,
+    pub service_code: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ConfigurableUpfrontPricingTermConfiguration")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigurableUpfrontPricingTermConfiguration {
     pub selector_value: String,
     pub dimensions: Vec<Dimension>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#Dimension")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Dimension {
     pub dimension_key: String,
     pub dimension_value: i32,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RenewalTermConfiguration")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct RenewalTermConfiguration {
     pub enable_auto_renew: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#VariablePaymentTermConfiguration")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct VariablePaymentTermConfiguration {
     pub payment_request_approval_strategy: String,
     pub expiration_duration: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#AcceptorContact")]
+#[derive(Debug, Clone, Default)]
+pub struct AcceptorContact {
+    pub first_name: String,
+    pub last_name: String,
+    pub email_address: String,
+    pub company_name: String,
+    pub country_code: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ChargeSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct ChargeSummary {
+    pub currency_code: Option<String>,
+    pub new_agreement_value: Option<String>,
+    pub new_agreement_value_after_tax: Option<String>,
+    pub expected_charges: Option<Vec<ExpectedCharge>>,
+    pub estimated_taxes: Option<EstimatedTaxes>,
+    pub itemized_charges: Option<Vec<ItemizedCharge>>,
+    pub invoicing_entity: Option<InvoicingEntity>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ExpectedCharge")]
+#[derive(Debug, Clone, Default)]
+pub struct ExpectedCharge {
+    pub id: Option<String>,
+    pub time: Option<::aws_smithy_types::DateTime>,
+    pub amount: Option<String>,
+    pub amount_after_tax: Option<String>,
+    pub timing: Option<String>,
+    pub estimated_taxes: Option<EstimatedTaxes>,
+    pub purchase_order_reference: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#EstimatedTaxes")]
+#[derive(Debug, Clone, Default)]
+pub struct EstimatedTaxes {
+    pub breakdown: Option<Vec<TaxBreakdownItem>>,
+    pub total_amount: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#TaxBreakdownItem")]
+#[derive(Debug, Clone, Default)]
+pub struct TaxBreakdownItem {
+    pub amount: Option<String>,
+    pub rate: Option<String>,
+    pub r#type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ItemizedCharge")]
+#[derive(Debug, Clone, Default)]
+pub struct ItemizedCharge {
+    pub dimension_key: Option<String>,
+    pub new_quantity: Option<i32>,
+    pub old_quantity: Option<i32>,
+    pub charge_reference: Option<String>,
+    pub incremental_charge_amount: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#InvoicingEntity")]
@@ -141,8 +214,270 @@ pub struct Resource {
     pub r#type: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#BuyerAgreementApprovalCriteria")]
+#[derive(Debug, Clone, Default)]
+pub struct BuyerAgreementApprovalCriteria {
+    pub required_approval_count: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#BuyerAgreementApprovalPlanInput")]
+#[derive(Debug, Clone, Default)]
+pub struct BuyerAgreementApprovalPlanInput {
+    pub plan_reference: String,
+    pub requester_note: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#LegalTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct LegalTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub documents: Option<Vec<DocumentItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#DocumentItem")]
+#[derive(Debug, Clone, Default)]
+pub struct DocumentItem {
+    pub r#type: Option<String>,
+    pub url: Option<String>,
+    pub version: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#SupportTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct SupportTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub refund_policy: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RenewalTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct RenewalTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub configuration: Option<RenewalTermConfiguration>,
+    pub lockout_period: Option<String>,
+    pub max_renewals: Option<i32>,
+    pub adjustment_deadline: Option<String>,
+    pub price_increase: Option<PriceIncrease>,
+    pub term_templates: Option<Vec<TermTemplate>>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplaceagreement#PriceIncrease")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum PriceIncrease {
+    fixedPercentage(FixedPercentage),
+    percentageRange(PercentageRange),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#FixedPercentage")]
+#[derive(Debug, Clone, Default)]
+pub struct FixedPercentage {
+    pub value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#PercentageRange")]
+#[derive(Debug, Clone, Default)]
+pub struct PercentageRange {
+    pub min_value: Option<String>,
+    pub max_value: Option<String>,
+    pub default_value: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplaceagreement#TermTemplate")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TermTemplate {
+    paymentScheduleTermTemplate(PaymentScheduleTermTemplate),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#PaymentScheduleTermTemplate")]
+#[derive(Debug, Clone, Default)]
+pub struct PaymentScheduleTermTemplate {
+    pub schedule: Option<Vec<PaymentScheduleEntry>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#PaymentScheduleEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct PaymentScheduleEntry {
+    pub charge_date_offset: Option<String>,
+    pub charge_percentage: Option<String>,
+    pub day_of_month: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#UsageBasedPricingTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct UsageBasedPricingTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub rate_cards: Option<Vec<UsageBasedRateCardItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#UsageBasedRateCardItem")]
+#[derive(Debug, Clone, Default)]
+pub struct UsageBasedRateCardItem {
+    pub rate_card: Option<Vec<RateCardItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RateCardItem")]
+#[derive(Debug, Clone, Default)]
+pub struct RateCardItem {
+    pub dimension_key: Option<String>,
+    pub price: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ConfigurableUpfrontPricingTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct ConfigurableUpfrontPricingTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub rate_cards: Option<Vec<ConfigurableUpfrontRateCardItem>>,
+    pub configuration: Option<ConfigurableUpfrontPricingTermConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ConfigurableUpfrontRateCardItem")]
+#[derive(Debug, Clone, Default)]
+pub struct ConfigurableUpfrontRateCardItem {
+    pub selector: Option<Selector>,
+    pub constraints: Option<Constraints>,
+    pub rate_card: Option<Vec<RateCardItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#Selector")]
+#[derive(Debug, Clone, Default)]
+pub struct Selector {
+    pub r#type: Option<String>,
+    pub value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#Constraints")]
+#[derive(Debug, Clone, Default)]
+pub struct Constraints {
+    pub multiple_dimension_selection: Option<String>,
+    pub quantity_configuration: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ByolPricingTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct ByolPricingTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RecurringPaymentTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct RecurringPaymentTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub billing_period: Option<String>,
+    pub price: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ValidityTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidityTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub agreement_duration: Option<String>,
+    pub agreement_start_date: Option<::aws_smithy_types::DateTime>,
+    pub agreement_end_date: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#PaymentScheduleTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct PaymentScheduleTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub schedule: Option<Vec<ScheduleItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ScheduleItem")]
+#[derive(Debug, Clone, Default)]
+pub struct ScheduleItem {
+    pub charge_date: Option<::aws_smithy_types::DateTime>,
+    pub charge_amount: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#FreeTrialPricingTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct FreeTrialPricingTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub duration: Option<String>,
+    pub grants: Option<Vec<GrantItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#GrantItem")]
+#[derive(Debug, Clone, Default)]
+pub struct GrantItem {
+    pub dimension_key: Option<String>,
+    pub max_quantity: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#FixedUpfrontPricingTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct FixedUpfrontPricingTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub duration: Option<String>,
+    pub price: Option<String>,
+    pub grants: Option<Vec<GrantItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#VariablePaymentTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct VariablePaymentTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub currency_code: Option<String>,
+    pub max_total_charge_amount: Option<String>,
+    pub configuration: Option<VariablePaymentTermConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#NetPaymentTerm")]
+#[derive(Debug, Clone, Default)]
+pub struct NetPaymentTerm {
+    pub r#type: Option<String>,
+    pub id: Option<String>,
+    pub payment_due_period: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#AgreementApprovalSummary")]
+#[derive(Debug, Clone)]
+pub struct AgreementApprovalSummary {
+    pub approval_type: String,
+    pub agreement_request_id: String,
+    pub agreement_approval_id: String,
+    pub name: String,
+    pub status: String,
+    pub created_at: ::aws_smithy_types::DateTime,
+    pub updated_at: ::aws_smithy_types::DateTime,
+    pub started_at: Option<::aws_smithy_types::DateTime>,
+    pub expires_at: Option<::aws_smithy_types::DateTime>,
+    pub approval_needed_by: ::aws_smithy_types::DateTime,
+}
+
 /// The values `AccessDeniedExceptionReason` accepts on the wire.
 pub const ACCESS_DENIED_EXCEPTION_REASON_VALUES: &[&str] = &["DENIED_BY_PRIVATE_MARKETPLACE_POLICY", "FAILED_KYC_COMPLIANCE", "INVALID_ACCESS", "INVALID_ACCOUNT_STATE", "MISSING_MFA"];
+
+
+/// The values `AgreementApprovalPartyType` accepts on the wire.
+pub const AGREEMENT_APPROVAL_PARTY_TYPE_VALUES: &[&str] = &["AWS_ORGANIZATION_ADMIN", "REQUESTER"];
+
+
+/// The values `AgreementApprovalStatus` accepts on the wire.
+pub const AGREEMENT_APPROVAL_STATUS_VALUES: &[&str] = &["APPROVED", "CANCELLED", "EXPIRED", "PENDING_APPROVAL", "REJECTED"];
+
+
+/// The values `AgreementApprovalType` accepts on the wire.
+pub const AGREEMENT_APPROVAL_TYPE_VALUES: &[&str] = &["BUYER_AGREEMENT_APPROVAL"];
 
 
 /// The values `AgreementCancellationRequestReasonCode` accepts on the wire.
@@ -161,8 +496,20 @@ pub const AGREEMENT_ENTITLEMENT_STATUS_VALUES: &[&str] = &["DEPROVISIONED", "FAI
 pub const AGREEMENT_ENTITLEMENT_STATUS_REASON_CODE_VALUES: &[&str] = &["ACCOUNT_SUSPENDED", "AGREEMENT_ACTIVE", "AGREEMENT_INACTIVE", "FUTURE_START_DATE", "INCOMPATIBLE_CURRENCY", "INVALID_PAYMENT_INSTRUMENT", "PRODUCT_RESTRICTED", "PROVISIONING_IN_PROGRESS", "UNSUPPORTED_OPERATION"];
 
 
+/// The values `AgreementRequestStatus` accepts on the wire.
+pub const AGREEMENT_REQUEST_STATUS_VALUES: &[&str] = &["ACCEPTED", "APPROVED", "CANCELLED", "DRAFT", "PENDING_APPROVAL", "REJECTED"];
+
+
 /// The values `AgreementStatus` accepts on the wire.
 pub const AGREEMENT_STATUS_VALUES: &[&str] = &["ACTIVE", "ARCHIVED", "CANCELLED", "EXPIRED", "RENEWED", "REPLACED", "ROLLED_BACK", "SUPERSEDED", "TERMINATED"];
+
+
+/// The values `ApprovalRequirement` accepts on the wire.
+pub const APPROVAL_REQUIREMENT_VALUES: &[&str] = &["NOT_REQUIRED", "REQUIRED"];
+
+
+/// The values `ApproverOutcomeStatus` accepts on the wire.
+pub const APPROVER_OUTCOME_STATUS_VALUES: &[&str] = &["APPROVED", "EXPIRED", "PENDING_APPROVAL", "QUEUED", "REJECTED", "SKIPPED"];
 
 
 /// The values `BillingAdjustmentErrorCode` accepts on the wire.
@@ -175,6 +522,10 @@ pub const BILLING_ADJUSTMENT_REASON_CODE_VALUES: &[&str] = &["ALTERNATIVE_PROCUR
 
 /// The values `BillingAdjustmentStatus` accepts on the wire.
 pub const BILLING_ADJUSTMENT_STATUS_VALUES: &[&str] = &["COMPLETED", "PENDING", "VALIDATION_FAILED"];
+
+
+/// The values `ContactType` accepts on the wire.
+pub const CONTACT_TYPE_VALUES: &[&str] = &["ACCEPTOR"];
 
 
 /// The values `EndTimeBehaviorReasonCode` accepts on the wire.
@@ -197,6 +548,10 @@ pub const INVOICE_TYPE_VALUES: &[&str] = &["CREDIT_MEMO", "INVOICE"];
 pub const LINE_ITEM_GROUP_BY_VALUES: &[&str] = &["INVOICE_ID"];
 
 
+/// The values `OfferVisibilityScope` accepts on the wire.
+pub const OFFER_VISIBILITY_SCOPE_VALUES: &[&str] = &["PRIVATE", "PUBLIC"];
+
+
 /// The values `PaymentRequestApprovalStrategy` accepts on the wire.
 pub const PAYMENT_REQUEST_APPROVAL_STRATEGY_VALUES: &[&str] = &["AUTO_APPROVE_ON_EXPIRATION", "WAIT_FOR_APPROVAL"];
 
@@ -206,7 +561,7 @@ pub const PAYMENT_REQUEST_STATUS_VALUES: &[&str] = &["APPROVED", "CANCELLED", "P
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["Agreement", "AgreementCancellationRequest", "AgreementProposal", "AgreementRequest", "BillingAdjustmentRequest", "Charge", "Invoice", "PaymentRequest"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["Agreement", "AgreementApproval", "AgreementCancellationRequest", "AgreementProposal", "AgreementRequest", "AgreementRequestApprovalPlan", "BillingAdjustmentRequest", "Charge", "Invoice", "PaymentRequest"];
 
 
 /// The values `SortOrder` accepts on the wire.
@@ -218,10 +573,10 @@ pub const TAX_ESTIMATION_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `Timing` accepts on the wire.
-pub const TIMING_VALUES: &[&str] = &["BILLING_PERIOD", "ON_ACCEPTANCE", "SCHEDULED"];
+pub const TIMING_VALUES: &[&str] = &["BILLING_PERIOD", "NOT_APPLICABLE", "ON_ACCEPTANCE", "SCHEDULED"];
 
 
 /// The values `ValidationExceptionReason` accepts on the wire.
-pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["BILLING_ADJUSTMENTS_LIMIT_EXCEEDED", "DUPLICATE_AGREEMENT_IN_ORGANIZATION", "DUPLICATE_CHARGES", "EXCEEDED_MAXIMUM_ADJUSTMENT_AMOUNT", "EXPIRED_AGREEMENT_PROPOSAL", "INACTIVE_AGREEMENT", "INCOMPATIBLE_TERMS", "INVALID_ADJUSTMENT_AMOUNT", "INVALID_AGREEMENT_CANCELLATION_REQUEST_ID", "INVALID_AGREEMENT_ID", "INVALID_AGREEMENT_PROPOSAL_IDENTIFIER", "INVALID_AGREEMENT_REQUEST_ID", "INVALID_AGREEMENT_TYPE", "INVALID_CATALOG", "INVALID_CHARGE_AMOUNT", "INVALID_CHARGE_ID", "INVALID_CHARGE_REVISION", "INVALID_CLIENT_TOKEN", "INVALID_CURRENCY_CODE", "INVALID_DESCRIPTION", "INVALID_FILTERS", "INVALID_FILTER_NAME", "INVALID_FILTER_VALUES", "INVALID_INCREMENTAL_CHARGE", "INVALID_INTENT", "INVALID_INVOICE_ADJUSTMENT_PERIOD", "INVALID_MAX_RESULTS", "INVALID_NAME", "INVALID_NEXT_TOKEN", "INVALID_PARTY_TYPE", "INVALID_PAYMENT_REQUEST_ID", "INVALID_PAYMENT_REQUEST_STATUS", "INVALID_PURCHASE_ORDERS", "INVALID_PURCHASE_ORDER_REFERENCE", "INVALID_REASON", "INVALID_REASON_CODE", "INVALID_REJECTION_REASON", "INVALID_REQUESTED_TERMS", "INVALID_REQUESTED_TERM_CONFIGURATION", "INVALID_REQUESTED_TERM_ID", "INVALID_SORT_BY", "INVALID_SORT_ORDER", "INVALID_SOURCE_AGREEMENT_IDENTIFIER", "INVALID_STATUS", "INVALID_TERM_ID", "MISSING_ACCOUNT_ADDRESS", "MISSING_ADJUSTMENT_AMOUNT", "MISSING_AGREEMENT_CANCELLATION_REQUEST_ID", "MISSING_AGREEMENT_ID", "MISSING_AGREEMENT_PROPOSAL_IDENTIFIER", "MISSING_AGREEMENT_REQUEST_ID", "MISSING_BILLING_ADJUSTMENTS", "MISSING_BILLING_ADJUSTMENT_REQUEST_ENTRY", "MISSING_CHARGE_AMOUNT", "MISSING_CHARGE_ID", "MISSING_CHARGE_REVISION", "MISSING_CURRENCY_CODE", "MISSING_DESCRIPTION", "MISSING_FILTER_NAME", "MISSING_FILTER_VALUES", "MISSING_INTENT", "MISSING_INVOICE_ID", "MISSING_MANDATORY_TERMS", "MISSING_NAME", "MISSING_PARTY_TYPE", "MISSING_PAYMENT_REQUEST_ID", "MISSING_PURCHASE_ORDERS", "MISSING_PURCHASE_ORDER_REFERENCE", "MISSING_REASON", "MISSING_REASON_CODE", "MISSING_REQUESTED_TERMS", "MISSING_REQUESTED_TERM_CONFIGURATION", "MISSING_REQUESTED_TERM_ID", "MISSING_SOURCE_AGREEMENT_IDENTIFIER", "MISSING_TERM_ID", "MISSING_USAGE_AGREEMENT", "MULTIPLE_AGREEMENT_IDS", "OTHER", "SUPERSEDED_AGREEMENT_PROPOSAL", "UNSUPPORTED_ACCOUNT_PLAN", "UNSUPPORTED_ACTION", "UNSUPPORTED_FILTERS"];
+pub const VALIDATION_EXCEPTION_REASON_VALUES: &[&str] = &["BILLING_ADJUSTMENTS_LIMIT_EXCEEDED", "CLOSED_AGREEMENT_APPROVAL", "CLOSED_AGREEMENT_REQUEST", "DUPLICATE_AGREEMENT_IN_ORGANIZATION", "DUPLICATE_CHARGES", "DUPLICATE_PLAN_REFERENCE", "EXCEEDED_MAXIMUM_ADJUSTMENT_AMOUNT", "EXPIRED_AGREEMENT_PROPOSAL", "INACTIVE_AGREEMENT", "INCOMPATIBLE_AGREEMENT_REQUEST", "INCOMPATIBLE_TERMS", "INVALID_ACCEPTOR_CONTACT", "INVALID_ADJUSTMENT_AMOUNT", "INVALID_AGREEMENT_APPROVAL_ID", "INVALID_AGREEMENT_CANCELLATION_REQUEST_ID", "INVALID_AGREEMENT_ID", "INVALID_AGREEMENT_PROPOSAL_IDENTIFIER", "INVALID_AGREEMENT_REQUEST_ID", "INVALID_AGREEMENT_TYPE", "INVALID_APPROVAL_TYPE", "INVALID_APPROVER_OUTCOME_ID_TO_OVERRIDE", "INVALID_CATALOG", "INVALID_CHARGE_AMOUNT", "INVALID_CHARGE_ID", "INVALID_CHARGE_REVISION", "INVALID_CLIENT_TOKEN", "INVALID_CURRENCY_CODE", "INVALID_DESCRIPTION", "INVALID_FILTERS", "INVALID_FILTER_NAME", "INVALID_FILTER_VALUES", "INVALID_INCREMENTAL_CHARGE", "INVALID_INTENT", "INVALID_INVOICE_ADJUSTMENT_PERIOD", "INVALID_MAX_RESULTS", "INVALID_NAME", "INVALID_NEXT_TOKEN", "INVALID_NOTE", "INVALID_PARTY_TYPE", "INVALID_PAYMENT_REQUEST_ID", "INVALID_PAYMENT_REQUEST_STATUS", "INVALID_PLAN_INPUTS", "INVALID_PURCHASE_ORDERS", "INVALID_PURCHASE_ORDER_REFERENCE", "INVALID_REASON", "INVALID_REASON_CODE", "INVALID_REJECTION_REASON", "INVALID_REQUESTED_TERMS", "INVALID_REQUESTED_TERM_CONFIGURATION", "INVALID_REQUESTED_TERM_ID", "INVALID_RESOURCE_ID", "INVALID_SORT_BY", "INVALID_SORT_ORDER", "INVALID_SOURCE_AGREEMENT_IDENTIFIER", "INVALID_STATUS", "INVALID_TERM_ID", "MISSING_ACCOUNT_ADDRESS", "MISSING_ADJUSTMENT_AMOUNT", "MISSING_AGREEMENT_APPROVAL_ID", "MISSING_AGREEMENT_CANCELLATION_REQUEST_ID", "MISSING_AGREEMENT_ID", "MISSING_AGREEMENT_PROPOSAL_IDENTIFIER", "MISSING_AGREEMENT_REQUEST_ID", "MISSING_AWS_LICENSE_MANAGER_USER_SUBSCRIPTIONS_SLR", "MISSING_BILLING_ADJUSTMENTS", "MISSING_BILLING_ADJUSTMENT_REQUEST_ENTRY", "MISSING_CHARGE_AMOUNT", "MISSING_CHARGE_ID", "MISSING_CHARGE_REVISION", "MISSING_CURRENCY_CODE", "MISSING_DESCRIPTION", "MISSING_FILTER_NAME", "MISSING_FILTER_VALUES", "MISSING_INTENT", "MISSING_INVOICE_ID", "MISSING_MANDATORY_TERMS", "MISSING_NAME", "MISSING_NOTE", "MISSING_PARTY_TYPE", "MISSING_PAYMENT_REQUEST_ID", "MISSING_PLAN_INPUTS", "MISSING_PURCHASE_ORDERS", "MISSING_PURCHASE_ORDER_REFERENCE", "MISSING_REASON", "MISSING_REASON_CODE", "MISSING_REQUESTED_TERMS", "MISSING_REQUESTED_TERM_CONFIGURATION", "MISSING_REQUESTED_TERM_ID", "MISSING_SORT_BY", "MISSING_SOURCE_AGREEMENT_IDENTIFIER", "MISSING_TERM_ID", "MISSING_USAGE_AGREEMENT", "MULTIPLE_AGREEMENT_IDS", "OTHER", "PENDING_APPROVAL_AGREEMENT_REQUEST", "QUEUED_AGREEMENT_APPROVAL", "REJECTED_BY_AGREEMENT_APPROVAL_POLICY", "SUPERSEDED_AGREEMENT_PROPOSAL", "UNSUPPORTED_ACCOUNT_PLAN", "UNSUPPORTED_ACTION", "UNSUPPORTED_FILTERS"];
 
 

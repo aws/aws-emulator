@@ -14,33 +14,46 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod accept_agreement_approval_types;
 pub mod accept_agreement_cancellation_request_types;
 pub mod accept_agreement_payment_request_types;
 pub mod accept_agreement_request_types;
 pub mod batch_create_billing_adjustment_request_types;
 pub mod cancel_agreement_cancellation_request_types;
 pub mod cancel_agreement_payment_request_types;
+pub mod cancel_agreement_request_types;
 pub mod cancel_agreement_types;
 pub mod create_agreement_request_types;
 pub mod describe_agreement_types;
+pub mod get_agreement_approval_types;
 pub mod get_agreement_cancellation_request_types;
+pub mod get_agreement_contacts_types;
 pub mod get_agreement_entitlements_types;
 pub mod get_agreement_payment_request_types;
+pub mod get_agreement_request_approval_plans_types;
+pub mod get_agreement_request_terms_types;
+pub mod get_agreement_request_types;
 pub mod get_agreement_terms_types;
 pub mod get_billing_adjustment_request_types;
+pub mod list_agreement_approvals_types;
 pub mod list_agreement_cancellation_requests_types;
 pub mod list_agreement_charges_types;
 pub mod list_agreement_invoice_line_items_types;
 pub mod list_agreement_payment_requests_types;
+pub mod list_agreement_requests_types;
 pub mod list_billing_adjustment_requests_types;
+pub mod reject_agreement_approval_types;
 pub mod reject_agreement_cancellation_request_types;
 pub mod reject_agreement_payment_request_types;
 pub mod search_agreements_types;
 pub mod send_agreement_cancellation_request_types;
 pub mod send_agreement_payment_request_types;
 pub mod shared_types;
+pub mod start_agreement_approvals_types;
 pub mod update_purchase_orders_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use accept_agreement_approval_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use accept_agreement_cancellation_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -54,21 +67,35 @@ pub use cancel_agreement_cancellation_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_agreement_payment_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use cancel_agreement_request_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_agreement_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_agreement_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_agreement_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agreement_approval_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agreement_cancellation_request_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agreement_contacts_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agreement_entitlements_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agreement_payment_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agreement_request_approval_plans_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agreement_request_terms_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_agreement_request_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_agreement_terms_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_billing_adjustment_request_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_agreement_approvals_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_agreement_cancellation_requests_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -78,7 +105,11 @@ pub use list_agreement_invoice_line_items_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_agreement_payment_requests_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_agreement_requests_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_billing_adjustment_requests_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use reject_agreement_approval_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use reject_agreement_cancellation_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -91,6 +122,8 @@ pub use send_agreement_cancellation_request_types::*;
 pub use send_agreement_payment_request_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_agreement_approvals_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_purchase_orders_types::*;
 

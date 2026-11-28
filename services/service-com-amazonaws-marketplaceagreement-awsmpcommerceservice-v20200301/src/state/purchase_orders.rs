@@ -6,6 +6,8 @@
 
 use super::*;
 
+use crate::ops::types::AgreementApprovalPurchaseOrder;
+
 /// The request member every operation carrying purchase-order associations
 /// names the list with (`AcceptAgreementRequestInput$purchaseOrders`,
 /// `UpdatePurchaseOrdersInput$purchaseOrders`).
@@ -235,6 +237,51 @@ pub fn validate_purchase_orders(
                 // than naming nothing: it is a value this member does not admit
                 // for this element.
                 kind: RefusalKind::Invalid,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a purchase-order list of an APPROVAL operation that cannot be resolved
+/// against the charges of the agreement request it is about, BEFORE anything is
+/// stored.
+///
+/// `AgreementApprovalPurchaseOrder` carries only "the unique identifier of the
+/// charge to associate the purchase order with" and "the purchase order reference
+/// to associate with the charge" — the agreement does not exist yet at any of
+/// these doors, and neither does a charge revision to state a precondition on —
+/// so the three rules left are the ones [`validate_purchase_orders`] states for
+/// those same two members: the charge named is one of the quote's charges, no
+/// earlier element named it already, and the reference the association exists to
+/// record is there.
+pub fn validate_approval_purchase_orders(
+    orders: &[AgreementApprovalPurchaseOrder],
+    charges: &BTreeSet<&str>,
+) -> Result<(), PurchaseOrderRefusal> {
+    let mut associated: BTreeSet<&str> = BTreeSet::new();
+    for (index, order) in orders.iter().enumerate() {
+        let charge_path = purchase_order_member_path(index, "chargeId");
+        if !charges.contains(order.charge_id.as_str()) {
+            return Err(PurchaseOrderRefusal {
+                reason: member_reason(&charge_path, RefusalKind::UnresolvedReference),
+                path: charge_path,
+                kind: RefusalKind::UnresolvedReference,
+            });
+        }
+        if !associated.insert(order.charge_id.as_str()) {
+            return Err(PurchaseOrderRefusal {
+                reason: REASON_DUPLICATE_CHARGES.to_string(),
+                path: charge_path,
+                kind: RefusalKind::Invalid,
+            });
+        }
+        if order.purchase_order_reference.is_none() {
+            let reference_path = purchase_order_member_path(index, "purchaseOrderReference");
+            return Err(PurchaseOrderRefusal {
+                reason: member_reason(&reference_path, RefusalKind::Missing),
+                path: reference_path,
+                kind: RefusalKind::Missing,
             });
         }
     }

@@ -39,6 +39,28 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
         }
     }
 
+    /// Mint an unused agreement approval id matching `AgreementApprovalId`'s
+    /// `^apr-[A-Za-z0-9]+$`.
+    pub fn mint_agreement_approval_id(&mut self) -> String {
+        loop {
+            let id = format!("apr-{:016x}", self.next_sequence());
+            if !self.agreement_approvals.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// Mint an approver outcome id matching `ApproverOutcomeId`'s
+    /// `^aprout-[A-Za-z0-9-]+$`.
+    ///
+    /// Drawn from the same counter every id of this store is drawn from, so an
+    /// outcome id is unique across the store and names exactly one approver of
+    /// one approval — which is what `approverOutcomeIdToOverride` resolves
+    /// against.
+    pub fn mint_approver_outcome_id(&mut self) -> String {
+        format!("aprout-{:016x}", self.next_sequence())
+    }
+
     /// Mint an unused agreement id matching `ResourceId`'s
     /// `^[A-Za-z0-9_/-]+$`.
     pub fn mint_agreement_id(&mut self) -> String {
@@ -620,13 +642,26 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
                 // named: the renewal re-states that quote's terms.
                 agreement_proposal_identifier: quote.agreement_proposal_identifier,
                 tax_configuration: quote.tax_configuration,
+                // The contact the source's own quote carried: a renewal is the
+                // same acceptor continuing the same purchase.
+                acceptor_contact: quote.acceptor_contact,
                 charge_summary,
+                proposal_summary: source.proposal_summary.clone(),
+                agreement_type: source.agreement_type.clone(),
+                catalog: source.catalog.clone(),
+                // The renewal's quote was accepted at the instant the clock
+                // created it, and the organization's approval policy has nothing
+                // to say about a renewal no caller asked for.
+                status: REQUEST_STATUS_ACCEPTED.to_string(),
+                approval_requirement: APPROVAL_NOT_REQUIRED.to_string(),
+                purchase_orders: Vec::new(),
                 // No caller sent this quote, so it carries no client token, and
                 // the renewal below is the agreement it was accepted as.
                 client_token: None,
                 accepted_agreement_id: Some(id.clone()),
                 accepted_at: Some(end),
                 created_at: end,
+                updated_at: end,
             },
         );
         self.agreements.insert(
@@ -652,6 +687,9 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
                 proposal_summary: source.proposal_summary.clone(),
                 accepted_terms: terms,
                 purchase_orders: Vec::new(),
+                // The renewal is for the same acceptor, whose contact the source
+                // agreement has on file.
+                acceptor_contact: source.acceptor_contact.clone(),
                 entitlements,
                 updated_at: end,
             },
@@ -961,6 +999,11 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
                 amount_after_tax: None,
                 timing: Some(timing.to_string()),
                 estimated_taxes: None,
+                // "The purchase order reference associated with the charge, if
+                // any": this call MINTS the charge, so nothing has associated a
+                // reference with it yet. A reference collected later is reported
+                // from the request that holds it ([`AgreementRequest::quote`]).
+                purchase_order_reference: None,
             });
             for dimension in price.dimensions {
                 itemized_charges.push(ItemizedCharge {

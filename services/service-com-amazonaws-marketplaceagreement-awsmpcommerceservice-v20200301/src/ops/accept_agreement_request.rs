@@ -93,6 +93,7 @@ pub enum AcceptAgreementRequestErrorModeled {
     ConflictException(ConflictException),
     InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -185,6 +186,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Where the request stands decides whether it can be accepted at all,
+        // which `AgreementRequestStatus` states per value: one `PENDING_APPROVAL`
+        // "is waiting for one or more approvers to decide", one `CANCELLED` "was
+        // cancelled before completion" and one `REJECTED` "won't proceed" — while
+        // `APPROVED` means "all required approvals have been granted… Call
+        // `AcceptAgreementRequest` to accept it". A `DRAFT` request has not been
+        // submitted for approval, so it is acceptable exactly while the buyer
+        // organization's policy does not REQUIRE approval of it
+        // (`ApprovalRequirement`: "indicates whether the agreement request
+        // requires approval before it can be accepted"); one the policy requires
+        // approval for, and one an approver rejected, are refused by that policy.
+        if let Some(reason) = crate::state::acceptance_refusal_reason(&request) {
+            return Err(AcceptAgreementRequestErrorModeled::ValidationException(
+                crate::state::validation_exception(reason, "agreementRequestId"),
+            )
+            .into());
+        }
+
+        // The store is bounded: past its quota the acceptance is refused rather
+        // than adding another agreement, and the quote stays acceptable.
+        if store.agreements.len() >= crate::state::AGREEMENT_QUOTA
+            && request.intent != crate::state::INTENT_AMEND
+        {
+            return Err(
+                AcceptAgreementRequestErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        // "The unique identifier associated with the error":
+                        // every exception shape this service models carries it
+                        // (`crate::state::next_request_id`).
+                        request_id: Some(crate::state::next_request_id()),
+                        message: Some(format!(
+                            "this account already holds the maximum of {} agreements",
+                            crate::state::AGREEMENT_QUOTA
+                        )),
+                        quota_code: Some(crate::state::AGREEMENT_QUOTA_CODE.to_string()),
+                        service_code: Some(crate::state::SERVICE_CODE.to_string()),
+                        resource_type: Some(crate::state::RESOURCE_TYPE_AGREEMENT.to_string()),
+                        // The quota is per account, so the account is the
+                        // resource that reached it.
+                        resource_id: Some(::engine::emulator_account_id().to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
         // What an amendment or replacement inherits from the agreement it acts
         // upon: the chain's first id, and the proposal the chain was created
         // from (an `AMEND` request names no proposal of its own). The agreement
@@ -261,6 +308,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ..order
             })
             .collect();
+        // The references the approvals of this request already collected for its
+        // charges, for every charge this call does not state one for: an approver
+        // of the request "can optionally provide purchase order references", and
+        // the charge they named is a charge of the agreement being accepted. A
+        // charge carries ONE reference, so a charge this call associates itself
+        // keeps the reference the caller stated.
+        let purchase_orders: Vec<PurchaseOrder> = purchase_orders
+            .iter()
+            .cloned()
+            .chain(
+                request
+                    .purchase_orders
+                    .iter()
+                    .filter(|collected| {
+                        !purchase_orders
+                            .iter()
+                            .any(|stated| stated.charge_id == collected.charge_id)
+                    })
+                    .map(|collected| PurchaseOrder {
+                        charge_id: collected.charge_id.clone(),
+                        charge_revision: Some(crate::state::INITIAL_CHARGE_REVISION),
+                        agreement_id: Some(id.clone()),
+                        purchase_order_reference: collected.purchase_order_reference.clone(),
+                    }),
+            )
+            .collect();
         // The terms this agreement holds: the proposal's own term, as the
         // published offer document carries it, for each term the request asked
         // for — plus this agreement's own window where a term reports one. The
@@ -297,30 +370,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             }
         } else {
-            // "The list of resources involved in the agreement": the resources of
-            // the agreement a replacement acts upon, and otherwise the products
-            // the published offer is for — see
-            // `crate::state::agreement_resources` for that one resolution, which
-            // both this summary and the entitlements below read.
-            let resources = crate::state::agreement_resources(
-                source
-                    .as_ref()
-                    .and_then(|source| source.proposal_summary.resources.as_deref()),
+            // The proposal this agreement is for, and "the list of resources
+            // involved in" it: the ONE resolution both the quote's own summary
+            // and the entitlements below read
+            // (`crate::state::proposal_summary_of`) — the resources of the
+            // agreement a replacement acts upon, and otherwise the products the
+            // published offer is for.
+            let proposal_summary = crate::state::proposal_summary_of(
+                request.agreement_proposal_identifier.as_deref(),
+                source.as_ref(),
             );
-            let proposal_summary = ProposalSummary {
-                // The only identity of the proposal this emulator holds is the
-                // identifier the request named; its offer set lives in the
-                // agreement proposal, which is not this service's resource.
-                offer_id: request.agreement_proposal_identifier.clone().or_else(|| {
-                    source
-                        .as_ref()
-                        .and_then(|source| source.proposal_summary.offer_id.clone())
-                }),
-                resources: Some(resources.clone()),
-                offer_set_id: source
-                    .as_ref()
-                    .and_then(|source| source.proposal_summary.offer_set_id.clone()),
-            };
+            let resources = proposal_summary
+                .resources
+                .clone()
+                .unwrap_or_else(crate::state::offer_resources);
             // Accepting the quote is what provisions the agreement's entitlements:
             // one licence per resource the agreement is involved with, each
             // `PENDING` until the clock owes it its `PROVISIONED` status. The
@@ -372,6 +435,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 proposal_summary,
                 accepted_terms,
                 purchase_orders,
+                // The contact the quote carried, which this agreement has on
+                // file from now on ("Don't provide this parameter if the intent
+                // is `AMEND`", so an amendment leaves the contact the agreement
+                // it modifies already holds).
+                acceptor_contact: request.acceptor_contact.clone(),
                 entitlements,
                 updated_at: now,
             };
@@ -383,6 +451,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // When the charges this quote minted are incurred: they are charged
             // when the request carrying them is accepted, which is now.
             request.accepted_at = Some(now);
+            // "ACCEPTED – The agreement request has been accepted and the
+            // resulting agreement has been created."
+            request.status = crate::state::REQUEST_STATUS_ACCEPTED.to_string();
+            request.updated_at = now;
         }
         // Accepting the quote also INVOICES the charges it incurs right now:
         // a charge timed `ON_ACCEPTANCE` is "charged immediately when the

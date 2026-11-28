@@ -226,11 +226,20 @@ pub fn member_reason(path: &str, kind: RefusalKind) -> String {
 ///
 /// `ValidationExceptionReason` spells every one of them `<STATE>_<RESOURCE>`
 /// (`INACTIVE_AGREEMENT`, `EXPIRED_AGREEMENT_PROPOSAL`,
-/// `SUPERSEDED_AGREEMENT_PROPOSAL`, `smithy_query(query="shape",
+/// `SUPERSEDED_AGREEMENT_PROPOSAL`, `PENDING_APPROVAL_AGREEMENT_REQUEST`,
+/// `CLOSED_AGREEMENT_REQUEST`, `CLOSED_AGREEMENT_APPROVAL`,
+/// `QUEUED_AGREEMENT_APPROVAL`, `smithy_query(query="shape",
 /// shape="ValidationExceptionReason")`), so the state is the leading word and
 /// the resource is the rest — which is what [`validation_message`] words the
 /// class from.
-const RESOURCE_STATES: [&str; 3] = ["INACTIVE", "EXPIRED", "SUPERSEDED"];
+const RESOURCE_STATES: &[&str] = &[
+    "INACTIVE",
+    "EXPIRED",
+    "SUPERSEDED",
+    "PENDING_APPROVAL",
+    "CLOSED",
+    "QUEUED",
+];
 
 /// The `message` a `ValidationException` carrying `reason` states.
 ///

@@ -20,16 +20,11 @@ pub struct CreateAgreementRequestInput {
     pub source_agreement_identifier: Option<String>,
     pub agreement_proposal_identifier: Option<String>,
     pub tax_configuration: Option<TaxConfiguration>,
+    pub acceptor_contact: Option<AcceptorContact>,
 }
 
-// `PartialEq` on the requested-terms tree (this structure, the configuration union
-// and everything reachable from them): `clientToken` is modelled
-// `@idempotencyToken`, so a create carrying a token that already named a quote has
-// to tell a REPLAY of the same request from a REUSE of the token for different
-// content, and that comparison is value equality of the terms the stored request
-// asked for against the submitted ones. Nothing else about these shapes changes.
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RequestedTerm")]
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct RequestedTerm {
     pub id: String,
     pub configuration: Option<RequestedTermConfiguration>,
@@ -37,7 +32,7 @@ pub struct RequestedTerm {
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.marketplaceagreement#RequestedTermConfiguration")]
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum RequestedTermConfiguration {
     configurableUpfrontPricingTermConfiguration(ConfigurableUpfrontPricingTermConfiguration),
     renewalTermConfiguration(RenewalTermConfiguration),
@@ -54,65 +49,10 @@ pub struct TaxConfiguration {
 #[derive(Debug, Clone, Default)]
 pub struct CreateAgreementRequestOutput {
     pub agreement_request_id: Option<String>,
+    pub agreement_type: Option<String>,
     pub charge_summary: Option<ChargeSummary>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ChargeSummary")]
-#[derive(Debug, Clone, Default)]
-pub struct ChargeSummary {
-    pub currency_code: Option<String>,
-    pub new_agreement_value: Option<String>,
-    pub new_agreement_value_after_tax: Option<String>,
-    pub expected_charges: Option<Vec<ExpectedCharge>>,
-    pub estimated_taxes: Option<EstimatedTaxes>,
-    pub itemized_charges: Option<Vec<ItemizedCharge>>,
-    pub invoicing_entity: Option<InvoicingEntity>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ExpectedCharge")]
-#[derive(Debug, Clone, Default)]
-pub struct ExpectedCharge {
-    pub id: Option<String>,
-    pub time: Option<::aws_smithy_types::DateTime>,
-    pub amount: Option<String>,
-    pub amount_after_tax: Option<String>,
-    pub timing: Option<String>,
-    pub estimated_taxes: Option<EstimatedTaxes>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#EstimatedTaxes")]
-#[derive(Debug, Clone, Default)]
-pub struct EstimatedTaxes {
-    pub breakdown: Option<Vec<TaxBreakdownItem>>,
-    pub total_amount: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#TaxBreakdownItem")]
-#[derive(Debug, Clone, Default)]
-pub struct TaxBreakdownItem {
-    pub amount: Option<String>,
-    pub rate: Option<String>,
-    pub r#type: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ItemizedCharge")]
-#[derive(Debug, Clone, Default)]
-pub struct ItemizedCharge {
-    pub dimension_key: Option<String>,
-    pub new_quantity: Option<i32>,
-    pub old_quantity: Option<i32>,
-    pub charge_reference: Option<String>,
-    pub incremental_charge_amount: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ServiceQuotaExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct ServiceQuotaExceededException {
-    pub request_id: Option<String>,
-    pub message: Option<String>,
-    pub quota_code: Option<String>,
-    pub service_code: Option<String>,
-    pub resource_type: Option<String>,
-    pub resource_id: Option<String>,
+    pub status: Option<String>,
+    pub approval_requirement: Option<String>,
+    pub created_at: Option<::aws_smithy_types::DateTime>,
 }
 

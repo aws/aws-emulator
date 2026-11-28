@@ -59,6 +59,8 @@ pub struct AgreementViewSummary {
     pub initial_agreement_id: Option<String>,
     pub end_time_behavior_type: Option<String>,
     pub end_time_behavior_reason_code: Option<String>,
+    pub free_trial_end_time: Option<::aws_smithy_types::DateTime>,
+    pub includes_contact_of_type: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#Entitlement")]

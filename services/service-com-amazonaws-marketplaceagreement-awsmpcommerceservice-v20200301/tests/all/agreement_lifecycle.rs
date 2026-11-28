@@ -199,6 +199,14 @@ impl Answer {
             .unwrap_or_default()
             .to_string()
     }
+
+    /// Whether the body carries no value at `pointer` — an absent member rather
+    /// than one carrying the empty string.
+    pub(crate) fn at_is_absent(&self, pointer: &str) -> bool {
+        self.body
+            .pointer(pointer)
+            .is_none_or(|value| value.is_null())
+    }
 }
 
 pub(crate) async fn call(router: &MultiServiceRouter, operation: &str, body: Value) -> Answer {
@@ -357,6 +365,11 @@ pub(crate) fn new_request(proposal: &str, terms: Vec<Value>) -> Value {
 }
 
 /// Create and accept one agreement over `terms`, answering its agreement id.
+///
+/// A quote the buyer organization's published approval policy requires approval
+/// for cannot be accepted until that approval is granted
+/// (`ApprovalRequirement`), so this harness clears it first
+/// ([`clear_required_approvals`]) — the flow a buyer follows for such a purchase.
 pub(crate) async fn agreement_over(
     router: &MultiServiceRouter,
     proposal: &str,
@@ -369,6 +382,9 @@ pub(crate) async fn agreement_over(
         created.status, created.body
     );
     let request_id = created.str_at("/agreementRequestId");
+    if created.str_at("/approvalRequirement") == "REQUIRED" {
+        clear_required_approvals(router, &request_id).await;
+    }
     let accepted = accept(router, json!({"agreementRequestId": request_id})).await;
     assert_eq!(
         accepted.status, 200,
@@ -376,6 +392,128 @@ pub(crate) async fn agreement_over(
         accepted.status, accepted.body
     );
     accepted.str_at("/agreementId")
+}
+
+/// How many decisions [`approve_every_level`] records before giving up: one per
+/// approver of an approval, which `BuyerAgreementApprovalLevels` (`@length(1..6)`)
+/// and `BuyerApproverOutcomes` (`@length(1..10)`) bound at sixty.
+const MOST_APPROVER_DECISIONS: usize = 60;
+
+/// Start every approval plan of the agreement request `request_id` and approve
+/// every level of every approval it starts, so the request reaches `APPROVED`.
+///
+/// `pub(crate)` because a suite that accepts a quote the organization requires
+/// approval for drives the same flow.
+pub(crate) async fn clear_required_approvals(router: &MultiServiceRouter, request_id: &str) {
+    let plans = call(
+        router,
+        "GetAgreementRequestApprovalPlans",
+        json!({"agreementRequestId": request_id}),
+    )
+    .await;
+    assert_eq!(
+        plans.status, 200,
+        "reading the approval plans of {request_id} must succeed, got {} with {:?}",
+        plans.status, plans.body
+    );
+    let plan_inputs: Vec<Value> = plans.body["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|plan| {
+            json!({"buyerAgreementApprovalPlanInput": {
+                "planReference": plan["buyerAgreementApprovalPlan"]["planReference"],
+            }})
+        })
+        .collect();
+    let started = call(
+        router,
+        "StartAgreementApprovals",
+        json!({"agreementRequestId": request_id, "planInputs": plan_inputs}),
+    )
+    .await;
+    assert_eq!(
+        started.status, 200,
+        "starting the approvals of {request_id} must succeed, got {} with {:?}",
+        started.status, started.body
+    );
+    for summary in started.body["approvalSummaries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let approval_id = summary["agreementApprovalId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        approve_every_level(router, &approval_id).await;
+    }
+}
+
+/// Approve the approval `approval_id` level by level, deciding for one approver
+/// at a time, until it reports `APPROVED`.
+///
+/// Each decision is read back before the next one is made: an approved level
+/// skips the approvers of it whose decision is no longer needed, so the approvers
+/// still to decide are whatever the approval reports after the last decision.
+async fn approve_every_level(router: &MultiServiceRouter, approval_id: &str) {
+    for _ in 0..MOST_APPROVER_DECISIONS {
+        let read = call(
+            router,
+            "GetAgreementApproval",
+            json!({"agreementApprovalId": approval_id}),
+        )
+        .await;
+        assert_eq!(
+            read.status, 200,
+            "reading {approval_id} must succeed, got {} with {:?}",
+            read.status, read.body
+        );
+        if read.str_at("/buyerAgreementApproval/status") == "APPROVED" {
+            return;
+        }
+        let Some(outcome) = pending_approver_outcome(&read.body["buyerAgreementApproval"]) else {
+            panic!(
+                "{approval_id} is not approved and has no approver left to decide: {:?}",
+                read.body
+            );
+        };
+        let approved = call(
+            router,
+            "AcceptAgreementApproval",
+            json!({"buyerAgreementApprovalApproverInput": {
+                "agreementApprovalId": approval_id,
+                "approverOutcomeIdToOverride": outcome,
+            }}),
+        )
+        .await;
+        assert_eq!(
+            approved.status, 200,
+            "approving {outcome} of {approval_id} must succeed, got {} with {:?}",
+            approved.status, approved.body
+        );
+    }
+    panic!("{approval_id} did not reach APPROVED within {MOST_APPROVER_DECISIONS} decisions");
+}
+
+/// The `approverOutcomeId` of one approver of `approval` that is awaiting a
+/// decision, or `None` when none is.
+///
+/// An approver is a union object with exactly one member, whichever kind of
+/// approver the plan named, so the payload is read as that one member's value.
+pub(crate) fn pending_approver_outcome(approval: &Value) -> Option<String> {
+    approval["levels"]
+        .as_array()?
+        .iter()
+        .flat_map(|level| level["groups"].as_array().cloned().unwrap_or_default())
+        .flat_map(|group| group["approvers"].as_array().cloned().unwrap_or_default())
+        .find_map(|approver| {
+            let (_, outcome) = approver.as_object()?.iter().next()?;
+            (outcome["status"].as_str() == Some("PENDING_APPROVAL"))
+                .then(|| outcome["approverOutcomeId"].as_str().map(str::to_string))
+                .flatten()
+        })
 }
 
 /// The quantity of the one prepaid dimension [`invoiced_agreement`] buys, large
@@ -2028,4 +2166,145 @@ async fn cancelling_persists_the_new_status() {
         "the refusal must name the member at fault, got {:?}",
         again.body
     );
+}
+
+// ---------------------------------------------------------------------------
+// The approvals a buyer's organization requires
+// ---------------------------------------------------------------------------
+
+/// A quote the buyer organization's published approval policy requires approval
+/// of is accepted only once that approval is granted; one it requires no approval
+/// of is accepted straight away.
+///
+/// The rule the rows span: `ApprovalRequirement` "indicates whether the agreement
+/// request requires approval before it can be accepted", and
+/// `GetAgreementRequestOutput$status` names which statuses an acceptance is
+/// served from — `APPROVED`, or a `DRAFT` whose organization requires no
+/// approval. The rows differ along what decides the requirement, which is what
+/// the quote commits: a small purchase, and one far past the policy's threshold.
+/// What the threshold itself IS, on either side of it and exactly at it, is the
+/// subject of `core/router/tests/all/marketplace_agreement_approvals.rs`, which
+/// drives the whole approval family over the assembled emulator.
+#[tokio::test]
+async fn an_agreement_request_is_accepted_only_when_its_organization_allows_it() {
+    let router = emulator();
+
+    // `(case, terms, whether the policy requires approval of the quote)`.
+    let rows: Vec<(&str, Vec<Value>, bool)> = vec![
+        (
+            "a small prepaid purchase",
+            vec![upfront_term("term.small@1", "P12M", &[("Users", 5)])],
+            false,
+        ),
+        (
+            "a purchase far past the policy's threshold",
+            vec![upfront_term("term.large@1", "P36M", &[("Admins", 25_000)])],
+            true,
+        ),
+    ];
+
+    for (index, (case, terms, requires_approval)) in rows.into_iter().enumerate() {
+        let created = create(&router, new_request(&format!("ap-approval{index}"), terms)).await;
+        assert_eq!(
+            created.status, 200,
+            "case {case}: creating the quote must succeed, got {} with {:?}",
+            created.status, created.body
+        );
+        let request_id = created.str_at("/agreementRequestId");
+        assert_eq!(
+            created.str_at("/approvalRequirement"),
+            if requires_approval {
+                "REQUIRED"
+            } else {
+                "NOT_REQUIRED"
+            },
+            "case {case}: the requirement follows what the quote commits, got {:?}",
+            created.body
+        );
+        assert_eq!(
+            created.str_at("/status"),
+            "DRAFT",
+            "case {case}: a created quote has not been submitted for approval, got {:?}",
+            created.body
+        );
+        assert_eq!(
+            created.str_at("/agreementType"),
+            "PurchaseAgreement",
+            "case {case}: the quote reports its agreement type, got {:?}",
+            created.body
+        );
+
+        if requires_approval {
+            // The acceptance is refused by the approval policy, and nothing is
+            // minted: the request is still the draft it was.
+            let early = accept(&router, json!({"agreementRequestId": request_id})).await;
+            assert_eq!(
+                (early.status, early.error_code(), early.reason()),
+                (
+                    400,
+                    "ValidationException",
+                    "REJECTED_BY_AGREEMENT_APPROVAL_POLICY"
+                ),
+                "case {case}: an unapproved quote must be refused by the policy, got {} with \
+                 {:?}",
+                early.status,
+                early.body
+            );
+            let read = call(
+                &router,
+                "GetAgreementRequest",
+                json!({"agreementRequestId": request_id}),
+            )
+            .await;
+            assert_eq!(
+                (read.str_at("/status"), read.at_is_absent("/agreementId")),
+                ("DRAFT".to_string(), true),
+                "case {case}: the refused acceptance minted nothing, got {:?}",
+                read.body
+            );
+
+            // The approvals the organization requires, granted the way a buyer
+            // grants them.
+            clear_required_approvals(&router, &request_id).await;
+            let read = call(
+                &router,
+                "GetAgreementRequest",
+                json!({"agreementRequestId": request_id}),
+            )
+            .await;
+            assert_eq!(
+                read.str_at("/status"),
+                "APPROVED",
+                "case {case}: every approval being approved approves the request, got {:?}",
+                read.body
+            );
+        }
+
+        let accepted = accept(&router, json!({"agreementRequestId": request_id})).await;
+        assert_eq!(
+            accepted.status, 200,
+            "case {case}: the acceptance must succeed, got {} with {:?}",
+            accepted.status, accepted.body
+        );
+        let agreement_id = accepted.str_at("/agreementId");
+        let read = call(
+            &router,
+            "GetAgreementRequest",
+            json!({"agreementRequestId": request_id}),
+        )
+        .await;
+        assert_eq!(
+            (read.str_at("/status"), read.str_at("/agreementId")),
+            ("ACCEPTED".to_string(), agreement_id.clone()),
+            "case {case}: the accepted request reports the agreement it minted, got {:?}",
+            read.body
+        );
+        let described = describe(&router, &agreement_id).await;
+        assert_eq!(
+            described.status, 200,
+            "case {case}: the agreement the acceptance minted must be readable, got {} with \
+             {:?}",
+            described.status, described.body
+        );
+    }
 }

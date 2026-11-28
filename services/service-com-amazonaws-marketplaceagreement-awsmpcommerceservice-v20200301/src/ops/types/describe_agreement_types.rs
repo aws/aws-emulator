@@ -32,6 +32,7 @@ pub struct DescribeAgreementOutput {
     pub status: Option<String>,
     pub initial_agreement_id: Option<String>,
     pub end_time_behavior: Option<EndTimeBehavior>,
+    pub free_trial_summary: Option<FreeTrialSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#EstimatedCharges")]
@@ -53,5 +54,11 @@ pub struct EndTimeBehavior {
 #[derive(Debug, Clone, Default)]
 pub struct RenewalSummary {
     pub offer_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#FreeTrialSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct FreeTrialSummary {
+    pub trial_end_time: Option<::aws_smithy_types::DateTime>,
 }
 

@@ -196,6 +196,29 @@ fn identity_denial_clause(actions: &[String], explicit: bool) -> String {
     }
 }
 
+/// The ARN of the principal this request speaks for, as a response member that names a
+/// caller carries it (`CallerIdentity$principalArn`, "the identity that overrode the
+/// approver's outcome").
+///
+/// Resolved through the SAME [`caller`] this gate decides on, so the principal a decision
+/// records is the principal the decision was authorized for. A caller whose credential
+/// speaks for nobody — the expired-session case [`caller`] states in words rather than as
+/// an ARN — is reported as the account's own published identity: the member is an ARN
+/// (`^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$`), so a value that is no ARN cannot be written into
+/// it, and in the assembled emulator the layer that authenticates a request refuses such a
+/// credential before any handler runs.
+pub fn caller_principal_arn<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+) -> String {
+    let arn = caller(engine, ctx).arn;
+    if arn.starts_with("arn:") {
+        arn
+    } else {
+        ::service_common::caller_principal::ambient_user_arn()
+    }
+}
+
 /// Authorize this request, where `operation` is the operation's own name
 /// ([`::smithy_server_runtime::Operation::NAME`]).
 ///

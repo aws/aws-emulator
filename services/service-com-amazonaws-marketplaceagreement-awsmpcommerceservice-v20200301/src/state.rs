@@ -82,14 +82,17 @@ use std::time::{Duration, SystemTime};
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    AcceptedTerm, Acceptor, AgreementCancellationRequestSummary, AgreementEntitlement,
+    AcceptedTerm, Acceptor, AcceptorContact, AgreementApprovalPurchaseOrder,
+    AgreementCancellationRequestSummary,
+    AgreementEntitlement, AgreementRequestSummary, AgreementRequestTerm,
     AgreementInvoiceLineItemGroupSummary, AgreementViewSummary,
     BatchCreateBillingAdjustmentRequestEntry, BillingAdjustmentSummary,
     ByolPricingTerm, Charge, ChargeSummary, ConfigurableUpfrontPricingTerm,
     ConfigurableUpfrontPricingTermConfiguration, ConfigurableUpfrontRateCardItem,
     ConflictException, Constraints, DescribeAgreementOutput, Dimension, DocumentItem,
     EndTimeBehavior, Entitlement, EstimatedCharges, ExpectedCharge, Filter,
-    FixedUpfrontPricingTerm, FreeTrialPricingTerm, GetAgreementPaymentRequestOutput,
+    FixedUpfrontPricingTerm, FreeTrialPricingTerm, FreeTrialSummary,
+    GetAgreementPaymentRequestOutput,
     GetBillingAdjustmentRequestOutput, GrantItem, InternalServerException, InvoiceBillingPeriod,
     ItemizedCharge, LegalTerm,
     NetPaymentTerm, PaymentRequestSummary, PaymentScheduleTerm, PricingCurrencyAmount,
@@ -120,6 +123,13 @@ pub mod granted_entitlements;
 /// offers — the Marketplace Discovery catalog.
 pub mod agreement_proposals;
 
+/// The approvals a buyer's organization requires before an agreement request can
+/// be accepted: the published approval policy and the approvals started from it.
+pub mod agreement_approvals;
+pub use agreement_approvals::{
+    AgreementApproval, ApprovalLevel, ApproverIdentity, ApproverOutcomeRecord, DecisionRefusal,
+};
+
 /// The `agreementType` every agreement this slice mints carries.
 ///
 /// `DescribeAgreementOutput$agreementType` documents two values,
@@ -143,6 +153,36 @@ pub const INTENT_NEW: &str = "NEW";
 pub const INTENT_AMEND: &str = "AMEND";
 /// See [`INTENT_NEW`].
 pub const INTENT_REPLACE: &str = "REPLACE";
+
+/// The `AgreementRequestStatus` a created agreement request carries: "the
+/// agreement request has been created but not yet submitted for approval".
+pub const REQUEST_STATUS_DRAFT: &str = "DRAFT";
+/// The `AgreementRequestStatus` starting its approvals moves a request to: "the
+/// agreement request is waiting for one or more approvers to decide".
+pub const REQUEST_STATUS_PENDING_APPROVAL: &str = "PENDING_APPROVAL";
+/// The `AgreementRequestStatus` a request reaches once its approvals are in:
+/// "all required approvals have been granted, but the agreement request wasn't
+/// accepted automatically. Call `AcceptAgreementRequest` to accept it."
+pub const REQUEST_STATUS_APPROVED: &str = "APPROVED";
+/// The `AgreementRequestStatus` accepting a request moves it to: "the agreement
+/// request has been accepted and the resulting agreement has been created".
+pub const REQUEST_STATUS_ACCEPTED: &str = "ACCEPTED";
+/// The `AgreementRequestStatus` a rejected approval moves its request to: "at
+/// least one approver rejected the agreement request. It won't proceed."
+pub const REQUEST_STATUS_REJECTED: &str = "REJECTED";
+/// The `AgreementRequestStatus` `CancelAgreementRequest` moves a request to:
+/// "the agreement request was cancelled before completion".
+pub const REQUEST_STATUS_CANCELLED: &str = "CANCELLED";
+
+/// `ApprovalRequirement`'s two values: whether "the agreement request requires
+/// approval before it can be accepted".
+pub const APPROVAL_REQUIRED: &str = "REQUIRED";
+/// See [`APPROVAL_REQUIRED`].
+pub const APPROVAL_NOT_REQUIRED: &str = "NOT_REQUIRED";
+
+/// `ContactType`'s only value: the kind of contact an agreement has on file when
+/// its quote carried the acceptor's contact information.
+pub const CONTACT_TYPE_ACCEPTOR: &str = "ACCEPTOR";
 
 /// The `AgreementStatus` an accepted agreement carries, and the one
 /// `CancelAgreement` moves it out of.
@@ -350,6 +390,21 @@ pub const BILLING_ADJUSTMENT_REQUEST_QUOTA: usize = 1_000;
 /// quota code is an identifier Service Quotas issues, which this emulator does
 /// not model and so must not invent one of.
 pub const AGREEMENT_REQUEST_QUOTA_CODE: &str = "AgreementRequestsPerAccount";
+
+/// How many agreements the store holds before `AcceptAgreementRequest` refuses
+/// to finalise another.
+///
+/// The same kind of bound as [`AGREEMENT_REQUEST_QUOTA`] and for the same
+/// reason: AWS publishes no number, so this is the emulator's OWN bound on the
+/// store rather than a claim about an account's quota, and it is far above any
+/// workflow an emulator serves. `AcceptAgreementRequest` models a
+/// `ServiceQuotaExceededException`, so reaching the bound is answered with it —
+/// the acceptance mints nothing and the quote stays acceptable.
+pub const AGREEMENT_QUOTA: usize = 1_000;
+
+/// The `quotaCode` that refusal reports; see [`AGREEMENT_REQUEST_QUOTA_CODE`]
+/// for why it is named for what it bounds.
+pub const AGREEMENT_QUOTA_CODE: &str = "AgreementsPerAccount";
 
 /// How many payment requests the store holds before
 /// `SendAgreementPaymentRequest` refuses to store another.
@@ -1535,6 +1590,22 @@ pub struct OfferDocument {
     /// How many installments a published payment schedule bills its total in:
     /// `ScheduleItem` is "an individual installment of the payment".
     pub installments: u32,
+    /// The legal name of the seller that published this offer, as
+    /// `AgreementApprovalProposer$legalName` reports it (`@required`, "the legal
+    /// name of the proposer").
+    ///
+    /// The parties of an agreement carry an ACCOUNT in this model and no name
+    /// anywhere else, so the one name of the seller is published with its offer.
+    pub proposer_legal_name: &'static str,
+    /// `OfferVisibilityScope` for this offer, one of `PUBLIC` and `PRIVATE`, as
+    /// `AgreementApprovalProposalSummary$visibilityScope` reports it
+    /// (`@required`).
+    ///
+    /// The offer this emulator publishes is signed by the proposer for the
+    /// acceptor that quotes it (`CreateAgreementRequest$agreementProposalIdentifier`
+    /// is "the agreement proposal signed by the proposer"), which is a private
+    /// offer rather than a public listing.
+    pub visibility_scope: &'static str,
 }
 
 /// See [`OfferDocument`].
@@ -1550,10 +1621,12 @@ pub const OFFER_DOCUMENT: OfferDocument = OfferDocument {
     eula_type: "StandardEula",
     eula_version: "1.0",
     installments: 4,
+    proposer_legal_name: "Emulated Marketplace Seller, Inc.",
+    visibility_scope: "PRIVATE",
 };
 
 /// The products the offer this emulator publishes is for, each as
-/// `(id, type)`.
+/// `(id, type, name)`.
 ///
 /// SOURCE: the emulator's OWN catalog, on exactly the same footing as
 /// [`RATE_CARD`] and [`OFFER_DOCUMENT`] and for the same reason — the resources
@@ -1569,17 +1642,32 @@ pub const OFFER_DOCUMENT: OfferDocument = OfferDocument {
 /// This is the list an agreement names in `ProposalSummary$resources` ("the
 /// list of resources involved in the agreement") when it inherits none, and the
 /// list its acceptance provisions one entitlement per — so it is never empty.
-pub const OFFER_RESOURCES: &[(&str, &str)] = &[
-    ("prod-emulatorsaas", "SaaSProduct"),
-    ("prod-emulatorami", "AmiProduct"),
-    ("prod-emulatorcontainer", "ContainerProduct"),
+/// The names are what `AgreementApprovalResource$name` reports for a product of
+/// the proposal an approval is about ([`published_product_name`]).
+pub const OFFER_RESOURCES: &[(&str, &str, &str)] = &[
+    ("prod-emulatorsaas", "SaaSProduct", "Emulator SaaS Platform"),
+    ("prod-emulatorami", "AmiProduct", "Emulator Machine Image"),
+    (
+        "prod-emulatorcontainer",
+        "ContainerProduct",
+        "Emulator Container Suite",
+    ),
 ];
+
+/// The name the published catalog carries for the product `id`, or `None` for a
+/// product it does not publish.
+pub fn published_product_name(id: &str) -> Option<&'static str> {
+    OFFER_RESOURCES
+        .iter()
+        .find(|(published, _, _)| *published == id)
+        .map(|(_, _, name)| *name)
+}
 
 /// [`OFFER_RESOURCES`] as the model reports a resource.
 pub fn offer_resources() -> Vec<Resource> {
     OFFER_RESOURCES
         .iter()
-        .map(|(id, r#type)| Resource {
+        .map(|(id, r#type, _)| Resource {
             id: Some((*id).to_string()),
             r#type: Some((*r#type).to_string()),
         })
@@ -1600,6 +1688,31 @@ pub fn agreement_resources(inherited: Option<&[Resource]>) -> Vec<Resource> {
     match inherited {
         Some(resources) if !resources.is_empty() => resources.to_vec(),
         _ => offer_resources(),
+    }
+}
+
+/// The proposal one agreement request — and the agreement accepting it mints —
+/// is for: the proposal the request named, the resources it is involved with
+/// ([`agreement_resources`]) and the offer set of the agreement it derives from.
+///
+/// The ONE place that summary is built, so the proposal an agreement request
+/// reports and the proposal the agreement its acceptance mints reports are the
+/// same thing rather than two. The only identity of the proposal this emulator
+/// holds is the identifier the request named; its offer set lives in the
+/// agreement proposal, which is not this service's resource, so it is carried
+/// over from the agreement the request acts upon where there is one.
+pub fn proposal_summary_of(
+    agreement_proposal_identifier: Option<&str>,
+    source: Option<&Agreement>,
+) -> ProposalSummary {
+    ProposalSummary {
+        offer_id: agreement_proposal_identifier
+            .map(str::to_string)
+            .or_else(|| source.and_then(|source| source.proposal_summary.offer_id.clone())),
+        resources: Some(agreement_resources(
+            source.and_then(|source| source.proposal_summary.resources.as_deref()),
+        )),
+        offer_set_id: source.and_then(|source| source.proposal_summary.offer_set_id.clone()),
     }
 }
 
@@ -1887,6 +2000,62 @@ pub fn accepted_terms(
         .collect()
 }
 
+/// The terms PROPOSED for an agreement request, in the order the request asked
+/// for them.
+///
+/// `GetAgreementRequestTerms` "retrieves the terms proposed for an agreement
+/// request, such as pricing, legal, and renewal terms", and `AgreementRequestTerm`
+/// models exactly the term shapes `AcceptedTerm` does: the terms proposed for a
+/// request are the terms the agreement accepting it would hold, so they are built
+/// by the ONE builder that resolves a requested term into the proposal's own term
+/// ([`accepted_terms`]) and re-stated as the request's own union. The window they
+/// are quoted over is anchored at the instant the request was created, so every
+/// read of a request reports the same dates.
+pub fn proposed_terms(
+    request: &AgreementRequest,
+    source: Option<&Agreement>,
+) -> Vec<AgreementRequestTerm> {
+    let context = AcceptedTermContext::new(&request.requested_terms, request.created_at, source);
+    accepted_terms(&request.requested_terms, &context)
+        .into_iter()
+        .map(proposed_term)
+        .collect()
+}
+
+/// One accepted term as the term PROPOSED for a request: the same payload under
+/// the union `AgreementRequestTerm` names it by.
+fn proposed_term(term: AcceptedTerm) -> AgreementRequestTerm {
+    match term {
+        AcceptedTerm::legalTerm(term) => AgreementRequestTerm::legalTerm(term),
+        AcceptedTerm::supportTerm(term) => AgreementRequestTerm::supportTerm(term),
+        AcceptedTerm::renewalTerm(term) => AgreementRequestTerm::renewalTerm(term),
+        AcceptedTerm::usageBasedPricingTerm(term) => {
+            AgreementRequestTerm::usageBasedPricingTerm(term)
+        }
+        AcceptedTerm::configurableUpfrontPricingTerm(term) => {
+            AgreementRequestTerm::configurableUpfrontPricingTerm(term)
+        }
+        AcceptedTerm::byolPricingTerm(term) => AgreementRequestTerm::byolPricingTerm(term),
+        AcceptedTerm::recurringPaymentTerm(term) => {
+            AgreementRequestTerm::recurringPaymentTerm(term)
+        }
+        AcceptedTerm::validityTerm(term) => AgreementRequestTerm::validityTerm(term),
+        AcceptedTerm::paymentScheduleTerm(term) => {
+            AgreementRequestTerm::paymentScheduleTerm(term)
+        }
+        AcceptedTerm::freeTrialPricingTerm(term) => {
+            AgreementRequestTerm::freeTrialPricingTerm(term)
+        }
+        AcceptedTerm::fixedUpfrontPricingTerm(term) => {
+            AgreementRequestTerm::fixedUpfrontPricingTerm(term)
+        }
+        AcceptedTerm::variablePaymentTerm(term) => {
+            AgreementRequestTerm::variablePaymentTerm(term)
+        }
+        AcceptedTerm::netPaymentTerm(term) => AgreementRequestTerm::netPaymentTerm(term),
+    }
+}
+
 /// The accepted term a requested term becomes.
 ///
 /// `GetAgreementTerms` documents the three members that come from the request
@@ -2165,6 +2334,36 @@ fn dimension_quantities(terms: &[AcceptedTerm]) -> HashMap<String, i32> {
 // Records
 // ---------------------------------------------------------------------------
 
+/// A value this model marks `@sensitive`, as a stored record holds it.
+///
+/// The value goes on the wire wherever the model puts it — an acceptor's contact
+/// details, an approver's note, an approver's email address and name are all
+/// members of some response — and NEVER into a log: this wrapper's `Debug` prints
+/// the FACT that a value is held and not the value, so a record that reaches a
+/// formatter cannot carry it into one. The same rule
+/// [`AgreementEntitlementRecord`]'s own `Debug` follows for a registration token.
+#[derive(Clone, Default)]
+pub struct Sensitive<T>(T);
+
+impl<T> Sensitive<T> {
+    /// Hold `value` as the sensitive value it is.
+    pub fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    /// The value, for the response member the model puts it in.
+    pub fn get(&self) -> &T {
+        &self.0
+    }
+}
+
+/// Prints that a value is held, never the value itself.
+impl<T> ::std::fmt::Debug for Sensitive<T> {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str("<sensitive>")
+    }
+}
+
 /// One agreement request — "a quote for the terms you want to accept" — as this
 /// emulator persists it.
 #[derive(Debug, Clone)]
@@ -2180,9 +2379,35 @@ pub struct AgreementRequest {
     pub source_agreement_identifier: Option<String>,
     pub agreement_proposal_identifier: Option<String>,
     pub tax_configuration: Option<TaxConfiguration>,
+    /// "The contact information of the acceptor", as the create carried it —
+    /// `None` for a request that named none. What `GetAgreementContacts` reports
+    /// for the agreement accepting this request mints.
+    pub acceptor_contact: Option<Sensitive<AcceptorContact>>,
     /// The charges the requested terms imply, computed once at create time so a
     /// replayed `clientToken` answers with the same quote.
     pub charge_summary: ChargeSummary,
+    /// The proposal this request is for, built once at create time
+    /// ([`proposal_summary_of`]).
+    pub proposal_summary: ProposalSummary,
+    /// The `agreementType` of this request, and of the agreement accepting it
+    /// mints ([`AGREEMENT_TYPE`]).
+    pub agreement_type: String,
+    /// The catalog this request was created in ([`CATALOG`]), which
+    /// `ListAgreementRequests` filters on.
+    pub catalog: String,
+    /// One of `AgreementRequestStatus`'s values: where this request stands in
+    /// the lifecycle `GetAgreementRequestOutput$status` documents.
+    pub status: String,
+    /// One of `ApprovalRequirement`'s values, decided once at create time from
+    /// the buyer organization's published approval policy
+    /// ([`agreement_approvals::approval_requirement`]) so every later report of
+    /// this request states the requirement the quote was made under.
+    pub approval_requirement: String,
+    /// The purchase order references collected for this request's charges while
+    /// its approvals ran, each naming one charge of its quote. The acceptance
+    /// associates them with the agreement's charges, beside any the accept call
+    /// states itself.
+    pub purchase_orders: Vec<AgreementApprovalPurchaseOrder>,
     pub client_token: Option<String>,
     /// The agreement `AcceptAgreementRequest` finalised from this request; a
     /// second accept of the same request is a conflict.
@@ -2197,6 +2422,9 @@ pub struct AgreementRequest {
     /// agreement it amended ([`…State::charges_of`](ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State::charges_of)).
     pub accepted_at: Option<SystemTime>,
     pub created_at: SystemTime,
+    /// When this request's own record last moved — a status transition, or a
+    /// purchase order reference collected for one of its charges.
+    pub updated_at: SystemTime,
 }
 
 impl AgreementRequest {
@@ -2209,11 +2437,143 @@ impl AgreementRequest {
     /// [`BillingAdjustmentRequest::matches_entry`] treat the same case.
     pub fn matches_create(&self, input: &CreateAgreementRequestInput) -> bool {
         self.intent == input.intent
-            && self.requested_terms == input.requested_terms
+            && requested_terms_match(&self.requested_terms, &input.requested_terms)
             && self.source_agreement_identifier == input.source_agreement_identifier
             && self.agreement_proposal_identifier == input.agreement_proposal_identifier
             && tax_estimation(self.tax_configuration.as_ref())
                 == tax_estimation(input.tax_configuration.as_ref())
+    }
+
+    /// The charges of this request's quote, with the purchase order reference
+    /// recorded for each of them.
+    ///
+    /// `ExpectedCharge$purchaseOrderReference` is "the purchase order reference
+    /// associated with the charge, if any": the references this request collected
+    /// are the one copy of them, so every report of its quote reads them from
+    /// here rather than keeping a second copy inside the stored summary.
+    pub fn quote(&self) -> ChargeSummary {
+        let mut summary = self.charge_summary.clone();
+        for charge in summary.expected_charges.iter_mut().flatten() {
+            charge.purchase_order_reference = charge
+                .id
+                .as_deref()
+                .and_then(|id| self.purchase_order_reference_of(id));
+        }
+        summary
+    }
+
+    /// The purchase order reference recorded for the charge `charge_id` of this
+    /// request, if one was collected.
+    pub fn purchase_order_reference_of(&self, charge_id: &str) -> Option<String> {
+        self.purchase_orders
+            .iter()
+            .find(|order| order.charge_id == charge_id)
+            .and_then(|order| order.purchase_order_reference.clone())
+    }
+
+    /// Record `collected` as the purchase order references of the charges they
+    /// name, at `now`.
+    ///
+    /// A charge carries ONE reference, so a charge that already carries one has
+    /// it REPLACED rather than standing beside it — the same single-writer rule
+    /// [`Agreement::associate_purchase_order`] follows for an agreement's own
+    /// associations.
+    pub fn collect_purchase_orders(
+        &mut self,
+        collected: Vec<AgreementApprovalPurchaseOrder>,
+        now: SystemTime,
+    ) {
+        for order in collected {
+            match self
+                .purchase_orders
+                .iter_mut()
+                .find(|held| held.charge_id == order.charge_id)
+            {
+                Some(held) => *held = order,
+                None => self.purchase_orders.push(order),
+            }
+        }
+        self.updated_at = now;
+    }
+
+    /// This request as `ListAgreementRequests` reports it.
+    pub fn to_summary(&self) -> AgreementRequestSummary {
+        AgreementRequestSummary {
+            agreement_request_id: Some(self.id.clone()),
+            agreement_type: Some(self.agreement_type.clone()),
+            status: Some(self.status.clone()),
+            agreement_id: self.accepted_agreement_id.clone(),
+            proposal_summary: Some(self.proposal_summary.clone()),
+        }
+    }
+
+    /// Whether this request is for the resource `resource_id` — one of the
+    /// resources of the proposal it is for.
+    ///
+    /// `ListAgreementRequestsInput$resourceId` is "an optional parameter to list
+    /// agreement requests for a specific resource, such as a product", and the
+    /// resources a request is for are the ones its proposal summary names.
+    pub fn involves_resource(&self, resource_id: &str) -> bool {
+        self.proposal_summary
+            .resources
+            .iter()
+            .flatten()
+            .any(|resource| resource.id.as_deref() == Some(resource_id))
+    }
+}
+
+/// Whether two `requestedTerms` lists ask for the same thing: the same terms, in
+/// the same order, each configured the same way.
+///
+/// Spelled out member by member because `RequestedTerm` and the configurations it
+/// carries are generated from the model, which derives no equality for them: the
+/// comparison a replayed `clientToken` turns on is the content of the request, so
+/// it is stated here over every member that content is made of.
+fn requested_terms_match(held: &[RequestedTerm], asked: &[RequestedTerm]) -> bool {
+    held.len() == asked.len()
+        && held.iter().zip(asked).all(|(held, asked)| {
+            held.id == asked.id
+                && match (held.configuration.as_ref(), asked.configuration.as_ref()) {
+                    (None, None) => true,
+                    (Some(held), Some(asked)) => term_configurations_match(held, asked),
+                    _ => false,
+                }
+        })
+}
+
+/// Whether two requested-term configurations ask for the same thing: the same
+/// union member, carrying the same values.
+fn term_configurations_match(
+    held: &RequestedTermConfiguration,
+    asked: &RequestedTermConfiguration,
+) -> bool {
+    use RequestedTermConfiguration as Configuration;
+    match (held, asked) {
+        (
+            Configuration::configurableUpfrontPricingTermConfiguration(held),
+            Configuration::configurableUpfrontPricingTermConfiguration(asked),
+        ) => {
+            held.selector_value == asked.selector_value
+                && held.dimensions.len() == asked.dimensions.len()
+                && held.dimensions.iter().zip(&asked.dimensions).all(
+                    |(held, asked)| {
+                        held.dimension_key == asked.dimension_key
+                            && held.dimension_value == asked.dimension_value
+                    },
+                )
+        }
+        (
+            Configuration::renewalTermConfiguration(held),
+            Configuration::renewalTermConfiguration(asked),
+        ) => held.enable_auto_renew == asked.enable_auto_renew,
+        (
+            Configuration::variablePaymentTermConfiguration(held),
+            Configuration::variablePaymentTermConfiguration(asked),
+        ) => {
+            held.payment_request_approval_strategy == asked.payment_request_approval_strategy
+                && held.expiration_duration == asked.expiration_duration
+        }
+        _ => false,
     }
 }
 
@@ -2234,6 +2594,45 @@ fn tax_estimation(configuration: Option<&TaxConfiguration>) -> &str {
 /// `TaxConfiguration$taxEstimation`'s modelled default, which is also what a
 /// request naming no `taxConfiguration` asks for.
 pub const TAX_ESTIMATION_DEFAULT: &str = "DISABLED";
+
+/// The `ValidationExceptionReason` for a request whose approvers have not
+/// decided yet.
+pub const REASON_PENDING_APPROVAL_AGREEMENT_REQUEST: &str = "PENDING_APPROVAL_AGREEMENT_REQUEST";
+/// The `ValidationExceptionReason` for a request that has been closed without
+/// being accepted.
+pub const REASON_CLOSED_AGREEMENT_REQUEST: &str = "CLOSED_AGREEMENT_REQUEST";
+/// The `ValidationExceptionReason` for an acceptance the buyer organization's
+/// approval policy does not allow: of a request an approver rejected, or of one
+/// the policy requires approval of that has not been approved.
+pub const REASON_REJECTED_BY_APPROVAL_POLICY: &str = "REJECTED_BY_AGREEMENT_APPROVAL_POLICY";
+
+/// Why `request` cannot be accepted in the state it is in, or `None` when it
+/// can.
+///
+/// `AgreementRequestStatus` states the lifecycle per value: `APPROVED` means
+/// "all required approvals have been granted… Call `AcceptAgreementRequest` to
+/// accept it", `PENDING_APPROVAL` that the request "is waiting for one or more
+/// approvers to decide", `REJECTED` that "at least one approver rejected the
+/// agreement request. It won't proceed", and `CANCELLED` that it "was cancelled
+/// before completion". A `DRAFT` request "has been created but not yet submitted
+/// for approval", so it can be accepted exactly while the buyer organization's
+/// policy does not require an approval of it — `ApprovalRequirement` "indicates
+/// whether the agreement request requires approval before it can be accepted" —
+/// and an acceptance the policy will not have is refused by that policy.
+///
+/// The ONE place that rule lives, so the acceptance door and any later reader of
+/// a request agree on which quotes are acceptable.
+pub fn acceptance_refusal_reason(request: &AgreementRequest) -> Option<&'static str> {
+    match request.status.as_str() {
+        REQUEST_STATUS_APPROVED => None,
+        REQUEST_STATUS_DRAFT if request.approval_requirement == APPROVAL_NOT_REQUIRED => None,
+        REQUEST_STATUS_DRAFT | REQUEST_STATUS_REJECTED => {
+            Some(REASON_REJECTED_BY_APPROVAL_POLICY)
+        }
+        REQUEST_STATUS_PENDING_APPROVAL => Some(REASON_PENDING_APPROVAL_AGREEMENT_REQUEST),
+        _ => Some(REASON_CLOSED_AGREEMENT_REQUEST),
+    }
+}
 
 /// One entitlement an acceptance provisioned, as this emulator persists it.
 ///
@@ -2340,6 +2739,11 @@ pub struct Agreement {
     /// The purchase orders the accept call associated with this agreement's
     /// charges.
     pub purchase_orders: Vec<PurchaseOrder>,
+    /// "The contact information of the acceptor", as the quote this agreement
+    /// was accepted from carried it — `None` for an agreement whose quote named
+    /// none. What `GetAgreementContacts` reports, and what
+    /// `AgreementViewSummary$includesContactOfType` says is on file.
+    pub acceptor_contact: Option<Sensitive<AcceptorContact>>,
     /// The entitlements accepting this agreement provisioned — one per resource
     /// the agreement is involved with (see [`agreement_resources`] and
     /// [`ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State::provision_entitlements`]).
@@ -2732,7 +3136,47 @@ impl Agreement {
             status: Some(self.status.clone()),
             initial_agreement_id: Some(self.initial_agreement_id.clone()),
             end_time_behavior: self.end_time_behavior(),
+            // "The free trial details of the agreement. This field is present
+            // only when the agreement includes a free trial."
+            free_trial_summary: self.free_trial_end_time().map(|trial_end_time| {
+                FreeTrialSummary {
+                    trial_end_time: Some(::aws_smithy_types::DateTime::from(trial_end_time)),
+                }
+            }),
         }
+    }
+
+    /// When the free trial of this agreement ends, and `None` for an agreement
+    /// whose accepted terms include no free trial.
+    ///
+    /// `FreeTrialSummary$trialEndTime` is "the date and time when the free trial
+    /// ends": the trial runs from the agreement's start date for the duration its
+    /// accepted `FreeTrialPricingTerm` states ("duration of the free trial
+    /// period"), which is the ONE place this emulator reports a trial end from —
+    /// so the summary of the agreement and its search view cannot disagree.
+    /// A term whose duration is not an ISO 8601 span names no instant, so no
+    /// trial end is reported for it.
+    pub fn free_trial_end_time(&self) -> Option<SystemTime> {
+        let duration = self.accepted_terms.iter().find_map(|term| match term {
+            AcceptedTerm::freeTrialPricingTerm(trial) => trial.duration.as_deref(),
+            _ => None,
+        })?;
+        self.start_time
+            .checked_add(::service_common::iso8601_span::iso8601_span(duration)?)
+    }
+
+    /// The kinds of contact information this agreement has on file, as
+    /// `AgreementViewSummary$includesContactOfType` lists them.
+    ///
+    /// "For example, `ACCEPTOR` indicates that the acceptor's contact information
+    /// is on file, which you can retrieve with `GetAgreementContacts`": the one
+    /// kind `ContactType` publishes, listed exactly when this agreement holds
+    /// that contact — so the member agrees with what `GetAgreementContacts`
+    /// answers. Absent, not empty, for an agreement with no contact on file.
+    pub fn contact_types(&self) -> Option<Vec<String>> {
+        self.acceptor_contact
+            .as_ref()
+            .map(|_| vec![CONTACT_TYPE_ACCEPTOR.to_string()])
     }
 
     /// The `SearchAgreements` projection of this agreement.
@@ -2771,6 +3215,14 @@ impl Agreement {
             initial_agreement_id: Some(self.initial_agreement_id.clone()),
             end_time_behavior_type: behavior.as_ref().map(|b| b.r#type.clone()),
             end_time_behavior_reason_code: behavior.and_then(|b| b.reason_code),
+            // "The date and time when the free trial of the agreement ends. This
+            // field is present only when the agreement includes a free trial" —
+            // the same instant `DescribeAgreement` reports in its
+            // `freeTrialSummary` ([`Agreement::free_trial_end_time`]).
+            free_trial_end_time: self
+                .free_trial_end_time()
+                .map(::aws_smithy_types::DateTime::from),
+            includes_contact_of_type: self.contact_types(),
         }
     }
 
@@ -3449,6 +3901,13 @@ pub fn idempotency_key(operation: &str, client_token: &str) -> String {
 pub struct ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
     /// Every agreement request, keyed by its `^ar-[A-Za-z0-9]+$` id.
     pub agreement_requests: BTreeMap<String, AgreementRequest>,
+    /// Every agreement approval, keyed by its `^apr-[A-Za-z0-9]+$` id. A
+    /// `BTreeMap` is what gives `ListAgreementApprovals` a stable total order to
+    /// page over: ids are minted from a zero-padded counter, so they sort in the
+    /// order the approvals were started. Bounded by
+    /// [`agreement_approvals::AGREEMENT_APPROVAL_QUOTA`], which
+    /// `StartAgreementApprovals` checks before it starts one.
+    pub agreement_approvals: BTreeMap<String, AgreementApproval>,
     /// Every agreement, keyed by its id. A `BTreeMap` is what gives
     /// `SearchAgreements` a stable total order to page over: ids are minted from
     /// a zero-padded counter, so they sort in creation order.
