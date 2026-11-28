@@ -64,7 +64,7 @@ const SETTLEMENT_DEADLINE: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// A member's text, or the empty string when the member is absent.
-fn text(value: &Value, member: &str) -> String {
+pub(crate) fn text(value: &Value, member: &str) -> String {
     value[member].as_str().unwrap_or_default().to_string()
 }
 
@@ -90,7 +90,7 @@ fn expected_bucket_digits(at: f64, case: &str) -> String {
 
 /// Create the image `name` with whatever `extra` adds to the request, asserting the 201,
 /// and hand back the response.
-async fn create(router: &MultiServiceRouter, name: &str, extra: Value) -> Value {
+pub(crate) async fn create(router: &MultiServiceRouter, name: &str, extra: Value) -> Value {
     let (status, body) = call(
         router,
         "POST",
@@ -146,7 +146,7 @@ async fn publish_status(
 }
 
 /// One row of the version listing of `identifier`, for the version `image_version`.
-async fn version_row(
+pub(crate) async fn version_row(
     router: &MultiServiceRouter,
     identifier: &str,
     image_version: &str,

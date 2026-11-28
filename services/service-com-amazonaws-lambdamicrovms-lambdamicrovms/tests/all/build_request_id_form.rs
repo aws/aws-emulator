@@ -54,7 +54,7 @@ fn is_build_request_id(value: &str) -> bool {
 
 /// Every `buildId` the build listing of `version` of the image `identifier` serves, in the
 /// order the page carries them, with each one asserted to be in the request-id form.
-async fn listed_build_ids(
+pub(crate) async fn listed_build_ids(
     router: &MultiServiceRouter,
     identifier: &str,
     version: &str,
@@ -81,7 +81,7 @@ async fn listed_build_ids(
 
 /// Read each of `build_ids` back through `GetMicrovmImageBuild`, addressed BY the
 /// identifier the listing published, and fail unless the read echoes it byte for byte.
-async fn read_each_build_back(
+pub(crate) async fn read_each_build_back(
     router: &MultiServiceRouter,
     identifier: &str,
     version: &str,
