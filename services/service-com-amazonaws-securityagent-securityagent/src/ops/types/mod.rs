@@ -14,10 +14,11 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// Not a type module: the schema/serializer macros a structure needs when its wire form
-// is not what the derive produces (a `@timestampFormat("date-time")` member, or a member
-// the recorded wire carries and the model does not). Declared with `#[macro_use]` AHEAD
-// of the type modules, which is what puts the macros in their textual scope.
+// Hand-written, at a generated path: the schema/serializer macros the derive cannot
+// emit (`@timestampFormat("date-time")` members, and the members the recorded wire
+// carries that the model does not declare). `#[macro_use]` ahead of the type modules
+// is what puts them in those modules' textual macro scope, so this declaration must
+// stay first; see `wire_shape.rs` for why they are not `#[macro_export]`ed.
 #[macro_use]
 mod wire_shape;
 
@@ -95,6 +96,7 @@ pub mod list_threat_model_job_tasks_types;
 pub mod list_threat_model_jobs_types;
 pub mod list_threat_models_types;
 pub mod list_threats_types;
+pub mod resume_pentest_job_types;
 pub mod shared_types;
 pub mod start_code_remediation_types;
 pub mod start_code_review_job_types;
@@ -267,6 +269,8 @@ pub use list_threat_model_jobs_types::*;
 pub use list_threat_models_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_threats_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use resume_pentest_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

@@ -26,6 +26,12 @@
 //! writes one record and `BatchGetCodeReviews` — and every code review operation
 //! implemented after it — reads back THAT record rather than a second copy of it.
 //!
+//! The pentest configurations created in an agent space live here too, and beside them
+//! the pentest JOBS started from each, keyed by their own ids, so `CreatePentest`,
+//! `StartPentestJob`, `StopPentestJob`, `ResumePentestJob` and the batch reads — and
+//! every pentest operation implemented after them — read and write ONE copy of each
+//! pentest and of each job.
+//!
 //! The security requirement packs live here for the same reason:
 //! `CreateSecurityRequirementPack`, `GetSecurityRequirementPack`,
 //! `ListSecurityRequirementPacks` — and every pack operation implemented after them —
@@ -61,12 +67,20 @@ mod code_reviews;
 
 pub use code_reviews::*;
 
+/// The pentests an agent space holds, the pentest jobs started from them, their stored
+/// records and the projections every pentest and pentest job response is answered from.
+/// Re-exported, so a handler reaches them through this one module like every other
+/// resource of this service.
+mod pentests;
+
+pub use pentests::*;
+
 use crate::ops::types::{
     AWSResources, AgentSpace, ApplicationSummary, Artifact, ArtifactMetadataItem, ArtifactSummary,
-    BatchCreateSecurityRequirementResult, BatchGetSecurityRequirementResult, CodeReviewSettings,
-    DnsVerification, HttpVerification, IdCConfiguration, PrivateConnectionSummary,
-    SecurityRequirementPackSummary, SecurityRequirementSummary, TargetDomain,
-    VerificationDetails,
+    Assets, BatchCreateSecurityRequirementResult, BatchGetSecurityRequirementResult,
+    CodeReviewSettings, DnsVerification, HttpVerification, IdCConfiguration,
+    PrivateConnectionSummary, SecurityRequirementPackSummary, SecurityRequirementSummary,
+    TargetDomain, VerificationDetails,
 };
 
 /// The region every value this service derives from the request's region carries when
@@ -756,6 +770,46 @@ pub const AGENT_SPACE_ARN_KIND: &str = "agent-instance";
 /// carry it (`smithy_query(query="shape",shape="AgentSpace")`).
 pub fn timestamp(at: SystemTime) -> ::aws_smithy_types::DateTime {
     ::aws_smithy_types::DateTime::from(at)
+}
+
+/// The member path and the violation an [`Assets`] whose lists hold more than
+/// `max_entries` each fails, or `None` when every list it names is one the service can
+/// store.
+///
+/// The ONE walk of the shape every resource that stores an `Assets` refuses an oversized
+/// list by — a code review ([`code_review_assets_violation`]) and a pentest
+/// ([`pentest_assets_violation`]) — so the two cannot disagree about which member of the
+/// shape was at fault, only about the ceiling each applies.
+///
+/// `clientCertificates` is not walked: it is `@length(max: 10)` in the model, so the
+/// boundary validator already refuses an oversized one before a handler runs.
+pub fn assets_entry_violation(assets: &Assets, max_entries: usize) -> Option<(String, String)> {
+    // The member names are the wire names of `Assets`
+    // (`smithy_query(query="shape",shape="Assets")`), so a refusal names the member the
+    // caller sent rather than a Rust field.
+    let lists: [(&str, usize); 6] = [
+        ("endpoints", assets.endpoints.as_ref().map_or(0, Vec::len)),
+        ("actors", assets.actors.as_ref().map_or(0, Vec::len)),
+        ("documents", assets.documents.as_ref().map_or(0, Vec::len)),
+        ("sourceCode", assets.source_code.as_ref().map_or(0, Vec::len)),
+        (
+            "integratedRepositories",
+            assets.integrated_repositories.as_ref().map_or(0, Vec::len),
+        ),
+        (
+            "trustedCaCertificates",
+            assets.trusted_ca_certificates.as_ref().map_or(0, Vec::len),
+        ),
+    ];
+    lists
+        .iter()
+        .find(|(_, entries)| *entries > max_entries)
+        .map(|(member, _)| {
+            (
+                format!("assets.{member}"),
+                format!("member must have at most {max_entries} items"),
+            )
+        })
 }
 
 /// One stored artifact: the file `AddArtifact` uploaded into an agent space, plus the
@@ -1802,6 +1856,14 @@ pub struct ComAmazonawsSecurityagentSecurityagentState {
     /// reason as [`Self::applications`]: one stable order for a read that walks the code
     /// reviews of an agent space and for a cursor to resume in.
     pub code_reviews: BTreeMap<String, CodeReviewRecord>,
+    /// Every stored pentest, keyed by its `pentestId`. A `BTreeMap` for the same reason
+    /// as [`Self::applications`]: one stable order for a read that walks the pentests of
+    /// an agent space and for a cursor to resume in.
+    pub pentests: BTreeMap<String, PentestRecord>,
+    /// Every stored pentest job, keyed by its `pentestJobId`. A `BTreeMap` for the same
+    /// reason as [`Self::pentests`]: one stable order for a read that walks the jobs of
+    /// one pentest.
+    pub pentest_jobs: BTreeMap<String, PentestJobRecord>,
     /// The ownership-verification challenge this account holds for each domain name it
     /// has registered, keyed by that name in its normalised form
     /// ([`normalized_domain_name`]).
@@ -1857,6 +1919,8 @@ impl Default for ComAmazonawsSecurityagentSecurityagentState {
                 .collect(),
             artifacts: BTreeMap::new(),
             code_reviews: BTreeMap::new(),
+            pentests: BTreeMap::new(),
+            pentest_jobs: BTreeMap::new(),
             domain_verification_tokens: BTreeMap::new(),
             identifiers: IdentifierMint::default(),
         }
@@ -2236,6 +2300,93 @@ impl ComAmazonawsSecurityagentSecurityagentState {
         self.code_reviews
             .get(code_review_id)
             .filter(|review| review.agent_space_id == agent_space_id)
+    }
+
+    /// Mint the `pentestId` of a new pentest.
+    ///
+    /// The pentest class's own form ([`PENTEST_ID_PREFIX`]) over a fresh draw of the
+    /// account's one mint, taken while the store is locked, so two calls — including two
+    /// carrying the same `title` in the same agent space — get two distinct ids and
+    /// neither overwrites the other, and a pentest id can never be an agent space's or a
+    /// code review's id.
+    pub fn mint_pentest_id(&mut self) -> String {
+        format!("{PENTEST_ID_PREFIX}{}", self.identifiers.next_uuid())
+    }
+
+    /// Mint the `pentestJobId` of a new pentest job; see [`Self::mint_pentest_id`] for
+    /// why the draw and the form are these, and [`PENTEST_JOB_ID_PREFIX`] for the class
+    /// prefix that tells a job's id from its pentest's.
+    pub fn mint_pentest_job_id(&mut self) -> String {
+        format!("{PENTEST_JOB_ID_PREFIX}{}", self.identifiers.next_uuid())
+    }
+
+    /// How many pentests the agent space `agent_space_id` holds, i.e. how many count
+    /// against that space's pentest quota ([`MAX_PENTESTS_PER_AGENT_SPACE`]).
+    pub fn pentest_count(&self, agent_space_id: &str) -> usize {
+        self.pentests
+            .values()
+            .filter(|pentest| pentest.agent_space_id == agent_space_id)
+            .count()
+    }
+
+    /// The pentest `pentest_id` names IN the agent space `agent_space_id`, or `None` when
+    /// that space holds no such pentest.
+    ///
+    /// A pentest is reachable only through the space that holds it — every operation of
+    /// one names the space beside the pentest — so an id that names a pentest of ANOTHER
+    /// agent space resolves to nothing here, exactly as an id nothing minted does.
+    pub fn pentest_in(&self, agent_space_id: &str, pentest_id: &str) -> Option<&PentestRecord> {
+        self.pentests
+            .get(pentest_id)
+            .filter(|pentest| pentest.agent_space_id == agent_space_id)
+    }
+
+    /// How many pentest jobs the pentest `pentest_id` holds, i.e. how many count against
+    /// that pentest's job quota ([`MAX_PENTEST_JOBS_PER_PENTEST`]).
+    pub fn pentest_job_count(&self, pentest_id: &str) -> usize {
+        self.pentest_jobs
+            .values()
+            .filter(|job| job.pentest_id == pentest_id)
+            .count()
+    }
+
+    /// The pentest job `pentest_job_id` names IN the agent space `agent_space_id`, or
+    /// `None` when that space holds no such job — resolved exactly as
+    /// [`Self::pentest_in`] resolves a pentest.
+    pub fn pentest_job_in(
+        &self,
+        agent_space_id: &str,
+        pentest_job_id: &str,
+    ) -> Option<&PentestJobRecord> {
+        self.pentest_jobs
+            .get(pentest_job_id)
+            .filter(|job| job.agent_space_id == agent_space_id)
+    }
+
+    /// The same record, mutably: the one record a write addressed to that space and job
+    /// id changes, so a stop, a resume and a read can never disagree about which job an
+    /// id names.
+    pub fn pentest_job_in_mut(
+        &mut self,
+        agent_space_id: &str,
+        pentest_job_id: &str,
+    ) -> Option<&mut PentestJobRecord> {
+        self.pentest_jobs
+            .get_mut(pentest_job_id)
+            .filter(|job| job.agent_space_id == agent_space_id)
+    }
+
+    /// Settle every pentest job transition the clock has made due by `now`.
+    ///
+    /// Called by each handler that projects a stored pentest job, so the outcome of a
+    /// stop or a pause surfaces on the first call after it fell due, whichever call that
+    /// is, and every one of them reports the same record. This materialises a change the
+    /// CLOCK already owed: it is the only write a reporting operation makes, and the
+    /// record it leaves is the one a read made at the due instant would have found.
+    pub fn settle_pentest_jobs(&mut self, now: SystemTime) {
+        for job in self.pentest_jobs.values_mut() {
+            job.settle(now);
+        }
     }
 }
 

@@ -71,7 +71,11 @@ pub struct ServiceQuotaExceededException {
     pub message: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.securityagent#Pentest")]
+/// `Pentest`, with its schema and serializer written out instead of derived:
+/// `createdAt`/`updatedAt` are `@timestampFormat("date-time")` members the derive would
+/// render as epoch numbers (`smithy_query(query="shape",shape="Pentest",
+/// model_path="services/service-com-amazonaws-securityagent-securityagent/smithy-model/com-amazonaws-securityagent-securityagent.json")`).
+/// The machinery lives in `super::wire_shape`.
 #[derive(Debug, Clone, Default)]
 pub struct Pentest {
     pub pentest_id: String,
@@ -95,6 +99,71 @@ pub struct Pentest {
     pub updated_at: Option<::aws_smithy_types::DateTime>,
 }
 
+sa_schema_and_codec!(
+    Pentest,
+    PENTEST_SCHEMA,
+    "com.amazonaws.securityagent#Pentest",
+    "com.amazonaws.securityagent",
+    "Pentest",
+    modelled: [
+        (M_PENTEST_ID, pentest_id, "pentestId", 0, req, string),
+        (M_AGENT_SPACE_ID, agent_space_id, "agentSpaceId", 1, req, string),
+        (M_TITLE, title, "title", 2, req, string),
+        (M_ASSETS, assets, "assets", 3, req, struct_of(Assets)),
+        (M_EXCLUDE_RISK_TYPES, exclude_risk_types, "excludeRiskTypes", 4, opt, list_of_string),
+        (M_SERVICE_ROLE, service_role, "serviceRole", 5, opt, string),
+        (M_LOG_CONFIG, log_config, "logConfig", 6, opt, struct_of(CloudWatchLog)),
+        (M_VPC_CONFIG, vpc_config, "vpcConfig", 7, opt, struct_of(VpcConfig)),
+        (
+            M_NETWORK_TRAFFIC_CONFIG,
+            network_traffic_config,
+            "networkTrafficConfig",
+            8,
+            opt,
+            struct_of(NetworkTrafficConfig)
+        ),
+        (
+            M_CODE_REMEDIATION_STRATEGY,
+            code_remediation_strategy,
+            "codeRemediationStrategy",
+            9,
+            opt,
+            string
+        ),
+        (M_CLEAN_UP_STRATEGY, clean_up_strategy, "cleanUpStrategy", 10, opt, string),
+        (
+            M_DISABLE_MANAGED_SKILLS,
+            disable_managed_skills,
+            "disableManagedSkills",
+            11,
+            opt,
+            list_of_string
+        ),
+        (M_MAX_TASK_HOURS, max_task_hours, "maxTaskHours", 12, opt, double),
+        (
+            M_REPORT_DESTINATION,
+            report_destination,
+            "reportDestination",
+            13,
+            opt,
+            struct_of(ReportDestination)
+        ),
+        (M_REPORT_FILTERS, report_filters, "reportFilters", 14, opt, struct_of(ReportFilters)),
+        (
+            M_CICD_CONFIGURATION,
+            cicd_configuration,
+            "cicdConfiguration",
+            15,
+            opt,
+            struct_of(CiCdConfiguration)
+        ),
+        (M_TEST_SCOPE, test_scope, "testScope", 16, opt, struct_of(TestScope)),
+        (M_CREATED_AT, created_at, "createdAt", 17, opt, date_time),
+        (M_UPDATED_AT, updated_at, "updatedAt", 18, opt, date_time),
+    ],
+    recorded: [],
+);
+
 #[smithy_macros::smithy(shape = "com.amazonaws.securityagent#Assets")]
 #[derive(Debug, Clone, Default)]
 pub struct Assets {
@@ -104,6 +173,7 @@ pub struct Assets {
     pub source_code: Option<Vec<SourceCodeRepository>>,
     pub integrated_repositories: Option<Vec<IntegratedRepository>>,
     pub trusted_ca_certificates: Option<Vec<TrustedCaCertificate>>,
+    pub client_certificates: Option<Vec<ClientCertificate>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityagent#Endpoint")]
@@ -172,6 +242,14 @@ pub enum CaCertificateSource {
     inlinePem(String),
     artifactId(String),
     s3Location(String),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityagent#ClientCertificate")]
+#[derive(Debug, Clone, Default)]
+pub struct ClientCertificate {
+    pub name: String,
+    pub secret_arn: String,
+    pub origins: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityagent#CloudWatchLog")]
@@ -464,6 +542,10 @@ pub const AUTHENTICATION_PROVIDER_TYPE_VALUES: &[&str] = &["AWS_IAM_ROLE", "AWS_
 pub const CLEAN_UP_STRATEGY_VALUES: &[&str] = &["BEST_EFFORT_DELETE", "RETAIN_ALL"];
 
 
+/// The values `CodeRemediationJobStatus` accepts on the wire.
+pub const CODE_REMEDIATION_JOB_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "NO_CHANGE_REQUIRED", "UNKNOWN"];
+
+
 /// The values `CodeRemediationStrategy` accepts on the wire.
 pub const CODE_REMEDIATION_STRATEGY_VALUES: &[&str] = &["AUTOMATIC", "DISABLED"];
 
@@ -489,7 +571,7 @@ pub const DOMAIN_VERIFICATION_METHOD_VALUES: &[&str] = &["DNS_TXT", "HTTP_ROUTE"
 
 
 /// The values `ErrorCode` accepts on the wire.
-pub const ERROR_CODE_VALUES: &[&str] = &["CLIENT_ERROR", "INTERNAL_ERROR", "STOPPED_BY_USER"];
+pub const ERROR_CODE_VALUES: &[&str] = &["CLIENT_ERROR", "INTERNAL_ERROR", "PAUSED_BY_USER", "STOPPED_BY_USER"];
 
 
 /// The values `FindingStatus` accepts on the wire.
@@ -505,7 +587,7 @@ pub const IP_ADDRESS_TYPE_VALUES: &[&str] = &["DUAL_STACK", "IPV4", "IPV6"];
 
 
 /// The values `JobStatus` accepts on the wire.
-pub const JOB_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "STOPPED", "STOPPING"];
+pub const JOB_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "PAUSED", "PAUSING", "STOPPED", "STOPPING"];
 
 
 /// The values `JobType` accepts on the wire.
@@ -521,11 +603,11 @@ pub const MANAGEMENT_TYPE_VALUES: &[&str] = &["AWS_MANAGED", "CUSTOMER_MANAGED"]
 
 
 /// The values `MembershipType` accepts on the wire.
-pub const MEMBERSHIP_TYPE_VALUES: &[&str] = &["USER"];
+pub const MEMBERSHIP_TYPE_VALUES: &[&str] = &["GROUP", "USER"];
 
 
 /// The values `MembershipTypeFilter` accepts on the wire.
-pub const MEMBERSHIP_TYPE_FILTER_VALUES: &[&str] = &["ALL", "USER"];
+pub const MEMBERSHIP_TYPE_FILTER_VALUES: &[&str] = &["ALL", "GROUP", "USER"];
 
 
 /// The values `NetworkTrafficRuleEffect` accepts on the wire.

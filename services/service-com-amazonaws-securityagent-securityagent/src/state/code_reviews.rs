@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use crate::ops::types::{Assets, CloudWatchLog, CodeReview, ReportDestination, ReportFilters};
 
-use super::timestamp;
+use super::{assets_entry_violation, timestamp};
 
 /// The prefix every `codeReviewId` this service hands out carries.
 ///
@@ -75,32 +75,7 @@ pub const MAX_CODE_REVIEW_ASSET_ENTRIES: usize = 100;
 /// Stated here once, so every operation that writes the assets of a code review refuses
 /// the same lists, naming the member that was too long.
 pub fn code_review_assets_violation(assets: &Assets) -> Option<(String, String)> {
-    // The member names are the wire names of `Assets`
-    // (`smithy_query(query="shape",shape="Assets")`), so a refusal names the member the
-    // caller sent rather than a Rust field.
-    let lists: [(&str, usize); 6] = [
-        ("endpoints", assets.endpoints.as_ref().map_or(0, Vec::len)),
-        ("actors", assets.actors.as_ref().map_or(0, Vec::len)),
-        ("documents", assets.documents.as_ref().map_or(0, Vec::len)),
-        ("sourceCode", assets.source_code.as_ref().map_or(0, Vec::len)),
-        (
-            "integratedRepositories",
-            assets.integrated_repositories.as_ref().map_or(0, Vec::len),
-        ),
-        (
-            "trustedCaCertificates",
-            assets.trusted_ca_certificates.as_ref().map_or(0, Vec::len),
-        ),
-    ];
-    lists
-        .iter()
-        .find(|(_, entries)| *entries > MAX_CODE_REVIEW_ASSET_ENTRIES)
-        .map(|(member, _)| {
-            (
-                format!("assets.{member}"),
-                format!("member must have at most {MAX_CODE_REVIEW_ASSET_ENTRIES} items"),
-            )
-        })
+    assets_entry_violation(assets, MAX_CODE_REVIEW_ASSET_ENTRIES)
 }
 
 /// One stored code review: "a new code review configuration in an agent space" (source:

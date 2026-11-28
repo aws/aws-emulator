@@ -48,6 +48,7 @@ pub struct MembershipSummary {
 #[derive(Debug, Clone)]
 pub enum MemberMetadata {
     User(UserMetadata),
+    Group(GroupMetadata),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityagent#UserMetadata")]
@@ -55,5 +56,12 @@ pub enum MemberMetadata {
 pub struct UserMetadata {
     pub username: String,
     pub email: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.securityagent#GroupMetadata")]
+#[derive(Debug, Clone, Default)]
+pub struct GroupMetadata {
+    pub display_name: Option<String>,
+    pub description: Option<String>,
 }
 

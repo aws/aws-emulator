@@ -73,6 +73,9 @@ pub struct CodeRemediationTaskDetails {
     pub repo_name: Option<String>,
     pub code_diff_link: Option<String>,
     pub pull_request_link: Option<String>,
+    pub status: Option<String>,
+    pub status_code: Option<String>,
+    pub status_reason: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.securityagent#CodeLocation")]
