@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-network
 pub struct DescribeLoggingConfigurationInput {
     pub firewall_arn: Option<String>,
     pub firewall_name: Option<String>,
+    pub firewall_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#DescribeLoggingConfigurationResponse")]

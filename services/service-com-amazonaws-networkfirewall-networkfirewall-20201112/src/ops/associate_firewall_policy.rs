@@ -202,7 +202,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // identified exactly the way every other firewall operation identifies
         // one.
         let key = state
-            .resolve_firewall(input.firewall_name.as_deref(), input.firewall_arn.as_deref())
+            .resolve_firewall_request(
+                input.firewall_name.as_deref(),
+                input.firewall_arn.as_deref(),
+                input.firewall_type.as_deref(),
+            )
             .map_err(associate_lookup_error)?;
 
         let now = ::std::time::SystemTime::now();

@@ -18,6 +18,7 @@ pub struct DisassociateAvailabilityZonesInput {
     pub firewall_arn: Option<String>,
     pub firewall_name: Option<String>,
     pub availability_zone_mappings: Vec<AvailabilityZoneMapping>,
+    pub firewall_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#DisassociateAvailabilityZonesResponse")]

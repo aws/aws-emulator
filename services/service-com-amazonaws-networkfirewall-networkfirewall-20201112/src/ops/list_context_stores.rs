@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! @op ListProxyConfigurations
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListProxyConfigurations`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListProxyConfigurations::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! @op ListContextStores
+//! IMPLEMENTED: pages the context stores this account's firewalls are associated
+//! with, of which this service holds none — see [`ListContextStores::handle`].
 //!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
 //! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `ListProxyConfigurations::new(engine)` and drives it through the centralized request walk:
+//! `ListContextStores::new(engine)` and drives it through the centralized request walk:
 //! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
 //!
 //! ## Reaching this service's state
@@ -39,7 +32,7 @@
 //!
 //! ---
 //!
-//! # Modeled contract for `ListProxyConfigurations`
+//! # Modeled contract for `ListContextStores`
 //!
 //! What AWS documents for this operation, from this service's Smithy model. HTML is
 //! stripped and long entries are clipped at ` …`. For the FULL text of any one item,
@@ -49,9 +42,12 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-networkfirewall-networkfirewall-20201112/smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json")
 //! ```
 //!
-//! Retrieves the metadata for the proxy configuration that you have defined. Depending on
-//! your setting for max results and the number of proxy configurations, a single call might
-//! not return the full list.
+//! Lists the active context stores that are associated with your firewalls. A context store
+//! records network resources that can be used to evaluate context-aware rules. You can list
+//! the following resource types: VPCs, subnets, security groups, and transit gateway
+//! attachments. When using a small page size, a single call might not return the full list.
+//! A response can contain fewer than MaxResults results, or none, and still include a
+//! NextToken. Keep making requests until the response does not include a NextToken.
 //!
 //! ## Input
 //!
@@ -67,14 +63,13 @@
 //!
 //! ## Output
 //!
+//! * `ContextStores` (ContextStores) **required** — The context stores that are associated
+//!   with your firewalls.
 //! * `NextToken` (PaginationToken, len 1..4096, pattern ^[0-9A-Za-z:\/+=]+$) — When you
 //!   request a list of objects with a MaxResults setting, if the number of objects that are
 //!   still available for retrieval exceeds the maximum you requested, Network Firewall
 //!   returns a NextToken value in the response. To retrieve the next batch of objects, use
 //!   the token returned from the prior request in your next request.
-//! * `ProxyConfigurations` (ProxyConfigurations) — The metadata for the proxy configurations.
-//!   Depending on your setting for max results and the number of proxy configurations that
-//!   you have, this might not be the full list.
 //!
 //! ## Errors
 //!
@@ -85,8 +80,6 @@
 //!   You tried to update a property with a value that isn't among the available types. Your
 //!   request references an ARN that is malformed, or corresponds to a resource that isn't
 //!   valid in the context of the request.
-//! * `ResourceNotFoundException` (HTTP 400) — Unable to locate a resource using the
-//!   parameters that you provided.
 //! * `ThrottlingException` (HTTP 400) — Unable to process the request due to throttling
 //!   limitations.
 
@@ -96,49 +89,48 @@ use super::types::*;
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
-// `ListProxyConfigurationsError` enum is never produced.
+// `ListContextStoresError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListProxyConfigurationsError` alias below. An operation that models no errors
+// here — hence the `ListContextStoresError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListProxyConfigurations")]
+#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListContextStores")]
 #[derive(Debug)]
-pub enum ListProxyConfigurationsErrorModeled {
+pub enum ListContextStoresErrorModeled {
     InternalServerError(InternalServerError),
     InvalidRequestException(InvalidRequestException),
-    ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::list_proxy_configurations::ListProxyConfigurationsError`). Wrapping the modeled enum is what
+/// (`crate::ops::list_context_stores::ListContextStoresError`). Wrapping the modeled enum is what
 /// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type ListProxyConfigurationsError = crate::scaffolded::Scaffolded<ListProxyConfigurationsErrorModeled>;
+pub type ListContextStoresError = crate::scaffolded::Scaffolded<ListContextStoresErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
 /// wrapper variant. See `crate::scaffolded` for how to drop the wrapper entirely once
 /// this operation is implemented.
-impl From<ListProxyConfigurationsErrorModeled> for ListProxyConfigurationsError {
-    fn from(modeled: ListProxyConfigurationsErrorModeled) -> Self {
+impl From<ListContextStoresErrorModeled> for ListContextStoresError {
+    fn from(modeled: ListContextStoresErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
 
-/// The `ListProxyConfigurations` operation.
+/// The `ListContextStores` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
 /// [`smithy_server_runtime::Operation`]. Generic over the engine type `Eng`, so this
 /// crate names no concrete engine type: a migrated service that needs state picks a
 /// concrete engine where it mounts the service, not here.
-pub struct ListProxyConfigurations<Eng> {
+pub struct ListContextStores<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
-impl<Eng> ListProxyConfigurations<Eng> {
+impl<Eng> ListContextStores<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
     /// request runs. Called by the generated `EmulatedService::new(engine)` constructor.
@@ -148,15 +140,15 @@ impl<Eng> ListProxyConfigurations<Eng> {
 }
 
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
-    for ListProxyConfigurations<Eng>
+    for ListContextStores<Eng>
 {
-    type Input = ListProxyConfigurationsInput;
-    type Output = ListProxyConfigurationsOutput;
-    type Error = ListProxyConfigurationsError;
+    type Input = ListContextStoresInput;
+    type Output = ListContextStoresOutput;
+    type Error = ListContextStoresError;
 
-    const NAME: &'static str = "ListProxyConfigurations";
-    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXY_CONFIGURATIONS_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXY_CONFIGURATIONS_OUTPUT_SCHEMA;
+    const NAME: &'static str = "ListContextStores";
+    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_CONTEXT_STORES_INPUT_SCHEMA;
+    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_CONTEXT_STORES_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(
@@ -164,18 +156,44 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListProxyConfigurations` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListProxyConfigurationsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListProxyConfigurations"))
+        let _ = (ctx, &self.engine);
+
+        // A context store is not a resource this API creates: "Network Firewall
+        // discovers the context store from the transit gateway association in
+        // Network Security Manager" (`Firewall$ContextStoreId`), so a firewall is
+        // associated with one only when it is transit gateway-attached — which
+        // `CreateFirewall` refuses here. No firewall this service holds is
+        // therefore associated with a context store, and this listing of "the
+        // context stores that are associated with your firewalls" is empty: an
+        // empty page rather than an invented catalog, which is how this service
+        // answers every listing of resources nothing here creates.
+        let stores: Vec<(String, ContextStore)> = Vec::new();
+
+        // Still cut by the shared paginator — `crate::state::paginate` clamps the
+        // caller's `MaxResults` to `crate::state::MAX_PAGE_SIZE` (100, the upper
+        // bound the model's `PaginationMaxResults` declares) and takes at most
+        // that many entries — so a `NextToken` this listing did not issue is
+        // refused rather than silently accepted, and no request can ask for a
+        // larger page than the model allows.
+        let page = crate::state::paginate(
+            stores,
+            crate::state::firewall_policies_v2::PAGE_KIND_CONTEXT_STORES,
+            input.next_token.as_deref(),
+            input.max_results,
+        )
+        .map_err(|_| {
+            ListContextStoresError::from(ListContextStoresErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        "NextToken is not a pagination token this listing issued.".to_string(),
+                    ),
+                },
+            ))
+        })?;
+
+        Ok(ListContextStoresOutput {
+            next_token: page.next_token,
+            context_stores: page.items,
+        })
     }
 }

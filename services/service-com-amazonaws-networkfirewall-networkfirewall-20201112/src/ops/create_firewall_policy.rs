@@ -244,11 +244,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // problem with your request", while `InvalidOperationException` is the
         // in-use/state refusal ("you might have tried to delete a rule group or
         // firewall policy that's in use"), so a create under a taken name takes
-        // the request class — as every other create in this service does.
-        if state
-            .firewall_policies
-            .contains_key(&input.firewall_policy_name)
-        {
+        // the request class — as every other create in this service does. The
+        // name space is the one both generations of firewall policy draw from,
+        // because both mint the same `firewall-policy/<name>` ARN.
+        if state.firewall_policy_name_taken(&input.firewall_policy_name) {
             return Err(
                 CreateFirewallPolicyErrorModeled::InvalidRequestException(
                     InvalidRequestException {

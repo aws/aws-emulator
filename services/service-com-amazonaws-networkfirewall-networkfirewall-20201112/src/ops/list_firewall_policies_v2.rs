@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! @op ListProxies
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListProxies`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListProxies::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! @op ListFirewallPoliciesV2
+//! IMPLEMENTED: pages the stored `FirewallPolicyV2Record`s in name order.
 //!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
 //! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `ListProxies::new(engine)` and drives it through the centralized request walk:
+//! `ListFirewallPoliciesV2::new(engine)` and drives it through the centralized request walk:
 //! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
 //!
 //! ## Reaching this service's state
@@ -39,7 +31,7 @@
 //!
 //! ---
 //!
-//! # Modeled contract for `ListProxies`
+//! # Modeled contract for `ListFirewallPoliciesV2`
 //!
 //! What AWS documents for this operation, from this service's Smithy model. HTML is
 //! stripped and long entries are clipped at ` …`. For the FULL text of any one item,
@@ -49,8 +41,9 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-networkfirewall-networkfirewall-20201112/smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json")
 //! ```
 //!
-//! Retrieves the metadata for the proxies that you have defined. Depending on your setting
-//! for max results and the number of proxies, a single call might not return the full list.
+//! Retrieves the metadata for the Next Generation policies that you have defined. Depending
+//! on your setting for max results and the number of firewall policies, a single call might
+//! not return the full list.
 //!
 //! ## Input
 //!
@@ -66,13 +59,14 @@
 //!
 //! ## Output
 //!
+//! * `FirewallPoliciesV2` (FirewallPoliciesV2) **required** — The metadata for the Next
+//!   Generation policies. Depending on your setting for max results and the number of
+//!   firewall policies that you have, this might not be the full list.
 //! * `NextToken` (PaginationToken, len 1..4096, pattern ^[0-9A-Za-z:\/+=]+$) — When you
 //!   request a list of objects with a MaxResults setting, if the number of objects that are
 //!   still available for retrieval exceeds the maximum you requested, Network Firewall
 //!   returns a NextToken value in the response. To retrieve the next batch of objects, use
 //!   the token returned from the prior request in your next request.
-//! * `Proxies` (Proxies) — The metadata for the proxies. Depending on your setting for max
-//!   results and the number of proxies that you have, this might not be the full list.
 //!
 //! ## Errors
 //!
@@ -92,48 +86,48 @@ use super::types::*;
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
-// `ListProxiesError` enum is never produced.
+// `ListFirewallPoliciesV2Error` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListProxiesError` alias below. An operation that models no errors
+// here — hence the `ListFirewallPoliciesV2Error` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListProxies")]
+#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListFirewallPoliciesV2")]
 #[derive(Debug)]
-pub enum ListProxiesErrorModeled {
+pub enum ListFirewallPoliciesV2ErrorModeled {
     InternalServerError(InternalServerError),
     InvalidRequestException(InvalidRequestException),
     ThrottlingException(ThrottlingException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::list_proxies::ListProxiesError`). Wrapping the modeled enum is what
+/// (`crate::ops::list_firewall_policies_v2::ListFirewallPoliciesV2Error`). Wrapping the modeled enum is what
 /// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type ListProxiesError = crate::scaffolded::Scaffolded<ListProxiesErrorModeled>;
+pub type ListFirewallPoliciesV2Error = crate::scaffolded::Scaffolded<ListFirewallPoliciesV2ErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
 /// wrapper variant. See `crate::scaffolded` for how to drop the wrapper entirely once
 /// this operation is implemented.
-impl From<ListProxiesErrorModeled> for ListProxiesError {
-    fn from(modeled: ListProxiesErrorModeled) -> Self {
+impl From<ListFirewallPoliciesV2ErrorModeled> for ListFirewallPoliciesV2Error {
+    fn from(modeled: ListFirewallPoliciesV2ErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
 
-/// The `ListProxies` operation.
+/// The `ListFirewallPoliciesV2` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
 /// [`smithy_server_runtime::Operation`]. Generic over the engine type `Eng`, so this
 /// crate names no concrete engine type: a migrated service that needs state picks a
 /// concrete engine where it mounts the service, not here.
-pub struct ListProxies<Eng> {
+pub struct ListFirewallPoliciesV2<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
-impl<Eng> ListProxies<Eng> {
+impl<Eng> ListFirewallPoliciesV2<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
     /// request runs. Called by the generated `EmulatedService::new(engine)` constructor.
@@ -143,15 +137,15 @@ impl<Eng> ListProxies<Eng> {
 }
 
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
-    for ListProxies<Eng>
+    for ListFirewallPoliciesV2<Eng>
 {
-    type Input = ListProxiesInput;
-    type Output = ListProxiesOutput;
-    type Error = ListProxiesError;
+    type Input = ListFirewallPoliciesV2Input;
+    type Output = ListFirewallPoliciesV2Output;
+    type Error = ListFirewallPoliciesV2Error;
 
-    const NAME: &'static str = "ListProxies";
-    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXIES_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXIES_OUTPUT_SCHEMA;
+    const NAME: &'static str = "ListFirewallPoliciesV2";
+    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_FIREWALL_POLICIES_V2_INPUT_SCHEMA;
+    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_FIREWALL_POLICIES_V2_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(
@@ -159,18 +153,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListProxies` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListProxiesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListProxies"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListFirewallPoliciesV2ErrorModeled::InternalServerError(
+                InternalServerError {
+                    message: Some("the firewall policy store is unavailable".to_string()),
+                },
+            )
+            .into());
+        };
+        let state = state.lock();
+
+        // Name order, so a page boundary is stable between the two calls that
+        // span it even though the backing map is unordered. The page itself is
+        // cut by the shared `crate::state::paginate`, which clamps the caller's
+        // `MaxResults` to `crate::state::MAX_PAGE_SIZE` (100, the upper bound the
+        // model's `PaginationMaxResults` declares), so one request can neither
+        // ask for a larger page than the model allows nor resume a cursor this
+        // listing did not issue.
+        let mut entries: Vec<(String, FirewallPolicyV2Metadata)> = state
+            .firewall_policies_v2
+            .iter()
+            .map(|(name, record)| (name.clone(), record.to_metadata()))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let page = crate::state::paginate(
+            entries,
+            crate::state::firewall_policies_v2::PAGE_KIND_FIREWALL_POLICIES_V2,
+            input.next_token.as_deref(),
+            input.max_results,
+        )
+        .map_err(|_| {
+            ListFirewallPoliciesV2Error::from(
+                ListFirewallPoliciesV2ErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(
+                            "NextToken is not a pagination token this listing issued.".to_string(),
+                        ),
+                    },
+                ),
+            )
+        })?;
+
+        Ok(ListFirewallPoliciesV2Output {
+            next_token: page.next_token,
+            firewall_policies_v2: page.items,
+        })
     }
 }

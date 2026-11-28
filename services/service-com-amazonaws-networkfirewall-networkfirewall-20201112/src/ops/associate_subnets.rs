@@ -286,6 +286,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> AssociateSubnets<
         let Some(record) = state.firewalls.get(&key) else {
             return Ok(None);
         };
+        // A request this call will refuse instantiates nothing: the NAT gateway
+        // mappings are refused in `attach` below, so no firewall endpoint is
+        // created for a request that does not land.
+        if input.nat_gateway_create_mappings.is_some() {
+            return Ok(None);
+        }
         if record.subnet_change_protection
             || input.subnet_mappings.len() > crate::state::MAX_AVAILABILITY_ZONES
         {
@@ -339,6 +345,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> AssociateSubnets<
             )
             .into());
         };
+
+        // "You can't specify this for a firewall that isn't a proxy mode
+        // firewall" (`AssociateSubnetsRequest$NatGatewayCreateMappings`): the
+        // member asks this service to create the NAT gateways of a proxy mode
+        // firewall for the Availability Zones being added, and every firewall it
+        // holds is a firewall-endpoint one — `CreateFirewall` refuses a proxy
+        // mode firewall — so there is no such firewall for the request to name
+        // and no NAT gateway to create. Refused rather than ignored, and refused
+        // AFTER the firewall is resolved, because the rule is a property of the
+        // firewall the request named.
+        if input.nat_gateway_create_mappings.is_some() {
+            return Err(AssociateSubnetsErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(crate::state::NAT_GATEWAYS_NOT_PROXY_MODE_MESSAGE.to_string()),
+                },
+            )
+            .into());
+        }
 
         let now = ::std::time::SystemTime::now();
         // The `PROVISIONING` -> `READY` move the clock owed at `ready_at()` is

@@ -18,6 +18,7 @@ pub struct DescribeRuleGroupInput {
     pub rule_group_arn: Option<String>,
     pub r#type: Option<String>,
     pub analyze_rule_group: bool,
+    pub rule_output_format: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#DescribeRuleGroupResponse")]
@@ -25,6 +26,8 @@ pub struct DescribeRuleGroupInput {
 pub struct DescribeRuleGroupOutput {
     pub update_token: String,
     pub rule_group: Option<RuleGroup>,
+    pub firewall_rule_group: Option<FirewallRuleGroup>,
+    pub ips_rule_group: Option<IpsRuleGroup>,
     pub rule_group_response: RuleGroupResponse,
 }
 

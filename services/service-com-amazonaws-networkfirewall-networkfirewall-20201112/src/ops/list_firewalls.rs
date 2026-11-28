@@ -174,15 +174,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // as omitting it: the member narrows the listing, it never empties it.
         let vpc_ids = input.vpc_ids.filter(|ids| !ids.is_empty());
 
+        // `FirewallType` "specifies the firewall type to filter the results by",
+        // and "if you don't specify a type, the default is to return firewalls of
+        // both types". Every firewall this service holds is a standard
+        // `FIREWALL` one — the other type is an internet gateway firewall, which
+        // `CreateFirewall` refuses here — so a request asking for that type alone
+        // selects none of them, and one asking for the standard type, or for
+        // neither, selects them all.
+        let selects_stored_firewalls = input
+            .firewall_type
+            .as_deref()
+            .is_none_or(|kind| kind == crate::state::FIREWALL_TYPE_FIREWALL);
+
         // Name order, so a page boundary is stable between the two calls that
         // span it even though the backing map is unordered.
         let mut entries: Vec<(String, FirewallMetadata)> = state
             .firewalls
             .iter()
             .filter(|(_, record)| {
-                vpc_ids
-                    .as_ref()
-                    .is_none_or(|ids| ids.contains(&record.vpc_id))
+                selects_stored_firewalls
+                    && vpc_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&record.vpc_id))
             })
             .map(|(name, record)| (name.clone(), record.to_metadata()))
             .collect();

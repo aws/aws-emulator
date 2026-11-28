@@ -201,6 +201,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // A firewall-engine (`FIREWALL`) and an IPS-engine (`IPS`) rule group are
+        // rule groups of their own kind: their rules are the ones a Next
+        // Generation policy's firewall and IPS sections evaluate, they are
+        // written through the `FirewallRuleGroup` and `IpsRuleGroup` documents
+        // rather than through the `RuleGroup` one every other type takes, and a
+        // read reports them in their own output members. None of that is written
+        // yet, so answer "not written yet" rather than storing a rule group
+        // under a document this service would then have to invent — or
+        // succeeding with the submitted document dropped.
+        if crate::state::RULE_GROUP_ENGINE_TYPES.contains(&input.r#type.as_str())
+            || input.firewall_rule_group.is_some()
+            || input.ips_rule_group.is_some()
+        {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "CreateRuleGroup for a firewall-engine or IPS-engine rule group",
+            ));
+        }
+
         // "You provide your rule group specification in your request using either
         // RuleGroup or Rules" — `Rules` is "a string containing STATEFUL rule group
         // rules specifications in Suricata flat format", and the response "returns a

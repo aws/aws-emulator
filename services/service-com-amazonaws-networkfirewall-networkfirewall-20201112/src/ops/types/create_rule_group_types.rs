@@ -16,6 +16,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-network
 pub struct CreateRuleGroupInput {
     pub rule_group_name: String,
     pub rule_group: Option<RuleGroup>,
+    pub firewall_rule_group: Option<FirewallRuleGroup>,
+    pub ips_rule_group: Option<IpsRuleGroup>,
     pub rules: Option<String>,
     pub r#type: String,
     pub description: Option<String>,

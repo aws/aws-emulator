@@ -18,6 +18,7 @@ use crate::ops::types::{
 };
 
 pub mod firewall_endpoints;
+pub mod firewall_policies_v2;
 pub mod log_destinations;
 pub mod stateful_rules;
 
@@ -39,6 +40,36 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// caller that describes the firewall immediately still observes `PROVISIONING`,
 /// and short enough that a test can wait it out.
 pub const FIREWALL_PROVISIONING_SPAN: Duration = Duration::from_millis(500);
+
+/// `FirewallType` members (`smithy_query(query="shape",shape="FirewallType")`):
+/// "a standard Network Firewall firewall", which is the kind this service
+/// creates and the one a request that names no type asks for ("if you don't
+/// specify a type, the default is `FIREWALL`").
+pub const FIREWALL_TYPE_FIREWALL: &str = "FIREWALL";
+/// See [`FIREWALL_TYPE_FIREWALL`]. "An internet gateway firewall, which Amazon
+/// Web Services Network Security Manager creates and manages for a VPC" — a kind
+/// nothing in this service creates, since `CreateFirewall` refuses an
+/// `IgwFirewallConfiguration`.
+pub const FIREWALL_TYPE_IGW: &str = "IGW_FIREWALL";
+
+/// Whether `firewall_type` — a request's `FirewallType`, absent or not — names
+/// the kind of firewall this service holds.
+///
+/// "If you don't specify a type, the default is `FIREWALL`", so an absent member
+/// asks for the standard kind; every other value asks for a kind this service
+/// holds none of.
+pub fn names_the_stored_firewall_type(firewall_type: Option<&str>) -> bool {
+    firewall_type.is_none_or(|kind| kind == FIREWALL_TYPE_FIREWALL)
+}
+
+/// What a request asking to create or delete the NAT gateways of a firewall that
+/// is not a proxy mode firewall is refused with: the rule the model states on
+/// both members that take them ("you can't specify this for a firewall that
+/// isn't a proxy mode firewall", and "you can't specify `TRUE` for a firewall
+/// that isn't a proxy mode firewall"). It names neither the firewall nor the
+/// mappings the request carried.
+pub const NAT_GATEWAYS_NOT_PROXY_MODE_MESSAGE: &str =
+    "You can't specify this for a firewall that isn't a proxy mode firewall.";
 
 /// `FirewallStatusValue` members (`smithy_query(query="shape",shape="FirewallStatusValue")`).
 pub const FIREWALL_PROVISIONING: &str = "PROVISIONING";
@@ -91,6 +122,17 @@ pub const RULE_GROUP_STATELESS: &str = "STATELESS";
 pub const RULE_GROUP_STATEFUL: &str = "STATEFUL";
 /// See [`RULE_GROUP_STATELESS`].
 pub const RULE_GROUP_STATEFUL_DOMAIN: &str = "STATEFUL_DOMAIN";
+/// See [`RULE_GROUP_STATELESS`]. A firewall ENGINE rule group: its rules are
+/// the ones a Next Generation policy's firewall section evaluates.
+pub const RULE_GROUP_FIREWALL: &str = "FIREWALL";
+/// See [`RULE_GROUP_STATELESS`]. An IPS ENGINE rule group: its rules are the
+/// ones a Next Generation policy's IPS section evaluates.
+pub const RULE_GROUP_IPS: &str = "IPS";
+
+/// The `RuleGroupType` members that name an ENGINE rule group — one written
+/// through a `FirewallRuleGroup` or an `IpsRuleGroup` document rather than
+/// through the `RuleGroup` one every other type takes.
+pub const RULE_GROUP_ENGINE_TYPES: [&str; 2] = [RULE_GROUP_FIREWALL, RULE_GROUP_IPS];
 
 /// `ResourceManagedStatus` members
 /// (`smithy_query(query="shape",shape="ResourceManagedStatus")`), the scope a
@@ -2821,6 +2863,14 @@ pub struct ComAmazonawsNetworkfirewallNetworkfirewall20201112State {
     pub firewall_policies: HashMap<String, FirewallPolicyRecord>,
     /// `FirewallPolicyArn` -> `FirewallPolicyName`.
     pub firewall_policy_arn_index: HashMap<String, String>,
+    /// Every created-and-not-deleted Next Generation policy, keyed by
+    /// `FirewallPolicyV2Name`. Its own store, because its document is its own
+    /// shape; the NAME space it draws from is the one the first-generation
+    /// policies draw from (see
+    /// [`firewall_policies_v2`](crate::state::firewall_policies_v2)).
+    pub firewall_policies_v2: HashMap<String, firewall_policies_v2::FirewallPolicyV2Record>,
+    /// `FirewallPolicyV2Arn` -> `FirewallPolicyV2Name`.
+    pub firewall_policy_v2_arn_index: HashMap<String, String>,
     /// The resource policy attached to a shared rule group or firewall policy,
     /// keyed by that resource's ARN. An absent entry is what makes
     /// `DescribeResourcePolicy` answer `ResourceNotFoundException`.
@@ -2856,6 +2906,35 @@ impl ComAmazonawsNetworkfirewallNetworkfirewall20201112State {
             &[ARN_TYPE_FIREWALL],
             |key| self.firewalls.contains_key(key),
         )
+    }
+
+    /// The `FirewallName` the given name, ARN and `FirewallType` identify.
+    ///
+    /// The TYPE is part of the identification: "if you specify the firewall ARN,
+    /// the type must match the resource type in the ARN. If you specify only the
+    /// firewall name, Network Firewall uses this value to identify the firewall.
+    /// If you don't specify a type, the default is `FIREWALL`"
+    /// (`DescribeFirewallRequest$FirewallType`, and the same text on every
+    /// operation that takes the member). The other value names an internet
+    /// gateway firewall, which this service holds none of
+    /// ([`names_the_stored_firewall_type`]), so a request naming it identifies no
+    /// firewall — never the standard firewall that happens to carry the same
+    /// name, exactly as a rule-group request naming an engine type identifies no
+    /// rule group of another kind.
+    ///
+    /// Every operation that takes the member resolves through here, so one
+    /// identification rule serves the reads, the updates, the delete and the
+    /// associations alike.
+    pub fn resolve_firewall_request(
+        &self,
+        name: Option<&str>,
+        arn: Option<&str>,
+        firewall_type: Option<&str>,
+    ) -> Result<String, ResolveError> {
+        if !names_the_stored_firewall_type(firewall_type) {
+            return Err(ResolveError::NotFound);
+        }
+        self.resolve_firewall(name, arn)
     }
 
     /// Accept a flow operation of `operation_type` on the firewall `request`
@@ -3002,6 +3081,14 @@ impl ComAmazonawsNetworkfirewallNetworkfirewall20201112State {
         group_type: Option<&str>,
         arn: Option<&str>,
     ) -> Result<String, RuleGroupLookupError> {
+        // A firewall-engine or an IPS-engine rule group is a rule group of its
+        // own kind, held in neither half of this name space: the rule-group
+        // writes store none ([`RULE_GROUP_ENGINE_TYPES`]), so a request that
+        // asks for that kind resolves to nothing — never to the rule group of
+        // another kind that happens to carry the same name.
+        if group_type.is_some_and(|group_type| RULE_GROUP_ENGINE_TYPES.contains(&group_type)) {
+            return Err(RuleGroupLookupError::Resolve(ResolveError::NotFound));
+        }
         let resource_path = match (name, group_type) {
             (Some(name), Some(group_type)) => Some(rule_group_resource_path(group_type, name)),
             (Some(_), None) if arn.is_none() => {

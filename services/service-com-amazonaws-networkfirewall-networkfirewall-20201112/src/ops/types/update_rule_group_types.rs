@@ -18,6 +18,8 @@ pub struct UpdateRuleGroupInput {
     pub rule_group_arn: Option<String>,
     pub rule_group_name: Option<String>,
     pub rule_group: Option<RuleGroup>,
+    pub firewall_rule_group: Option<FirewallRuleGroup>,
+    pub ips_rule_group: Option<IpsRuleGroup>,
     pub rules: Option<String>,
     pub r#type: Option<String>,
     pub description: Option<String>,

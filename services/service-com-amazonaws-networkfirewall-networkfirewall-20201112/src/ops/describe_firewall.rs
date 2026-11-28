@@ -175,9 +175,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut state = state.lock();
 
         let key = state
-            .resolve_firewall(
+            .resolve_firewall_request(
                 input.firewall_name.as_deref(),
                 input.firewall_arn.as_deref(),
+                input.firewall_type.as_deref(),
             )
             .map_err(describe_lookup_error)?;
         let Some(record) = state.firewalls.get_mut(&key) else {

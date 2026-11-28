@@ -130,7 +130,7 @@ const RESOURCE_NAME_MEMBERS: [&str; 4] = [
 /// whole set rather than editing one:
 ///
 /// * the rule-group type is one enumeration service-side and a subset of it in the public
-///   model: `smithy_query(query="shape",shape="RuleGroupType")` declares the three values a
+///   model: `smithy_query(query="shape",shape="RuleGroupType")` declares the values a
 ///   caller may name on a create, while a refusal naming the type enumerates every value the
 ///   service's own enumeration carries, in its order;
 /// * the generated-rules type of a domain-list rule group carries the model's own four values
@@ -156,10 +156,16 @@ const SERVICE_VALUE_SETS: &[(&[&str], &[&str])] = &[
 /// (`smithy_query(query="shape",shape="RuleGroupType")`), in its declaration order —
 /// which is how a violation about that type is recognised among this service's other
 /// enumerated members (see [`SERVICE_VALUE_SETS`], keyed by the whole modelled set).
-const MODELLED_RULE_GROUP_TYPES: &[&str] = &["STATELESS", "STATEFUL", "STATEFUL_DOMAIN"];
+const MODELLED_RULE_GROUP_TYPES: &[&str] = &[
+    "STATELESS",
+    "STATEFUL",
+    "STATEFUL_DOMAIN",
+    "FIREWALL",
+    "IPS",
+];
 
 /// The rule-group type values the SERVICE's own enumeration carries, in the order it
-/// states them: the three the public model declares plus the three it does not.
+/// states them: the five the public model declares plus the one it does not.
 const SERVICE_RULE_GROUP_TYPES: &[&str] = &[
     "FIREWALL",
     "STATELESS",
@@ -191,25 +197,19 @@ const INPUT_SCHEMAS: &[&Schema] = {
         types::ASSOCIATE_AVAILABILITY_ZONES_INPUT_SCHEMA,
         types::ASSOCIATE_FIREWALL_POLICY_INPUT_SCHEMA,
         types::ASSOCIATE_SUBNETS_INPUT_SCHEMA,
-        types::ATTACH_RULE_GROUPS_TO_PROXY_CONFIGURATION_INPUT_SCHEMA,
         types::CREATE_CONTAINER_ASSOCIATION_INPUT_SCHEMA,
         types::CREATE_FIREWALL_INPUT_SCHEMA,
         types::CREATE_FIREWALL_POLICY_INPUT_SCHEMA,
-        types::CREATE_PROXY_CONFIGURATION_INPUT_SCHEMA,
-        types::CREATE_PROXY_INPUT_SCHEMA,
-        types::CREATE_PROXY_RULES_INPUT_SCHEMA,
-        types::CREATE_PROXY_RULE_GROUP_INPUT_SCHEMA,
+        types::CREATE_FIREWALL_POLICY_V2_INPUT_SCHEMA,
         types::CREATE_RULE_GROUP_INPUT_SCHEMA,
         types::CREATE_TLS_INSPECTION_CONFIGURATION_INPUT_SCHEMA,
         types::CREATE_VPC_ENDPOINT_ASSOCIATION_INPUT_SCHEMA,
         types::DELETE_CONTAINER_ASSOCIATION_INPUT_SCHEMA,
         types::DELETE_FIREWALL_INPUT_SCHEMA,
         types::DELETE_FIREWALL_POLICY_INPUT_SCHEMA,
+        types::DELETE_FIREWALL_POLICY_V2_INPUT_SCHEMA,
         types::DELETE_NETWORK_FIREWALL_TRANSIT_GATEWAY_ATTACHMENT_INPUT_SCHEMA,
-        types::DELETE_PROXY_CONFIGURATION_INPUT_SCHEMA,
         types::DELETE_PROXY_INPUT_SCHEMA,
-        types::DELETE_PROXY_RULES_INPUT_SCHEMA,
-        types::DELETE_PROXY_RULE_GROUP_INPUT_SCHEMA,
         types::DELETE_RESOURCE_POLICY_INPUT_SCHEMA,
         types::DELETE_RULE_GROUP_INPUT_SCHEMA,
         types::DELETE_TLS_INSPECTION_CONFIGURATION_INPUT_SCHEMA,
@@ -218,31 +218,28 @@ const INPUT_SCHEMAS: &[&Schema] = {
         types::DESCRIBE_FIREWALL_INPUT_SCHEMA,
         types::DESCRIBE_FIREWALL_METADATA_INPUT_SCHEMA,
         types::DESCRIBE_FIREWALL_POLICY_INPUT_SCHEMA,
+        types::DESCRIBE_FIREWALL_POLICY_V2_INPUT_SCHEMA,
         types::DESCRIBE_FLOW_OPERATION_INPUT_SCHEMA,
         types::DESCRIBE_LOGGING_CONFIGURATION_INPUT_SCHEMA,
-        types::DESCRIBE_PROXY_CONFIGURATION_INPUT_SCHEMA,
         types::DESCRIBE_PROXY_INPUT_SCHEMA,
-        types::DESCRIBE_PROXY_RULE_GROUP_INPUT_SCHEMA,
-        types::DESCRIBE_PROXY_RULE_INPUT_SCHEMA,
         types::DESCRIBE_RESOURCE_POLICY_INPUT_SCHEMA,
         types::DESCRIBE_RULE_GROUP_INPUT_SCHEMA,
         types::DESCRIBE_RULE_GROUP_METADATA_INPUT_SCHEMA,
         types::DESCRIBE_RULE_GROUP_SUMMARY_INPUT_SCHEMA,
         types::DESCRIBE_TLS_INSPECTION_CONFIGURATION_INPUT_SCHEMA,
         types::DESCRIBE_VPC_ENDPOINT_ASSOCIATION_INPUT_SCHEMA,
-        types::DETACH_RULE_GROUPS_FROM_PROXY_CONFIGURATION_INPUT_SCHEMA,
         types::DISASSOCIATE_AVAILABILITY_ZONES_INPUT_SCHEMA,
         types::DISASSOCIATE_SUBNETS_INPUT_SCHEMA,
         types::GET_ANALYSIS_REPORT_RESULTS_INPUT_SCHEMA,
         types::LIST_ANALYSIS_REPORTS_INPUT_SCHEMA,
         types::LIST_CONTAINER_ASSOCIATIONS_INPUT_SCHEMA,
+        types::LIST_CONTEXT_STORES_INPUT_SCHEMA,
         types::LIST_FIREWALLS_INPUT_SCHEMA,
         types::LIST_FIREWALL_POLICIES_INPUT_SCHEMA,
+        types::LIST_FIREWALL_POLICIES_V2_INPUT_SCHEMA,
         types::LIST_FLOW_OPERATIONS_INPUT_SCHEMA,
         types::LIST_FLOW_OPERATION_RESULTS_INPUT_SCHEMA,
-        types::LIST_PROXIES_INPUT_SCHEMA,
-        types::LIST_PROXY_CONFIGURATIONS_INPUT_SCHEMA,
-        types::LIST_PROXY_RULE_GROUPS_INPUT_SCHEMA,
+        types::LIST_RESOURCES_IN_CONTEXT_STORE_INPUT_SCHEMA,
         types::LIST_RULE_GROUPS_INPUT_SCHEMA,
         types::LIST_TAGS_FOR_RESOURCE_INPUT_SCHEMA,
         types::LIST_TLS_INSPECTION_CONFIGURATIONS_INPUT_SCHEMA,
@@ -262,12 +259,8 @@ const INPUT_SCHEMAS: &[&Schema] = {
         types::UPDATE_FIREWALL_ENCRYPTION_CONFIGURATION_INPUT_SCHEMA,
         types::UPDATE_FIREWALL_POLICY_CHANGE_PROTECTION_INPUT_SCHEMA,
         types::UPDATE_FIREWALL_POLICY_INPUT_SCHEMA,
+        types::UPDATE_FIREWALL_POLICY_V2_INPUT_SCHEMA,
         types::UPDATE_LOGGING_CONFIGURATION_INPUT_SCHEMA,
-        types::UPDATE_PROXY_CONFIGURATION_INPUT_SCHEMA,
-        types::UPDATE_PROXY_INPUT_SCHEMA,
-        types::UPDATE_PROXY_RULE_GROUP_PRIORITIES_INPUT_SCHEMA,
-        types::UPDATE_PROXY_RULE_INPUT_SCHEMA,
-        types::UPDATE_PROXY_RULE_PRIORITIES_INPUT_SCHEMA,
         types::UPDATE_PROXY_SETTINGS_INPUT_SCHEMA,
         types::UPDATE_RULE_GROUP_INPUT_SCHEMA,
         types::UPDATE_SUBNET_CHANGE_PROTECTION_INPUT_SCHEMA,
@@ -455,9 +448,9 @@ fn in_service_value_set(violation: &Violation) -> Violation {
 /// `StatelessRuleGroupReference$Priority` and `StatelessRule$Priority` target `Priority`,
 /// `@range` 1..65535; `PortRange$FromPort` and `$ToPort` target `PortRangeBound`, `@range`
 /// 0..65535 — whose own bound ADMITS zero, so an absent one keeps the absent-member clause).
-/// Every other number a request of this service can carry sits in an OPTIONAL member — the
-/// proxy rule and rule-group positions (`ProxyRulePriority$NewPosition`,
-/// `ProxyRuleGroupPriority$NewPosition`), a page size, a flow age, an idle timeout — and an
+/// Every other number a request of this service can carry sits in an OPTIONAL member — a Next
+/// Generation policy's firewall-section entry priority (`FirewallRuleGroupEntry$Priority`), a
+/// page size, a flow age, an idle timeout — and an
 /// optional member is never reported absent, so no other structure of a request document
 /// declares one of the member names above under a bound of its own.
 const NUMBER_VALUED_SHAPES: &[&Schema] = {
@@ -591,7 +584,7 @@ mod tests {
         let rows: [(&str, &[&str], &[&str]); 6] = [
             (
                 "the rule-group type's modelled set",
-                &["STATELESS", "STATEFUL", "STATEFUL_DOMAIN"],
+                &["STATELESS", "STATEFUL", "STATEFUL_DOMAIN", "FIREWALL", "IPS"],
                 &widened,
             ),
             (

@@ -54,6 +54,10 @@ suricatax-rule-parser = "=0.2.0-alpha.1"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# The one declaration of this crate's integration-test suites: `tests/all/main.rs`
+# is `automod::dir!("tests/all")`, so every suite beside it is compiled without a
+# `mod` line of its own.
+automod = { workspace = true }
 # `time` beyond what `#[tokio::test]` needs: an integration test waits out the
 # firewall provisioning span with `tokio::time::sleep`. Test-only, so it does not
 # widen the shipped crate's feature set.

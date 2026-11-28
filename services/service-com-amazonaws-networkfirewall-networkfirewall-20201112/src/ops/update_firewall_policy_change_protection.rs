@@ -209,7 +209,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // nothing stored locates no resource, whether it never existed or
         // `DeleteFirewall` has since removed it.
         let key = state
-            .resolve_firewall(input.firewall_name.as_deref(), input.firewall_arn.as_deref())
+            .resolve_firewall_request(
+                input.firewall_name.as_deref(),
+                input.firewall_arn.as_deref(),
+                input.firewall_type.as_deref(),
+            )
             .map_err(update_lookup_error)?;
         let Some(record) = state.firewalls.get_mut(&key) else {
             return Err(

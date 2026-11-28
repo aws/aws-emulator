@@ -16,6 +16,8 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-network
 pub struct DeleteFirewallInput {
     pub firewall_name: Option<String>,
     pub firewall_arn: Option<String>,
+    pub firewall_type: Option<String>,
+    pub delete_associated_nat_gateways: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#DeleteFirewallResponse")]

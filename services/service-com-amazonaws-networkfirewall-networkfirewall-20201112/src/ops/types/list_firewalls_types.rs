@@ -17,6 +17,7 @@ pub struct ListFirewallsInput {
     pub next_token: Option<String>,
     pub vpc_ids: Option<Vec<String>>,
     pub max_results: Option<i32>,
+    pub firewall_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ListFirewallsResponse")]

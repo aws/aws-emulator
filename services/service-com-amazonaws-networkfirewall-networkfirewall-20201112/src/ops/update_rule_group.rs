@@ -210,6 +210,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // scope: the rule group it edits is the one already stored.
         let _ = ctx;
 
+        // A firewall-engine (`FIREWALL`) and an IPS-engine (`IPS`) rule group are
+        // rule groups of their own kind, written through the
+        // `FirewallRuleGroup` and `IpsRuleGroup` documents rather than through
+        // the `RuleGroup` one every other type takes. Neither kind is written
+        // yet — `CreateRuleGroup` stores none — so answer "not written yet"
+        // rather than succeeding with the submitted document dropped.
+        if input
+            .r#type
+            .as_deref()
+            .is_some_and(|group_type| crate::state::RULE_GROUP_ENGINE_TYPES.contains(&group_type))
+            || input.firewall_rule_group.is_some()
+            || input.ips_rule_group.is_some()
+        {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "UpdateRuleGroup for a firewall-engine or IPS-engine rule group",
+            ));
+        }
+
         // "You must provide either this rule group setting or a Rules setting, but
         // not both" (`UpdateRuleGroupRequest$RuleGroup`). A request that gives
         // NEITHER edits no rules, which is how a caller changes only the description

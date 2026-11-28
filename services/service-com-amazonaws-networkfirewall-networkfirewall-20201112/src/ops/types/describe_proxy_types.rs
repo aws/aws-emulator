@@ -47,3 +47,10 @@ pub struct DescribeProxyResource {
     pub tags: Option<Vec<Tag>>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#TlsInterceptProperties")]
+#[derive(Debug, Clone, Default)]
+pub struct TlsInterceptProperties {
+    pub pca_arn: Option<String>,
+    pub tls_intercept_mode: Option<String>,
+}
+

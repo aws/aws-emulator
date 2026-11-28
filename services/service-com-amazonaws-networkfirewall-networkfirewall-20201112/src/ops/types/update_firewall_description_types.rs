@@ -18,6 +18,7 @@ pub struct UpdateFirewallDescriptionInput {
     pub firewall_arn: Option<String>,
     pub firewall_name: Option<String>,
     pub description: Option<String>,
+    pub firewall_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#UpdateFirewallDescriptionResponse")]

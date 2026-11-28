@@ -362,22 +362,14 @@ async fn a_rules_source_on_the_wrong_half_of_the_service_is_refused() {
 /// operation that only picks which rule groups to report stays the boundary's
 /// validation refusal.
 ///
-/// The rows span the three values the service's own enumeration carries beside the
-/// public three, a value no enumeration carries, two accepted values in the wrong
-/// case, and the empty string — each on the create and on the listing, plus the
-/// update path and a request that breaks a constraint the create does declare
-/// alongside the type.
+/// The rows span the one value the service's own enumeration carries beside the
+/// five the public model declares, a value no enumeration carries, two accepted
+/// values in the wrong case, and the empty string — each on the create and on the
+/// listing, plus the update path and a request that breaks a constraint the create
+/// does declare alongside the type.
 #[tokio::test]
 async fn a_type_the_api_does_not_accept_is_refused_as_an_invalid_rule_group_type() {
-    let rows: &[&str] = &[
-        "FIREWALL",
-        "IPS",
-        "IPS_DOMAIN",
-        "STATEFULL",
-        "Stateful",
-        "stateless",
-        "",
-    ];
+    let rows: &[&str] = &["IPS_DOMAIN", "STATEFULL", "Stateful", "stateless", ""];
 
     let harness = Harness::new();
     for group_type in rows {
@@ -421,7 +413,7 @@ async fn a_type_the_api_does_not_accept_is_refused_as_an_invalid_rule_group_type
             "CreateRuleGroup",
             &json!({
                 "RuleGroupName": "typed-group",
-                "Type": "IPS",
+                "Type": "IPS_DOMAIN",
                 "Capacity": 10,
                 "Description": "d".repeat(513),
                 "RuleGroup": stateless_group(vec![stateless_rule(1, "aws:pass", json!({}))]),
@@ -457,7 +449,7 @@ async fn a_type_the_api_does_not_accept_is_refused_as_an_invalid_rule_group_type
             "UpdateRuleGroup",
             &json!({
                 "RuleGroupName": "updated-group",
-                "Type": "IPS",
+                "Type": "IPS_DOMAIN",
                 "UpdateToken": "00000000-0000-4000-8000-000000000000",
                 "RuleGroup": stateless_group(vec![stateless_rule(1, "aws:pass", json!({}))]),
             }),

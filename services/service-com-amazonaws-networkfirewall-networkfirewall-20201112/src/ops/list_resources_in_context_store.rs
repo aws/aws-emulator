@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! @op ListProxyRuleGroups
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListProxyRuleGroups`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListProxyRuleGroups::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! @op ListResourcesInContextStore
+//! IMPLEMENTED: answers the modelled not-found for a `ContextStoreId` no stored
+//! firewall is associated with — see [`ListResourcesInContextStore::handle`].
 //!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
 //! [`smithy_server_runtime::Operation`]. The framework constructs one per service via
-//! `ListProxyRuleGroups::new(engine)` and drives it through the centralized request walk:
+//! `ListResourcesInContextStore::new(engine)` and drives it through the centralized request walk:
 //! deserialize → validate → `handle` → serialize. You write ONLY the `handle` body.
 //!
 //! ## Reaching this service's state
@@ -39,7 +32,7 @@
 //!
 //! ---
 //!
-//! # Modeled contract for `ListProxyRuleGroups`
+//! # Modeled contract for `ListResourcesInContextStore`
 //!
 //! What AWS documents for this operation, from this service's Smithy model. HTML is
 //! stripped and long entries are clipped at ` …`. For the FULL text of any one item,
@@ -49,12 +42,21 @@
 //! smithy_query(query="doc",shape="<Shape>",member="<Member>",model_path="services/service-com-amazonaws-networkfirewall-networkfirewall-20201112/smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json")
 //! ```
 //!
-//! Retrieves the metadata for the proxy rule groups that you have defined. Depending on
-//! your setting for max results and the number of proxy rule groups, a single call might
-//! not return the full list.
+//! Lists the resources that a context store records. The context store must be associated
+//! with a transit gateway that your firewall is attached to. You can filter the results by
+//! Region, resource type, or both. When using a small page size, a single call might not
+//! return the full list. A response can contain fewer than MaxResults results, or none, and
+//! still include a NextToken. Keep making requests until the response does not include a
+//! NextToken.
 //!
 //! ## Input
 //!
+//! * `ContextStoreId` (ContextStoreId) **required** — The unique identifier of the context
+//!   store. To get the identifiers of the context stores that are associated with your
+//!   firewalls, call ListContextStores.
+//! * `Filters` (ContextFilters) — Optional filters that limit the results to resources in a
+//!   specific Region, of a specific resource type, or both. If you specify both filters,
+//!   Network Firewall returns only the resources that match both.
 //! * `MaxResults` (PaginationMaxResults, range 1..100) — The maximum number of objects that
 //!   you want Network Firewall to return for this request. If more objects are available, in
 //!   the response, Network Firewall provides a NextToken value that you can use in a
@@ -63,7 +65,8 @@
 //!   request a list of objects with a MaxResults setting, if the number of objects that are
 //!   still available for retrieval exceeds the maximum you requested, Network Firewall
 //!   returns a NextToken value in the response. To retrieve the next batch of objects, use
-//!   the token returned from the prior request in your next request.
+//!   the token returned from the prior request in your next request. A token is valid only
+//!   for the same ContextStoreId and filters as the request that returned it.
 //!
 //! ## Output
 //!
@@ -72,9 +75,8 @@
 //!   still available for retrieval exceeds the maximum you requested, Network Firewall
 //!   returns a NextToken value in the response. To retrieve the next batch of objects, use
 //!   the token returned from the prior request in your next request.
-//! * `ProxyRuleGroups` (ProxyRuleGroups) — The metadata for the proxy rule groups. Depending
-//!   on your setting for max results and the number of proxy rule groups that you have, this
-//!   might not be the full list.
+//! * `ResourceContexts` (ResourceContexts) **required** — The resources that the context
+//!   store records and that match your filters.
 //!
 //! ## Errors
 //!
@@ -96,17 +98,17 @@ use super::types::*;
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
-// `ListProxyRuleGroupsError` enum is never produced.
+// `ListResourcesInContextStoreError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-networkfirewall-20201112.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListProxyRuleGroupsError` alias below. An operation that models no errors
+// here — hence the `ListResourcesInContextStoreError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListProxyRuleGroups")]
+#[smithy_macros::operation_error("com.amazonaws.networkfirewall#ListResourcesInContextStore")]
 #[derive(Debug)]
-pub enum ListProxyRuleGroupsErrorModeled {
+pub enum ListResourcesInContextStoreErrorModeled {
     InternalServerError(InternalServerError),
     InvalidRequestException(InvalidRequestException),
     ResourceNotFoundException(ResourceNotFoundException),
@@ -114,31 +116,31 @@ pub enum ListProxyRuleGroupsErrorModeled {
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::list_proxy_rule_groups::ListProxyRuleGroupsError`). Wrapping the modeled enum is what
+/// (`crate::ops::list_resources_in_context_store::ListResourcesInContextStoreError`). Wrapping the modeled enum is what
 /// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type ListProxyRuleGroupsError = crate::scaffolded::Scaffolded<ListProxyRuleGroupsErrorModeled>;
+pub type ListResourcesInContextStoreError = crate::scaffolded::Scaffolded<ListResourcesInContextStoreErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
 /// wrapper variant. See `crate::scaffolded` for how to drop the wrapper entirely once
 /// this operation is implemented.
-impl From<ListProxyRuleGroupsErrorModeled> for ListProxyRuleGroupsError {
-    fn from(modeled: ListProxyRuleGroupsErrorModeled) -> Self {
+impl From<ListResourcesInContextStoreErrorModeled> for ListResourcesInContextStoreError {
+    fn from(modeled: ListResourcesInContextStoreErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
 
-/// The `ListProxyRuleGroups` operation.
+/// The `ListResourcesInContextStore` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
 /// [`smithy_server_runtime::Operation`]. Generic over the engine type `Eng`, so this
 /// crate names no concrete engine type: a migrated service that needs state picks a
 /// concrete engine where it mounts the service, not here.
-pub struct ListProxyRuleGroups<Eng> {
+pub struct ListResourcesInContextStore<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
-impl<Eng> ListProxyRuleGroups<Eng> {
+impl<Eng> ListResourcesInContextStore<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
     /// request runs. Called by the generated `EmulatedService::new(engine)` constructor.
@@ -148,15 +150,15 @@ impl<Eng> ListProxyRuleGroups<Eng> {
 }
 
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
-    for ListProxyRuleGroups<Eng>
+    for ListResourcesInContextStore<Eng>
 {
-    type Input = ListProxyRuleGroupsInput;
-    type Output = ListProxyRuleGroupsOutput;
-    type Error = ListProxyRuleGroupsError;
+    type Input = ListResourcesInContextStoreInput;
+    type Output = ListResourcesInContextStoreOutput;
+    type Error = ListResourcesInContextStoreError;
 
-    const NAME: &'static str = "ListProxyRuleGroups";
-    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXY_RULE_GROUPS_INPUT_SCHEMA;
-    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_PROXY_RULE_GROUPS_OUTPUT_SCHEMA;
+    const NAME: &'static str = "ListResourcesInContextStore";
+    const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_RESOURCES_IN_CONTEXT_STORE_INPUT_SCHEMA;
+    const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::LIST_RESOURCES_IN_CONTEXT_STORE_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
     async fn handle(
@@ -164,18 +166,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
         let _ = (&input, ctx, &self.engine);
-        // Implement `ListProxyRuleGroups` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListProxyRuleGroupsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListProxyRuleGroups"))
+
+        // The resources a context store records are the resources of THAT
+        // store, so the store has to exist before there is anything to list.
+        // A context store is not a resource this API creates: "Network Firewall
+        // discovers the context store from the transit gateway association in
+        // Network Security Manager" (`Firewall$ContextStoreId`), and
+        // `CreateFirewall` refuses a transit gateway-attached firewall here — so
+        // no firewall this service holds is associated with a context store
+        // (`ListContextStores` reports the same empty set), and every
+        // `ContextStoreId` names a store that does not exist. That is the
+        // modelled miss, with the service's one not-found constant, rather than
+        // an empty page: an empty page would say the store exists and records
+        // nothing.
+        Err(
+            ListResourcesInContextStoreErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                },
+            )
+            .into(),
+        )
     }
 }

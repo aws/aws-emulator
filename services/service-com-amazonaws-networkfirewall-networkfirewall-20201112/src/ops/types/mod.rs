@@ -18,24 +18,18 @@ pub mod accept_network_firewall_transit_gateway_attachment_types;
 pub mod associate_availability_zones_types;
 pub mod associate_firewall_policy_types;
 pub mod associate_subnets_types;
-pub mod attach_rule_groups_to_proxy_configuration_types;
 pub mod create_container_association_types;
 pub mod create_firewall_policy_types;
+pub mod create_firewall_policy_v2_types;
 pub mod create_firewall_types;
-pub mod create_proxy_configuration_types;
-pub mod create_proxy_rule_group_types;
-pub mod create_proxy_rules_types;
-pub mod create_proxy_types;
 pub mod create_rule_group_types;
 pub mod create_tls_inspection_configuration_types;
 pub mod create_vpc_endpoint_association_types;
 pub mod delete_container_association_types;
 pub mod delete_firewall_policy_types;
+pub mod delete_firewall_policy_v2_types;
 pub mod delete_firewall_types;
 pub mod delete_network_firewall_transit_gateway_attachment_types;
-pub mod delete_proxy_configuration_types;
-pub mod delete_proxy_rule_group_types;
-pub mod delete_proxy_rules_types;
 pub mod delete_proxy_types;
 pub mod delete_resource_policy_types;
 pub mod delete_rule_group_types;
@@ -44,12 +38,10 @@ pub mod delete_vpc_endpoint_association_types;
 pub mod describe_container_association_types;
 pub mod describe_firewall_metadata_types;
 pub mod describe_firewall_policy_types;
+pub mod describe_firewall_policy_v2_types;
 pub mod describe_firewall_types;
 pub mod describe_flow_operation_types;
 pub mod describe_logging_configuration_types;
-pub mod describe_proxy_configuration_types;
-pub mod describe_proxy_rule_group_types;
-pub mod describe_proxy_rule_types;
 pub mod describe_proxy_types;
 pub mod describe_resource_policy_types;
 pub mod describe_rule_group_metadata_types;
@@ -57,19 +49,18 @@ pub mod describe_rule_group_summary_types;
 pub mod describe_rule_group_types;
 pub mod describe_tls_inspection_configuration_types;
 pub mod describe_vpc_endpoint_association_types;
-pub mod detach_rule_groups_from_proxy_configuration_types;
 pub mod disassociate_availability_zones_types;
 pub mod disassociate_subnets_types;
 pub mod get_analysis_report_results_types;
 pub mod list_analysis_reports_types;
 pub mod list_container_associations_types;
+pub mod list_context_stores_types;
 pub mod list_firewall_policies_types;
+pub mod list_firewall_policies_v2_types;
 pub mod list_firewalls_types;
 pub mod list_flow_operation_results_types;
 pub mod list_flow_operations_types;
-pub mod list_proxies_types;
-pub mod list_proxy_configurations_types;
-pub mod list_proxy_rule_groups_types;
+pub mod list_resources_in_context_store_types;
 pub mod list_rule_groups_types;
 pub mod list_tags_for_resource_types;
 pub mod list_tls_inspection_configurations_types;
@@ -90,13 +81,9 @@ pub mod update_firewall_description_types;
 pub mod update_firewall_encryption_configuration_types;
 pub mod update_firewall_policy_change_protection_types;
 pub mod update_firewall_policy_types;
+pub mod update_firewall_policy_v2_types;
 pub mod update_logging_configuration_types;
-pub mod update_proxy_configuration_types;
-pub mod update_proxy_rule_group_priorities_types;
-pub mod update_proxy_rule_priorities_types;
-pub mod update_proxy_rule_types;
 pub mod update_proxy_settings_types;
-pub mod update_proxy_types;
 pub mod update_rule_group_types;
 pub mod update_subnet_change_protection_types;
 pub mod update_tls_inspection_configuration_types;
@@ -110,21 +97,13 @@ pub use associate_firewall_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_subnets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use attach_rule_groups_to_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_container_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_firewall_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_firewall_policy_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_firewall_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use create_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use create_proxy_rule_group_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use create_proxy_rules_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use create_proxy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_rule_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -136,15 +115,11 @@ pub use delete_container_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_firewall_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_firewall_policy_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_firewall_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_network_firewall_transit_gateway_attachment_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use delete_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use delete_proxy_rule_group_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use delete_proxy_rules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_proxy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -162,17 +137,13 @@ pub use describe_firewall_metadata_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_firewall_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_firewall_policy_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_firewall_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_flow_operation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_logging_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use describe_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use describe_proxy_rule_group_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use describe_proxy_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_proxy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -188,8 +159,6 @@ pub use describe_tls_inspection_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_vpc_endpoint_association_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use detach_rule_groups_from_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_availability_zones_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_subnets_types::*;
@@ -200,7 +169,11 @@ pub use list_analysis_reports_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_container_associations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_context_stores_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_firewall_policies_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_firewall_policies_v2_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_firewalls_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -208,11 +181,7 @@ pub use list_flow_operation_results_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_flow_operations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use list_proxies_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use list_proxy_configurations_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use list_proxy_rule_groups_types::*;
+pub use list_resources_in_context_store_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_rule_groups_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -254,19 +223,11 @@ pub use update_firewall_policy_change_protection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_firewall_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_firewall_policy_v2_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_logging_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use update_proxy_configuration_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use update_proxy_rule_group_priorities_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use update_proxy_rule_priorities_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use update_proxy_rule_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_proxy_settings_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use update_proxy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_rule_group_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

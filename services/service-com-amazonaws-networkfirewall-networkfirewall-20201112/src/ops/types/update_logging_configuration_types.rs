@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-networkfirewall-network
 pub struct UpdateLoggingConfigurationInput {
     pub firewall_arn: Option<String>,
     pub firewall_name: Option<String>,
+    pub firewall_type: Option<String>,
     pub logging_configuration: Option<LoggingConfiguration>,
     pub enable_monitoring_dashboard: Option<bool>,
 }

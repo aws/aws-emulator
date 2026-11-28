@@ -247,20 +247,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // A transit gateway-attached firewall (`TransitGatewayId`,
-        // `AvailabilityZoneMappings`, `AvailabilityZoneChangeProtection`) and a
-        // proxy-mode one (`NoSourcePreservation`, `NatGatewayMappings`,
-        // `VpcEndpoint`, `ProxySettings`) are different resources with their own
-        // status and attachment models, and none of the operations that manage
-        // them is implemented. Answer "not written yet" rather than storing a
-        // half-built record — or, for a member this handler would otherwise drop,
-        // succeeding with the input ignored.
+        // `AvailabilityZoneMappings`, `AvailabilityZoneChangeProtection`), a
+        // proxy-mode one (`NatGatewayCreateMappings`, `VpcEndpoint`,
+        // `ProxySettings`) and an internet gateway-attached one
+        // (`IgwFirewallConfiguration`, `TransparentFilteringNatScope`) are
+        // different resources with their own status and attachment models, and
+        // none of the operations that manage them is implemented. Answer "not
+        // written yet" rather than storing a half-built record — or, for a member
+        // this handler would otherwise drop, succeeding with the input ignored.
         if input.transit_gateway_id.is_some()
             || input.availability_zone_mappings.is_some()
             || input.availability_zone_change_protection
-            || input.no_source_preservation
-            || input.nat_gateway_mappings.is_some()
+            || input.nat_gateway_create_mappings.is_some()
             || input.vpc_endpoint.is_some()
             || input.proxy_settings.is_some()
+            || input.igw_firewall_configuration.is_some()
+            || input.transparent_filtering_nat_scope.is_some()
         {
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "CreateFirewall for a transit gateway-attached or proxy-mode firewall",

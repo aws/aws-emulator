@@ -66,41 +66,12 @@ pub struct SubnetMapping {
     pub ip_address_type: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyConfiguration")]
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#NatGatewayCreateMapping")]
 #[derive(Debug, Clone, Default)]
-pub struct ProxyConfiguration {
-    pub proxy_configuration_name: Option<String>,
-    pub proxy_configuration_arn: Option<String>,
-    pub description: Option<String>,
-    pub create_time: Option<::aws_smithy_types::DateTime>,
-    pub delete_time: Option<::aws_smithy_types::DateTime>,
-    pub rule_groups: Option<Vec<ProxyConfigRuleGroup>>,
-    pub default_rule_phase_actions: Option<ProxyConfigDefaultRulePhaseActionsRequest>,
-    pub tags: Option<Vec<Tag>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyConfigRuleGroup")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyConfigRuleGroup {
-    pub proxy_rule_group_name: Option<String>,
-    pub proxy_rule_group_arn: Option<String>,
-    pub r#type: Option<String>,
-    pub priority: Option<i32>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyConfigDefaultRulePhaseActionsRequest")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyConfigDefaultRulePhaseActionsRequest {
-    pub pre_dns: Option<String>,
-    pub pre_request: Option<String>,
-    pub post_response: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#Tag")]
-#[derive(Debug, Clone, Default)]
-pub struct Tag {
-    pub key: String,
-    pub value: String,
+pub struct NatGatewayCreateMapping {
+    pub subnet_id: String,
+    pub allocation_ids: Option<Vec<String>>,
+    pub private_ips: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ContainerMonitoringConfiguration")]
@@ -113,6 +84,13 @@ pub struct ContainerMonitoringConfiguration {
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ContainerAttribute")]
 #[derive(Debug, Clone, Default)]
 pub struct ContainerAttribute {
+    pub key: String,
+    pub value: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#Tag")]
+#[derive(Debug, Clone, Default)]
+pub struct Tag {
     pub key: String,
     pub value: String,
 }
@@ -130,16 +108,18 @@ pub struct EncryptionConfiguration {
     pub r#type: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#NatGatewayMapping")]
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#IgwFirewallConfiguration")]
 #[derive(Debug, Clone, Default)]
-pub struct NatGatewayMapping {
-    pub nat_gateway_id: String,
+pub struct IgwFirewallConfiguration {
+    pub enforcement_mode: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxySettings")]
 #[derive(Debug, Clone, Default)]
 pub struct ProxySettings {
     pub listener_properties: Vec<ListenerProperty>,
+    pub certificate_arn: Option<String>,
+    pub domain_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ListenerProperty")]
@@ -177,10 +157,13 @@ pub struct Firewall {
     pub transit_gateway_owner_account_id: Option<String>,
     pub availability_zone_mappings: Option<Vec<AvailabilityZoneMapping>>,
     pub availability_zone_change_protection: bool,
-    pub nat_gateway_mappings: Option<Vec<NatGatewayMapping>>,
+    pub igw_firewall_configuration: Option<IgwFirewallConfiguration>,
+    pub nat_gateway_create_mappings: Option<Vec<NatGatewayCreateMapping>>,
     pub proxy_settings: Option<ProxySettings>,
-    pub no_source_preservation: bool,
     pub vpc_endpoint: Option<VpcEndpoint>,
+    pub context_store_id: Option<String>,
+    pub context_store_owner_account_id: Option<String>,
+    pub transparent_filtering_nat_scope: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallStatus")]
@@ -191,6 +174,7 @@ pub struct FirewallStatus {
     pub sync_states: Option<std::collections::HashMap<String, SyncState>>,
     pub capacity_usage_summary: Option<CapacityUsageSummary>,
     pub transit_gateway_attachment_sync_state: Option<TransitGatewayAttachmentSyncState>,
+    pub context_store_sync_state: Option<ContextStoreSyncState>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#SyncState")]
@@ -198,6 +182,7 @@ pub struct FirewallStatus {
 pub struct SyncState {
     pub attachment: Option<Attachment>,
     pub config: Option<std::collections::HashMap<String, PerObjectStatus>>,
+    pub address_translations: Option<AddressTranslations>,
     pub nat_gateway_attachments: Option<Vec<NatGatewayAttachment>>,
 }
 
@@ -216,6 +201,13 @@ pub struct Attachment {
 pub struct PerObjectStatus {
     pub sync_status: Option<String>,
     pub update_token: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#AddressTranslations")]
+#[derive(Debug, Clone, Default)]
+pub struct AddressTranslations {
+    pub public_i_pv6_addresses: Option<Vec<String>>,
+    pub public_i_pv4_addresses: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#NatGatewayAttachment")]
@@ -252,6 +244,13 @@ pub struct IPSetMetadata {
 pub struct TransitGatewayAttachmentSyncState {
     pub attachment_id: Option<String>,
     pub transit_gateway_attachment_status: Option<String>,
+    pub status_message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ContextStoreSyncState")]
+#[derive(Debug, Clone, Default)]
+pub struct ContextStoreSyncState {
+    pub sync_status: Option<String>,
     pub status_message: Option<String>,
 }
 
@@ -387,97 +386,81 @@ pub struct FirewallPolicyError {
     pub resource_id: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ListenerPropertyRequest")]
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallPolicyV2")]
 #[derive(Debug, Clone, Default)]
-pub struct ListenerPropertyRequest {
-    pub port: i32,
-    pub r#type: String,
+pub struct FirewallPolicyV2 {
+    pub firewall_rule_group_entries: Option<Vec<FirewallRuleGroupEntry>>,
+    pub ips_rule_group_entries: Option<Vec<IpsRuleGroupEntry>>,
+    pub policy_mode: Option<String>,
+    pub firewall_default_action: Option<String>,
+    pub stateful_engine_options: Option<StatefulEngineOptionsV2>,
+    pub tls_inspection_configuration_arn: Option<String>,
+    pub policy_variables: Option<PolicyVariables>,
+    pub route53_resolved_ip_validation: Option<Route53ResolvedIPValidation>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#TlsInterceptPropertiesRequest")]
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallRuleGroupEntry")]
 #[derive(Debug, Clone, Default)]
-pub struct TlsInterceptPropertiesRequest {
-    pub pca_arn: Option<String>,
-    pub tls_intercept_mode: Option<String>,
+pub struct FirewallRuleGroupEntry {
+    pub priority: Option<i32>,
+    pub resource_arn: Option<String>,
+    pub inline_rule_group: Option<FirewallRuleGroup>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#Proxy")]
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallRuleGroup")]
 #[derive(Debug, Clone, Default)]
-pub struct Proxy {
-    pub create_time: Option<::aws_smithy_types::DateTime>,
-    pub delete_time: Option<::aws_smithy_types::DateTime>,
-    pub update_time: Option<::aws_smithy_types::DateTime>,
-    pub failure_code: Option<String>,
-    pub failure_message: Option<String>,
-    pub proxy_state: Option<String>,
-    pub proxy_modify_state: Option<String>,
-    pub nat_gateway_id: Option<String>,
-    pub proxy_configuration_name: Option<String>,
-    pub proxy_configuration_arn: Option<String>,
-    pub proxy_name: Option<String>,
-    pub proxy_arn: Option<String>,
-    pub listener_properties: Option<Vec<ListenerProperty>>,
-    pub tls_intercept_properties: Option<TlsInterceptProperties>,
-    pub tags: Option<Vec<Tag>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#TlsInterceptProperties")]
-#[derive(Debug, Clone, Default)]
-pub struct TlsInterceptProperties {
-    pub pca_arn: Option<String>,
-    pub tls_intercept_mode: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#UnsupportedOperationException")]
-#[derive(Debug, Clone, Default)]
-pub struct UnsupportedOperationException {
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyRulesByRequestPhase")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyRulesByRequestPhase {
-    pub pre_dns: Option<Vec<ProxyRule>>,
-    pub pre_request: Option<Vec<ProxyRule>>,
-    pub post_response: Option<Vec<ProxyRule>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyRule")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyRule {
-    pub proxy_rule_name: Option<String>,
-    pub description: Option<String>,
-    pub action: Option<String>,
-    pub conditions: Option<Vec<ProxyRuleCondition>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyRuleCondition")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyRuleCondition {
-    pub condition_operator: Option<String>,
-    pub condition_key: Option<String>,
-    pub condition_values: Option<Vec<String>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ProxyRuleGroup")]
-#[derive(Debug, Clone, Default)]
-pub struct ProxyRuleGroup {
-    pub proxy_rule_group_name: Option<String>,
-    pub proxy_rule_group_arn: Option<String>,
-    pub create_time: Option<::aws_smithy_types::DateTime>,
-    pub delete_time: Option<::aws_smithy_types::DateTime>,
-    pub rules: Option<ProxyRulesByRequestPhase>,
-    pub description: Option<String>,
-    pub tags: Option<Vec<Tag>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleGroup")]
-#[derive(Debug, Clone, Default)]
-pub struct RuleGroup {
+pub struct FirewallRuleGroup {
+    pub rules_source: FirewallRulesSource,
     pub rule_variables: Option<RuleVariables>,
     pub reference_sets: Option<ReferenceSets>,
-    pub rules_source: RulesSource,
-    pub stateful_rule_options: Option<StatefulRuleOptions>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallRulesSource")]
+#[derive(Debug, Clone, Default)]
+pub struct FirewallRulesSource {
+    pub rules_string: Option<String>,
+    pub firewall_rules: Option<Vec<FirewallRule>>,
+    pub rules_source_list: Option<RulesSourceList>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallRule")]
+#[derive(Debug, Clone, Default)]
+pub struct FirewallRule {
+    pub action: String,
+    pub action_scope: String,
+    pub hook: String,
+    pub protocol: String,
+    pub source_i_ps: Option<String>,
+    pub dest_i_ps: Option<String>,
+    pub source_ports: Option<String>,
+    pub dest_ports: Option<String>,
+    pub rule_options: Option<Vec<RuleOption>>,
+    pub accept_prior_hooks: Option<bool>,
+    pub alert_enabled: Option<bool>,
+    pub bypass_ips_enabled: Option<bool>,
+    pub rule_metadata: Option<RuleMetadata>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleOption")]
+#[derive(Debug, Clone, Default)]
+pub struct RuleOption {
+    pub keyword: String,
+    pub settings: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleMetadata")]
+#[derive(Debug, Clone, Default)]
+pub struct RuleMetadata {
+    pub rule_enabled: Option<bool>,
+    pub rule_description: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RulesSourceList")]
+#[derive(Debug, Clone, Default)]
+pub struct RulesSourceList {
+    pub targets: Vec<String>,
+    pub target_types: Vec<String>,
+    pub generated_rules_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleVariables")]
@@ -485,12 +468,19 @@ pub struct RuleGroup {
 pub struct RuleVariables {
     pub ip_sets: Option<std::collections::HashMap<String, IPSet>>,
     pub port_sets: Option<std::collections::HashMap<String, PortSet>>,
+    pub context_sets: Option<std::collections::HashMap<String, ContextSet>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#PortSet")]
 #[derive(Debug, Clone, Default)]
 pub struct PortSet {
     pub definition: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ContextSet")]
+#[derive(Debug, Clone, Default)]
+pub struct ContextSet {
+    pub definition: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ReferenceSets")]
@@ -505,6 +495,69 @@ pub struct IPSetReference {
     pub reference_arn: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#IpsRuleGroupEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct IpsRuleGroupEntry {
+    pub resource_arn: Option<String>,
+    pub inline_rule_group: Option<IpsRuleGroup>,
+    pub r#override: Option<IpsRuleGroupOverride>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#IpsRuleGroup")]
+#[derive(Debug, Clone, Default)]
+pub struct IpsRuleGroup {
+    pub rules_source: IpsRulesSource,
+    pub rule_variables: Option<RuleVariables>,
+    pub reference_sets: Option<ReferenceSets>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#IpsRulesSource")]
+#[derive(Debug, Clone, Default)]
+pub struct IpsRulesSource {
+    pub rules_string: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#IpsRuleGroupOverride")]
+#[derive(Debug, Clone, Default)]
+pub struct IpsRuleGroupOverride {
+    pub action: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#StatefulEngineOptionsV2")]
+#[derive(Debug, Clone, Default)]
+pub struct StatefulEngineOptionsV2 {
+    pub stream_exception_policy: Option<String>,
+    pub flow_timeouts: Option<FlowTimeouts>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#FirewallPolicyV2Response")]
+#[derive(Debug, Clone, Default)]
+pub struct FirewallPolicyV2Response {
+    pub firewall_policy_v2_name: String,
+    pub firewall_policy_v2_arn: String,
+    pub firewall_policy_v2_id: String,
+    pub description: Option<String>,
+    pub firewall_policy_v2_status: Option<String>,
+    pub status_message: Option<String>,
+    pub tags: Option<Vec<Tag>>,
+    pub consumed_firewall_rule_capacity: Option<i32>,
+    pub consumed_ips_rule_capacity: Option<i32>,
+    pub consumed_ips_domain_capacity: Option<i32>,
+    pub number_of_associations: Option<i32>,
+    pub encryption_configuration: Option<EncryptionConfiguration>,
+    pub errors: Option<Vec<FirewallPolicyError>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleGroup")]
+#[derive(Debug, Clone, Default)]
+pub struct RuleGroup {
+    pub rule_variables: Option<RuleVariables>,
+    pub reference_sets: Option<ReferenceSets>,
+    pub rules_source: RulesSource,
+    pub stateful_rule_options: Option<StatefulRuleOptions>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RulesSource")]
 #[derive(Debug, Clone, Default)]
 pub struct RulesSource {
@@ -512,14 +565,6 @@ pub struct RulesSource {
     pub rules_source_list: Option<RulesSourceList>,
     pub stateful_rules: Option<Vec<StatefulRule>>,
     pub stateless_rules_and_custom_actions: Option<StatelessRulesAndCustomActions>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RulesSourceList")]
-#[derive(Debug, Clone, Default)]
-pub struct RulesSourceList {
-    pub targets: Vec<String>,
-    pub target_types: Vec<String>,
-    pub generated_rules_type: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#StatefulRule")]
@@ -539,13 +584,6 @@ pub struct Header {
     pub direction: String,
     pub destination: String,
     pub destination_port: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#RuleOption")]
-#[derive(Debug, Clone, Default)]
-pub struct RuleOption {
-    pub keyword: String,
-    pub settings: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#StatelessRulesAndCustomActions")]
@@ -655,6 +693,7 @@ pub struct ServerCertificateConfiguration {
     pub scopes: Option<Vec<ServerCertificateScope>>,
     pub certificate_authority_arn: Option<String>,
     pub check_certificate_revocation_status: Option<CheckCertificateRevocationStatusActions>,
+    pub default_decryption_behavior: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#ServerCertificate")]
@@ -671,6 +710,15 @@ pub struct ServerCertificateScope {
     pub source_ports: Option<Vec<PortRange>>,
     pub destination_ports: Option<Vec<PortRange>>,
     pub protocols: Option<Vec<i32>>,
+    pub domain_match: Option<DomainMatch>,
+    pub decryption_action: Option<String>,
+    pub deployment_mode: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#DomainMatch")]
+#[derive(Debug, Clone, Default)]
+pub struct DomainMatch {
+    pub domains: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#CheckCertificateRevocationStatusActions")]
@@ -730,6 +778,12 @@ pub struct AZSyncState {
     pub attachment: Option<Attachment>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#UnsupportedOperationException")]
+#[derive(Debug, Clone, Default)]
+pub struct UnsupportedOperationException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#InvalidResourcePolicyException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidResourcePolicyException {
@@ -766,8 +820,12 @@ pub struct ResourceOwnerCheckException {
     pub message: Option<String>,
 }
 
+/// The values `ActionScope` accepts on the wire.
+pub const ACTION_SCOPE_VALUES: &[&str] = &["FLOW", "HOOK", "PACKET", "TX"];
+
+
 /// The values `AttachmentStatus` accepts on the wire.
-pub const ATTACHMENT_STATUS_VALUES: &[&str] = &["CREATING", "DELETING", "ERROR", "FAILED", "READY", "SCALING"];
+pub const ATTACHMENT_STATUS_VALUES: &[&str] = &["CREATING", "DELETING", "ERROR", "FAILED", "READY", "SCALING", "STANDBY"];
 
 
 /// The values `ConfigurationSyncState` accepts on the wire.
@@ -782,8 +840,20 @@ pub const CONTAINER_ASSOCIATION_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATING",
 pub const CONTAINER_MONITORING_TYPE_VALUES: &[&str] = &["ECS", "EKS"];
 
 
+/// The values `ContextStoreSyncStatus` accepts on the wire.
+pub const CONTEXT_STORE_SYNC_STATUS_VALUES: &[&str] = &["FULLY_RESOLVED", "PARTIALLY_RESOLVED", "SYNCING", "SYNC_FAILED", "UNRESOLVED"];
+
+
+/// The values `ContextType` accepts on the wire.
+pub const CONTEXT_TYPE_VALUES: &[&str] = &["Attachment", "ResourceId", "SegmentId", "Subnet"];
+
+
 /// The values `DNSExpiryExceptionPolicy` accepts on the wire.
 pub const D_N_S_EXPIRY_EXCEPTION_POLICY_VALUES: &[&str] = &["CONTINUE", "DROP", "REJECT"];
+
+
+/// The values `DecryptionAction` accepts on the wire.
+pub const DECRYPTION_ACTION_VALUES: &[&str] = &["BYPASS", "DECRYPT"];
 
 
 /// The values `EnabledAnalysisType` accepts on the wire.
@@ -794,12 +864,28 @@ pub const ENABLED_ANALYSIS_TYPE_VALUES: &[&str] = &["HTTP_HOST", "TLS_SNI"];
 pub const ENCRYPTION_TYPE_VALUES: &[&str] = &["AWS_OWNED_KMS_KEY", "CUSTOMER_KMS"];
 
 
+/// The values `EnforcementMode` accepts on the wire.
+pub const ENFORCEMENT_MODE_VALUES: &[&str] = &["POLICY_CONTROLLED"];
+
+
 /// The values `FirewallPolicyErrorCode` accepts on the wire.
 pub const FIREWALL_POLICY_ERROR_CODE_VALUES: &[&str] = &["DNS_FIREWALL_RULE_GROUP_UNAVAILABLE", "ROUTE53_RESOLVED_IP_VALIDATION_MISSING"];
 
 
+/// The values `FirewallRuleAction` accepts on the wire.
+pub const FIREWALL_RULE_ACTION_VALUES: &[&str] = &["ACCEPT", "DROP", "REJECT", "REJECT_BOTH", "REJECT_DST"];
+
+
+/// The values `FirewallRuleProtocol` accepts on the wire.
+pub const FIREWALL_RULE_PROTOCOL_VALUES: &[&str] = &["BITTORRENT_DHT", "DCERPC", "DHCP", "DNP3", "DNS", "DOH2", "FTP", "FTP_DATA", "HTTP", "HTTP2", "ICMP", "ICMPV4", "ICMPV6", "IKEV2", "IP", "IPV4", "IPV6", "KRB5", "LDAP", "MDNS", "MQTT", "MSN", "NFS", "NTP", "PGSQL", "POP3", "QUIC", "RDP", "RFB", "SCTP", "SMB", "SMTP", "SNMP", "SSH", "TCP", "TELNET", "TFTP", "TLS", "UDP", "WEBSOCKET"];
+
+
 /// The values `FirewallStatusValue` accepts on the wire.
-pub const FIREWALL_STATUS_VALUE_VALUES: &[&str] = &["DELETING", "FAILED", "PROVISIONING", "READY"];
+pub const FIREWALL_STATUS_VALUE_VALUES: &[&str] = &["DELETING", "FAILED", "PROVISIONING", "READY", "STANDBY"];
+
+
+/// The values `FirewallType` accepts on the wire.
+pub const FIREWALL_TYPE_VALUES: &[&str] = &["FIREWALL", "IGW_FIREWALL"];
 
 
 /// The values `FlowOperationStatus` accepts on the wire.
@@ -812,6 +898,10 @@ pub const FLOW_OPERATION_TYPE_VALUES: &[&str] = &["FLOW_CAPTURE", "FLOW_FLUSH"];
 
 /// The values `GeneratedRulesType` accepts on the wire.
 pub const GENERATED_RULES_TYPE_VALUES: &[&str] = &["ALERTLIST", "ALLOWLIST", "DENYLIST", "REJECTLIST"];
+
+
+/// The values `HookKey` accepts on the wire.
+pub const HOOK_KEY_VALUES: &[&str] = &["BITTORRENT_DHT_REQUEST_COMPLETE", "BITTORRENT_DHT_REQUEST_STARTED", "BITTORRENT_DHT_RESPONSE_COMPLETE", "BITTORRENT_DHT_RESPONSE_STARTED", "DCERPC_REQUEST_COMPLETE", "DCERPC_REQUEST_STARTED", "DCERPC_RESPONSE_COMPLETE", "DCERPC_RESPONSE_STARTED", "DHCP_REQUEST_COMPLETE", "DHCP_REQUEST_STARTED", "DHCP_RESPONSE_COMPLETE", "DHCP_RESPONSE_STARTED", "DNP3_REQUEST_COMPLETE", "DNP3_REQUEST_STARTED", "DNP3_RESPONSE_COMPLETE", "DNP3_RESPONSE_STARTED", "DNS_REQUEST_COMPLETE", "DNS_REQUEST_STARTED", "DNS_RESPONSE_COMPLETE", "DNS_RESPONSE_STARTED", "DOH2_GLOBAL_REQUEST_COMPLETE", "DOH2_GLOBAL_REQUEST_STARTED", "DOH2_GLOBAL_RESPONSE_COMPLETE", "DOH2_GLOBAL_RESPONSE_STARTED", "DOH2_STREAM_REQUEST_CLOSED", "DOH2_STREAM_REQUEST_COMPLETE", "DOH2_STREAM_REQUEST_DATA", "DOH2_STREAM_REQUEST_HEADERS", "DOH2_STREAM_REQUEST_STARTED", "DOH2_STREAM_RESPONSE_CLOSED", "DOH2_STREAM_RESPONSE_COMPLETE", "DOH2_STREAM_RESPONSE_DATA", "DOH2_STREAM_RESPONSE_HEADERS", "DOH2_STREAM_RESPONSE_STARTED", "FTP_DATA_REQUEST_COMPLETE", "FTP_DATA_REQUEST_STARTED", "FTP_DATA_RESPONSE_COMPLETE", "FTP_DATA_RESPONSE_STARTED", "FTP_REQUEST_COMPLETE", "FTP_REQUEST_STARTED", "FTP_RESPONSE_COMPLETE", "FTP_RESPONSE_STARTED", "HTTP1_REQUEST_BODY", "HTTP1_REQUEST_COMPLETE", "HTTP1_REQUEST_HEADERS", "HTTP1_REQUEST_LINE", "HTTP1_REQUEST_STARTED", "HTTP1_REQUEST_TRAILER", "HTTP1_RESPONSE_BODY", "HTTP1_RESPONSE_COMPLETE", "HTTP1_RESPONSE_HEADERS", "HTTP1_RESPONSE_LINE", "HTTP1_RESPONSE_STARTED", "HTTP1_RESPONSE_TRAILER", "HTTP2_GLOBAL_REQUEST_COMPLETE", "HTTP2_GLOBAL_REQUEST_STARTED", "HTTP2_GLOBAL_RESPONSE_COMPLETE", "HTTP2_GLOBAL_RESPONSE_STARTED", "HTTP2_STREAM_REQUEST_CLOSED", "HTTP2_STREAM_REQUEST_COMPLETE", "HTTP2_STREAM_REQUEST_DATA", "HTTP2_STREAM_REQUEST_HEADERS", "HTTP2_STREAM_REQUEST_STARTED", "HTTP2_STREAM_RESPONSE_CLOSED", "HTTP2_STREAM_RESPONSE_COMPLETE", "HTTP2_STREAM_RESPONSE_DATA", "HTTP2_STREAM_RESPONSE_HEADERS", "HTTP2_STREAM_RESPONSE_STARTED", "ICMPV4_ALL", "ICMPV4_FLOW_START", "ICMPV4_PRE_FLOW", "ICMPV4_PRE_STREAM", "ICMPV6_ALL", "ICMPV6_FLOW_START", "ICMPV6_PRE_FLOW", "ICMPV6_PRE_STREAM", "ICMP_ALL", "ICMP_FLOW_START", "ICMP_PRE_FLOW", "ICMP_PRE_STREAM", "IKE_REQUEST_COMPLETE", "IKE_REQUEST_STARTED", "IKE_RESPONSE_COMPLETE", "IKE_RESPONSE_STARTED", "IPV4_ALL", "IPV4_FLOW_START", "IPV4_PRE_FLOW", "IPV4_PRE_STREAM", "IPV6_ALL", "IPV6_FLOW_START", "IPV6_PRE_FLOW", "IPV6_PRE_STREAM", "IP_ALL", "IP_FLOW_START", "IP_PRE_FLOW", "IP_PRE_STREAM", "KRB5_REQUEST_COMPLETE", "KRB5_REQUEST_STARTED", "KRB5_RESPONSE_COMPLETE", "KRB5_RESPONSE_STARTED", "LDAP_REQUEST_COMPLETE", "LDAP_REQUEST_STARTED", "LDAP_RESPONSE_COMPLETE", "LDAP_RESPONSE_STARTED", "MDNS_REQUEST_COMPLETE", "MDNS_REQUEST_STARTED", "MDNS_RESPONSE_COMPLETE", "MDNS_RESPONSE_STARTED", "MQTT_REQUEST_COMPLETE", "MQTT_REQUEST_STARTED", "MQTT_RESPONSE_COMPLETE", "MQTT_RESPONSE_STARTED", "NFS_REQUEST_COMPLETE", "NFS_REQUEST_STARTED", "NFS_RESPONSE_COMPLETE", "NFS_RESPONSE_STARTED", "NTP_REQUEST_COMPLETE", "NTP_REQUEST_STARTED", "NTP_RESPONSE_COMPLETE", "NTP_RESPONSE_STARTED", "PGSQL_REQUEST_COMPLETE", "PGSQL_REQUEST_STARTED", "PGSQL_RESPONSE_COMPLETE", "PGSQL_RESPONSE_STARTED", "POP3_REQUEST_COMPLETE", "POP3_REQUEST_STARTED", "POP3_RESPONSE_COMPLETE", "POP3_RESPONSE_STARTED", "QUIC_REQUEST_COMPLETE", "QUIC_REQUEST_STARTED", "QUIC_RESPONSE_COMPLETE", "QUIC_RESPONSE_STARTED", "RDP_REQUEST_COMPLETE", "RDP_REQUEST_STARTED", "RDP_RESPONSE_COMPLETE", "RDP_RESPONSE_STARTED", "RFB_REQUEST_COMPLETE", "RFB_REQUEST_STARTED", "RFB_RESPONSE_COMPLETE", "RFB_RESPONSE_STARTED", "SCTP_ALL", "SCTP_FLOW_START", "SCTP_PRE_FLOW", "SCTP_PRE_STREAM", "SMB_REQUEST_COMPLETE", "SMB_REQUEST_STARTED", "SMB_RESPONSE_COMPLETE", "SMB_RESPONSE_STARTED", "SMTP_REQUEST_COMPLETE", "SMTP_REQUEST_DATA", "SMTP_REQUEST_STARTED", "SMTP_RESPONSE_COMPLETE", "SMTP_RESPONSE_DATA", "SMTP_RESPONSE_STARTED", "SNMP_REQUEST_COMPLETE", "SNMP_REQUEST_STARTED", "SNMP_RESPONSE_COMPLETE", "SNMP_RESPONSE_STARTED", "SSH_REQUEST_BANNER_DONE", "SSH_REQUEST_BANNER_WAIT_EOL", "SSH_REQUEST_FINISHED", "SSH_REQUEST_IN_PROGRESS", "SSH_RESPONSE_BANNER_DONE", "SSH_RESPONSE_BANNER_WAIT_EOL", "SSH_RESPONSE_FINISHED", "SSH_RESPONSE_IN_PROGRESS", "TCP_ALL", "TCP_FLOW_START", "TCP_PRE_FLOW", "TCP_PRE_STREAM", "TELNET_REQUEST_COMPLETE", "TELNET_REQUEST_STARTED", "TELNET_RESPONSE_COMPLETE", "TELNET_RESPONSE_STARTED", "TFTP_REQUEST_COMPLETE", "TFTP_REQUEST_STARTED", "TFTP_RESPONSE_COMPLETE", "TFTP_RESPONSE_STARTED", "TLS_CLIENT_CERT", "TLS_CLIENT_DATA", "TLS_CLIENT_FINISHED", "TLS_CLIENT_HELLO", "TLS_CLIENT_STARTED", "TLS_SERVER_CERT", "TLS_SERVER_DATA", "TLS_SERVER_FINISHED", "TLS_SERVER_HELLO", "TLS_SERVER_STARTED", "UDP_ALL", "UDP_FLOW_START", "UDP_PRE_FLOW", "UDP_PRE_STREAM", "WEBSOCKET_REQUEST_COMPLETE", "WEBSOCKET_REQUEST_STARTED", "WEBSOCKET_RESPONSE_COMPLETE", "WEBSOCKET_RESPONSE_STARTED"];
 
 
 /// The values `IPAddressType` accepts on the wire.
@@ -846,12 +936,16 @@ pub const OVERRIDE_ACTION_VALUES: &[&str] = &["DROP_TO_ALERT"];
 pub const PER_OBJECT_SYNC_STATUS_VALUES: &[&str] = &["CAPACITY_CONSTRAINED", "DEPRECATED", "IN_SYNC", "NOT_SUBSCRIBED", "PENDING"];
 
 
+/// The values `PolicyDefaultAction` accepts on the wire.
+pub const POLICY_DEFAULT_ACTION_VALUES: &[&str] = &["ACCEPT", "ALERT", "DROP", "REJECT"];
+
+
+/// The values `PolicyMode` accepts on the wire.
+pub const POLICY_MODE_VALUES: &[&str] = &["ENFORCE", "MONITOR"];
+
+
 /// The values `ProxyModifyState` accepts on the wire.
 pub const PROXY_MODIFY_STATE_VALUES: &[&str] = &["COMPLETED", "FAILED", "MODIFYING"];
-
-
-/// The values `ProxyRulePhaseAction` accepts on the wire.
-pub const PROXY_RULE_PHASE_ACTION_VALUES: &[&str] = &["ALERT", "ALLOW", "DENY"];
 
 
 /// The values `ProxyState` accepts on the wire.
@@ -870,6 +964,10 @@ pub const RESOURCE_MANAGED_TYPE_VALUES: &[&str] = &["ACTIVE_THREAT_DEFENSE", "AW
 pub const RESOURCE_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETING", "ERROR", "UPDATING"];
 
 
+/// The values `ResourceType` accepts on the wire.
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["SecurityGroup", "Subnet", "TGWAttachment", "VPC"];
+
+
 /// The values `RevocationCheckAction` accepts on the wire.
 pub const REVOCATION_CHECK_ACTION_VALUES: &[&str] = &["DROP", "PASS", "REJECT"];
 
@@ -878,16 +976,16 @@ pub const REVOCATION_CHECK_ACTION_VALUES: &[&str] = &["DROP", "PASS", "REJECT"];
 pub const ROUTE53_RESOLVED_I_P_VALIDATION_ACTION_VALUES: &[&str] = &["ALERT", "DROP", "REJECT"];
 
 
-/// The values `RuleGroupRequestPhase` accepts on the wire.
-pub const RULE_GROUP_REQUEST_PHASE_VALUES: &[&str] = &["POST_RES", "PRE_DNS", "PRE_REQ"];
-
-
 /// The values `RuleGroupType` accepts on the wire.
-pub const RULE_GROUP_TYPE_VALUES: &[&str] = &["STATEFUL", "STATEFUL_DOMAIN", "STATELESS"];
+pub const RULE_GROUP_TYPE_VALUES: &[&str] = &["FIREWALL", "IPS", "STATEFUL", "STATEFUL_DOMAIN", "STATELESS"];
 
 
 /// The values `RuleOrder` accepts on the wire.
 pub const RULE_ORDER_VALUES: &[&str] = &["DEFAULT_ACTION_ORDER", "STRICT_ORDER"];
+
+
+/// The values `RuleOutputFormat` accepts on the wire.
+pub const RULE_OUTPUT_FORMAT_VALUES: &[&str] = &["FIREWALL_RULES", "RULES_STRING"];
 
 
 /// The values `StatefulAction` accepts on the wire.
@@ -906,6 +1004,10 @@ pub const STATEFUL_RULE_PROTOCOL_VALUES: &[&str] = &["DCERPC", "DHCP", "DNS", "F
 pub const STREAM_EXCEPTION_POLICY_VALUES: &[&str] = &["CONTINUE", "DROP", "REJECT"];
 
 
+/// The values `StreamExceptionPolicyV2` accepts on the wire.
+pub const STREAM_EXCEPTION_POLICY_V2_VALUES: &[&str] = &["DROP", "REJECT"];
+
+
 /// The values `SubscriptionStatus` accepts on the wire.
 pub const SUBSCRIPTION_STATUS_VALUES: &[&str] = &["NOT_SUBSCRIBED", "SUBSCRIBED"];
 
@@ -918,6 +1020,10 @@ pub const SUMMARY_RULE_OPTION_VALUES: &[&str] = &["METADATA", "MSG", "SID"];
 pub const T_C_P_FLAG_VALUES: &[&str] = &["ACK", "CWR", "ECE", "FIN", "PSH", "RST", "SYN", "URG"];
 
 
+/// The values `TLSInspectionScopeDeploymentMode` accepts on the wire.
+pub const T_L_S_INSPECTION_SCOPE_DEPLOYMENT_MODE_VALUES: &[&str] = &["ALL", "EXPLICIT_PROXY_ONLY", "TRANSPARENT_FIREWALL_ONLY"];
+
+
 /// The values `TargetType` accepts on the wire.
 pub const TARGET_TYPE_VALUES: &[&str] = &["AWS_ROUTE_53_RESOLVED_DOMAIN", "HTTP_HOST", "TLS_SNI"];
 
@@ -928,5 +1034,9 @@ pub const TLS_INTERCEPT_MODE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 /// The values `TransitGatewayAttachmentStatus` accepts on the wire.
 pub const TRANSIT_GATEWAY_ATTACHMENT_STATUS_VALUES: &[&str] = &["CREATING", "DELETED", "DELETING", "ERROR", "FAILED", "PENDING_ACCEPTANCE", "READY", "REJECTED", "REJECTING"];
+
+
+/// The values `TransparentFilteringNatScope` accepts on the wire.
+pub const TRANSPARENT_FILTERING_NAT_SCOPE_VALUES: &[&str] = &["NAT_ALL", "NAT_NONE"];
 
 

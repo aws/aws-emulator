@@ -229,6 +229,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(DescribeRuleGroupOutput {
             update_token: record.update_token.clone(),
             rule_group: Some(record.rule_group.clone()),
+            // `FirewallRuleGroup` and `IpsRuleGroup` are the documents of a
+            // firewall-engine and an IPS-engine rule group, the kinds a Next
+            // Generation policy evaluates. A rule group this store holds was
+            // written through the `RuleGroup` document — the writes refuse the
+            // engine kinds rather than storing one — so neither projection has a
+            // document to report and both stay absent. `RuleOutputFormat` picks
+            // the form those engine rules are returned in and "applies only to
+            // FIREWALL and IPS rule groups", so it selects the form of nothing
+            // here: the rule group this call reports carries no engine rules to
+            // return in either form.
+            firewall_rule_group: None,
+            ips_rule_group: None,
             rule_group_response,
         })
     }

@@ -28,10 +28,11 @@ pub struct CreateFirewallInput {
     pub transit_gateway_id: Option<String>,
     pub availability_zone_mappings: Option<Vec<AvailabilityZoneMapping>>,
     pub availability_zone_change_protection: bool,
-    pub nat_gateway_mappings: Option<Vec<NatGatewayMapping>>,
+    pub igw_firewall_configuration: Option<IgwFirewallConfiguration>,
+    pub nat_gateway_create_mappings: Option<Vec<NatGatewayCreateMapping>>,
     pub proxy_settings: Option<ProxySettings>,
-    pub no_source_preservation: bool,
     pub vpc_endpoint: Option<VpcEndpoint>,
+    pub transparent_filtering_nat_scope: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#CreateFirewallResponse")]

@@ -18,6 +18,7 @@ pub struct AssociateSubnetsInput {
     pub firewall_arn: Option<String>,
     pub firewall_name: Option<String>,
     pub subnet_mappings: Vec<SubnetMapping>,
+    pub nat_gateway_create_mappings: Option<Vec<NatGatewayCreateMapping>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.networkfirewall#AssociateSubnetsResponse")]

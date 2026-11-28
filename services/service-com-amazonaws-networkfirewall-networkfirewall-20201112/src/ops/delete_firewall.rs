@@ -229,9 +229,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteFirewall<En
             return Vec::new();
         };
         let state = state.lock();
-        let Ok(key) = state.resolve_firewall(
+        let Ok(key) = state.resolve_firewall_request(
             input.firewall_name.as_deref(),
             input.firewall_arn.as_deref(),
+            input.firewall_type.as_deref(),
         ) else {
             return Vec::new();
         };
@@ -266,11 +267,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteFirewall<En
         let mut state = state.lock();
 
         let key = state
-            .resolve_firewall(
+            .resolve_firewall_request(
                 input.firewall_name.as_deref(),
                 input.firewall_arn.as_deref(),
+                input.firewall_type.as_deref(),
             )
             .map_err(delete_lookup_error)?;
+
+        // "You can't specify `TRUE` for a firewall that isn't a proxy mode
+        // firewall" (`DeleteFirewallRequest$DeleteAssociatedNatGateways`): the
+        // member asks this service to delete the NAT gateways it created for a
+        // proxy mode firewall, and every firewall it holds is a firewall-endpoint
+        // one — `CreateFirewall` refuses a proxy mode firewall — so there is no
+        // such firewall for the request to name and nothing to delete. Refused
+        // rather than ignored, and refused AFTER the firewall is resolved,
+        // because the rule is a property of the firewall the request named.
+        if input.delete_associated_nat_gateways {
+            return Err(DeleteFirewallErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    message: Some(
+                        crate::state::NAT_GATEWAYS_NOT_PROXY_MODE_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
 
         // Take the record out, and put it straight back when the firewall is
         // protected: one probe, and the refusal provably leaves the store as it
