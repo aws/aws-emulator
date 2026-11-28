@@ -4669,6 +4669,7 @@ pub mod kubernetes_config_maps;
 pub mod kubernetes_container_run;
 pub mod kubernetes_events;
 pub mod kubernetes_fargate;
+pub mod kubernetes_fargate_logging;
 pub mod kubernetes_image_pull;
 pub mod kubernetes_impersonation;
 pub mod kubernetes_lists;

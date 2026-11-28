@@ -42,11 +42,21 @@
 //! [`MAX_PROGRAM_WORDS`] and [`MAX_PROGRAM_WORD_BYTES`] on the vector itself,
 //! [`MAX_CONTAINERS_PERFORMED_PER_POD`] on how many programs one pod buys, and
 //! [`MAX_CONTAINER_RUNS_PER_REQUEST`] on how many pods one request runs the containers
-//! of. A run keeps nothing of what a program WROTE: this server serves no pod log
-//! endpoint, so those lines are a stream nothing reads, and the session is not asked for
-//! them. The work is synchronous and CPU-bound, so it is performed off the request worker
+//! of. The work is synchronous and CPU-bound, so it is performed off the request worker
 //! ([`settle_due_runs`]), one pod per hop, and the worker serving the request is released
 //! while it runs.
+//!
+//! # What a program WROTE
+//!
+//! Nothing of it is kept in this store: this server serves no pod log endpoint, so there is
+//! no read of this service those lines would answer. They are kept only where something
+//! DELIVERS them — a pod on AWS Fargate capacity, whose log router delivers what its
+//! containers wrote to the destination the cluster's `aws-logging` ConfigMap names
+//! ([`super::kubernetes_fargate_logging`]) — and then only for as long as the delivery
+//! takes: the session is asked for the lines of a pod that has such a destination, bounded
+//! by [`MAX_ROUTED_LINES_PER_CONTAINER`], [`MAX_ROUTED_LINE_BYTES`] and
+//! [`MAX_ROUTED_BYTES_PER_POD`] across the whole pod, and is not asked for them at all for a
+//! pod that has none.
 //!
 //! # A container nothing performed CLAIMS NOTHING
 //!
@@ -88,16 +98,21 @@
 //! is served at all ([`super::kubernetes_api::serve`]) rather than inside the routing.
 
 use ::service_common::posix_shell_session::{
-    SessionConfig, ShellSession, BUILT_IN_COMMANDS, VOLUME_COMMANDS,
+    OutputLimits, SessionConfig, ShellSession, BUILT_IN_COMMANDS, VOLUME_COMMANDS,
 };
 
 use super::kubernetes_events::{
     EventObject, RecordedEvent, EVENT_SOURCE_KUBELET, EVENT_TYPE_NORMAL, EVENT_TYPE_WARNING,
     INVOLVED_KIND_POD,
 };
+use super::kubernetes_fargate_logging::{
+    self as fargate_logging, CloudWatchOutput, ContainerOutput, PodLogDelivery,
+    MAX_ROUTED_BYTES_PER_POD, MAX_ROUTED_LINES_PER_CONTAINER, MAX_ROUTED_LINE_BYTES,
+};
 use super::kubernetes_image_pull::PULL_REASON_FAILED;
 use super::kubernetes_objects::{
-    POD_NO_CONTAINER_RUNTIME_MESSAGE, POD_PHASE_FAILED, POD_PHASE_SUCCEEDED, POD_START_DELAY,
+    ClusterObjects, POD_NO_CONTAINER_RUNTIME_MESSAGE, POD_PHASE_FAILED, POD_PHASE_SUCCEEDED,
+    POD_START_DELAY,
 };
 use super::kubernetes_pod_spec::{
     MAX_CONTAINERS_PER_POD, POD_RESTART_POLICY_ALWAYS, POD_RESTART_POLICY_NEVER,
@@ -310,6 +325,9 @@ struct ContainerProgram {
 /// The run one pod's containers are owed at `now`: what to run, and where to record it.
 #[derive(Debug)]
 struct DueRun {
+    /// The Region the cluster runs in, which is where a delivery of this pod's output is
+    /// addressed when its configuration names no other.
+    region: String,
     namespace: String,
     pod_name: String,
     pod_uid: String,
@@ -318,26 +336,85 @@ struct DueRun {
     /// The instant the node took the pod, which is when its containers were started.
     at: SystemTime,
     containers: Vec<ContainerProgram>,
+    /// Where what this pod's containers write is DELIVERED, and `None` for a pod nothing
+    /// delivers the output of — a pod that is not on Fargate capacity, and one on a cluster
+    /// whose `aws-logging` ConfigMap configures no destination
+    /// ([`super::kubernetes_fargate_logging`]).
+    logs: Option<PodLogDestination>,
+}
+
+/// Where one pod's output goes: the destinations the cluster's log router is configured
+/// with, and the Pod execution role the delivery is made as.
+#[derive(Debug, Clone)]
+struct PodLogDestination {
+    /// `FargateProfile$podExecutionRoleArn` of the profile that selected the pod.
+    pod_execution_role: String,
+    outputs: Vec<CloudWatchOutput>,
+}
+
+impl DueRun {
+    /// This pod's delivery of `written`, and `None` for a pod nothing delivers the output
+    /// of ([`Self::logs`]).
+    fn log_delivery(&self, written: Vec<ContainerOutput>) -> Option<PodLogDelivery> {
+        let destination = self.logs.clone()?;
+        Some(PodLogDelivery {
+            region: self.region.clone(),
+            namespace: self.namespace.clone(),
+            pod_name: self.pod_name.clone(),
+            pod_uid: self.pod_uid.clone(),
+            pod_execution_role: destination.pod_execution_role,
+            outputs: destination.outputs,
+            containers: written,
+            at: self.at,
+        })
+    }
+}
+
+/// What recording one pod's run came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunRecorded {
+    /// This request's run is the one the pod now carries, so this request is the one that
+    /// delivers what those containers wrote.
+    Recorded,
+    /// The pod already carried a run — another request performed its containers while this
+    /// one was performing them — or it is no longer the pod this run was for, so the outcome
+    /// already recorded is the one that stands and nothing more is owed for it here.
+    AlreadyRun,
+    /// This cluster's API plane is gone from the store: there is nothing left to record
+    /// against.
+    PlaneGone,
 }
 
 /// Perform the programs of every pod of the cluster keyed `key` whose containers the
 /// clock already owes their start, recording each outcome and the events the kubelet
-/// recorded for it.
+/// recorded for it — and delivering what those containers wrote to the destination the
+/// cluster's log router is configured with ([`super::kubernetes_fargate_logging`]).
 ///
 /// Performing a caller's own program is synchronous, CPU-BOUND work, so it is performed
 /// OFF the request worker ([`::tokio::task::spawn_blocking`]) — one pod per hop, so the
 /// worker serving the request is handed back between pods and the request's own deadline,
 /// a health check and a shutdown all have an await point to land on while a program is
 /// being performed. No store of this service is held across that hop either (see the
-/// module docs).
+/// module docs), nor across the delivery that follows it.
 ///
 /// Idempotent: a pod that already carries an outcome is left exactly as it was, so
-/// running this again — which every later request does — changes nothing a caller sees.
+/// running this again — which every later request does — changes nothing a caller sees,
+/// and its output is delivered once, by the request whose run the pod carries.
 pub async fn settle_due_runs(
     state: &::engine::ServiceState<ServiceStore>,
     key: &(String, String),
     now: SystemTime,
 ) {
+    // The router of this cluster, read and RELEASED: the delivery asks the other services'
+    // stores and goes over the in-process callback, which is never done with this service's
+    // lock held.
+    let router = {
+        let store = state.lock();
+        store
+            .kubernetes_api
+            .get(key)
+            .map(|plane| plane.fargate_logs.clone())
+    };
     let mut due = due_runs(state, key, now);
     due.truncate(MAX_CONTAINER_RUNS_PER_REQUEST);
     for run in due {
@@ -349,29 +426,33 @@ pub async fn settle_due_runs(
         // A fault of this process rather than of the request — the work could not be
         // performed at all — so nothing is recorded for it and the next request attempts
         // it again.
-        let Ok((run, (record, events))) = performed else {
+        let Ok((run, (record, events, written))) = performed else {
             return;
         };
-        if !record_run(state, key, &run, record, events) {
-            return;
+        match record_run(state, key, &run, record, events) {
+            RunRecorded::Recorded => {}
+            RunRecorded::AlreadyRun => continue,
+            RunRecorded::PlaneGone => return,
+        }
+        // The lines those containers wrote, delivered as the pod's own log router delivers
+        // them — once, by the request that recorded the run above.
+        if let (Some(router), Some(delivery)) = (router.as_ref(), run.log_delivery(written)) {
+            router.deliver(&delivery).await;
         }
     }
 }
 
 /// Record what one pod's containers did, and the events its node's kubelet recorded.
-///
-/// `false` says this cluster's API plane is gone from the store — the cluster was deleted
-/// while the programs were being performed — so there is nothing left to record against.
 fn record_run(
     state: &::engine::ServiceState<ServiceStore>,
     key: &(String, String),
     run: &DueRun,
     record: PodRunRecord,
     events: Vec<EventObject>,
-) -> bool {
+) -> RunRecorded {
     let mut store = state.lock();
     let Some(plane) = store.kubernetes_api.get_mut(key) else {
-        return false;
+        return RunRecorded::PlaneGone;
     };
     let Some(pod) = plane
         .objects
@@ -379,18 +460,18 @@ fn record_run(
         .get_mut(&run.namespace)
         .and_then(|namespace| namespace.pods.get_mut(&run.pod_name))
     else {
-        return true;
+        return RunRecorded::AlreadyRun;
     };
     // The pod may have been read — and its containers run — by another request while this
     // one was performing them; the outcome already recorded is the one that stands.
     if pod.run.is_some() || pod.uid != run.pod_uid {
-        return true;
+        return RunRecorded::AlreadyRun;
     }
     pod.run = Some(record);
     for event in events {
         plane.objects.record_event(&run.namespace, event);
     }
-    true
+    RunRecorded::Recorded
 }
 
 /// The pods of that cluster whose containers are owed their start at `now` and whose
@@ -401,6 +482,8 @@ fn record_run(
 /// created, so there is no program of theirs to perform
 /// ([`super::kubernetes_image_pull`]). Neither is a pod whose pull has not been made yet
 /// — the image is fetched before the container is created, so the order is the kubelet's.
+/// [`next_due_pod_step`] states the same reading as an INSTANT, which is what the clock
+/// that settles these steps with nobody looking waits for.
 fn due_runs(
     state: &::engine::ServiceState<ServiceStore>,
     key: &(String, String),
@@ -410,6 +493,15 @@ fn due_runs(
     let Some(plane) = store.kubernetes_api.get(key) else {
         return Vec::new();
     };
+    // The destinations this cluster's log router is configured with, read ONCE per pass:
+    // one ConfigMap configures the router of the whole cluster.
+    let outputs = plane
+        .objects
+        .namespaces
+        .get(fargate_logging::OBSERVABILITY_NAMESPACE)
+        .and_then(|held| held.config_maps.get(fargate_logging::LOGGING_CONFIG_MAP))
+        .map(|configuration| fargate_logging::cloudwatch_outputs(&configuration.data))
+        .unwrap_or_default();
     let mut due = Vec::new();
     for (namespace, held) in &plane.objects.namespaces {
         for (pod_name, pod) in &held.pods {
@@ -430,17 +522,70 @@ fn due_runs(
             let Some(node) = pod.node_name.clone() else {
                 continue;
             };
+            // ONLY a pod on Fargate capacity has a log router beside it, and the role the
+            // delivery is made as is the Pod execution role of the profile that selected
+            // it — which is the role that capacity was provisioned under.
+            let logs = plane
+                .objects
+                .fargate_nodes
+                .values()
+                .find(|fargate| {
+                    fargate.namespace == *namespace
+                        && fargate.pod_name == *pod_name
+                        && fargate.pod_uid == pod.uid
+                })
+                .filter(|_| !outputs.is_empty())
+                .map(|fargate| PodLogDestination {
+                    pod_execution_role: fargate.pod_execution_role.clone(),
+                    outputs: outputs.clone(),
+                });
             due.push(DueRun {
+                region: key.0.clone(),
                 namespace: namespace.clone(),
                 pod_name: pod_name.clone(),
                 pod_uid: pod.uid.clone(),
                 node,
                 at,
                 containers: pod_container_programs(&pod.spec),
+                logs,
             });
         }
     }
     due
+}
+
+/// The EARLIEST instant at which a pod of `objects` is owed a step of its own clock — its
+/// image pull or its containers' start — and `None` when no pod of the cluster is owed one.
+///
+/// The same reading [`due_runs`] and
+/// [`super::kubernetes_image_pull::settle_due_pulls`] take of which pods are still owed
+/// something, answered as the instant the next of those steps falls due: a pod the node has
+/// taken is owed its pull, and once that pull was served its containers are owed their
+/// start, while a pod whose pull the registry refused is owed nothing more and neither is
+/// one whose containers have run.
+///
+/// It is what the clock of a cluster's pods waits for
+/// ([`super::kubernetes_api::drive_pod_clock`]), so the steps a pod is owed are taken whether
+/// or not a client looks again — a pod's containers run on AWS because the pod was admitted,
+/// not because somebody read it.
+#[must_use]
+pub fn next_due_pod_step(objects: &ClusterObjects) -> Option<SystemTime> {
+    objects
+        .namespaces
+        .values()
+        .flat_map(|held| held.pods.values())
+        .filter(|pod| pod.node_name.is_some())
+        .filter(|pod| match &pod.pull {
+            // The pull itself is still owed.
+            None => true,
+            // A pull the registry refused leaves the pod's containers uncreated, so nothing
+            // more of this pod is owed.
+            Some(pull) if pull.stopped_the_pod() => false,
+            // The images are there: the containers' start is owed until it has been made.
+            Some(_) => pod.run.is_none(),
+        })
+        .filter_map(|pod| pod.concludes_at)
+        .min()
 }
 
 /// The containers an admitted pod's spec declares, as the programs they run — in the
@@ -548,28 +693,34 @@ pub fn performable_program(program: &[String]) -> Option<&str> {
 }
 
 /// Perform `program` — a container's argument vector — and report what it did, or that
-/// nothing was performed for it.
+/// nothing was performed for it, beside the LINES it wrote.
 ///
 /// Pure computation over the caller's own words: the session starts no process, opens no
 /// host file and reaches no network, and the work it performs is bounded by that
 /// session's own bounds.
+///
+/// `keeps_output` says whether the lines the program wrote are wanted: they are kept only
+/// for a container whose pod has somewhere to DELIVER them
+/// ([`super::kubernetes_fargate_logging`]), bounded by
+/// [`MAX_ROUTED_LINES_PER_CONTAINER`] and [`MAX_ROUTED_LINE_BYTES`] — a session that is not
+/// asked for them does not grow with them, and the answer is then empty.
 #[must_use]
 pub fn run_declared_program(
     program: &[String],
     variables: &BTreeMap<String, String>,
-) -> ContainerRun {
+    keeps_output: bool,
+) -> (ContainerRun, Vec<String>) {
     let Some(name) = performable_program(program) else {
-        return ContainerRun::NotPerformed;
+        return (ContainerRun::NotPerformed, Vec::new());
     };
     let mut words: Vec<&str> = vec![name];
     words.extend(program.iter().skip(1).map(String::as_str));
     let line = ::shell_words::join(words);
-    // The session keeps NO output: this server serves no pod log endpoint, so the lines a
-    // container writes are a stream nothing here reads, and a session that is not asked
-    // for them does not grow with them. What the program DID is its exit status, which is
-    // what the container's status reports.
     let config = SessionConfig {
-        output: None,
+        output: keeps_output.then_some(OutputLimits {
+            lines: MAX_ROUTED_LINES_PER_CONTAINER,
+            line_bytes: MAX_ROUTED_LINE_BYTES,
+        }),
         ..SessionConfig::default()
     };
     // A container has storage of its own — its writable layer and the volumes the pod
@@ -580,19 +731,54 @@ pub fn run_declared_program(
     // An `exit` the program performed is the status it ended with, the way a shell takes
     // it.
     let status = session.exit_status().unwrap_or(status);
-    ContainerRun::Performed {
-        status,
-        slept: session.slept(),
+    // Standard ERROR is delivered beside standard output: a log router follows the log file
+    // the node keeps for the container, which carries both of the container's streams. The
+    // two together are held to the per-container line ceiling, since it bounds what is KEPT
+    // rather than either stream on its own.
+    let mut written: Vec<String> = session.output().to_vec();
+    written.extend(session.errors().iter().cloned());
+    written.truncate(MAX_ROUTED_LINES_PER_CONTAINER);
+    (
+        ContainerRun::Performed {
+            status,
+            slept: session.slept(),
+        },
+        written,
+    )
+}
+
+/// The leading lines of `lines` that fit in what is `left` of one pod's delivery budget,
+/// taking what they weigh out of it ([`MAX_ROUTED_BYTES_PER_POD`]).
+///
+/// Once the budget is spent nothing more of that pod is kept: a manifest declaring many
+/// containers therefore cannot multiply the per-container ceiling.
+fn within_pod_budget(lines: Vec<String>, left: &mut usize) -> Vec<String> {
+    let mut kept = Vec::new();
+    for line in lines {
+        if line.len() > *left {
+            *left = 0;
+            break;
+        }
+        *left -= line.len();
+        kept.push(line);
     }
+    kept
 }
 
 /// Run every container of `run`, in the pod's own order, and answer what each one did
-/// beside the events the node's kubelet recorded.
-fn attempt(run: &DueRun) -> (PodRunRecord, Vec<EventObject>) {
+/// beside the events the node's kubelet recorded and the lines each container wrote.
+fn attempt(run: &DueRun) -> (PodRunRecord, Vec<EventObject>, Vec<ContainerOutput>) {
     let mut record = PodRunRecord::default();
     let mut events = Vec::new();
+    let mut written = Vec::new();
+    // The lines are kept only for a pod whose output something delivers (see
+    // [`run_declared_program`]), and only as many bytes as one pod's whole delivery may
+    // carry.
+    let keeps_output = run.logs.is_some();
+    let mut budget = MAX_ROUTED_BYTES_PER_POD;
     for container in &run.containers {
-        let outcome = run_declared_program(&container.program, &container.variables);
+        let (outcome, lines) =
+            run_declared_program(&container.program, &container.variables, keeps_output);
         match outcome {
             ContainerRun::Performed { .. } => {
                 // The two steps a kubelet records for a container whose image it has:
@@ -619,8 +805,15 @@ fn attempt(run: &DueRun) -> (PodRunRecord, Vec<EventObject>) {
             )),
         }
         record.containers.push((container.name.clone(), outcome));
+        let lines = within_pod_budget(lines, &mut budget);
+        if !lines.is_empty() {
+            written.push(ContainerOutput {
+                name: container.name.clone(),
+                lines,
+            });
+        }
     }
-    (record, events)
+    (record, events, written)
 }
 
 /// One event the node's kubelet recorded about a container of the pod `run` is for.

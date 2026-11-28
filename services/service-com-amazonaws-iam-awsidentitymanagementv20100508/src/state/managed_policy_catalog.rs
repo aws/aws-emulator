@@ -394,6 +394,28 @@ pub const AWS_MANAGED_POLICIES: &[AwsManagedPolicy] = &[
         is_attachable: true,
         document: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["autoscaling:DescribeAutoScalingGroups","autoscaling:UpdateAutoScalingGroup","ec2:AttachVolume","ec2:AuthorizeSecurityGroupIngress","ec2:CreateRoute","ec2:CreateSecurityGroup","ec2:CreateTags","ec2:CreateVolume","ec2:DeleteRoute","ec2:DeleteSecurityGroup","ec2:DeleteVolume","ec2:Describe*","ec2:DetachVolume","ec2:ModifyInstanceAttribute","ec2:ModifyVolume","ec2:RevokeSecurityGroupIngress","elasticloadbalancing:Add*","elasticloadbalancing:Apply*","elasticloadbalancing:Attach*","elasticloadbalancing:Configure*","elasticloadbalancing:Create*","elasticloadbalancing:Delete*","elasticloadbalancing:Deregister*","elasticloadbalancing:Describe*","elasticloadbalancing:Detach*","elasticloadbalancing:Modify*","elasticloadbalancing:Register*","elasticloadbalancing:Set*","kms:DescribeKey"],"Resource":"*"},{"Effect":"Allow","Action":"iam:CreateServiceLinkedRole","Resource":"*","Condition":{"StringEquals":{"iam:AWSServiceName":"elasticloadbalancing.amazonaws.com"}}}]}"#,
     },
+    // The policy AWS documents for the POD EXECUTION ROLE of an Amazon EKS Fargate
+    // profile ("Amazon EKS Pod execution IAM role", Amazon EKS User Guide): the Amazon
+    // ECR grants the Fargate infrastructure pulls a selected Pod's images with, and
+    // NOTHING else — a Fargate Pod's log router writes to CloudWatch Logs as this same
+    // role, so a role carrying only this policy may not create a log group or a log
+    // stream and may not put log events, and the grants for that are the separate policy
+    // an operator adds beside this one.
+    //
+    // As the rule above has it: the path, the friendly name and the document are AWS's,
+    // taken from the reference; this project has not read this policy's published id,
+    // version number or instants, so those fields stand for the FORM AWS publishes them
+    // in and are the first thing to replace when the published values become available.
+    AwsManagedPolicy {
+        path: "/",
+        policy_name: "AmazonEKSFargatePodExecutionRolePolicy",
+        policy_id: "ANPAQF7VXTLMKZJ3NHRDB",
+        default_version_id: "v1",
+        published: "2019-11-25T22:03:19Z",
+        revised: "2019-11-25T22:03:19Z",
+        is_attachable: true,
+        document: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"*"}]}"#,
+    },
     // The policy AWS documents for the NODE role of an Amazon EKS node group ("Amazon
     // EKS node IAM role", Amazon EKS User Guide): the Amazon EC2 describes the
     // in-cluster AWS cloud provider makes, the cluster read a joining node makes, and

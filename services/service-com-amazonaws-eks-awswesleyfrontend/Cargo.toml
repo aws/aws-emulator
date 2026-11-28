@@ -16,7 +16,10 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+# `time`: the cluster's Kubernetes API address bounds a handshake and a request with
+# `tokio::time::timeout`, and the clock of its pods waits for the instant their next
+# step falls due (`src/state/kubernetes_api.rs`).
+tokio = { workspace = true, features = ["time"] }
 bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
@@ -46,6 +49,18 @@ aws-sdk-autoscaling = { version = "1", default-features = false }
 # cluster's own log group, which is CloudWatch Logs' resource to create and write
 # (`src/state/control_plane_logs.rs`).
 aws-sdk-cloudwatchlogs = { version = "1", default-features = false }
+# The CloudWatch Logs service, which SERVES the calls the LOG ROUTER beside a pod
+# on a cluster's Fargate capacity makes as the profile's Pod execution role:
+# whether that role may create the group its `aws-logging` configuration names,
+# whether it may create the stream the pod's output goes to, and whether it may
+# put the records — which is what decides whether that output is delivered at all
+# (`src/state/kubernetes_fargate_logging.rs` ->
+# `…cloudwatchlogs…::state::log_stream_creation::DeliveryPlane`). The log group and
+# the policies on the role are that service's and IAM's own records, held in their
+# own stores in the shared engine, so each call is answered by the service that
+# owns them rather than by a copy kept here. No cycle: that crate does not depend
+# on this one.
+service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # The session registry in the same shared engine, which is where
 # `sts:GetCallerIdentity` answers from: `CreateCluster` files the cluster creator's
 # bootstrap access entry under the IAM principal the request's own credential speaks

@@ -190,6 +190,16 @@ pub struct KubernetesApiPlane {
     /// elastic network interface
     /// ([`kubernetes_pod_addressing::settle_due_pod_addresses`]).
     addressing: kubernetes_pod_addressing::PodAddressPlane,
+    /// The LOG ROUTER of this cluster's Fargate capacity: what a pod a profile
+    /// selected wrote is delivered to the destination the cluster's `aws-logging`
+    /// ConfigMap names, as that profile's Pod execution role
+    /// ([`super::kubernetes_fargate_logging`]).
+    pub(super) fargate_logs: super::kubernetes_fargate_logging::FargateLogRouter,
+    /// The task driving this cluster's POD CLOCK, and `None` while none is
+    /// ([`drive_pod_clock`]): the steps its pods are owed are taken by one task at a time, so a
+    /// cluster whose pods are waiting has one pump rather than one per request. Held so the
+    /// pump is ABORTED with the cluster rather than outliving it.
+    pod_clock: Option<::tokio::task::JoinHandle<()>>,
     /// The registry the service that REDEEMS a web identity token reads, where a
     /// projected service account token this API server issues is recorded: such a
     /// token is the web identity `sts:AssumeRoleWithWebIdentity` exchanges for a
@@ -232,6 +242,17 @@ impl ::std::fmt::Debug for KubernetesApiPlane {
             .field("authority", &self.authority)
             .field("namespaces", &self.objects.namespaces.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// The pump driving this cluster's pod clock dies WITH the cluster: dropping the plane — which
+/// is what deleting the cluster does — ends the task that was settling the steps its pods were
+/// owed, exactly as it closes the address the plane was answering on.
+impl Drop for KubernetesApiPlane {
+    fn drop(&mut self) {
+        if let Some(pump) = self.pod_clock.take() {
+            pump.abort();
+        }
     }
 }
 
@@ -286,6 +307,9 @@ pub async fn publish<Eng: Send + Sync + 'static>(
     if state.lock().kubernetes_api.contains_key(key) {
         return;
     }
+    // The callback is the seam every cross-service call of this cluster's data plane goes
+    // over: its audit log's export and its Fargate log router's delivery both hold one.
+    let router_callback = callback.clone();
     let tls = tls_server_config(&identity);
     if tls.is_none() {
         ::tracing::warn!(
@@ -315,6 +339,16 @@ pub async fn publish<Eng: Send + Sync + 'static>(
         // The records the cluster's networking plugin takes a pod's address out
         // of, taken over the same seam and held for the same reason.
         addressing: kubernetes_pod_addressing::PodAddressPlane::of(engine),
+        // The log router beside the pods this cluster's Fargate profiles run,
+        // reached over the same callback and holding the stores each of its own
+        // calls is decided by.
+        fargate_logs: super::kubernetes_fargate_logging::FargateLogRouter::of(
+            engine,
+            router_callback,
+        ),
+        // No pod is owed a step on a cluster that has just been created, so no pump is
+        // driving its clock yet.
+        pod_clock: None,
         // The registry a redeemer of a web identity reads, so a token this API
         // server issues can be exchanged for the role session a service account's
         // annotated IAM role vends.
@@ -626,6 +660,10 @@ async fn answer(
         if let Some(delivery) = served.delivery {
             delivery.deliver().await;
         }
+        // The steps this cluster's pods are owed NEXT: the images of a pod this request has
+        // just admitted are fetched and its containers started at stored instants, and this
+        // client may make no further call to settle them on ([`drive_pod_clock`]).
+        drive_pod_clock(&state, &key);
         match served.body {
             Some(negotiated) => {
                 media_response(served.status, negotiated.content_type, negotiated.bytes)
@@ -679,6 +717,115 @@ pub struct ApiRequest<'request> {
     /// read.
     pub content_type: &'request str,
     pub body: &'request [u8],
+}
+
+/// How long the POD CLOCK waits between wake-ups at least: a step already due is still
+/// waited for, which is what keeps the pump below from ever costing a CPU-bound spin, and it
+/// hands the runtime back between wake-ups.
+const POD_CLOCK_MIN_WAIT: StdDuration = StdDuration::from_millis(50);
+
+/// How long it waits at most, so a pump holding this cluster's clock notices a step another
+/// request has since made due.
+const POD_CLOCK_MAX_WAIT: StdDuration = StdDuration::from_secs(1);
+
+/// How many wake-ups ONE pump makes before it stands down, leaving the next request to start
+/// another.
+///
+/// CHOSEN, under the rule every bound of this service's data plane follows: a pump releases
+/// its claim as soon as no pod of the cluster is owed a step
+/// ([`kubernetes_container_run::next_due_pod_step`]), so this is only the backstop that keeps
+/// a pod nothing can settle — one whose step stays owed however often it is taken — from
+/// holding a task of this process for ever.
+const MAX_POD_CLOCK_WAKE_UPS: usize = 1_200;
+
+/// Start the ONE pod clock of the cluster keyed `key`, unless a pump is already driving it or
+/// no pod of that cluster is owed a step.
+///
+/// A pod's steps are owed at STORED instants — its images are fetched and its containers are
+/// started once the node that took it has held it for the span this service owes that move —
+/// and a client that has created a pod makes no further Kubernetes API call they could be
+/// settled on: it watches the pod's effects elsewhere, in the log group its output is
+/// delivered to ([`super::kubernetes_fargate_logging`]). So the steps are taken by a pump
+/// that waits for the instant the next of them falls due, exactly as they are taken by a
+/// request that finds them already due ([`settle_pod_clock`]): the pump materialises only
+/// what a stored due instant has already made due, and changes no answer any call gives.
+///
+/// Returns at once — the pump runs on a task of its own, whose handle the plane keeps so it is
+/// ABORTED when the cluster goes ([`KubernetesApiPlane::drop`]) — and does nothing at all on a
+/// thread with no async runtime to spawn one onto. Call it with NO store guard held.
+pub fn drive_pod_clock(state: &::engine::ServiceState<ServiceStore>, key: &(String, String)) {
+    let Ok(runtime) = ::tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let pumped = state.clone();
+    let pumped_key = key.clone();
+    // The claim and the spawn are taken under ONE critical section, so two requests cannot
+    // start two pumps for one cluster; spawning waits for nothing, and the task's own first
+    // read of this store happens after the guard below is released.
+    let mut store = state.lock();
+    let Some(plane) = store.kubernetes_api.get_mut(key) else {
+        return;
+    };
+    // A pump whose task has ended holds nothing — including one that ended without releasing
+    // anything — so the claim cannot be left behind by a task that is gone.
+    let driving = plane
+        .pod_clock
+        .as_ref()
+        .is_some_and(|pump| !pump.is_finished());
+    if driving || kubernetes_container_run::next_due_pod_step(&plane.objects).is_none() {
+        return;
+    }
+    plane.pod_clock = Some(runtime.spawn(async move {
+        for _ in 0..MAX_POD_CLOCK_WAKE_UPS {
+            // Read and RELEASED: the settling below takes the other services' stores.
+            let due = {
+                let store = pumped.lock();
+                store
+                    .kubernetes_api
+                    .get(&pumped_key)
+                    .and_then(|plane| kubernetes_container_run::next_due_pod_step(&plane.objects))
+            };
+            // Nothing more is owed — or the cluster is gone, and there is no plane left to
+            // settle anything against.
+            let Some(due) = due else {
+                return;
+            };
+            let wait = due
+                .duration_since(SystemTime::now())
+                .unwrap_or_default()
+                .clamp(POD_CLOCK_MIN_WAIT, POD_CLOCK_MAX_WAIT);
+            ::tokio::time::sleep(wait).await;
+            settle_pod_clock(&pumped, &pumped_key, SystemTime::now()).await;
+        }
+    }));
+}
+
+/// Take every step the clock already owes the pods of the cluster keyed `key`: the images
+/// their kubelet fetches, the addresses the cluster's networking plugin gives them, and the
+/// programs their containers run — beside the delivery of what those containers wrote.
+///
+/// The ONE pass the pump above takes, the same steps a request takes for itself before it is
+/// routed, so a step settled with a client looking and one settled with nobody looking cannot
+/// come out differently. Called with NO store guard held: each of those steps takes another
+/// service's lock, and the run awaits.
+async fn settle_pod_clock(
+    state: &::engine::ServiceState<ServiceStore>,
+    key: &(String, String),
+    now: SystemTime,
+) {
+    let planes = {
+        let store = state.lock();
+        store
+            .kubernetes_api
+            .get(key)
+            .map(|plane| (plane.registry.clone(), plane.addressing.clone()))
+    };
+    let Some((registry, addressing)) = planes else {
+        return;
+    };
+    kubernetes_image_pull::settle_due_pulls(state, &registry, key, now);
+    kubernetes_pod_addressing::settle_due_pod_addresses(state, &addressing, key);
+    kubernetes_container_run::settle_due_runs(state, key, now).await;
 }
 
 /// One answered Kubernetes API request: what the client reads, and the record the

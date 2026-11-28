@@ -32,6 +32,20 @@
 //! service decides its own signed `CreateLogGroup` against. It is asked only where the
 //! driver makes that call, which the delivering service's own driver order decides.
 //!
+//! Once there is a stream, the driver PUTS the records into it — `logs:PutLogEvents`
+//! ("Uploads a batch of log events to the specified log stream", `PutLogEvents`) on that
+//! stream — and that is the last question of the same kind
+//! ([`serve_log_events_delivery`]): a role a policy lets create the stream but not write to
+//! it delivers no event, so each of the driver's calls is decided by the service that would
+//! serve it rather than one standing for the others.
+//!
+//! A delivering service does not always hold the engine when the delivery happens — a log
+//! router of a workload whose own clock owes the run decides it from a plane that service
+//! opened earlier — so the two stores these questions read are taken once
+//! ([`DeliveryPlane::of`], with a handler's `&*self.engine`) and kept. They are the SAME
+//! stores the engine-borne entry points below resolve, so a delivery decided through either
+//! answers alike.
+//!
 //! Nothing is withheld on evidence this emulator does not have. An engine carrying no IAM
 //! store, a role that store holds no record for, and a role carrying an attachment whose
 //! document this account does not hold (an entry of AWS's own catalog) each show nothing
@@ -62,6 +76,11 @@ pub const CREATE_LOG_STREAM_ACTION: &str = "CreateLogStream";
 /// Amazon CloudWatch Logs", IAM Service Authorization Reference).
 pub const CREATE_LOG_GROUP_ACTION: &str = "CreateLogGroup";
 
+/// The operation a log driver PUTS the records it delivers through, which is the action IAM
+/// publishes for it ("Actions defined by Amazon CloudWatch Logs", IAM Service Authorization
+/// Reference).
+pub const PUT_LOG_EVENTS_ACTION: &str = "PutLogEvents";
+
 /// Why this service did not serve a log driver's stream creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamCreationRefusal {
@@ -91,6 +110,19 @@ pub struct GroupCreationRefused {
     pub message: String,
 }
 
+/// Why this service did not serve a log driver's DELIVERY of records into a stream: no
+/// policy in force on the principal permits the put.
+///
+/// The stream's own existence is not among the reasons — the driver creates the stream it
+/// delivers to before it puts anything ([`StreamCreationRefusal`]) — so this carries the one
+/// refusal a put earns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryRefused {
+    /// The authorization refusal itself: the sentence AWS refuses a call no policy permits
+    /// with.
+    pub message: String,
+}
+
 /// The principal a log driver's stream creation is made as.
 #[derive(Debug, Clone, Copy)]
 pub struct DeliveryPrincipal<'a> {
@@ -109,6 +141,154 @@ impl DeliveryPrincipal<'_> {
     }
 }
 
+/// The two stores a delivery made on a role's behalf is decided from: the log groups this
+/// service holds, and the IAM records the role's documents are in.
+///
+/// Taken once and kept, for the deliverer that no longer holds the engine when the delivery
+/// happens (see the module docs). The engine-borne entry points below build one of these per
+/// call, so both forms read the same two stores.
+#[derive(Clone)]
+pub struct DeliveryPlane {
+    /// This service's store, and `None` for an engine that carries none — which knows
+    /// nothing about any group, so nothing is refused on it.
+    logs: Option<::engine::ServiceState<crate::state::ComAmazonawsCloudwatchlogsLogs20140328State>>,
+    /// The IAM store the principal's identity documents are read from, and `None` for an
+    /// engine with no IAM — which shows nothing about the role, so nothing is withheld on it.
+    identities: Option<
+        ::engine::ServiceState<iam_store::ComAmazonawsIamAwsidentitymanagementv20100508State>,
+    >,
+}
+
+/// Written by hand rather than derived: what is diagnosable is whether the stores are there
+/// at all, not what they hold.
+impl ::std::fmt::Debug for DeliveryPlane {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        formatter
+            .debug_struct("DeliveryPlane")
+            .field("logs", &self.logs.is_some())
+            .field("identities", &self.identities.is_some())
+            .finish()
+    }
+}
+
+impl DeliveryPlane {
+    /// The stores in `engine`.
+    #[must_use]
+    pub fn of<Eng: Send + Sync + 'static>(engine: &Eng) -> Self {
+        Self {
+            logs: crate::state::service_state(engine),
+            identities: iam_store::service_state(engine),
+        }
+    }
+
+    /// [`serve_log_stream_creation`], decided from these stores.
+    pub fn serve_log_stream_creation(
+        &self,
+        region: &str,
+        log_group: &str,
+        log_stream: &str,
+        principal: Option<DeliveryPrincipal<'_>>,
+    ) -> Result<(), StreamCreationRefusal> {
+        // The RESOURCE the creation addresses: the stream itself, which is what a grant
+        // written for a log driver names (the group's ARN with the trailing wildcard covers
+        // it).
+        let resource = super::log_stream_arn(region, log_group, log_stream);
+        if let Some(message) = self.withheld_call(
+            principal,
+            CREATE_LOG_STREAM_ACTION,
+            &resource,
+            "ServeLogStreamCreation",
+            "no policy in force permits this role to create this log stream",
+        ) {
+            return Err(StreamCreationRefusal::NotAuthorized { message });
+        }
+        let Some(state) = self.logs.clone() else {
+            // No store of this service to ask: nothing is known about the group, so the
+            // creation is not refused on it.
+            return Ok(());
+        };
+        let store = state.lock();
+        if !store.log_groups.contains_key(log_group) {
+            // The sentence `CreateLogStream` itself refuses a group this account does not
+            // hold with, so the driver is told exactly what its own call would have been
+            // told.
+            return Err(StreamCreationRefusal::NotFound {
+                message: super::resource_not_found_message("log group"),
+            });
+        }
+        Ok(())
+    }
+
+    /// [`serve_log_group_creation`], decided from these stores.
+    pub fn serve_log_group_creation(
+        &self,
+        region: &str,
+        log_group: &str,
+        principal: Option<DeliveryPrincipal<'_>>,
+    ) -> Result<(), GroupCreationRefused> {
+        // The resource ARN this service decides a `CreateLogGroup` against is the GROUP's own
+        // ([`super::identity_authorization`]), so one group and one role are decided alike
+        // however the creation is asked for.
+        let resource = super::log_group_arn(region, log_group, false);
+        match self.withheld_call(
+            principal,
+            CREATE_LOG_GROUP_ACTION,
+            &resource,
+            "ServeLogGroupCreation",
+            "no policy in force permits this role to create this log group",
+        ) {
+            Some(message) => Err(GroupCreationRefused { message }),
+            None => Ok(()),
+        }
+    }
+
+    /// [`serve_log_events_delivery`], decided from these stores.
+    pub fn serve_log_events_delivery(
+        &self,
+        region: &str,
+        log_group: &str,
+        log_stream: &str,
+        principal: Option<DeliveryPrincipal<'_>>,
+    ) -> Result<(), DeliveryRefused> {
+        // `PutLogEvents` addresses the STREAM the records go into, which is the resource this
+        // service decides its own signed put against.
+        let resource = super::log_stream_arn(region, log_group, log_stream);
+        match self.withheld_call(
+            principal,
+            PUT_LOG_EVENTS_ACTION,
+            &resource,
+            "ServeLogEventsDelivery",
+            "no policy in force permits this role to put log events into this log stream",
+        ) {
+            Some(message) => Err(DeliveryRefused { message }),
+            None => Ok(()),
+        }
+    }
+
+    /// Why no policy in force on `principal` permits `action_name` on `resource`, as the
+    /// sentence AWS refuses it with, or `None` when one does — or when nothing of the kind
+    /// can be shown (see the module docs).
+    ///
+    /// `audit_operation` and `audit_message` name the call in the emulator's audit log.
+    fn withheld_call(
+        &self,
+        principal: Option<DeliveryPrincipal<'_>>,
+        action_name: &str,
+        resource: &str,
+        audit_operation: &'static str,
+        audit_message: &'static str,
+    ) -> Option<String> {
+        withheld_call_over(
+            self.identities.as_ref(),
+            principal,
+            action_name,
+            resource,
+            audit_operation,
+            audit_message,
+        )
+    }
+}
+
 /// Serve the creation of the stream `log_stream` of the group `log_group` in `region`, made
 /// on behalf of `principal`.
 ///
@@ -124,33 +304,7 @@ pub fn serve_log_stream_creation<Eng: Send + Sync + 'static>(
     log_stream: &str,
     principal: Option<DeliveryPrincipal<'_>>,
 ) -> Result<(), StreamCreationRefusal> {
-    // The RESOURCE the creation addresses: the stream itself, which is what a grant written
-    // for a log driver names (the group's ARN with the trailing wildcard covers it).
-    let resource = super::log_stream_arn(region, log_group, log_stream);
-    if let Some(message) = withheld_creation(
-        engine,
-        principal,
-        CREATE_LOG_STREAM_ACTION,
-        &resource,
-        "ServeLogStreamCreation",
-        "no policy in force permits this role to create this log stream",
-    ) {
-        return Err(StreamCreationRefusal::NotAuthorized { message });
-    }
-    let Some(state) = crate::state::service_state(engine) else {
-        // No store of this service to ask: nothing is known about the group, so the
-        // creation is not refused on it.
-        return Ok(());
-    };
-    let store = state.lock();
-    if !store.log_groups.contains_key(log_group) {
-        // The sentence `CreateLogStream` itself refuses a group this account does not hold
-        // with, so the driver is told exactly what its own call would have been told.
-        return Err(StreamCreationRefusal::NotFound {
-            message: super::resource_not_found_message("log group"),
-        });
-    }
-    Ok(())
+    DeliveryPlane::of(engine).serve_log_stream_creation(region, log_group, log_stream, principal)
 }
 
 /// Serve the creation of the log group `log_group` in `region`, made on behalf of
@@ -167,30 +321,35 @@ pub fn serve_log_group_creation<Eng: Send + Sync + 'static>(
     log_group: &str,
     principal: Option<DeliveryPrincipal<'_>>,
 ) -> Result<(), GroupCreationRefused> {
-    // The resource ARN this service decides a `CreateLogGroup` against is the GROUP's own
-    // ([`super::identity_authorization`]), so one group and one role are decided alike
-    // however the creation is asked for.
-    let resource = super::log_group_arn(region, log_group, false);
-    match withheld_creation(
-        engine,
-        principal,
-        CREATE_LOG_GROUP_ACTION,
-        &resource,
-        "ServeLogGroupCreation",
-        "no policy in force permits this role to create this log group",
-    ) {
-        Some(message) => Err(GroupCreationRefused { message }),
-        None => Ok(()),
-    }
+    DeliveryPlane::of(engine).serve_log_group_creation(region, log_group, principal)
+}
+
+/// Serve the PUT of records into the stream `log_stream` of `log_group` in `region`, made on
+/// behalf of `principal` by a log driver delivering a workload's output.
+///
+/// `Ok(())` for a put this service would serve — and for every caller this gate does not
+/// bound (see the module docs) — and the refusal otherwise. Nothing is written here: the
+/// driver puts the records through `PutLogEvents`, so what this answers is whether that call
+/// would be served at all, which is what decides whether the workload's output is delivered.
+pub fn serve_log_events_delivery<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    region: &str,
+    log_group: &str,
+    log_stream: &str,
+    principal: Option<DeliveryPrincipal<'_>>,
+) -> Result<(), DeliveryRefused> {
+    DeliveryPlane::of(engine).serve_log_events_delivery(region, log_group, log_stream, principal)
 }
 
 /// Why no policy in force on `principal` permits `action_name` on `resource`, as the sentence
 /// AWS refuses it with, or `None` when one does — or when nothing of the kind can be shown
 /// (see the module docs).
 ///
-/// `audit_operation` and `audit_message` name the creation in the emulator's audit log.
-fn withheld_creation<Eng: Send + Sync + 'static>(
-    engine: &Eng,
+/// `audit_operation` and `audit_message` name the call in the emulator's audit log.
+fn withheld_call_over(
+    identities: Option<
+        &::engine::ServiceState<iam_store::ComAmazonawsIamAwsidentitymanagementv20100508State>,
+    >,
     principal: Option<DeliveryPrincipal<'_>>,
     action_name: &str,
     resource: &str,
@@ -199,7 +358,7 @@ fn withheld_creation<Eng: Send + Sync + 'static>(
 ) -> Option<String> {
     let principal = principal?;
     let role_arn = principal.role_arn;
-    let iam = iam_store::service_state(engine)?;
+    let iam = identities?;
     let (documents, boundary) = {
         let store = iam.lock();
         // A role this account's IAM holds no record for may belong to another account, so
