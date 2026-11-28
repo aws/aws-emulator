@@ -21,7 +21,7 @@
 
 use super::*;
 
-use super::registry_pull::{parse_registry_reference, RegistryReference};
+use super::registry_pull::{self, parse_registry_reference, RegistryReference};
 
 /// What the image a pull reference resolves to declares as its own program.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,26 +75,75 @@ pub fn declared_image_program<Eng: Send + Sync + 'static>(
     resolved_image_program(&store, &reference)
 }
 
+/// The same answer, decided from the stores a caller already holds
+/// ([`registry_pull::PullPlane`]), for a compute service that resolves a pod's or a task's
+/// pulls through that plane rather than through the engine.
+///
+/// The same reading [`declared_image_program`] makes, over the same store: a reference this
+/// registry does not answer for is [`ImageProgram::Unknown`] here too.
+impl registry_pull::PullPlane {
+    #[must_use]
+    pub fn declared_image_program(&self, image: &str) -> ImageProgram {
+        let Some((addressed_registry, reference)) = parse_registry_reference(image) else {
+            return ImageProgram::Unknown;
+        };
+        if addressed_registry != registry_id() {
+            return ImageProgram::Unknown;
+        }
+        let Some(state) = self.registry_store() else {
+            return ImageProgram::Unknown;
+        };
+        // The configuration is taken out of the store and the store is RELEASED: reading
+        // what it declares is a parse of bytes a caller pushed, and no other caller of this
+        // registry waits behind it.
+        let configuration = {
+            let store = state.lock();
+            stored_configuration(&store, &reference)
+        };
+        match configuration {
+            Some(configuration) => configured_program(&configuration),
+            None => ImageProgram::Unknown,
+        }
+    }
+}
+
 /// The same answer, read out of the store `store` for the resolved reference `reference`.
 fn resolved_image_program(
     store: &ComAmazonawsEcrAmazonec2containerregistryV20150921State,
     reference: &RegistryReference,
 ) -> ImageProgram {
-    let Ok(repository) = store.repository(&reference.region, &reference.repository_name) else {
-        return ImageProgram::Unknown;
-    };
-    let Ok(held) = repository.lookup_image(&reference.identifier()) else {
-        return ImageProgram::Unknown;
-    };
-    let Some(digest) = manifest_config_digest(&held.manifest) else {
-        return ImageProgram::Unknown;
-    };
-    let Some(blob) = repository.layer_blobs.get(&digest) else {
-        // The manifest references a configuration this repository does not hold, so what the
-        // image declares is not here to read.
-        return ImageProgram::Unknown;
-    };
-    configured_program(&blob.content)
+    match stored_configuration(store, reference) {
+        Some(configuration) => configured_program(&configuration),
+        None => ImageProgram::Unknown,
+    }
+}
+
+/// The most bytes of an image CONFIGURATION this reading parses.
+///
+/// A BOUND ON THIS PROCESS rather than a registry limit: the blob is bytes a caller pushed
+/// (a repository holds blobs far larger than any configuration document), so a reference is
+/// answered as one nothing is known about rather than letting one pushed blob decide what a
+/// compute service parses per container it starts. Far above the few kilobytes an image
+/// configuration is.
+pub const MAX_CONFIGURATION_BYTES: usize = 64 * 1024;
+
+/// The CONFIGURATION blob the image `reference` resolves to, as its own bytes, and `None`
+/// where this registry holds nothing that states one — a repository or an identifier it does
+/// not answer for, a document that references no configuration, a configuration blob it does
+/// not hold, and one past [`MAX_CONFIGURATION_BYTES`].
+fn stored_configuration(
+    store: &ComAmazonawsEcrAmazonec2containerregistryV20150921State,
+    reference: &RegistryReference,
+) -> Option<Vec<u8>> {
+    let repository = store
+        .repository(&reference.region, &reference.repository_name)
+        .ok()?;
+    let held = repository.lookup_image(&reference.identifier()).ok()?;
+    let digest = manifest_config_digest(&held.manifest)?;
+    // The manifest references a configuration this repository does not hold, so what the
+    // image declares is not here to read.
+    let blob = repository.layer_blobs.get(&digest)?;
+    (blob.content.len() <= MAX_CONFIGURATION_BYTES).then(|| blob.content.clone())
 }
 
 /// The digest of the CONFIGURATION blob `manifest` references, and `None` for a document
@@ -115,13 +164,28 @@ fn manifest_config_digest(manifest: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// How many words of a declared program this reading takes, and how long one of them may
+/// be.
+///
+/// BOUNDS ON THIS PROCESS, for the same reason [`MAX_CONFIGURATION_BYTES`] is one: the two
+/// members are a pushed document's, so a vector past either one states no program this
+/// registry answers with rather than one a compute service is made to carry. Far above the
+/// handful of words an image's entry point and command are.
+pub const MAX_PROGRAM_WORDS: usize = 256;
+/// See [`MAX_PROGRAM_WORDS`].
+pub const MAX_PROGRAM_WORD_BYTES: usize = 4 * 1024;
+
 /// What the bytes of an image CONFIGURATION declare as the image's program.
 ///
 /// [`ImageProgram::Unknown`] for bytes that do not read as an image configuration — one
-/// whose `config` object is not there at all — because such a blob states nothing about a
-/// program; [`ImageProgram::Undeclared`] for a configuration that reads as one and names
-/// neither member, which is an image carrying no program of its own.
+/// whose `config` object is not there at all, and one past [`MAX_CONFIGURATION_BYTES`] —
+/// because such a blob states nothing about a program; [`ImageProgram::Undeclared`] for a
+/// configuration that reads as one and names neither member, which is an image carrying no
+/// program of its own, and for one whose vector is past the ceilings above.
 fn configured_program(configuration: &[u8]) -> ImageProgram {
+    if configuration.len() > MAX_CONFIGURATION_BYTES {
+        return ImageProgram::Unknown;
+    }
     let Ok(document) = serde_json::from_slice::<serde_json::Value>(configuration) else {
         return ImageProgram::Unknown;
     };
@@ -134,8 +198,17 @@ fn configured_program(configuration: &[u8]) -> ImageProgram {
         .filter_map(serde_json::Value::as_array)
         .flatten()
         .filter_map(serde_json::Value::as_str)
+        .take(MAX_PROGRAM_WORDS.saturating_add(1))
         .map(ToString::to_string)
         .collect();
+    if declared.len() > MAX_PROGRAM_WORDS
+        || declared
+            .iter()
+            .any(|word| word.len() > MAX_PROGRAM_WORD_BYTES)
+    {
+        // A vector past this reading's own ceilings names no program it answers with.
+        return ImageProgram::Undeclared;
+    }
     if declared.is_empty() {
         ImageProgram::Undeclared
     } else {
@@ -194,6 +267,47 @@ mod tests {
                 configured_program(configuration.as_bytes()),
                 expected,
                 "case {case:?}: expected {expected:?} from {configuration}"
+            );
+        }
+    }
+
+    /// RULE: the bytes a configuration is read from and the vector its two members name are
+    /// a PUSHED document's, so each is bounded here: a blob past the byte ceiling states
+    /// nothing this registry answers about, and a vector past the word ceilings is no
+    /// program it answers with.
+    #[test]
+    fn a_configuration_past_this_readings_ceilings_declares_no_program() {
+        let long_word = "a".repeat(super::MAX_PROGRAM_WORD_BYTES + 1);
+        let many_words: Vec<String> = (0..=super::MAX_PROGRAM_WORDS)
+            .map(|index| format!("w{index}"))
+            .collect();
+        for (case, configuration, expected) in [
+            (
+                "a word past the per-word ceiling",
+                format!(r#"{{"config":{{"Cmd":["{long_word}"]}}}}"#),
+                ImageProgram::Undeclared,
+            ),
+            (
+                "more words than the ceiling takes",
+                format!(
+                    r#"{{"config":{{"Cmd":{}}}}}"#,
+                    serde_json::to_string(&many_words).expect("a JSON array")
+                ),
+                ImageProgram::Undeclared,
+            ),
+            (
+                "a blob past the byte ceiling",
+                format!(
+                    r#"{{"note":"{}","config":{{"Cmd":["sh"]}}}}"#,
+                    "p".repeat(super::MAX_CONFIGURATION_BYTES)
+                ),
+                ImageProgram::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                configured_program(configuration.as_bytes()),
+                expected,
+                "case {case:?}: expected {expected:?}"
             );
         }
     }

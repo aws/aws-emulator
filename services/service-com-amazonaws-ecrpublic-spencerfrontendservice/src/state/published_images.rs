@@ -65,6 +65,16 @@ pub struct PublishedRepository {
     pub repository_name: &'static str,
     /// The tags the repository's gallery listing publishes a release under.
     pub image_tags: &'static [&'static str],
+    /// The PROGRAM the image this repository publishes declares as its own — the argument
+    /// vector its configuration's entry point and command name, which is what a container of
+    /// it runs when the client that created the container names no program of its own.
+    ///
+    /// SOURCE: each image's own published default command, as the image documents it. The
+    /// private registry answers the same question off the configuration blob a push stored
+    /// (`::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program`);
+    /// this gallery holds the published images themselves, so what each of them declares is
+    /// stated here beside the releases it publishes.
+    pub image_program: &'static [&'static str],
 }
 
 /// The tags the gallery's mirror of the BusyBox official image publishes.
@@ -133,16 +143,27 @@ pub const PUBLISHED_REPOSITORIES: &[PublishedRepository] = &[
         registry_alias: DOCKER_OFFICIAL_IMAGES_ALIAS,
         repository_name: "library/busybox",
         image_tags: BUSYBOX_TAGS,
+        // The BusyBox official image's own default command is the SHELL that multi-call
+        // binary provides, which is what a container of it runs when its client names no
+        // program: the image's documented command, and the one a `docker run` of it drops
+        // into.
+        image_program: &["sh"],
     },
     PublishedRepository {
         registry_alias: DOCKER_OFFICIAL_IMAGES_ALIAS,
         repository_name: "library/nginx",
         image_tags: NGINX_TAGS,
+        // The command the nginx official image documents for its own container: the server in
+        // the foreground, which is how that image runs it.
+        image_program: &["nginx", "-g", "daemon off;"],
     },
     PublishedRepository {
         registry_alias: DOCKER_OFFICIAL_IMAGES_ALIAS,
         repository_name: "library/httpd",
         image_tags: HTTPD_TAGS,
+        // The Apache HTTP Server official image's own command, which its documentation names
+        // as the foreground wrapper the image ships.
+        image_program: &["httpd-foreground"],
     },
 ];
 
@@ -362,6 +383,32 @@ pub fn published_repository(
     })
 }
 
+/// The PROGRAM the image `reference` names declares as its own, for a reference into a
+/// repository of this gallery whose image this emulator holds and under a tag that
+/// repository publishes ([`PublishedRepository::image_program`]).
+///
+/// `None` for every reference this gallery states no image of — another alias, a repository
+/// whose releases are not held here, and a release this gallery does not publish — because
+/// nothing here says what such an image declares, and for a reference addressing a DIGEST,
+/// which names a release rather than one of the published tags (see the module docs).
+///
+/// A READ of the published catalogue alone: it takes no store and changes nothing.
+#[must_use]
+pub fn published_image_program(reference: &GalleryReference) -> Option<Vec<String>> {
+    let tag = reference.image_tag.as_deref()?;
+    let published = published_repository(&reference.registry_alias, &reference.repository_name)?;
+    if !published.image_tags.contains(&tag) {
+        return None;
+    }
+    Some(
+        published
+            .image_program
+            .iter()
+            .map(|&word| word.to_string())
+            .collect(),
+    )
+}
+
 /// Whether the gallery publishes the image `reference` names, and `None` where nothing here
 /// decides it: a repository of the MIRRORED namespace whose releases this emulator does not
 /// hold, and every repository of every other alias, as for any registry it holds no store for.
@@ -442,6 +489,81 @@ mod tests {
             repository_name: repository.to_string(),
             image_tag: tag.map(str::to_string),
             image_digest: digest.map(str::to_string),
+        }
+    }
+
+    /// RULE: the program an image of this gallery declares is the one its published entry
+    /// states ([`PublishedRepository::image_program`]), for a reference into a repository
+    /// whose image this emulator holds and under a tag that repository publishes — and
+    /// nothing is stated for a reference this gallery holds no image of, so a release it does
+    /// not publish, a repository it holds no image of, another alias and a reference
+    /// addressing a digest each declare nothing.
+    #[test]
+    fn a_published_image_declares_the_program_its_entry_states() {
+        let shell = Some(vec!["sh".to_string()]);
+        // (case, the reference, the program the image declares)
+        let rows: &[(&str, GalleryReference, Option<Vec<String>>)] = &[
+            (
+                "a release of a held repository",
+                reference("docker", "library/busybox", Some("1.36"), None),
+                shell.clone(),
+            ),
+            (
+                "another release of the same repository",
+                reference("docker", "library/busybox", Some("musl"), None),
+                shell.clone(),
+            ),
+            (
+                "a held repository whose image runs a server",
+                reference("docker", "library/nginx", Some("1.29"), None),
+                Some(vec![
+                    "nginx".to_string(),
+                    "-g".to_string(),
+                    "daemon off;".to_string(),
+                ]),
+            ),
+            (
+                "the other held server image",
+                reference("docker", "library/httpd", Some("2.4-alpine"), None),
+                Some(vec!["httpd-foreground".to_string()]),
+            ),
+            (
+                "a tag the held repository publishes no release under",
+                reference("docker", "library/busybox", Some("no-such-release"), None),
+                None,
+            ),
+            (
+                "a repository of that registry no image is held of",
+                reference("docker", "library/python", Some("3.12"), None),
+                None,
+            ),
+            (
+                "a repository of another alias",
+                reference("someone", "library/busybox", Some("1.36"), None),
+                None,
+            ),
+            (
+                "a reference addressing a digest",
+                reference("docker", "library/busybox", None, Some("sha256:abc")),
+                None,
+            ),
+        ];
+        for (case, reference, expected) in rows {
+            let declared = published_image_program(reference);
+            assert_eq!(
+                declared, *expected,
+                "case {case:?}: expected {expected:?}, got {declared:?}"
+            );
+        }
+
+        // EVERY held repository states a program: an entry that stated none would leave a
+        // container of its image with nothing to run while the gallery holds the image.
+        for published in PUBLISHED_REPOSITORIES {
+            assert!(
+                !published.image_program.is_empty(),
+                "the repository {:?} must state the program its image declares",
+                published.repository_name
+            );
         }
     }
 

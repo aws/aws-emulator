@@ -2861,3 +2861,54 @@ fn a_nested_programs_operands_are_its_positional_parameters() {
         );
     }
 }
+
+/// RULE: a shell invoked with NO operand at all reads its commands from standard input —
+/// POSIX (`sh`): "if there are no operands and the -c option is not specified, the -s option
+/// shall be assumed" — and a session has no standard input, which is an input already at end
+/// of file. So no command of it runs, and the status is the one a shell that executed none
+/// exits with: "the exit status shall be that of the last command executed", or zero where no
+/// command was. An invocation that asks for anything this session cannot give it — a program
+/// text it did not carry, a script the tree holds no file for, an option — is still a command
+/// that could not run.
+#[test]
+fn a_shell_invoked_with_no_operand_runs_nothing_and_succeeds() {
+    let statuses = Statuses::default();
+    // (case, the line, the status the session answers)
+    let rows: [(&str, &str, i32); 7] = [
+        ("a shell with no operand", "sh", statuses.success),
+        ("the other name it is invoked under", "bash", statuses.success),
+        (
+            "a shell whose last command decided the status",
+            "sh -c 'exit 5'",
+            5,
+        ),
+        (
+            "a shell asked for a program text it did not carry",
+            "sh -c",
+            statuses.could_not_run,
+        ),
+        (
+            "a shell asked for an option this session has no input for",
+            "sh -s",
+            statuses.could_not_run,
+        ),
+        (
+            "a shell asked for a script the tree holds no file for",
+            "sh /absent.sh",
+            statuses.could_not_run,
+        ),
+        (
+            "a shell given its program on standard input",
+            "echo 'exit 7' | sh",
+            7,
+        ),
+    ];
+    for (case, line, expected) in rows {
+        let mut held = working_tree_session();
+        let answered = held.run(line);
+        assert_eq!(
+            answered, expected,
+            "case {case:?}: expected the status {expected}, got {answered}"
+        );
+    }
+}

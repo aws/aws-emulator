@@ -216,6 +216,37 @@ impl PullRegistries {
             .as_ref()
             .is_some_and(|state| state.lock().is_this_registry(registry_alias))
     }
+
+    /// The PROGRAM the image `image` declares as its own, as the registry that serves
+    /// that image reports it — and `None` for every reference no registry of this
+    /// emulator states a program for.
+    ///
+    /// It is what a container whose pod declares no `command` runs: "the container
+    /// image's ENTRYPOINT is used if this is not provided" (`Container$command`), so
+    /// the vector comes from the IMAGE rather than from the manifest. The registry is
+    /// what can answer it — an image declares its program in the configuration blob of
+    /// its own repository — so each of the two registries this emulator holds answers
+    /// for its own images: the private registry off the configuration a push stored
+    /// ([`::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program`]),
+    /// and the public gallery off the published images it holds
+    /// ([`::service_com_amazonaws_ecrpublic_spencerfrontendservice::state::published_images`]).
+    /// The reference is read exactly as the PULL reads it, so the image whose program
+    /// is answered is the image that was pulled.
+    #[must_use]
+    pub fn image_declared_program(&self, image: &str, region: &str) -> Option<Vec<String>> {
+        use ::service_com_amazonaws_ecr_amazonec2containerregistry_v20150921::state::image_program::ImageProgram;
+        use ::service_com_amazonaws_ecrpublic_spencerfrontendservice::state::{
+            gallery_pull, published_images,
+        };
+
+        let addressed = reference_into_this_registry(self, image, region);
+        if let ImageProgram::Declared(program) = self.private.declared_image_program(&addressed) {
+            return Some(program);
+        }
+        gallery_pull::parse_gallery_reference(image)
+            .as_ref()
+            .and_then(published_images::published_image_program)
+    }
 }
 
 /// How many of the pulls a request finds DUE it settles before it is answered.

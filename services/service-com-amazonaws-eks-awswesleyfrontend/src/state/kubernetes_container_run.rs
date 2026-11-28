@@ -61,12 +61,16 @@
 //! # A container nothing performed CLAIMS NOTHING
 //!
 //! Whether the declared vector is one this emulator can perform at all is decided BEFORE
-//! anything is performed ([`performable_program`]), so a container declaring NO vector —
-//! whose program is the one inside the caller's own image, which this emulator holds
-//! none of — and one naming a program the catalog does not hold are both
-//! [`ContainerRun::NotPerformed`], which carries no exit status and no output. Nothing
-//! ran, so nothing of a run is reported: such a container reports the runtime's own
-//! reason for one it could not start
+//! anything is performed ([`performable_program`]). A container declaring NO part of a
+//! vector of its own runs the program its IMAGE declares — "the container image's
+//! ENTRYPOINT is used if this is not provided" — which the REGISTRY that serves that image
+//! answers ([`DueRun::with_image_programs`]), so such a container is performed exactly like
+//! one whose manifest named that program. A container that declared PART of a vector (its
+//! `args` alone, which replace the image's command rather than its entry point), one whose
+//! image no registry of this emulator states a program for, and one naming a program the
+//! catalog does not hold are all [`ContainerRun::NotPerformed`], which carries no exit
+//! status and no output. Nothing ran, so nothing of a run is reported: such a container
+//! reports the runtime's own reason for one it could not start
 //! ([`super::kubernetes_objects::POD_START_ERROR_REASON`]) and the sentence naming that
 //! condition, never an exit status, and the pod ends in the phase Kubernetes reports for
 //! containers that terminated without running.
@@ -109,7 +113,7 @@ use super::kubernetes_fargate_logging::{
     self as fargate_logging, CloudWatchOutput, ContainerOutput, PodLogDelivery,
     MAX_ROUTED_BYTES_PER_POD, MAX_ROUTED_LINES_PER_CONTAINER, MAX_ROUTED_LINE_BYTES,
 };
-use super::kubernetes_image_pull::PULL_REASON_FAILED;
+use super::kubernetes_image_pull::{PullRegistries, PULL_REASON_FAILED};
 use super::kubernetes_objects::{
     ClusterObjects, POD_NO_CONTAINER_RUNTIME_MESSAGE, POD_PHASE_FAILED, POD_PHASE_SUCCEEDED,
     POD_START_DELAY,
@@ -313,10 +317,16 @@ impl PodRunRecord {
 struct ContainerProgram {
     /// The container's own name, which is what the outcome is recorded under.
     name: String,
+    /// The IMAGE it runs, which is what declares its program when the container declares
+    /// none ([`DueRun::with_image_programs`]).
+    image: String,
     /// The argument vector it runs: `command` followed by `args`, as the container
     /// runtime exec's them. Empty for a container that declares none, and for a vector
     /// past this emulator's own ceilings.
     program: Vec<String>,
+    /// Whether the program this container runs is the one its IMAGE declares: it declared
+    /// neither half of a vector of its own ([`declares_no_vector`]).
+    runs_the_images_program: bool,
     /// The environment variables the container declares, which are the environment its
     /// program is given.
     variables: BTreeMap<String, String>,
@@ -353,6 +363,39 @@ struct PodLogDestination {
 }
 
 impl DueRun {
+    /// This run with the program its IMAGE declares filled in for every container that
+    /// declares none: "the container image's ENTRYPOINT is used if this is not provided"
+    /// (`Container$command`), so such a container runs what the image states, which the
+    /// registry that serves that image answers
+    /// ([`super::kubernetes_image_pull::PullRegistries::image_declared_program`]).
+    ///
+    /// A container whose image no registry of this emulator states a program for is left
+    /// with the empty vector it had — and so is one that declared PART of a vector of its
+    /// own ([`declares_no_vector`]): nothing here knows what either runs, so nothing is
+    /// invented for them and they stay containers nothing was performed for.
+    ///
+    /// The vector is held to the SAME ceilings a vector the manifest named is held to
+    /// ([`MAX_PROGRAM_WORDS`], [`MAX_PROGRAM_WORD_BYTES`], applied by
+    /// [`within_program_ceilings`]) — an image's configuration is a document a caller
+    /// pushed, so what one of them can make this process run is bounded here and not by
+    /// what that document says.
+    ///
+    /// Takes the registries' own stores, so it is called with NO store of this service
+    /// held — which is why it happens between reading the due runs and performing them.
+    fn with_image_programs(mut self, registries: &PullRegistries) -> Self {
+        for container in &mut self.containers {
+            if !container.runs_the_images_program {
+                continue;
+            }
+            if let Some(declared) =
+                registries.image_declared_program(&container.image, &self.region)
+            {
+                container.program = within_program_ceilings(declared);
+            }
+        }
+        self
+    }
+
     /// This pod's delivery of `written`, and `None` for a pod nothing delivers the output
     /// of ([`Self::logs`]).
     fn log_delivery(&self, written: Vec<ContainerOutput>) -> Option<PodLogDelivery> {
@@ -407,17 +450,26 @@ pub async fn settle_due_runs(
 ) {
     // The router of this cluster, read and RELEASED: the delivery asks the other services'
     // stores and goes over the in-process callback, which is never done with this service's
-    // lock held.
-    let router = {
+    // lock held. The REGISTRIES come with it, because the program a container whose pod
+    // declares none runs is the one its image declares, which those registries answer
+    // ([`DueRun::with_image_programs`]) — also with no store of this service held.
+    let (router, registries) = {
         let store = state.lock();
-        store
-            .kubernetes_api
-            .get(key)
-            .map(|plane| plane.fargate_logs.clone())
+        match store.kubernetes_api.get(key) {
+            Some(plane) => (
+                Some(plane.fargate_logs.clone()),
+                Some(plane.registry.clone()),
+            ),
+            None => (None, None),
+        }
     };
     let mut due = due_runs(state, key, now);
     due.truncate(MAX_CONTAINER_RUNS_PER_REQUEST);
     for run in due {
+        let run = match registries.as_ref() {
+            Some(registries) => run.with_image_programs(registries),
+            None => run,
+        };
         let performed = ::tokio::task::spawn_blocking(move || {
             let outcome = attempt(&run);
             (run, outcome)
@@ -604,10 +656,37 @@ fn pod_container_programs(spec: &::serde_json::Value) -> Vec<ContainerProgram> {
                 .and_then(::serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            image: container
+                .get("image")
+                .and_then(::serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             program: declared_program(container),
+            runs_the_images_program: declares_no_vector(container),
             variables: declared_variables(container),
         })
         .collect()
+}
+
+/// Whether `container` declares NO part of an argument vector of its own — neither
+/// `command` nor `args` — which is the container whose program is the one its IMAGE
+/// declares, whole ([`DueRun::with_image_programs`]).
+///
+/// The two members override different halves of that program: `command` is the
+/// "entrypoint array ... the container image's ENTRYPOINT is used if this is not provided"
+/// and `args` the "arguments to the entrypoint. The container image's CMD is used if this
+/// is not provided". What a registry answers here is the image's program as ONE vector —
+/// its entry point followed by its command — so a container that replaces only the second
+/// half cannot be served out of it: such a container is one nothing was performed for,
+/// rather than one reported as having run the image's own program with the arguments the
+/// manifest declared thrown away.
+fn declares_no_vector(container: &::serde_json::Value) -> bool {
+    ["command", "args"].iter().all(|member| {
+        container
+            .get(*member)
+            .and_then(::serde_json::Value::as_array)
+            .is_none_or(|declared| declared.is_empty())
+    })
 }
 
 /// The argument vector a container runs: its `command` ("entrypoint array") followed by
@@ -615,7 +694,8 @@ fn pod_container_programs(spec: &::serde_json::Value) -> Vec<ContainerProgram> {
 /// exec's them in.
 ///
 /// Empty when it declares no `command` — a container running the program its IMAGE
-/// declares, which no manifest here names — and empty too for a vector past this
+/// declares, which the registry serving that image answers for
+/// ([`DueRun::with_image_programs`]) — and empty too for a vector past this
 /// emulator's own ceilings ([`MAX_PROGRAM_WORDS`], [`MAX_PROGRAM_WORD_BYTES`]).
 fn declared_program(container: &::serde_json::Value) -> Vec<String> {
     let words = |member: &str| -> Vec<String> {
@@ -633,11 +713,23 @@ fn declared_program(container: &::serde_json::Value) -> Vec<String> {
     let mut program = words("command");
     // `args` are the arguments of an entry point, so a container that declares none has
     // no program of its own whatever its `args` say: "the container image's ENTRYPOINT is
-    // used if this is not provided", and this emulator holds no image's entry point.
+    // used if this is not provided", which the registry serving the image answers for
+    // ([`DueRun::with_image_programs`]).
     if program.is_empty() {
         return Vec::new();
     }
     program.extend(words("args"));
+    within_program_ceilings(program)
+}
+
+/// `program` when it is within this emulator's own ceilings on an argument vector, and the
+/// EMPTY vector when it is not ([`MAX_PROGRAM_WORDS`], [`MAX_PROGRAM_WORD_BYTES`]).
+///
+/// The ONE place those ceilings are applied, so a vector reaches the session through them
+/// whichever side it came from: the manifest's own `command`/`args`, and the program an
+/// image's configuration declares — a document a caller pushed to a registry, so a vector
+/// past them names no program at all rather than one this process is made to carry.
+fn within_program_ceilings(program: Vec<String>) -> Vec<String> {
     if program.len() > MAX_PROGRAM_WORDS
         || program
             .iter()

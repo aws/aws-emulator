@@ -3965,12 +3965,28 @@ impl ShellSession {
     /// them around the run, so a program that invokes itself (a script running `sh` on its own
     /// path) ends on that bound rather than on this module's own recursion.
     ///
-    /// Any other invocation — an interactive shell, a login shell, a program read from
-    /// standard input — needs something this session does not have, so it is a command that
+    /// Any other invocation — a login shell, an interactive one, an option this session has
+    /// nothing to apply — needs something this session does not have, so it is a command that
     /// could not run.
+    ///
+    /// One invocation is not such a case: a shell invoked with NO operand at all. "If there
+    /// are no operands and the -c option is not specified, the -s option shall be assumed" —
+    /// the shell reads its commands from STANDARD INPUT — so the text it is given there is the
+    /// program it performs: the here-document, the file an input redirection names, or what the
+    /// stage before it in a pipeline wrote ([`Self::standard_input`]). A session handed none of
+    /// those has an input already at end of file, so no command of it runs and the status is
+    /// the one a shell that executed none exits with: "the exit status shall be that of the
+    /// last command executed", or success where no command was. It is the program a minimal
+    /// image whose own command is a shell declares, so a container of one ends exactly as it
+    /// does on a node with no terminal attached.
     fn run_nested_program(&mut self, arguments: &[String], redirections: &Redirections) -> i32 {
         let Some((first, rest)) = arguments.split_first() else {
-            return self.config.statuses.could_not_run;
+            // The program is this shell's own standard input, which the budget and the
+            // depth are charged around exactly as they are for an `sh -c` program.
+            return match self.standard_input(redirections) {
+                Some(program) => self.run_script_text(&program, vec![SHELL_NAME.to_string()]),
+                None => self.config.statuses.success,
+            };
         };
         // The POSITIONAL PARAMETERS the nested program is given, which is what the operands
         // after the program are: `sh -c PROGRAM NAME ARG…` names the program text, then the

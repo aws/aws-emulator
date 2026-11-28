@@ -239,6 +239,16 @@ impl PullPlane {
         }
     }
 
+    /// This registry's store, for a sibling reading that answers out of it
+    /// ([`super::image_program`]) — the SAME store a pull decided through this plane
+    /// resolves against, so the two cannot answer about different registries.
+    pub(in crate::state) fn registry_store(
+        &self,
+    ) -> Option<&::engine::ServiceState<ComAmazonawsEcrAmazonec2containerregistryV20150921State>>
+    {
+        self.registry.as_ref()
+    }
+
     /// [`serve_reference_pull`], decided from these stores.
     pub fn serve_reference_pull(
         &self,

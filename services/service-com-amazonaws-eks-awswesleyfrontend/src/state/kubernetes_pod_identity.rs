@@ -7,9 +7,14 @@
 //! containers of a pod the cluster's API server admits. The three values such an
 //! admission has to write — the agent's own link-local address, the
 //! credential-delivery variable names, and the path the projected token is
-//! mounted under — are constructs this project forbids in source, so the
-//! admission is not served at all: a pod reads back with the spec its create
-//! carried and the defaults the API server fills in, and nothing else.
+//! mounted under — are constructs this project forbids in source: a merge-gate
+//! scan rejects each of them outright (`code_pattern_scan`, categories
+//! `imds-endpoint`, `container-credentials-env` and `host-secret-path`, whose
+//! finding states "this finding comes from a regex scan with no inference in it,
+//! so no model verdict lowers it"), and those three values are fixed text of EKS
+//! Pod Identity rather than anything this emulator chooses. So the admission is
+//! not served at all: a pod reads back with the spec its create carried and the
+//! defaults the API server fills in, and nothing else.
 //!
 //! The file is still here because the tooling that wrote it cannot remove a
 //! file. Deleting it changes no behaviour, and the next change to touch this

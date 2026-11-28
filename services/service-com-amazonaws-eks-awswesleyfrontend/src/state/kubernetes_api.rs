@@ -183,8 +183,10 @@ pub struct KubernetesApiPlane {
     audit: Option<ClusterAuditLog>,
     /// The Amazon ECR registries the kubelet of a node of this cluster pulls a
     /// pod's images from, as the stores that decide a pull
-    /// ([`kubernetes_image_pull::settle_due_pulls`]).
-    registry: kubernetes_image_pull::PullRegistries,
+    /// ([`kubernetes_image_pull::settle_due_pulls`]) — and that answer what an image
+    /// DECLARES as its own program, for a container whose pod declares none
+    /// ([`kubernetes_container_run::settle_due_runs`]).
+    pub(super) registry: kubernetes_image_pull::PullRegistries,
     /// The Amazon EC2 records this cluster's networking plugin addresses its pods
     /// out of: a pod's address is a secondary private address of its node's own
     /// elastic network interface
