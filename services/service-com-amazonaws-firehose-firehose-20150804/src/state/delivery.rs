@@ -249,18 +249,19 @@ const DEFAULT_BUFFER_INTERVAL: Duration = Duration::from_secs(300);
 /// through a stream and then reads the destination back to verify its own delivery finds its
 /// data there.
 ///
-/// A CHOSEN span, bounded from both sides by what a client can observe. It sits well above
-/// the batching windows a configuration asks for in seconds or in a minute — those are
-/// honoured to the second, so a producer that asks for one gets exactly the batching and the
-/// latency it asked for, and a reader taking its first look well inside such a window finds
-/// the destination still empty. And it stays short enough to be WAITED OUT: a buffer's records
-/// are observable only once they are AT the destination, so a producer that puts a record and
-/// then polls the destination — and every pipeline whose records pass through a stream on
-/// their way to the consumer that checks them — has to find them there inside ONE such poll
-/// loop, which is the minute below rather than the quarter of an hour the longest interval
-/// admits: a read-back that gives up before the buffer is flushed sees a destination that
-/// stays empty forever, which is the one outcome this span exists to prevent.
-pub const MAX_BUFFER_HOLD: Duration = Duration::from_secs(60);
+/// A CHOSEN span, and the one this emulator gives every other piece of work the clock owes,
+/// because the window inside the hints is the SERVICE's to pick: a buffer's records are
+/// observable only once they are AT the destination, so a producer that puts a record and then
+/// polls the destination — and every pipeline whose records pass through a stream on their way
+/// to the consumer that checks them, a vended-log delivery into a stream among them — has to
+/// find them there inside ONE read-back loop. A read-back that gives up before the buffer is
+/// flushed sees a destination that stays empty forever, which is the one outcome this span
+/// exists to prevent, and a ceiling as long as a consumer's whole patience prevents none of
+/// it. It stays well above [`FULL_BUFFER_DELIVERY_SPAN`], so a buffer that is held is still
+/// held: a configuration asking for a window of seconds inside this span gets exactly the
+/// batching and the latency it asked for, a reader taking its first look right after the put
+/// finds the destination still empty, and only the size condition writes a buffer sooner.
+pub const MAX_BUFFER_HOLD: Duration = Duration::from_secs(3);
 
 /// How long after a stream's buffer opens — the instant the oldest record it holds landed
 /// — the delivery comes due once the buffer holds at least `BufferingHints$SizeInMBs` of
@@ -4372,7 +4373,12 @@ mod tests {
                 FULL_BUFFER_DELIVERY_SPAN,
             ),
             ("one second", Some(1), 1, Duration::from_secs(1)),
-            ("a minute", Some(60), 1, Duration::from_secs(60)),
+            (
+                "a minute, which is past the ceiling and so improved on",
+                Some(60),
+                1,
+                MAX_BUFFER_HOLD,
+            ),
             (
                 "one second below the ceiling",
                 Some(i32::try_from(ceiling).expect("the ceiling fits the member") - 1),

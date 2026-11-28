@@ -23,7 +23,7 @@
 //!
 //! The sibling suite [`super::hint_ceiling`] pins the other half of the same rule — an interval
 //! of minutes is not collapsed into the put that opened the buffer, so its rows hold their
-//! records all through the readings taken well inside the span — and the parent suite
+//! records at the reading taken right after that put — and the parent suite
 //! [`crate::buffering_hints`] that an interval inside the span is honoured to the second. This
 //! one pins the END of the window: that every one of those configurations is delivered, and
 //! WHAT the destination's listing then says about the object, which is the only thing such a

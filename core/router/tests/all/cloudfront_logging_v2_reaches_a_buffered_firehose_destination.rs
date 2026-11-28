@@ -58,25 +58,30 @@ use super::query_wire::form_encode;
 /// The AWS-managed cache policy `Managed-CachingOptimized`, by the id Amazon publishes for it:
 /// the second of two identical viewer requests is answered from the edge cache under it, so the
 /// two requests the rows log differ in their result classification.
-const CACHING_OPTIMIZED: &str = "658327ea-f89d-4fab-a63d-7e88639e58f6";
+///
+/// `pub(crate)` with the pipeline helpers below, so the sibling suite that drives the same
+/// pipeline over a window no consumer could wait out
+/// ([`super::cloudfront_access_log_join_survives_a_minutes_long_firehose_window`]) wires it the
+/// same way rather than keeping another copy.
+pub(crate) const CACHING_OPTIMIZED: &str = "658327ea-f89d-4fab-a63d-7e88639e58f6";
 
 /// The one `logType` a CloudFront delivery source sends ("For CloudFront, the valid value is
 /// ACCESS_LOGS", `smithy_query(query="doc",shape="PutDeliverySourceRequest",member="logType")`).
-const LOG_TYPE: &str = "ACCESS_LOGS";
+pub(crate) const LOG_TYPE: &str = "ACCESS_LOGS";
 
 /// `DeliveryDestination$outputFormat` every destination here is created under: the structured
 /// one of `OutputFormat`'s own values (`smithy_query(query="shape",shape="OutputFormat")`), so
 /// each record is a JSON object of its fields.
-const OUTPUT_FORMAT: &str = "json";
+pub(crate) const OUTPUT_FORMAT: &str = "json";
 
 /// The `DeliveryDestinationType` of a destination that is an Amazon S3 bucket, and of one that
 /// is a Firehose delivery stream (`smithy_query(query="shape",shape="DeliveryDestinationType")`).
-const S3: &str = "S3";
-const FH: &str = "FH";
+pub(crate) const S3: &str = "S3";
+pub(crate) const FH: &str = "FH";
 
 /// The record layout every delivery here carries: the fields a consumer joining an S3 record to
 /// a Firehose record reads, in this order.
-const FIELDS: &[&str] = &[
+pub(crate) const FIELDS: &[&str] = &[
     "x-edge-request-id",
     "cs-uri-stem",
     "sc-status",
@@ -94,11 +99,11 @@ const PAYLOAD: &str = "the object the edge serves and logs";
 const ROLE: &str = "logv2-buffered-firehose";
 
 /// The `X-Amz-Target` prefix and the content type Firehose's wire carries.
-const FIREHOSE_TARGET: &str = "Firehose_20150804";
+pub(crate) const FIREHOSE_TARGET: &str = "Firehose_20150804";
 const JSON_1_1: &str = "application/x-amz-json-1.1";
 
 /// The `DeliveryStreamStatus` a stream takes puts in.
-const ACTIVE: &str = "ACTIVE";
+pub(crate) const ACTIVE: &str = "ACTIVE";
 
 /// How long a destination that IS owed its records is polled before a case fails, and how often
 /// it is looked at again.
@@ -140,19 +145,22 @@ fn rows() -> Vec<Row> {
 }
 
 /// One wired leg of the pipeline: where its records land and how a consumer reads them.
-struct Leg {
-    case: &'static str,
+pub(crate) struct Leg {
+    pub(crate) case: &'static str,
     /// The bucket its records land in, and the prefix they land under.
-    bucket: String,
-    prefix: String,
+    pub(crate) bucket: String,
+    pub(crate) prefix: String,
     /// Whether the objects are the gzipped log files a vended-log delivery writes into a
     /// bucket, or the records a delivery stream put into its own destination uncompressed.
-    gzipped: bool,
+    pub(crate) gzipped: bool,
 }
 
 /// The five services this suite exercises, mounted on `engine` exactly as the router mounts
 /// them, with request authentication as `authenticated` says.
-fn emulator(engine: &Arc<engine::InMemoryEngine>, authenticated: bool) -> MultiServiceRouter {
+pub(crate) fn emulator(
+    engine: &Arc<engine::InMemoryEngine>,
+    authenticated: bool,
+) -> MultiServiceRouter {
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(authenticated);
     router.register_service(
@@ -178,7 +186,12 @@ fn emulator(engine: &Arc<engine::InMemoryEngine>, authenticated: bool) -> MultiS
 }
 
 /// One Firehose call, which must be accepted.
-async fn firehose(router: &MultiServiceRouter, case: &str, operation: &str, body: &Value) -> Value {
+pub(crate) async fn firehose(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: &Value,
+) -> Value {
     let answered = call(
         router,
         "firehose",
@@ -203,7 +216,12 @@ async fn firehose(router: &MultiServiceRouter, case: &str, operation: &str, body
 }
 
 /// One IAM action, which must be accepted.
-async fn iam(router: &MultiServiceRouter, case: &str, action: &str, params: &[(&str, &str)]) {
+pub(crate) async fn iam(
+    router: &MultiServiceRouter,
+    case: &str,
+    action: &str,
+    params: &[(&str, &str)],
+) {
     let mut body = format!("Action={action}&Version=2010-05-08");
     for (key, value) in params {
         body.push('&');
@@ -231,7 +249,11 @@ async fn iam(router: &MultiServiceRouter, case: &str, action: &str, params: &[(&
 }
 
 /// Every key `bucket` holds under `prefix`.
-async fn keys_under(router: &MultiServiceRouter, bucket: &str, prefix: &str) -> Vec<String> {
+pub(crate) async fn keys_under(
+    router: &MultiServiceRouter,
+    bucket: &str,
+    prefix: &str,
+) -> Vec<String> {
     let listed = call(
         router,
         "s3",
@@ -261,7 +283,7 @@ async fn keys_under(router: &MultiServiceRouter, bucket: &str, prefix: &str) -> 
 /// The records one leg's destination holds, read the way a consumer of that kind of destination
 /// reads them: the gzipped log file a vended-log delivery writes into a bucket, or the
 /// newline-delimited records a delivery stream put into its own destination.
-async fn records(router: &MultiServiceRouter, leg: &Leg) -> Vec<Value> {
+pub(crate) async fn records(router: &MultiServiceRouter, leg: &Leg) -> Vec<Value> {
     let mut held = Vec::new();
     for key in keys_under(router, &leg.bucket, &leg.prefix).await {
         let fetched = call(
@@ -308,7 +330,11 @@ async fn records(router: &MultiServiceRouter, leg: &Leg) -> Vec<Value> {
 
 /// Look at `leg`'s destination until it holds `wanted` records or [`DELIVERY_DEADLINE`] passes,
 /// then answer whatever it holds. Waits on the CONDITION, never on a span.
-async fn records_until(router: &MultiServiceRouter, leg: &Leg, wanted: usize) -> Vec<Value> {
+pub(crate) async fn records_until(
+    router: &MultiServiceRouter,
+    leg: &Leg,
+    wanted: usize,
+) -> Vec<Value> {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
         let held = records(router, leg).await;

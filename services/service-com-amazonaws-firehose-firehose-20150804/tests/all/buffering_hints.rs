@@ -14,24 +14,27 @@
 //! the extended one, or the `S3Configuration` of an Amazon Redshift destination ("Firehose
 //! first delivers data to the S3 bucket and then issues an Amazon Redshift COPY command").
 //!
-//! So a destination's bucket holds NOTHING for a record put inside a longer interval, holds
-//! one object for the same record once that interval has passed, and holds one as soon as the
-//! records cross the configured size however long the interval is.
+//! So a destination's bucket holds NOTHING for a record put inside a window still running,
+//! holds one object for the same record once that window has passed, and holds one as soon as
+//! the records cross the configured size however long the interval is. The window a buffer
+//! waits out is the interval its hints ask for while that interval is inside the span this
+//! emulator holds a buffer for; an interval past that span is IMPROVED ON — "these options are
+//! treated as hints, and therefore Firehose might choose to use different values when it is
+//! optimal" (`BufferingHints`) — so a buffer asking for minutes is neither collapsed into the
+//! put that opened it nor held past that span.
 //!
 //! Every row asserts that window rather than any particular latency, and no case waits for a
-//! fixed time or reads the wall clock: a destination is read right after its own put, a
-//! destination that IS due is polled until it holds its object, and the destinations whose
-//! interval is minutes away are required to hold nothing at every reading taken while that
-//! polling runs.
+//! fixed time or reads the wall clock: a destination whose window is still running is read
+//! right after its own put, where it must hold nothing, and every destination is then polled
+//! until it holds its object.
 //!
 //! The rows here vary the HINT VALUES of one destination member; the sibling suite
 //! `buffering_hints_destination_members` varies the MEMBER carrying them, and drives its own
 //! rows through [`assert_window_rule`] below, so there is one table-driver and one reading of
-//! "delivered" and "not delivered yet" between the two. The windows these rows wait out are
-//! the ones a case can; what a window of MINUTES gets — the wait it asked for while that
-//! wait is inside the span this emulator holds data for — is the child suite
-//! [`hint_ceiling`], and what the destination's own listing then reports is
-//! [`delivered_listing_entry`].
+//! "delivered" and "not delivered yet" between the two. How the hints of a window past that
+//! span are SPELLED — the documented default stated explicitly, the member left out, the
+//! published maximum — is the child suite [`hint_ceiling`], and what the destination's own
+//! listing then reports is [`delivered_listing_entry`].
 
 /// What a destination asking for an interval at the CEILING of the published range gets. The
 /// `#[path]` is what keeps it a child of THIS suite rather than a second suite
@@ -58,13 +61,14 @@ const BUCKET: &str = "buffering-hints-bucket";
 
 /// The interval the rows that wait one out are configured with, in seconds.
 ///
-/// Inside the published range of `IntervalInSeconds` (0..900), and short enough that a case
-/// waiting one out is not waiting on [`DELIVERY_DEADLINE`].
-pub(crate) const SHORT_INTERVAL: i64 = 5;
+/// Inside the published range of `IntervalInSeconds` (0..900), and inside the span this
+/// emulator holds a buffer for, so a row configured with it gets exactly the wait it asked for
+/// and a case waiting one out is not waiting on [`DELIVERY_DEADLINE`].
+pub(crate) const SHORT_INTERVAL: i64 = 2;
 
-/// A minutes-long interval, in seconds: inside the same published range, and far longer than
-/// every deadline here, so a buffer configured with it must hold nothing at every reading a
-/// case takes.
+/// A minutes-long interval, in seconds: inside the same published range, and far past the span
+/// this emulator holds a buffer for, so a buffer configured with it is improved on at the end
+/// of that span rather than waited out.
 pub(crate) const LONG_INTERVAL: i64 = 120;
 
 /// How long a stream is polled for `ACTIVE` before a case fails: far longer than the
@@ -73,9 +77,9 @@ pub(crate) const LONG_INTERVAL: i64 = 120;
 const ACTIVE_DEADLINE: Duration = Duration::from_secs(60);
 
 /// How long a delivery that IS due is waited for before a case fails, so a slow machine does
-/// not fail a case the clock would have served. Generous next to [`SHORT_INTERVAL`] and far
-/// inside [`LONG_INTERVAL`], so a buffer that must still be held is still held at every
-/// reading taken inside this window.
+/// not fail a case the clock would have served. Generous next to [`SHORT_INTERVAL`] and next to
+/// the span this emulator holds a buffer for, which is the longest wait any row here gets; it
+/// bounds nothing a case measures.
 const DELIVERY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How often a destination, or a stream's status, is polled while waiting.
@@ -120,9 +124,10 @@ pub(crate) enum Due {
     AtOnce,
     /// Only once [`SHORT_INTERVAL`] has passed.
     AfterItsInterval,
-    /// Not while this case runs: its interval is minutes away and its records never reach
-    /// its size.
-    NotYet,
+    /// Only once the span this emulator holds a buffer for has passed: its interval is
+    /// minutes away and its records never reach its size, so the window it asked for is
+    /// improved on at the end of that span.
+    AtTheCeiling,
 }
 
 /// How the row's records are put.
@@ -189,7 +194,7 @@ fn rows() -> Vec<Row> {
             hints: None,
             records: (1, 0),
             put: Put::OneBatch,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "the longest interval the member admits, with a tiny record",
@@ -197,7 +202,7 @@ fn rows() -> Vec<Row> {
             hints: Some((1, 900)),
             records: (1, 0),
             put: Put::OneBatch,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "the longest interval with the largest size, and records far below it",
@@ -205,7 +210,7 @@ fn rows() -> Vec<Row> {
             hints: Some((128, 900)),
             records: (2, BIG_RECORD_BYTES),
             put: Put::OneCallEach,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "records crossing SizeInMBs=1 inside the longest interval",
@@ -325,14 +330,16 @@ pub(crate) async fn assert_window_rule(bucket: &str, stream_prefix: &str, rows: 
     }
 
     // The buffers whose size condition has fired, and the ones configured at the shortest
-    // interval their member admits, are objects now. The ones whose interval is minutes away
-    // must hold nothing at every reading taken while those are waited for.
-    let held: Vec<Watch<'_>> = watches(&legs, Due::NotYet);
-    await_delivered(&emulator, &watches(&legs, Due::AtOnce), &held).await;
+    // interval their member admits, are objects now.
+    await_delivered(&emulator, &watches(&legs, Due::AtOnce)).await;
 
-    // And the buffers configured with the short interval become objects once it has elapsed,
-    // while the minutes-long ones, read all through that wait, still hold nothing.
-    await_delivered(&emulator, &watches(&legs, Due::AfterItsInterval), &held).await;
+    // The buffers configured with the short interval become objects once it has elapsed.
+    await_delivered(&emulator, &watches(&legs, Due::AfterItsInterval)).await;
+
+    // And the ones asking for minutes are not waited out: each becomes one object at the end
+    // of the span this emulator holds a buffer for, since the hints are hints the service may
+    // improve on.
+    await_delivered(&emulator, &watches(&legs, Due::AtTheCeiling)).await;
 }
 
 /// Every leg whose destination is due at `due`, as destinations under watch.
@@ -419,20 +426,10 @@ async fn assert_nothing_delivered(emulator: &Emulator, watch: &Watch<'_>) {
     );
 }
 
-/// Wait until every destination of `due` holds its delivered object, requiring every
-/// destination of `held` to hold NOTHING at each reading taken meanwhile.
-async fn await_delivered(emulator: &Emulator, due: &[Watch<'_>], held: &[Watch<'_>]) {
+/// Wait until every destination of `due` holds its delivered object.
+async fn await_delivered(emulator: &Emulator, due: &[Watch<'_>]) {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
-        for watch in held {
-            let keys = emulator.keys_under(watch.bucket, watch.prefix).await;
-            assert!(
-                keys.is_empty(),
-                "case {:?}: a buffer whose interval has not elapsed is not delivered, \
-                 got {keys:?}",
-                watch.case
-            );
-        }
         let mut pending: Vec<&str> = Vec::new();
         for watch in due {
             if emulator

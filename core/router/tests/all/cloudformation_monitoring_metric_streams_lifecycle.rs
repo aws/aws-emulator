@@ -75,7 +75,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long the destination is watched, after it has been emptied, to show that a stopped estate
 /// delivers nothing further. A negative observation has no condition to wait for, so it is made
 /// repeatedly over this window rather than once after a wait.
-const SILENCE_WINDOW: Duration = Duration::from_secs(2);
+///
+/// Longer than the window a destination's buffer can be held for — the records a stopped stream
+/// had already handed over are written at the next flush, and a destination declaring no
+/// `BufferingHints` is one whose window this emulator picks — so the silence a teardown waits
+/// for covers a pending flush rather than ending before it.
+const SILENCE_WINDOW: Duration = Duration::from_secs(10);
 
 /// The XML namespace an Amazon S3 multi-object delete carries.
 const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";

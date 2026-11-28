@@ -12,10 +12,13 @@
 //! met: `IntervalInSeconds` after the buffer opened ("Buffer incoming data for the specified
 //! period of time, in seconds, before delivering it to the destination") or as soon as the
 //! buffer holds `SizeInMBs`. So a destination configured with a NON-ZERO interval and a size
-//! the records never reach holds nothing while that interval runs and holds the consumed
-//! record once it has elapsed — and because the source, not a Firehose call, is what feeds
-//! such a stream, consumption keeps going after a delivery: a record a producer writes to the
-//! source later is delivered too, and a record written twice is delivered twice.
+//! the records never reach holds nothing while that window runs and holds the consumed
+//! record once it has elapsed — the window being the interval it asked for while that interval
+//! is inside the span this emulator holds a buffer for, and the end of that span for an
+//! interval past it, the hints being hints the service may improve on — and because the source,
+//! not a Firehose call, is what feeds such a stream, consumption keeps going after a delivery:
+//! a record a producer writes to the source later is delivered too, and a record written twice
+//! is delivered twice.
 //!
 //! What this suite adds to its siblings: `kinesis_source_ingestion` drives the consumption
 //! path with destinations asking for the shortest interval their member admits, or for records
@@ -58,9 +61,10 @@ enum Due {
     AtOnce,
     /// Only once [`SHORT_INTERVAL`] has passed.
     AfterItsInterval,
-    /// Not while this case runs: its interval is minutes away and its record is far below its
-    /// size.
-    NotYet,
+    /// Only once the span this emulator holds a buffer for has passed: its interval is minutes
+    /// away and its record is far below its size, so the window it asked for is improved on at
+    /// the end of that span.
+    AtTheCeiling,
 }
 
 /// One case: the source's shape, the destination the Firehose stream delivers to, and when
@@ -118,7 +122,7 @@ fn rows() -> Vec<Row> {
             member: "ExtendedS3DestinationConfiguration",
             prefix: Some("held/"),
             hints: (128, LONG_INTERVAL),
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
     ]
 }
@@ -195,23 +199,19 @@ async fn a_consumed_record_is_delivered_on_its_destinations_own_buffering_window
                 &leg.payload,
             )
             .await;
-            // A destination whose interval has not elapsed still holds exactly what the
-            // earlier rounds delivered, read right after this round's own put — nothing at
-            // all for the one whose interval is minutes away.
+            // A destination whose window has not elapsed still holds exactly what the
+            // earlier rounds delivered, read right after this round's own put.
             if leg.due != Due::AtOnce {
-                let held = match leg.due {
-                    Due::NotYet => 0,
-                    _ => round - 1,
-                };
-                assert_copies(&emulator, leg, held, "right after the producer's put").await;
+                assert_copies(&emulator, leg, round - 1, "right after the producer's put").await;
             }
         }
         // The destinations asking for the shortest interval their member admits are due as
         // soon as the record is consumed; the ones asking for a non-zero interval become due
-        // once it has elapsed. The minutes-away ones must hold nothing at every reading taken
-        // while either is waited for.
+        // once it has elapsed, and the one asking for minutes at the end of the span this
+        // emulator holds a buffer for, which improves on the window it asked for.
         await_copies(&emulator, &legs, Due::AtOnce, round).await;
         await_copies(&emulator, &legs, Due::AfterItsInterval, round).await;
+        await_copies(&emulator, &legs, Due::AtTheCeiling, round).await;
         assert_delivered_keys(&emulator, &legs).await;
     }
 
@@ -219,10 +219,6 @@ async fn a_consumed_record_is_delivered_on_its_destinations_own_buffering_window
     // nothing else — watched over a window, so a record consumed twice or delivered twice
     // fails the case whenever it happens.
     for leg in &legs {
-        if leg.due == Due::NotYet {
-            assert_copies(&emulator, leg, 0, "after every round").await;
-            continue;
-        }
         stays_delivered(
             &emulator,
             leg.case,
@@ -289,14 +285,10 @@ async fn assert_copies(emulator: &Emulator, leg: &Leg, copies: usize, stage: &st
     );
 }
 
-/// Wait until every leg of `due` holds `copies` copies of its payload, requiring every
-/// [`Due::NotYet`] leg to hold nothing at each reading taken meanwhile.
+/// Wait until every leg of `due` holds `copies` copies of its payload.
 async fn await_copies(emulator: &Emulator, legs: &[Leg], due: Due, copies: usize) {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
-        for leg in legs.iter().filter(|leg| leg.due == Due::NotYet) {
-            assert_copies(emulator, leg, 0, "while a due destination was waited for").await;
-        }
         let mut pending: Vec<(&str, usize)> = Vec::new();
         for leg in legs.iter().filter(|leg| leg.due == due) {
             let held = concatenated(emulator, &leg.bucket, &leg.prefix).await;

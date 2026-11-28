@@ -14,7 +14,9 @@
 //! delivers data to the S3 bucket and then issues an Amazon Redshift COPY command").
 //!
 //! So a record put into a destination configured with a minutes-long interval is in NO
-//! member's bucket while that interval runs, however the destination was spelled.
+//! member's bucket at the reading taken right after that put, however the destination was
+//! spelled, and reaches every one of them once the span this emulator holds a buffer for has
+//! passed — the hints being hints the service may improve on.
 
 use crate::buffering_hints::{
     assert_window_rule, Due, Member, Put, Row, BIG_RECORD_BYTES, LONG_INTERVAL, SHORT_INTERVAL,
@@ -42,7 +44,7 @@ fn rows() -> Vec<Row> {
             hints: Some((128, LONG_INTERVAL)),
             records: (1, 0),
             put: Put::OneCallEach,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "the plain Amazon S3 member with no BufferingHints at all, so the \
@@ -51,7 +53,7 @@ fn rows() -> Vec<Row> {
             hints: None,
             records: (2, 0),
             put: Put::OneBatch,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "the plain Amazon S3 member at a short interval, with a payload far below \
@@ -86,7 +88,7 @@ fn rows() -> Vec<Row> {
             hints: Some((128, LONG_INTERVAL)),
             records: (1, 0),
             put: Put::OneCallEach,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "an Amazon Redshift destination's S3 configuration at a minutes-long \
@@ -95,7 +97,7 @@ fn rows() -> Vec<Row> {
             hints: Some((128, LONG_INTERVAL)),
             records: (1, 0),
             put: Put::OneBatch,
-            due: Due::NotYet,
+            due: Due::AtTheCeiling,
         },
         Row {
             case: "an Amazon Redshift destination's S3 configuration at a short interval",
