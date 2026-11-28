@@ -42,15 +42,13 @@ use super::*;
 ///
 /// Each entry is a namespace whose options are the caller's OWN names (the
 /// environment properties and the template parameters passed to the
-/// application), are scoped to a resource of their own (a scheduled action, an
-/// Auto Scaling trigger), or belong to a resource this emulator provisions no
-/// behaviour for (the database instance, the proxy's static files, the traffic
-/// split of an immutable deployment, and the load balancers' listeners and
-/// policies). The platform resolves a specification naming one of them, so this
-/// service does too.
+/// application), are scoped to a resource of their own (a scheduled action), or
+/// belong to a resource this emulator provisions no behaviour for (the database
+/// instance, the proxy's static files, the traffic split of an immutable
+/// deployment, and the load balancers' listeners and policies). The platform
+/// resolves a specification naming one of them, so this service does too.
 pub const UNDESCRIBED_CONFIGURATION_NAMESPACES: &[&str] = &[
     "aws:autoscaling:scheduledaction",
-    "aws:autoscaling:trigger",
     "aws:cloudformation:template:parameter",
     "aws:elasticbeanstalk:application:environment",
     "aws:elasticbeanstalk:environment:proxy:staticfiles",

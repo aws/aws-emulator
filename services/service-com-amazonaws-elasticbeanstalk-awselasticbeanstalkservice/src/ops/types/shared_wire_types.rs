@@ -46,8 +46,8 @@ eb_environment_description!(CreateEnvironmentOutput, CREATE_ENVIRONMENT_OUTPUT_S
 /// Where ONE option of a resolved configuration set got its effective value: the
 /// triple that names the option and the source the value came from.
 ///
-/// An option in force at NO value came from no layer, so it carries no
-/// `OptionSource` — see
+/// An option in force at NO value came from no layer, so its `OptionSource`
+/// names none — the empty structure — see
 /// [`crate::state::resolved_option_setting_details`], which is where the values
 /// come from.
 ///

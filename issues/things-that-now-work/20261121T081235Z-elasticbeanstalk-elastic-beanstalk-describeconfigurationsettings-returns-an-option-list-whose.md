@@ -75,3 +75,42 @@ Model grounding: Smithy elasticbeanstalk DescribeConfigurationSettings -> Config
 3. Cause 1: replay fixture elasticbeanstalk-configuration-template-lifecycle-and-validation and compare step task#6 (and task#9) - CreateApplication, CreateConfigurationTemplate / CreateEnvironment, then DescribeConfigurationSettings for that application + template/environment. Diff the returned ConfigurationSettings[0].OptionSettings and OptionSettingDetails lists against the recorded response: membership and order differ from the first aws:cloudformation:template:parameter entry onward, and several Values differ.
 4. Cause 2: replay fixture elasticbeanstalk-environment-create-option-setting-reflected and compare step task#5 - create an environment with an explicit OptionSettings entry (aws:elasticbeanstalk:application:environment / SPRING_PROFILES_ACTIVE) via the API, then call DescribeConfigurationSettings for that environment. Every OptionSettingDetails entry comes back without OptionSource (AWS returns {Identifier: API, Origin: API} for the API-supplied option, {Identifier: Service, Origin: Service} for service-contributed options and the empty element where there is no source), and the entries at member[1..3] are different options than AWS reports.
 5. Both steps answer HTTP 200 on both sides; the divergence is entirely in the response body, so the check is a body diff, not a status/error-code comparison.
+
+## Resolution
+
+Cause 2 is fixed as a rule: an `OptionSettingDetails` entry now ALWAYS carries an
+`OptionSource`, naming the layer the value in force came from — `API` where the
+configuration set itself holds the setting, `Service` where the platform version
+put the value there — and naming nothing, as the EMPTY element, for an option in
+force at no value. The emulator previously dropped the member entirely for such
+an option, which is what the recording reported as `expected '', got None`.
+
+Cause 1 is fixed in its composition rule: a read of a configuration set reports
+the EFFECTIVE option set of the platform version the set is for — every option
+that version SUPPLIES to the environment it provisions plus every option its
+published catalog DEFINES, each at the value in force (the configuration's own
+setting, else the published `DefaultValue`, else no value). The set was
+previously filtered down to the options the catalog publishes a non-empty
+default for, so an option the version defines without a default was missing from
+the read altogether; for a Python platform version the reported set grows from 58
+options to 113 against the 118 the recorded step carries. Beside that rule, the
+catalog itself gained what it had been missing: the two `aws:cloudformation:
+template:parameter` entries the recorded set carries for every environment
+(`AppSource`, `HooksPkgUrl`), the whole `aws:autoscaling:trigger` family (ten
+options the published option reference documents for every environment, which
+this catalog described none of), the documented defaults of the classic load
+balancer's health-check target and listener ports and of the rolling update's
+timeout, and a value in force for the environment property a Python runtime
+supplies — the directory the platform runs the deployed application from — which
+is why the recording attributes it to the service.
+
+What the replay still reports, left here so the gap is not lost: the recorded
+answer's exact membership and order (118 entries in the service's own sequence)
+is not reached. What remains is the CONTENT of the per-platform-version option
+catalog AWS publishes — which options that version defines, in which order it
+lists them — which is data this emulator does not hold and which the recorded
+values are withheld for; the catalog here is written from Elastic Beanstalk's
+published configuration-option reference. That gap is the subject of the open
+`DescribeConfigurationOptions` catalog issue
+(20261029T180136Z-elasticbeanstalk-elastic-beanstalk-accepts-inputs-aws-refuses-and-publishes.md).
+No rule of the composition or of the attribution is missing here.

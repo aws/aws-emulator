@@ -59,6 +59,59 @@ pub(super) const OPTION_DESCRIPTIONS: &[OptionDescription] = &[
         "Minimum number of instances you want running. Must be a positive integer no greater \
          than MaxSize.",
     ),
+    // aws:autoscaling:trigger — the CloudWatch alarm the group scales on.
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "BreachDuration",
+        "Amount of time, in minutes, a metric can be beyond its defined limit (as specified in \
+         the UpperThreshold and LowerThreshold) before the trigger fires.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "EvaluationPeriods",
+        "Number of consecutive evaluation periods used to determine if a breach is occurring.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "LowerBreachScaleIncrement",
+        "How many Amazon EC2 instances to remove when performing a scaling activity.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "LowerThreshold",
+        "If the measurement falls below this number for the breach duration, a trigger is fired.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "MeasureName",
+        "Metric used for your Auto Scaling trigger.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Period",
+        "Specifies how frequently Amazon CloudWatch measures the metrics for your trigger.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Statistic",
+        "Statistic the trigger should use, such as Average.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Unit",
+        "Unit for the trigger measurement, such as Bytes.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "UpperBreachScaleIncrement",
+        "How many Amazon EC2 instances to add when performing a scaling activity.",
+    ),
+    (
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "UpperThreshold",
+        "If the measurement is higher than this number for the breach duration, a trigger is \
+         fired.",
+    ),
     // aws:autoscaling:launchconfiguration — the instances themselves.
     (
         NAMESPACE_LAUNCH_CONFIGURATION,

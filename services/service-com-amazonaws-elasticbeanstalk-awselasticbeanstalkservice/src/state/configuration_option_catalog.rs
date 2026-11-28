@@ -226,6 +226,72 @@ impl ConfigurationOption {
     }
 }
 
+/// `aws:elb:healthcheck` / `Target`'s documented default: the check the classic
+/// load balancer makes on an instance to decide whether it is healthy, stated as
+/// the protocol and the port it is made on.
+pub(super) const DEFAULT_HEALTH_CHECK_TARGET: &str = "TCP:80";
+
+/// The value a load-balancer listener port carries when the balancer does NOT
+/// listen on it — `aws:elb:loadbalancer` / `LoadBalancerHTTPSPort`'s documented
+/// default, since an environment's balancer serves no HTTPS listener until a
+/// certificate is configured for one.
+pub(super) const LISTENER_PORT_OFF: &str = "OFF";
+
+/// `aws:autoscaling:updatepolicy:rollingupdate` / `Timeout`'s documented default
+/// — "the maximum amount of time to wait for all instances in a batch of
+/// instances to pass health checks", as the ISO 8601 duration the option is
+/// stated in.
+pub(super) const DEFAULT_ROLLING_UPDATE_TIMEOUT: &str = "PT30M";
+
+/// The namespace holding the options of the CloudWatch alarm an environment's
+/// Auto Scaling group scales on, as the published option reference names it
+/// ("General options for all environments").
+pub(super) const NAMESPACE_AUTOSCALING_TRIGGER: &str = "aws:autoscaling:trigger";
+
+/// The upper bound the reference states for each of the trigger's three timing
+/// options ("1 to 600"): the period a metric is measured over and how long a
+/// threshold must be breached before the group scales, both in minutes, and how
+/// MANY of those periods are evaluated, which is a count rather than a span —
+/// which is why the bound is named for neither unit.
+pub(super) const MAX_PUBLISHED_TRIGGER_BOUND: i32 = 600;
+
+/// The metrics the trigger can watch, as the reference lists them for
+/// `MeasureName`.
+pub(super) const TRIGGER_MEASURE_NAMES: &[&str] = &[
+    "CPUUtilization",
+    "DiskReadBytes",
+    "DiskReadOps",
+    "DiskWriteBytes",
+    "DiskWriteOps",
+    "HealthyHostCount",
+    "Latency",
+    "NetworkIn",
+    TRIGGER_MEASURE_NETWORK_OUT,
+    "RequestCount",
+    "UnHealthyHostCount",
+];
+
+/// `MeasureName`'s documented default — the bytes an instance sends out, which
+/// is also why the thresholds beside it are stated in [`TRIGGER_UNIT_BYTES`].
+pub(super) const TRIGGER_MEASURE_NETWORK_OUT: &str = "NetworkOut";
+
+/// The units a watched metric can be stated in, as the reference lists them for
+/// `Unit`.
+pub(super) const TRIGGER_UNITS: &[&str] = &[
+    "Bits",
+    "Bits/Second",
+    TRIGGER_UNIT_BYTES,
+    "Bytes/Second",
+    "Count",
+    "Count/Second",
+    "None",
+    "Percent",
+    "Seconds",
+];
+
+/// `Unit`'s documented default. See [`TRIGGER_UNITS`].
+pub(super) const TRIGGER_UNIT_BYTES: &str = "Bytes";
+
 /// The CloudWatch Logs retention periods a log group can be kept for, in days,
 /// which is the value set of every `RetentionInDays` option below.
 pub(super) const LOG_RETENTION_IN_DAYS: &[&str] = &[
@@ -315,6 +381,76 @@ pub const GENERAL_CONFIGURATION_OPTIONS: &[ConfigurationOption] = &[
         DEFAULT_MIN_SIZE_VALUE,
     )
     .with_range(0, MAX_PUBLISHED_ASG_SIZE),
+    // aws:autoscaling:trigger — the CloudWatch alarm the group scales on:
+    // which metric is watched, over what period, and the two thresholds it
+    // scales out and in at. Every environment whose group can scale defines
+    // them, so they are part of the configuration a read of the set reports.
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "BreachDuration",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "5",
+    )
+    .with_range(1, MAX_PUBLISHED_TRIGGER_BOUND),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "EvaluationPeriods",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "1",
+    )
+    .with_range(1, MAX_PUBLISHED_TRIGGER_BOUND),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "LowerBreachScaleIncrement",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "-1",
+    ),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "LowerThreshold",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "2000000",
+    ),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "MeasureName",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        TRIGGER_MEASURE_NETWORK_OUT,
+    )
+    .with_values(TRIGGER_MEASURE_NAMES),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Period",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "5",
+    )
+    .with_range(1, MAX_PUBLISHED_TRIGGER_BOUND),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Statistic",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "Average",
+    )
+    .with_values(&["Average", "Maximum", "Minimum", "Sum"]),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "Unit",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        TRIGGER_UNIT_BYTES,
+    )
+    .with_values(TRIGGER_UNITS),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "UpperBreachScaleIncrement",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "1",
+    ),
+    ConfigurationOption::new(
+        NAMESPACE_AUTOSCALING_TRIGGER,
+        "UpperThreshold",
+        CHANGE_SEVERITY_NO_INTERRUPTION,
+        "6000000",
+    ),
     // aws:autoscaling:launchconfiguration — the instances themselves.
     ConfigurationOption::new(
         "aws:autoscaling:launchconfiguration",
@@ -799,7 +935,7 @@ pub const GENERAL_CONFIGURATION_OPTIONS: &[ConfigurationOption] = &[
         "aws:autoscaling:updatepolicy:rollingupdate",
         "Timeout",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        DEFAULT_ROLLING_UPDATE_TIMEOUT,
     ),
     ConfigurationOption::new(
         "aws:ec2:instances",
@@ -849,35 +985,38 @@ pub const GENERAL_CONFIGURATION_OPTIONS: &[ConfigurationOption] = &[
         CHANGE_SEVERITY_NO_INTERRUPTION,
         "",
     ),
+    // The classic load balancer's own listeners and health check, whose
+    // defaults the option reference states: the check the balancer makes on an
+    // instance, and the two ports it listens on with the protocol each speaks.
     ConfigurationOption::new(
         "aws:elb:healthcheck",
         "Target",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        DEFAULT_HEALTH_CHECK_TARGET,
     ),
     ConfigurationOption::new(
         "aws:elb:loadbalancer",
         "LoadBalancerHTTPPort",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        "80",
     ),
     ConfigurationOption::new(
         "aws:elb:loadbalancer",
         "LoadBalancerHTTPSPort",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        LISTENER_PORT_OFF,
     ),
     ConfigurationOption::new(
         "aws:elb:loadbalancer",
         "LoadBalancerPortProtocol",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        "HTTP",
     ),
     ConfigurationOption::new(
         "aws:elb:loadbalancer",
         "LoadBalancerSSLPortProtocol",
         CHANGE_SEVERITY_NO_INTERRUPTION,
-        "",
+        "HTTPS",
     ),
     ConfigurationOption::new(
         "aws:elb:loadbalancer",
@@ -1217,7 +1356,7 @@ pub(super) const OPTION_INSTANCE_TYPE_FAMILY: &str = "InstanceTypeFamily";
 ///
 /// RECORDED BEHAVIOUR, not modelled and not in the published option reference:
 /// the awsQuery `DescribeConfigurationSettings` answers in this project's
-/// recorded corpus carry these three
+/// recorded corpus carry these
 /// [`NAMESPACE_TEMPLATE_PARAMETER`] entries in the resolved set of a
 /// configuration nobody wrote them into, so they belong to the set the platform
 /// version puts in force rather than to what a caller configured. They are
@@ -1226,10 +1365,21 @@ pub(super) const OPTION_INSTANCE_TYPE_FAMILY: &str = "InstanceTypeFamily";
 /// `ConfigurationOptionDescription` for them: there is no default, no change
 /// severity and no value set to publish, which is exactly why
 /// `DescribeConfigurationOptions` describes none of them.
+///
+/// They are the parameters of the environment stack every platform version
+/// builds: the instance type's family, the proxy's static-file mappings, the
+/// environment properties passed to the application, the source of the
+/// application version deployed in it and the package of platform hooks its
+/// instances run.
 pub const PLATFORM_SUPPLIED_OPTIONS: &[(&str, &str)] = &[
     (NAMESPACE_TEMPLATE_PARAMETER, OPTION_INSTANCE_TYPE_FAMILY),
     (NAMESPACE_TEMPLATE_PARAMETER, "StaticFiles"),
     (NAMESPACE_TEMPLATE_PARAMETER, "EnvironmentVariables"),
+    (
+        NAMESPACE_TEMPLATE_PARAMETER,
+        crate::ops::types::RUNTIME_SOURCE_PARAMETER_APP_SOURCE,
+    ),
+    (NAMESPACE_TEMPLATE_PARAMETER, "HooksPkgUrl"),
 ];
 
 /// The environment properties a PYTHON platform version supplies on top of
@@ -1237,7 +1387,11 @@ pub const PLATFORM_SUPPLIED_OPTIONS: &[(&str, &str)] = &[
 /// [`PLATFORM_SUPPLIED_OPTIONS`] — a recorded resolved set of a Python
 /// configuration carries it.
 const PYTHON_SUPPLIED_OPTIONS: &[(&str, &str)] =
-    &[(NAMESPACE_APPLICATION_ENVIRONMENT, "PYTHONPATH")];
+    &[(NAMESPACE_APPLICATION_ENVIRONMENT, PYTHON_MODULE_SEARCH_PATH)];
+
+/// The environment property a Python platform version points at the deployed
+/// application's directory. See [`SUPPLIED_OPTION_VALUES`].
+pub const PYTHON_MODULE_SEARCH_PATH: &str = "PYTHONPATH";
 
 /// The properties a platform version supplies because of the RUNTIME it runs,
 /// by the [`SolutionStack::platform_category`] the catalog publishes it under —
@@ -1352,17 +1506,18 @@ pub fn named_platform_version(
 }
 
 /// The option settings a configuration SET holds, RESOLVED: the options
-/// `supplied` by the platform version, then the option catalog `catalog`
-/// publishes at its default values, with the settings `written` on the
-/// configuration itself applied over them.
+/// `supplied` by the platform version, then every option the option catalog
+/// `catalog` publishes, with the settings `written` on the configuration itself
+/// applied over them.
 ///
 /// Elastic Beanstalk resolves a configuration through a layered chain — what the
 /// platform version supplies and defaults, then the saved configuration, then
 /// the settings set on the environment — so the configuration set a read reports
-/// is the resolved one: it carries options nobody wrote, each at the
-/// `DefaultValue` `DescribeConfigurationOptions` publishes for the same
-/// (`Namespace`, `OptionName`) on that platform version, and an option the
-/// configuration DOES set at the value it was set to.
+/// is the EFFECTIVE set of that platform version: it carries every option that
+/// version defines or supplies, whoever wrote it, each at the value in force —
+/// the setting the configuration itself holds, else the `DefaultValue`
+/// `DescribeConfigurationOptions` publishes for the same (`Namespace`,
+/// `OptionName`) on that version, else no value at all.
 ///
 /// The `supplied` options are the ones that platform version SUPPLIES to the
 /// environment it provisions rather than publishes for configuration (see
@@ -1371,10 +1526,12 @@ pub fn named_platform_version(
 /// at no value is reported with no `Value`, which is also what makes it
 /// attributable to no layer (see [`resolved_option_setting_details`]).
 ///
-/// An option the catalog defines no default for is in force at no value, so it
-/// is reported only where the configuration sets it; an option the catalog does
-/// not define at all — an application environment variable, which the caller
-/// names — is reported because the configuration sets it.
+/// An option the catalog defines no default for is in the set the same way, in
+/// force at no value until the configuration sets one: what puts an option in
+/// the set is the platform version DEFINING it, not a value standing behind it.
+/// An option the catalog does not define at all — an application environment
+/// variable, which the caller names — is reported because the configuration sets
+/// it.
 ///
 /// This is why the WRITTEN settings are what the store keeps: the override an
 /// `OptionsToRemove` takes out stops replacing the default, so that option
@@ -1401,7 +1558,6 @@ pub fn resolved_option_settings(
         .collect();
     let defaults: Vec<ConfigurationOptionSetting> = catalog
         .iter()
-        .filter(|option| !option.default_value.is_empty())
         .map(|option| ConfigurationOptionSetting {
             // "A unique resource name for the configuration option setting" —
             // only a time-based scaling option is set on a resource of its own,
@@ -1409,7 +1565,11 @@ pub fn resolved_option_settings(
             resource_name: None,
             namespace: Some(option.namespace.to_string()),
             option_name: Some(option.name.to_string()),
-            value: Some(option.default_value.to_string()),
+            // "DefaultValue: the default value for this configuration option" —
+            // the value in force for an option nobody set. An option the
+            // version publishes NO default for has none in force, so it is
+            // reported with no `Value` rather than with an empty one.
+            value: stated(option.default_value),
         })
         .collect();
     let mut resolved = merge_option_settings(&merge_option_settings(&supplied, &defaults), written);
@@ -1423,20 +1583,58 @@ pub fn resolved_option_settings(
 /// The template parameter [`OPTION_INSTANCE_TYPE_FAMILY`] is the family of the
 /// instance type the configuration runs on ([`environment_instance_type`], the
 /// same derivation the environment's resources are reported from), so it tracks
-/// the type the configuration puts in force rather than being written out. A
-/// parameter the configuration ITSELF sets keeps the value it was set to: the
-/// derivation fills only a parameter in force at no value.
+/// the type the configuration puts in force rather than being written out. The
+/// environment property a runtime supplies is in force at the FIXED value that
+/// platform puts there ([`SUPPLIED_OPTION_VALUES`]). A parameter the
+/// configuration ITSELF sets keeps the value it was set to: the derivation fills
+/// only a parameter in force at no value.
 fn supplied_option_values(resolved: &mut [ConfigurationOptionSetting]) {
     let instance_type = environment_instance_type(resolved);
     let family = instance_type_family(&instance_type).to_string();
     for setting in resolved.iter_mut() {
-        let supplies_the_family = setting.namespace.as_deref() == Some(NAMESPACE_TEMPLATE_PARAMETER)
-            && setting.option_name.as_deref() == Some(OPTION_INSTANCE_TYPE_FAMILY);
-        if supplies_the_family && setting.value.is_none() {
+        if setting.value.is_some() {
+            continue;
+        }
+        let named = (
+            setting.namespace.as_deref().unwrap_or_default(),
+            setting.option_name.as_deref().unwrap_or_default(),
+        );
+        if named == (NAMESPACE_TEMPLATE_PARAMETER, OPTION_INSTANCE_TYPE_FAMILY) {
             setting.value = Some(family.clone());
+            continue;
+        }
+        if let Some((_, _, value)) = SUPPLIED_OPTION_VALUES
+            .iter()
+            .find(|(namespace, option_name, _)| (*namespace, *option_name) == named)
+        {
+            setting.value = Some((*value).to_string());
         }
     }
 }
+
+/// The deployed application's own directory on an environment's instances: the
+/// directory the platform runs the application version from — the same one this
+/// emulator's own application runtime runs it from (see
+/// [`super::application_runtime`]) — which is what a runtime that supplies a
+/// module search path points it at.
+pub const DEPLOYED_APPLICATION_DIRECTORY: &str = "/var/app/current";
+
+/// The values the SERVICE puts in force for the options a platform version
+/// SUPPLIES, beside the derived instance-type family: `(Namespace, OptionName,
+/// Value)`.
+///
+/// That a value IS in force for the property a Python runtime supplies is
+/// RECORDED BEHAVIOUR (same source as [`PYTHON_SUPPLIED_OPTIONS`]): the recorded
+/// resolved set reports the module search path with `OptionSource` `Service`,
+/// which is the service having put a value there rather than the property
+/// sitting unset. WHICH value is the platform's documented one for that property
+/// — the directory it runs the deployed application from
+/// ([`DEPLOYED_APPLICATION_DIRECTORY`]), not a value read off the recording.
+const SUPPLIED_OPTION_VALUES: &[(&str, &str, &str)] = &[(
+    NAMESPACE_APPLICATION_ENVIRONMENT,
+    PYTHON_MODULE_SEARCH_PATH,
+    DEPLOYED_APPLICATION_DIRECTORY,
+)];
 
 /// The FAMILY of the Amazon EC2 instance type `instance_type`: the part before
 /// the size, which is how an instance type is named (`<family>.<size>`). A name
@@ -1473,10 +1671,11 @@ pub const OPTION_SOURCE_API: &str = "API";
 /// caller set apart from an inherited default, which is what a client reads to
 /// confirm a setting it applied took effect.
 ///
-/// An option the set reports at NO value came from NO layer, so it carries no
-/// `OptionSource` at all rather than one naming a source that put nothing in
-/// force — which is how the recorded answers report the options a platform
-/// version supplies without a value (see [`PLATFORM_SUPPLIED_OPTIONS`]).
+/// An option the set reports at NO value came from NO layer, so its
+/// `OptionSource` NAMES none: the member is still there, as the empty structure,
+/// because every entry of the recorded `OptionSettingDetails` list carries one —
+/// which is how the recorded answers report the options a platform version
+/// supplies without a value (see [`PLATFORM_SUPPLIED_OPTIONS`]).
 pub fn resolved_option_setting_details(
     catalog: &[&'static ConfigurationOption],
     supplied: &[(&'static str, &'static str)],
@@ -1492,6 +1691,9 @@ pub fn resolved_option_setting_details(
             } else {
                 OPTION_SOURCE_SERVICE
             };
+            // Both members name the layer the value in force came from, and
+            // both are left unstated where no value is in force.
+            let source = setting.value.is_some().then(|| origin.to_string());
             OptionSettingDetail {
                 // The three members that NAME the option, the triple an
                 // `OptionSpecification` names one by, so a detail about an
@@ -1499,9 +1701,9 @@ pub fn resolved_option_setting_details(
                 resource_name: setting.resource_name.clone(),
                 namespace: setting.namespace.clone(),
                 option_name: setting.option_name.clone(),
-                option_source: setting.value.as_ref().map(|_| OptionSource {
-                    identifier: Some(origin.to_string()),
-                    origin: Some(origin.to_string()),
+                option_source: Some(OptionSource {
+                    identifier: source.clone(),
+                    origin: source,
                 }),
             }
         })

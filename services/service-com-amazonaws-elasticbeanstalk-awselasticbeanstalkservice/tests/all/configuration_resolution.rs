@@ -5,15 +5,15 @@
 //!
 //! RULE under test: a configuration set reports the RESOLVED option settings of
 //! the platform version it is for — the options that version SUPPLIES to the
-//! environment it provisions and every option its published catalogue gives a
-//! `DefaultValue` for, at that default, with the settings the configuration
-//! itself holds replacing the defaults of the options they name and adding the
-//! options the catalogue does not define. So the set a read answers with carries
-//! options the caller never wrote, a supplied option the service puts no value
-//! in force for is reported with no value, an option the catalogue gives no
-//! default for is reported only where the configuration sets it, and an option
-//! an `OptionsToRemove` takes out stops overriding its default and resolves back
-//! to it instead of vanishing from the set.
+//! environment it provisions and every option its published catalogue defines,
+//! each at the value in force: the setting the configuration itself holds, else
+//! the `DefaultValue` the catalogue gives for it, else no value at all. So the
+//! set a read answers with carries options the caller never wrote, a supplied
+//! option the service puts no value in force for is reported with no value, an
+//! option the catalogue gives no default for is reported at no value until the
+//! configuration sets one, and an option an `OptionsToRemove` takes out stops
+//! overriding its default and resolves back to it instead of vanishing from the
+//! set.
 //!
 //! The defaults every assertion here is made against are read over the WIRE from
 //! `DescribeConfigurationOptions` — the operation that owns the catalogue — so
@@ -85,8 +85,9 @@ fn borrowed(settings: &[Setting]) -> Vec<(&str, &str, &str, &str)> {
 }
 
 /// The option catalogue `DescribeConfigurationOptions` publishes for `stack`, as
-/// `(Namespace, OptionName) -> DefaultValue` for every option it publishes a
-/// default for.
+/// `(Namespace, OptionName) -> DefaultValue` for EVERY option it publishes — the
+/// empty string for one it publishes no `DefaultValue` for, which is the value
+/// in force for it: none.
 ///
 /// This is the catalogue a configuration set for that platform version resolves
 /// against, read from the operation that owns it rather than from a list written
@@ -103,9 +104,11 @@ async fn published_defaults(
     .await;
     option_descriptions(&answer)
         .into_iter()
-        .filter_map(|option| {
-            let default_value = option.default_value.clone()?;
-            Some(((option.namespace, option.name), default_value))
+        .map(|option| {
+            (
+                (option.namespace, option.name),
+                option.default_value.unwrap_or_default(),
+            )
         })
         .collect()
 }
@@ -137,9 +140,10 @@ async fn published_option_named(
 }
 
 /// The configuration set `written` puts in force on the platform version
-/// `stack`, whose published defaults are `defaults`: the options that version
-/// SUPPLIES, then every published default, with the written settings over them,
-/// sorted by the key an option is identified by.
+/// `stack`, whose published options are `defaults`: the options that version
+/// SUPPLIES, then every published option at the default the catalogue gives it,
+/// with the written settings over them, sorted by the key an option is
+/// identified by.
 ///
 /// The supplied options are the ones the platform version puts in the set
 /// without publishing a configurable description of them — the parameters of the
@@ -147,7 +151,9 @@ async fn published_option_named(
 /// service (`eb::state::platform_supplied_options`) rather than listed here.
 /// Each is in force at no value, reported with no `Value` (which the reader
 /// answers as the empty string), except the instance-type FAMILY, which the
-/// service derives from the instance type the configuration runs on.
+/// service derives from the instance type the configuration runs on, and the
+/// module search path a Python runtime points at the directory it runs the
+/// deployed application from.
 fn expected_resolved(
     stack: &str,
     defaults: &BTreeMap<(String, String), String>,
@@ -159,10 +165,12 @@ fn expected_resolved(
         eb::state::platform_supplied_options(published)
             .into_iter()
             .map(|(namespace, option_name)| {
-                let value = if option_name == INSTANCE_TYPE_FAMILY {
-                    family.clone()
-                } else {
-                    String::new()
+                let value = match option_name {
+                    INSTANCE_TYPE_FAMILY => family.clone(),
+                    eb::state::PYTHON_MODULE_SEARCH_PATH => {
+                        eb::state::DEPLOYED_APPLICATION_DIRECTORY.to_string()
+                    }
+                    _ => String::new(),
                 };
                 (
                     (namespace.to_string(), option_name.to_string(), String::new()),
@@ -645,10 +653,12 @@ async fn removing_an_option_from_an_environment_leaves_it_at_its_published_defau
     );
 }
 
-/// An option the published catalogue gives NO default for is in force at no
-/// value: it is reported only where the configuration sets it.
+/// An option the published catalogue gives NO default for is in the set the
+/// platform version DEFINES it in, in force at no value until the configuration
+/// sets one: the read reports it either way, with no `Value` where nothing put
+/// one in force and at the configuration's value where it did.
 #[tokio::test]
-async fn an_option_with_no_published_default_is_reported_only_when_the_set_sets_it() {
+async fn an_option_with_no_published_default_is_reported_at_no_value_until_the_set_sets_it() {
     let case = "an option with no published default";
     let emulator = Emulator::new();
     created(
@@ -668,11 +678,12 @@ async fn an_option_with_no_published_default_is_reported_only_when_the_set_sets_
         })
         .await;
 
-    for (name, written) in [
-        ("unset", Vec::new()),
+    for (name, written, expected_value) in [
+        ("unset", Vec::new(), ""),
         (
             "set",
             vec![setting(&namespace, &option_name, "chosen", "")],
+            "chosen",
         ),
     ] {
         let mut params: Vec<(String, String)> = vec![
@@ -701,16 +712,10 @@ async fn an_option_with_no_published_default_is_reported_only_when_the_set_sets_
             "case \"{case}, {name}\": unexpected resolved set, got {}",
             described.body
         );
-        let carries_it = reported
-            .iter()
-            .any(|(reported_namespace, reported_name, _, _)| {
-                *reported_namespace == namespace && *reported_name == option_name
-            });
-        assert_eq!(
-            carries_it,
-            !written.is_empty(),
-            "case \"{case}, {name}\": {namespace}/{option_name} is reported only when the set \
-             sets it, got {reported:?}"
+        assert!(
+            reported.contains(&setting(&namespace, &option_name, expected_value, "")),
+            "case \"{case}, {name}\": expected {namespace}/{option_name} at \
+             {expected_value:?}, got {reported:?}"
         );
     }
 }
