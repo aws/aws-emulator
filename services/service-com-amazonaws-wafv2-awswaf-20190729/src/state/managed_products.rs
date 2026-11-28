@@ -34,18 +34,21 @@
 use super::*;
 
 /// The address an Amazon Web Services Marketplace listing's product page is
-/// published under, without its listing segment.
+/// published under, without its scheme or its listing segment.
 ///
 /// `ManagedProductDescriptor$ProductLink` is "the link to the rule group product
-/// page" of a Marketplace managed rule group, and a Marketplace listing's product
-/// page lives under this address followed by the identifier the listing is
-/// published as (see [`MarketplaceManagedProduct::product_link`]).
+/// page" of a Marketplace managed rule group, and every such page is published on the
+/// Marketplace at this address followed by the identifier the listing is published as.
 ///
-/// The address AS PUBLISHED, down to its scheme: a product page is the
-/// Marketplace's own page and the link is catalogue reference data, so nothing here
-/// normalises it. The URLs this service rewrites are the ones a CALLER fetches from
-/// this emulator; a vendor's product page is neither of those.
-pub const MARKETPLACE_PRODUCT_PAGE_ADDRESS: &str = "http://aws.amazon.com/marketplace/pp";
+/// What it does NOT state is the whole link: the published catalogue carries a page's
+/// own address verbatim, and those addresses differ in their scheme and in the form of
+/// the segment they end with (a listing code, a product view), so each listing cites
+/// its link rather than this constant composing one
+/// ([`MarketplaceManagedProduct::product_link`]). The addresses AS PUBLISHED: a
+/// product page is the Marketplace's own page and the link is catalogue reference
+/// data, so nothing here normalises one. The URLs this service rewrites are the ones a
+/// CALLER fetches from this emulator; a vendor's product page is neither of those.
+pub const MARKETPLACE_PRODUCT_PAGE_ADDRESS: &str = "aws.amazon.com/marketplace/pp";
 
 /// An Amazon Web Services Marketplace SELLER of managed rule groups: the name its
 /// groups are published under and the topic it announces changes to them on.
@@ -112,24 +115,29 @@ pub struct MarketplaceManagedProduct {
     /// The listing's display name (`ProductTitle` is "the display name for the
     /// managed rule group"), in the seller's published words.
     ///
-    /// Cited, never composed: a seller's listing text is the seller's. Every
-    /// descriptor the service publishes carries a title and a summary, so a listing
-    /// whose own text no source available here states is absent from this catalogue
+    /// Cited, never composed: a seller's listing text is the seller's. A listing
+    /// whose own title no source available here states is absent from this catalogue
     /// rather than reported with a text nobody published — the same reading
     /// [`PublishedManagedRule::published_label`] takes of a label.
     pub product_title: &'static str,
     /// The listing's one-line summary (`ProductDescription` is "a short description
-    /// of the managed rule group"), in the seller's published words (see
-    /// [`Self::product_title`]).
-    pub product_description: &'static str,
-    /// The segment the seller's product page is published under on Amazon Web
-    /// Services Marketplace: the listing code the page is addressed by, which
-    /// [`MARKETPLACE_PRODUCT_PAGE_ADDRESS`] is followed by to form `ProductLink`.
+    /// of the managed rule group"), in the seller's published words, where this
+    /// catalogue cites it; `None` where it cannot, and then the member is left out of
+    /// the descriptor.
     ///
-    /// Published per listing rather than derived from the group's name or its
-    /// identifier, because a listing code is the Marketplace's own and reads nothing
-    /// like either.
-    pub product_page: &'static str,
+    /// Cited, never composed: a seller's listing text is the seller's, so a summary no
+    /// source available here states is omitted rather than worded by this emulator —
+    /// the same reading [`PublishedManagedRule::published_label`] takes of a label.
+    pub product_description: Option<&'static str>,
+    /// The link to this listing's product page on Amazon Web Services Marketplace
+    /// (`ProductLink`), exactly as the catalogue publishes it.
+    ///
+    /// Cited whole rather than composed from
+    /// [`MARKETPLACE_PRODUCT_PAGE_ADDRESS`] and a page segment, because the published
+    /// links differ in their scheme and in the form of the segment the page is
+    /// addressed by (a listing code, a product view) — both of which are the
+    /// Marketplace's own and read nothing like the group's name or its identifier.
+    pub product_link: &'static str,
     /// Whether the seller offers this group in named versions a web ACL can choose
     /// between (`IsVersioningSupported`), reported as stored like the same property
     /// of an Amazon Web Services Managed Rules group
@@ -155,25 +163,13 @@ impl MarketplaceManagedProduct {
             product_id: Some(self.product_id.map(str::to_string).unwrap_or_else(|| {
                 product_id_of_pair(self.seller.vendor_name, self.managed_rule_set_name)
             })),
-            product_link: Some(self.product_link()),
+            product_link: Some(self.product_link.to_string()),
             product_title: Some(self.product_title.to_string()),
-            product_description: Some(self.product_description.to_string()),
+            product_description: self.product_description.map(str::to_string),
             sns_topic_arn: Some(self.seller.notification_topic_arn()),
             is_versioning_supported: self.is_versioning_supported,
             is_advanced_managed_rule_set: false,
         }
-    }
-
-    /// The link to this listing's product page: the Marketplace product-page
-    /// address ([`MARKETPLACE_PRODUCT_PAGE_ADDRESS`]) followed by the listing code
-    /// the page is published under ([`Self::product_page`]).
-    ///
-    /// `ProductLink` is "for Amazon Web Services Marketplace managed rule groups
-    /// only, the link to the rule group product page", so it is answered for a
-    /// seller's listing and for nothing else — an Amazon Web Services Managed Rules
-    /// rule set carries none ([`ManagedRuleGroupDescriptor::product`]).
-    pub fn product_link(&self) -> String {
-        format!("{MARKETPLACE_PRODUCT_PAGE_ADDRESS}/{}", self.product_page)
     }
 }
 
@@ -192,6 +188,18 @@ const CYBER_SECURITY_CLOUD: MarketplaceSeller = MarketplaceSeller {
     notification_topic_account: Some("343255486711"),
 };
 
+/// The seller of the `Fortinet` managed rule groups, with the topic it announces
+/// changes to them on and the account that topic lives in.
+///
+/// A second seller, so the catalogue's per-VENDOR facts — the vendor name a group is
+/// identified by and the one topic that vendor announces its changes on — are carried
+/// per seller rather than per listing.
+const FORTINET: MarketplaceSeller = MarketplaceSeller {
+    vendor_name: "Fortinet",
+    notification_topic: "Fortinet_OWASP_Top_10_Notifications",
+    notification_topic_account: Some("040422370703"),
+};
+
 /// The Amazon Web Services Marketplace managed rule groups this catalogue
 /// publishes, grouped by seller.
 ///
@@ -202,9 +210,10 @@ const CYBER_SECURITY_CLOUD: MarketplaceSeller = MarketplaceSeller {
 ///
 /// A seller's inventory is the SELLER's publication, so every entry here is CITED
 /// rather than composed: the vendor name, the group name, the identifier and the
-/// listing text the seller publishes the product under, the listing code its product
-/// page is addressed by and the seller's notification topic. A listing this
-/// catalogue cannot cite is absent rather than invented — adding a seller's listing
+/// listing text the seller publishes the product under, the address of its product
+/// page and the seller's notification topic. A listing this
+/// catalogue cannot cite is absent rather than invented, and so is any part of one it
+/// cannot cite (a summary no source states is omitted) — adding a seller's listing
 /// is a data change in this one list. Listed in the order the service's catalogue
 /// publishes them.
 pub const MARKETPLACE_MANAGED_PRODUCT_CATALOGUE: &[MarketplaceManagedProduct] = &[
@@ -213,20 +222,41 @@ pub const MARKETPLACE_MANAGED_PRODUCT_CATALOGUE: &[MarketplaceManagedProduct] = 
         "CyberSecurityCloud-APIGatewayServerless-",
         Some("8bbf295b-34b3-40c0-bee7-5ba8f602705f"),
         "Cyber Security Cloud Managed Rules for AWS WAF -API Gateway/Serverless-",
-        "The Cyber Security Cloud OWASP ruleset is designed to mitigate and \
-         minimize vulnerabilities, including all those on OWASP API \
-         Security/Serverless Top 10 Threats.",
-        "B081TKTBQ8",
+        Some(
+            "The Cyber Security Cloud OWASP ruleset is designed to mitigate and \
+             minimize vulnerabilities, including all those on OWASP API \
+             Security/Serverless Top 10 Threats.",
+        ),
+        "http://aws.amazon.com/marketplace/pp/B081TKTBQ8",
     ),
     listing(
         &CYBER_SECURITY_CLOUD,
         "CyberSecurityCloud-HighSecurityOWASPSet-",
         Some("fa8c6ca7-12c3-4e3f-8524-782177f2f2bd"),
         "Cyber Security Cloud Managed Rules for AWS WAF -HighSecurity OWASP Set-",
-        "The Cyber Security Cloud OWASP ruleset is designed to mitigate and \
-         minimize vulnerabilities, including all those on OWASP Top 10 Web \
-         Application Threats list.",
-        "B081TD6XL1",
+        Some(
+            "The Cyber Security Cloud OWASP ruleset is designed to mitigate and \
+             minimize vulnerabilities, including all those on OWASP Top 10 Web \
+             Application Threats list.",
+        ),
+        "http://aws.amazon.com/marketplace/pp/B081TD6XL1",
+    ),
+    listing(
+        &CYBER_SECURITY_CLOUD,
+        "CyberSecurityCloud-ProtocolEnforcement-",
+        Some("prod-qqlwxtijbjsm2"),
+        "Cyber Security Cloud Managed Rules for AWS WAF -Protocol Enforcement by \
+         WafCharm-",
+        None,
+        "https://aws.amazon.com/marketplace/pp/prodview-g2dp6u5k5w5jo",
+    ),
+    listing(
+        &FORTINET,
+        "all_rules",
+        Some("cdd10222-b7e0-466d-a710-6a35cbab6f9a"),
+        "OWASP Top 10 - The Complete Ruleset",
+        None,
+        "http://aws.amazon.com/marketplace/pp/B081SK32C7",
     ),
 ];
 
@@ -245,8 +275,8 @@ const fn listing(
     managed_rule_set_name: &'static str,
     product_id: Option<&'static str>,
     product_title: &'static str,
-    product_description: &'static str,
-    product_page: &'static str,
+    product_description: Option<&'static str>,
+    product_link: &'static str,
 ) -> MarketplaceManagedProduct {
     MarketplaceManagedProduct {
         seller,
@@ -254,7 +284,7 @@ const fn listing(
         product_id,
         product_title,
         product_description,
-        product_page,
+        product_link,
         is_versioning_supported: true,
     }
 }

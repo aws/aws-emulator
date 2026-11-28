@@ -652,18 +652,19 @@ async fn the_put_judges_its_references_its_token_and_its_target_in_wafs_order() 
         ),
         ("a wafv2 ARN of another resource kind", ip_set_arn.clone()),
     ];
-    // References the STORE is what tells apart from a usable one: both are well-formed
-    // rule-group ARNs, and neither names a rule group of this namespace.
-    let unresolvable: [(&str, String); 2] = [
-        (
-            "a rule-group ARN nothing minted",
-            format!("{group_arn}-never-minted"),
-        ),
-        (
-            "a rule group of the other namespace",
-            global_group_arn.clone(),
-        ),
-    ];
+    // The reference the STORE is what tells apart from a usable one: a well-formed
+    // rule-group ARN of THIS namespace that names no rule group of the account.
+    let unresolvable: [(&str, String); 1] = [(
+        "a rule-group ARN nothing minted",
+        format!("{group_arn}-never-minted"),
+    )];
+    // A reference of the OTHER namespace: an ARN names the region and the namespace the
+    // resource it refers to lives in, and a resource lives in exactly that namespace, so
+    // this one is a reference the request cannot use at all — a judgement between two
+    // values the REQUEST carries, which is why it outranks the target lookup (the rule
+    // `crate::managed_rule_set_reference_identity` asserts over its own table).
+    let of_another_namespace: [(&str, String); 1] =
+        [("a rule group of the other namespace", global_group_arn.clone())];
     // `LockToken` is `@length(1..36)` with `@pattern(^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}
     // [0-9a-f]{12}$)` (`smithy_query(query="shape",shape="LockToken")`): a value of
     // the wrong shape, a hex-looking value of the wrong length, and the empty string
@@ -738,6 +739,26 @@ async fn the_put_judges_its_references_its_token_and_its_target_in_wafs_order() 
                     );
                     continue;
                 }
+                assert_invalid_parameter(&body, FIELD_RESOURCE_ARN, arn, ARN_NOT_VALID, &case);
+            }
+        }
+    }
+
+    // A reference of the other namespace is reported whatever the target and whatever
+    // the token: both halves of that judgement are in the request, so there is nothing
+    // for the store to be asked first.
+    for (reference, arn) in &of_another_namespace {
+        for token in tokens {
+            for (target, name, id, _reports_the_reference) in targets {
+                let case = format!("{reference}, LockToken {token:?}, against {target}");
+                let (status, body) = waf
+                    .call("PutManagedRuleSetVersions", put(name, id, token, arn))
+                    .await;
+                assert_eq!(
+                    status, 400,
+                    "case {case:?}: expected a refusal, got status {status} and body \
+                     {body}"
+                );
                 assert_invalid_parameter(&body, FIELD_RESOURCE_ARN, arn, ARN_NOT_VALID, &case);
             }
         }
@@ -1131,9 +1152,6 @@ const MALFORMED_LOCK_TOKEN: &str = "stale-token";
 /// An account id that is not this emulator's own, for an ARN of another account.
 const FOREIGN_ACCOUNT: &str = "123456789012";
 
-/// A region that is neither namespace's own, for an ARN of another region.
-const FOREIGN_REGION: &str = "eu-central-1";
-
 /// Every way an `AssociatedRuleGroupArn` can be one WAF cannot use for a published
 /// version, given the namespace and the identity the put addresses: the case name and
 /// the value to send.
@@ -1142,9 +1160,16 @@ const FOREIGN_REGION: &str = "eu-central-1";
 /// account, its region, its resource kind, its service, and whether it is an ARN at
 /// all — and the first row is the form WAF's own ARN builder mints for the
 /// `(Scope, Name, Id)` the put addresses (`state::resource_arn`), which on an account
-/// that has minted no rule group resolves to nothing. The first four rows are
+/// that has minted no rule group resolves to nothing. The first three rows are
 /// well-formed rule-group ARNs that only the STORE can tell from a usable reference;
 /// the last three need no store at all.
+///
+/// What is deliberately NOT here is a reference of another NAMESPACE (another region, or
+/// the other `Scope`'s namespace segment): an ARN names the namespace its resource lives
+/// in, so such a reference is one the request cannot use at all, judged between two
+/// values the request itself carries and therefore ahead of this target lookup — the rule
+/// `crate::managed_rule_set_reference_identity` asserts over its own table, including on
+/// an account that holds no set.
 fn references_a_fresh_account_cannot_use(
     scope: &str,
     region: &str,
@@ -1175,10 +1200,6 @@ fn references_a_fresh_account_cannot_use(
         (
             "a rule-group ARN of another account".to_string(),
             arn_of("aws", FOREIGN_ACCOUNT, arn_region, RULE_GROUP_ARN_KIND),
-        ),
-        (
-            "a rule-group ARN of another region".to_string(),
-            arn_of("aws", account, FOREIGN_REGION, RULE_GROUP_ARN_KIND),
         ),
         (
             "a rule-group ARN of another partition".to_string(),

@@ -286,8 +286,19 @@ async fn a_constrained_map_key_is_judged_before_the_put_resolves_anything() {
 
     // The contrast: with every key inside the modelled form, the same requests are told
     // about the store. The target that does not resolve comes first...
+    //
+    // ...except where the row would be answered on its REFERENCE instead: a reference of
+    // this namespace sent to the other one is a reference the request cannot use at all,
+    // a judgement between two values the request itself carries and so taken ahead of
+    // the target (the rule `crate::managed_rule_set_reference_identity` asserts). Those
+    // combinations are driven there, over their own table.
     for (target, scope, name, id) in targets.into_iter().skip(1) {
         for (body_case, reference, forecasted_lifetime, token) in bodies {
+            let reference_of_another_namespace = scope != SCOPE_REGIONAL
+                && reference.is_some_and(|arn| arn.starts_with("arn:aws:wafv2:"));
+            if reference_of_another_namespace {
+                continue;
+            }
             let case = format!("a legal key, against {target}, with {body_case}");
             let (sent, _rendered) = entry(reference, forecasted_lifetime);
             let (status, answer) = waf

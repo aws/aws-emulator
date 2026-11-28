@@ -64,6 +64,9 @@ mod monetization;
 /// The caller-supplied regular expressions a save carries, and the refusal one that
 /// is not something that matches draws.
 mod patterns;
+/// What a resource REFERENCE a request carries says about the resource it names, and
+/// whether the request can use it at all.
+mod references;
 /// What a saved rule list has to satisfy across the whole list.
 mod rule_set;
 /// The `Scope` every resource is namespaced by.
@@ -73,6 +76,9 @@ mod scope;
 mod statements;
 /// What a TOKEN DOMAIN has to be, for every member that takes one.
 mod token_domains;
+/// What the references a VENDOR's managed-rule-set publish carries have to satisfy,
+/// and in which order.
+mod vendor_references;
 pub use api_keys::*;
 pub use capacity::*;
 pub use catalog::*;
@@ -83,10 +89,12 @@ pub use ip_set_addresses::*;
 pub use managed_products::*;
 pub use monetization::*;
 pub use patterns::*;
+pub use references::*;
 pub use rule_set::*;
 pub use scope::*;
 pub use statements::*;
 pub use token_domains::*;
+pub use vendor_references::*;
 
 // ---------------------------------------------------------------------------
 // The exception messages: ONE constant sentence per exception type.
@@ -3106,42 +3114,6 @@ pub fn audit(operation: &str, scope: &str, name: &str, id: &str, outcome: &str) 
     );
 }
 
-/// `true` when `value` has the shape of a wafv2 resource ARN:
-/// `arn:<partition>:wafv2:<region>:<account>:<global|regional>/<kind>/<name>/<id>`.
-///
-/// `GetWebACL` separates the two ARN failures the model names: an ARN that is
-/// malformed is `WAFInvalidParameterException` ("Your request references an ARN
-/// that is malformed", from that error's own doc), while a well-formed ARN naming
-/// nothing stored is `WAFNonexistentItemException`.
-pub fn is_wafv2_resource_arn(value: &str) -> bool {
-    let mut segments = value.split(':');
-    let (
-        Some("arn"),
-        Some(partition),
-        Some("wafv2"),
-        Some(_region),
-        Some(_account),
-        Some(resource),
-        None,
-    ) = (
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-    )
-    else {
-        return false;
-    };
-    let resource_parts: Vec<&str> = resource.split('/').collect();
-    !partition.is_empty()
-        && resource_parts.len() == 4
-        && matches!(resource_parts[0], "global" | "regional")
-        && resource_parts[1..].iter().all(|part| !part.is_empty())
-}
-
 /// One form of protected-resource ARN a web ACL can be put in front of, the
 /// `ResourceType` value that form names, and the `Scope` of the web ACL it takes.
 #[derive(Debug)]
@@ -4042,54 +4014,6 @@ pub fn page_size(limit: Option<i32>, noun: &str) -> Result<usize, WAFInvalidPara
     // The match above leaves `requested` in `1..=MAX_PAGE_SIZE`, so this cannot
     // fail: the conversion is here to state that invariant, not to hide a case.
     Ok(usize::try_from(requested).expect("a page size in 1..=MAX_PAGE_SIZE fits a usize"))
-}
-
-/// The resource-kind segment of a wafv2 resource ARN (`webacl`, `ipset`,
-/// `rulegroup`, …), or `None` when `value` is not one at all.
-///
-/// The ARN layout is the one [`is_wafv2_resource_arn`] pins:
-/// `arn:<partition>:wafv2:<region>:<account>:<global|regional>/<kind>/<name>/<id>`,
-/// so the kind is the second slash-separated segment of the resource part.
-pub fn arn_resource_kind(value: &str) -> Option<&str> {
-    if !is_wafv2_resource_arn(value) {
-        return None;
-    }
-    value.split(':').nth(5)?.split('/').nth(1)
-}
-
-/// The REGION segment of a wafv2 resource ARN, or `None` when `value` is not one at all.
-///
-/// Same layout as [`arn_resource_kind`], so the region is the ARN's fourth
-/// colon-separated field. A resource is reached through the endpoint of the region its
-/// ARN names — [`resource_arn`] mints that segment from the scope and the endpoint the
-/// create arrived at — so this is what a request addressing a resource BY ARN is judged
-/// against: an endpoint cannot act on an ARN naming another region's namespace.
-pub fn arn_resource_region(value: &str) -> Option<&str> {
-    if !is_wafv2_resource_arn(value) {
-        return None;
-    }
-    value.split(':').nth(3)
-}
-
-/// The ACCOUNT segment of a wafv2 resource ARN, or `None` when `value` is not one at
-/// all.
-///
-/// Same layout as [`arn_resource_kind`], so the account is the ARN's fifth
-/// colon-separated field. A resource belongs to the account that created it, and WAF
-/// resolves an ARN for the CALLER's account: an ARN naming another account names an
-/// account WAF cannot resolve for this caller (see
-/// [`crate::scaffolded::UNRECOGNIZED_CLIENT_CODE`]).
-pub fn arn_account(value: &str) -> Option<&str> {
-    if !is_wafv2_resource_arn(value) {
-        return None;
-    }
-    value.split(':').nth(4)
-}
-
-/// `true` when `value` is a wafv2 resource ARN whose account segment is not the
-/// account this emulator serves — the account every call it answers is made for.
-pub fn arn_names_another_account(value: &str) -> bool {
-    arn_account(value).is_some_and(|account| account != ::engine::emulator_account_id())
 }
 
 /// This service's Smithy namespace, for the shadow member schemas below.

@@ -16,14 +16,19 @@
 //! the namespace asked does not hold, and it earns the same refusal — which also shows the
 //! refusal is not keyed to a `(Name, Id)` nothing has ever minted. The rows cross the two
 //! namespaces (each one asked while the other holds the set) with what the body carries
-//! (nothing, a version defined by a rule group of the namespace asked, one defined by a rule
-//! group of the namespace that HOLDS the set, a value that is no ARN) and with both writes
+//! (nothing, a version defined by a rule group of the namespace asked, a value that is no
+//! ARN) and with both writes
 //! that address a set by that triple: `PutManagedRuleSetVersions`, and
 //! `UpdateManagedRuleSetVersionExpiryDate`, whose `VersionToExpire` is resolved inside the
 //! set the triple names. Every row sends the lock token the held set really carries, so no
 //! row can be answered by the token's form either, and the contrast at the end of each
 //! namespace is the same triple sent to the namespace that holds it, where the write is
 //! served.
+//!
+//! The one body that is answered on something else is kept beside those rows: a version
+//! defined by a rule group of the namespace that HOLDS the set is a reference the namespace
+//! asked cannot use at all, judged from the request ahead of the target — see
+//! [`crate::managed_rule_set_reference_identity`] for that rule's own table.
 //!
 //! Every call goes through the same front door a real client uses (the `Waf` harness in
 //! [`crate::web_acl_lifecycle`]), so what these tests observe is what an SDK observes. No
@@ -36,8 +41,7 @@ use service_com_amazonaws_wafv2_awswaf_20190729::state::{
 };
 
 use crate::managed_rule_sets::provision_managed_rule_set;
-use crate::parameter_validation::{error_code, error_message};
-use crate::rule_group_lifecycle::create_rule_group;
+use crate::parameter_validation::{error_code, error_message};use crate::rule_group_lifecycle::create_rule_group;
 use crate::web_acl_lifecycle::Waf;
 
 /// A version key inside `VersionKeyString`'s `@length(1..64)` and
@@ -102,10 +106,6 @@ async fn a_set_held_only_in_the_other_namespace_is_a_target_this_one_does_not_ho
                 "a version defined by a rule group of the namespace asked",
                 Some(group_in_asked.clone()),
             ),
-            (
-                "a version defined by a rule group of the holding namespace",
-                Some(group_in_holder.clone()),
-            ),
             ("a value that is no ARN", Some(NOT_AN_ARN.to_string())),
         ];
 
@@ -132,6 +132,47 @@ async fn a_set_held_only_in_the_other_namespace_is_a_target_this_one_does_not_ho
                 );
             }
         }
+
+        // The one body that is NOT answered on the target: a reference of the namespace
+        // that HOLDS the set is one the namespace asked cannot use at all — an ARN names
+        // the namespace its resource lives in, and both halves of that comparison are in
+        // the request — so it is judged ahead of the target lookup and is what the
+        // publish is told about. That rule has its own table in
+        // `crate::managed_rule_set_reference_identity`; this is the cell this suite
+        // reaches.
+        let case = format!(
+            "{asked} asked while {holder} holds the set, a version defined by a rule \
+             group of the holding namespace"
+        );
+        let (status, body) = waf
+            .call(
+                "PutManagedRuleSetVersions",
+                json!({
+                    "Name": set_name,
+                    "Scope": asked,
+                    "Id": &set_id,
+                    "LockToken": &set_lock,
+                    "RecommendedVersion": VERSION,
+                    "VersionsToPublish": {
+                        VERSION: {
+                            "AssociatedRuleGroupArn": &group_in_holder,
+                            "ForecastedLifetime": 90,
+                        },
+                    },
+                }),
+            )
+            .await;
+        assert_eq!(
+            (status, error_code(&body).as_str()),
+            (400, "WAFInvalidParameterException"),
+            "case {case:?}: a reference of another namespace is what the publish is told \
+             about, got status {status} and body {body}"
+        );
+        assert_eq!(
+            (body["Field"].as_str(), body["Parameter"].as_str()),
+            (Some("RESOURCE_ARN"), Some(group_in_holder.as_str())),
+            "case {case:?}: expected the refusal to name that reference, got {body}"
+        );
 
         // The other write that addresses a set by the same triple: the version it names to
         // expire is resolved INSIDE that set, so the namespace that does not hold the set is

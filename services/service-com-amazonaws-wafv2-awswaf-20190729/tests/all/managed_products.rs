@@ -26,8 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_wafv2_awswaf_20190729::state::{
-    managed_product_id, managed_product_topic_arn, MarketplaceManagedProduct,
-    AWS_MANAGED_RULE_GROUP_VENDOR, AWS_MANAGED_RULE_NOTIFICATION_TOPIC,
+    managed_product_id, managed_product_topic_arn, marketplace_managed_product,
+    MarketplaceManagedProduct, AWS_MANAGED_RULE_GROUP_VENDOR, AWS_MANAGED_RULE_NOTIFICATION_TOPIC,
     MANAGED_RULE_GROUP_CATALOGUE, MARKETPLACE_MANAGED_PRODUCT_CATALOGUE,
     MARKETPLACE_PRODUCT_PAGE_ADDRESS, SUBSCRIPTION_NOT_FOUND_MESSAGE,
 };
@@ -335,7 +335,7 @@ async fn both_vendor_families_are_reported_as_managed_products() {
                 product_id: _,
                 product_title,
                 product_description,
-                product_page,
+                product_link,
                 is_versioning_supported,
             } = *published;
             let case = format!("{scope}/{}/{managed_rule_set_name}", seller.vendor_name);
@@ -343,8 +343,10 @@ async fn both_vendor_families_are_reported_as_managed_products() {
             else {
                 panic!("case {case:?}: the seller's listing must be reported, got {response}");
             };
-            // The listing's own text, in the seller's published words: every
-            // descriptor carries a title and a summary.
+            // The listing's own text, in the seller's published words: its title, and
+            // the summary where the catalogue cites one (a listing whose summary no
+            // source states carries no `ProductDescription` rather than text nobody
+            // published).
             assert_eq!(
                 product["ProductTitle"],
                 json!(product_title),
@@ -353,7 +355,10 @@ async fn both_vendor_families_are_reported_as_managed_products() {
             );
             assert_eq!(
                 product["ProductDescription"],
-                json!(product_description),
+                match product_description {
+                    Some(summary) => json!(summary),
+                    None => Value::Null,
+                },
                 "case {case:?}: expected the listing's published summary \
                  {product_description:?}, got {product}"
             );
@@ -374,14 +379,18 @@ async fn both_vendor_families_are_reported_as_managed_products() {
                  set, got {product}"
             );
             // "For Amazon Web Services Marketplace managed rule groups only, the
-            // link to the rule group product page" (`ProductLink`): the Marketplace
-            // product-page address followed by the listing code the page is
-            // published under.
+            // link to the rule group product page" (`ProductLink`): the address its
+            // product page is published under, cited whole.
             assert_eq!(
                 product["ProductLink"],
-                json!(format!("{MARKETPLACE_PRODUCT_PAGE_ADDRESS}/{product_page}")),
+                json!(product_link),
                 "case {case:?}: expected the link to this listing's product page, got \
                  {product}"
+            );
+            assert!(
+                product_link.contains(MARKETPLACE_PRODUCT_PAGE_ADDRESS),
+                "case {case:?}: a listing's page is published on the Marketplace at \
+                 {MARKETPLACE_PRODUCT_PAGE_ADDRESS:?}, got {product_link:?}"
             );
             // The topic its SELLER announces changes on, not the Amazon Web Services
             // Managed Rules one.
@@ -437,8 +446,10 @@ async fn both_vendor_families_are_reported_as_managed_products() {
 
 /// Every reported product's `ProductId` identifies the PRODUCT: it is the product's
 /// own identifier rather than a copy of its `ManagedRuleSetName`, it is unique
-/// across the whole catalogue, it has the form this service's identifiers take, and
-/// it is the same on a later call and under the other scope.
+/// across the whole catalogue, it is within the form the model admits (`ProductId`:
+/// `length 1..128`, pattern `\S`) — taking the form this service's identifiers have
+/// wherever the catalogue publishes no identifier of the vendor's own — and it is the
+/// same on a later call and under the other scope.
 ///
 /// One row per published product of either family, crossed with both scopes and
 /// with a repeated call.
@@ -465,7 +476,18 @@ async fn every_product_carries_its_own_stable_identifier() {
                  rule-set name, got {product}"
             );
             assert!(
-                is_model_uuid(identifier),
+                (1..=128).contains(&identifier.len()) && identifier.trim() == identifier,
+                "case {case:?}: a ProductId is 1..128 non-blank characters, got \
+                 {identifier:?}"
+            );
+            // A publishing vendor assigns the identifier of its own product, so an
+            // identifier the catalogue cites is reported in the publisher's own form;
+            // the form THIS service's identifiers take is what a product whose own
+            // nobody states is published under.
+            let published = marketplace_managed_product(vendor, name)
+                .and_then(|listing| listing.product_id);
+            assert!(
+                published.is_some() || is_model_uuid(identifier),
                 "case {case:?}: expected an identifier of the form this service's ids \
                  take, got {identifier:?}"
             );

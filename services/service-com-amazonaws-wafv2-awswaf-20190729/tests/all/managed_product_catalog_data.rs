@@ -3,9 +3,10 @@
 //! What a managed-product descriptor CARRIES, end to end over the wire.
 //!
 //! The rule asserted here: a managed product is a vendor's publication read out of
-//! the service's own fixed catalogue, so every descriptor a describe reports is
-//! fully populated — a `ProductTitle` and a `ProductDescription` for every product —
-//! and each member that names something the publishing VENDOR owns (the product's
+//! the service's own fixed catalogue, so every member a descriptor carries is the
+//! PUBLISHER's — a `ProductTitle` for every product and its publisher's own
+//! `ProductDescription` wherever the catalogue cites one — and each member that names
+//! something the publishing VENDOR owns (the product's
 //! identifier, the link to its product page, the ARN of the topic the vendor
 //! announces its changes on) is reported exactly as the catalogue publishes it,
 //! never rewritten through the local-account/URL normalisation this emulator applies
@@ -76,13 +77,15 @@ fn assert_published_text(product: &Value, member: &str, case: &str) {
 }
 
 /// Every product of either family reports its publisher's display text — a
-/// `ProductTitle` AND a `ProductDescription` — in both scopes, because a product is
-/// published with both and a describe reports what its publisher states about it.
+/// `ProductTitle` for every product, and the `ProductDescription` its publisher
+/// states where the catalogue cites one — in both scopes, because a describe reports
+/// what a product's publisher states about it and nothing this emulator worded.
 ///
 /// One row per published product of either vendor family, crossed with the two
 /// scopes: the rows span the Amazon Web Services Managed Rules family and the
 /// Marketplace family, versioned and unversioned products, advanced and ordinary
-/// ones.
+/// ones, and listings whose published summary the catalogue cites as well as ones it
+/// cannot.
 #[tokio::test]
 async fn every_managed_product_reports_its_publishers_title_and_description() {
     let pairs = published_pairs();
@@ -104,27 +107,44 @@ async fn every_managed_product_reports_its_publishers_title_and_description() {
                 panic!("case {case:?}: the published product must be reported");
             };
             assert_published_text(product, "ProductTitle", &case);
-            assert_published_text(product, "ProductDescription", &case);
+            // A summary is published text too, so where the descriptor carries one it
+            // is the publisher's; a product whose summary no source states carries no
+            // `ProductDescription` at all rather than text nobody published.
+            if !product["ProductDescription"].is_null() {
+                assert_published_text(product, "ProductDescription", &case);
+            }
         }
+    }
+
+    // Every product of the Amazon Web Services Managed Rules family is published with
+    // a summary, so none of those rows may be the omitted kind.
+    let all = all_products(&waf, SCOPES[0]).await;
+    for group in MANAGED_RULE_GROUP_CATALOGUE {
+        let case = format!("{}/{}", group.vendor_name, group.name);
+        let Some(product) = product_of(&all, group.vendor_name, group.name) else {
+            panic!("case {case:?}: the published rule set must be reported");
+        };
+        assert_published_text(product, "ProductDescription", &case);
     }
 }
 
-/// A Marketplace product's `ProductLink` is the published product-page address
-/// followed by the listing code its page is addressed by — scheme and host exactly
-/// as published, not normalised and not an address this emulator serves — and a
-/// product of the Amazon Web Services Managed Rules family carries no link at all,
-/// the member being "for Amazon Web Services Marketplace managed rule groups only".
+/// A Marketplace product's `ProductLink` is the address its product page is published
+/// under — scheme and host exactly as published, not normalised and not an address
+/// this emulator serves — and a product of the Amazon Web Services Managed Rules
+/// family carries no link at all, the member being "for Amazon Web Services
+/// Marketplace managed rule groups only".
 ///
 /// One row per published product of either family, in both scopes: the Marketplace
 /// rows assert the published link, the Amazon Web Services Managed Rules rows assert
-/// its absence.
+/// its absence. The Marketplace rows span the published forms of such a link, which
+/// differ in scheme and in the segment the page is addressed by.
 #[tokio::test]
 async fn a_marketplace_product_link_is_published_verbatim() {
-    // The published address, as the catalogue states it: a product page is the
-    // Marketplace's own, so this is reference data rather than a URL this emulator
-    // serves.
+    // The Marketplace's own product-page address, as the catalogue states it: a
+    // product page is the Marketplace's own, so this is reference data rather than a
+    // URL this emulator serves.
     assert_eq!(
-        MARKETPLACE_PRODUCT_PAGE_ADDRESS, "http://aws.amazon.com/marketplace/pp",
+        MARKETPLACE_PRODUCT_PAGE_ADDRESS, "aws.amazon.com/marketplace/pp",
         "the catalogue publishes the Marketplace product-page address as AWS does, \
          got {MARKETPLACE_PRODUCT_PAGE_ADDRESS:?}"
     );
@@ -140,7 +160,7 @@ async fn a_marketplace_product_link_is_published_verbatim() {
             let Some(product) = product_of(&all, vendor, name) else {
                 panic!("case {case:?}: the seller's listing must be reported");
             };
-            let expected = format!("{MARKETPLACE_PRODUCT_PAGE_ADDRESS}/{}", listing.product_page);
+            let expected = listing.product_link;
             assert_eq!(
                 product["ProductLink"],
                 json!(expected),
@@ -149,7 +169,8 @@ async fn a_marketplace_product_link_is_published_verbatim() {
             );
             let link = product["ProductLink"].as_str().unwrap_or_default();
             assert!(
-                link.starts_with("http://aws.amazon.com/"),
+                link.contains(MARKETPLACE_PRODUCT_PAGE_ADDRESS)
+                    && (link.starts_with("http://") || link.starts_with("https://")),
                 "case {case:?}: a published product-page link keeps the scheme and \
                  host it is published under, got {link:?}"
             );

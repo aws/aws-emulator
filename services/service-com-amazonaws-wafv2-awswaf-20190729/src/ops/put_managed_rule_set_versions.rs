@@ -4,9 +4,9 @@
 //! Publishes versions of the managed rule set `(Scope, Name, Id)` names, once its
 //! `LockToken` still matches the stored one. An identity no managed rule set of this
 //! account carries is `WAFNonexistentItemException`, a stale token
-//! `WAFOptimisticLockException` and an `AssociatedRuleGroupArn` WAF will not accept
-//! `WAFInvalidParameterException` (all HTTP 400). This is the ONLY file to touch for
-//! this operation.
+//! `WAFOptimisticLockException`, and an `AssociatedRuleGroupArn` WAF will not accept —
+//! one naming another namespace included — `WAFInvalidParameterException` (all HTTP
+//! 400). This is the ONLY file to touch for this operation.
 //!
 //! REQUEST VALIDATION comes before any state is read, and the RESOURCE THE PUT ADDRESSES
 //! before anything else the BODY carries is judged. A value the model constrains is
@@ -15,13 +15,17 @@
 //! which endpoint's namespace anything would be resolved in at all, and then the
 //! `VersionsToPublish` KEYS, which are `VersionKeyString`s the boundary walk cannot reach
 //! (it visits a map's values), are refused in the validator's own envelope whatever the
-//! request targets — exactly as `Name` or `Id` outside their own form already are. Only
+//! request targets — exactly as `Name` or `Id` outside their own form already are — and
+//! then an `AssociatedRuleGroupArn` naming a NAMESPACE other than the one this request
+//! addresses, a comparison between two values the request itself carries
+//! (`crate::state::reference_of_another_namespace`). Only
 //! then is the managed rule set `(Scope, Name, Id)` names resolved, so an identity no
 //! managed rule set of this account carries is `WAFNonexistentItemException` whatever
 //! references the body holds — a publisher cannot be told about the versions of a set that
 //! is not there, nor about the rule groups those versions would be defined by. The rest of
 //! the body is then judged in the order WAF reads it: a reference that is no rule-group ARN
-//! at all, then whether a well-formed reference resolves to a rule group of this scope, and
+//! at all, then whether a reference that does identify a rule group resolves to one of this
+//! scope, and
 //! last the optimistic-lock token's own modelled constraint — which is why `LockToken`
 //! carries `skip_validation` on the input struct (see
 //! `super::types::put_managed_rule_set_versions_types`): the request boundary runs every
@@ -246,6 +250,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &crate::state::M_VERSIONS_TO_PUBLISH,
         ) {
             return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
+        // Then a reference the request CARRIES that belongs to another NAMESPACE. Each
+        // entry of `VersionsToPublish` names "the Amazon Resource Name (ARN) of the
+        // vendor's rule group that's used in the published managed rule group version"
+        // (`VersionToPublish$AssociatedRuleGroupArn`), and an ARN names the region and
+        // the namespace the resource it refers to lives in: a reference naming a
+        // namespace other than the one this request addresses is one this call cannot
+        // use, which is "your request references an ARN that is malformed, or
+        // corresponds to a resource with which [it] can't be [used]" from
+        // `WAFInvalidParameterException`'s own doc, carrying `Field` RESOURCE_ARN, the
+        // reference as `Parameter` ("the invalid parameter that resulted in the
+        // exception", so the value the request supplied) and
+        // `crate::state::ARN_NOT_VALID_REASON` as `Reason`. Both halves of that
+        // comparison are in the REQUEST
+        // (`crate::state::publish_reference_of_another_namespace`), so like the version
+        // keys above it is answered before anything is resolved — the same judgement
+        // `GetWebACL` makes about the ARN it addresses a web ACL by. A reference of the
+        // namespace this request does address is resolved in the order WAF resolves
+        // things: the target the call addresses first, then the body's references,
+        // both below.
+        if let Some(arn) = crate::state::publish_reference_of_another_namespace(
+            rule_group_references(&input).iter().map(String::as_str),
+            &input.scope,
+            &crate::service::requests::request_region(ctx.parts()),
+        ) {
+            return Err(
+                PutManagedRuleSetVersionsErrorModeled::WAFInvalidParameterException(
+                    crate::state::invalid_arn_exception(arn),
+                )
+                .into(),
+            );
         }
 
         let Some(store) = crate::state::service_state(&*self.engine) else {
@@ -544,12 +580,12 @@ fn rule_group_references(input: &PutManagedRuleSetVersionsInput) -> Vec<String> 
 /// at all, if any.
 ///
 /// A value WAF cannot read as a reference to one of the vendor's rule groups is a
-/// bad PARAMETER, judged from the request alone: it must be a well-formed wafv2
-/// resource ARN ([`crate::state::is_wafv2_resource_arn`]) whose resource kind is
-/// `rulegroup` ([`crate::state::RULE_GROUP_ARN_KIND`]). Whether such an ARN names a
+/// bad PARAMETER, judged from the request
+/// ([`crate::state::unacceptable_publish_reference`]). Whether such an ARN names a
 /// rule group that exists is a different question, answered against state.
 fn unacceptable_rule_group_reference(input: &PutManagedRuleSetVersionsInput) -> Option<String> {
-    rule_group_references(input).into_iter().find(|arn| {
-        crate::state::arn_resource_kind(arn) != Some(crate::state::RULE_GROUP_ARN_KIND)
-    })
+    crate::state::unacceptable_publish_reference(
+        rule_group_references(input).iter().map(String::as_str),
+    )
+    .map(str::to_string)
 }
