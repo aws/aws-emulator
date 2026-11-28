@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-swf-simpleworkflowservice
 service-com-amazonaws-swf-simpleworkflowservice/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-swf-simpleworkflowservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-swf-simpleworkflowservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the members AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md    # what each local declaration is and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

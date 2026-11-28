@@ -1,0 +1,190 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.swf#ResourceTag": {
+      "type": "structure",
+      "members": {
+        "key": {
+          "target": "com.amazonaws.swf#ResourceTagKey",
+          "traits": { "smithy.api#required": {} }
+        },
+        "value": { "target": "com.amazonaws.swf#ResourceTagValue" },
+        "__type": { "target": "smithy.api#String" }
+      }
+    },
+    "com.amazonaws.swf#ActivityTaskScheduledEventAttributes": {
+      "type": "structure",
+      "members": {
+        "activityType": {
+          "target": "com.amazonaws.swf#ActivityType",
+          "traits": { "smithy.api#required": {} }
+        },
+        "activityId": {
+          "target": "com.amazonaws.swf#ActivityId",
+          "traits": { "smithy.api#required": {} }
+        },
+        "input": { "target": "com.amazonaws.swf#Data" },
+        "control": { "target": "com.amazonaws.swf#Data" },
+        "scheduleToStartTimeout": { "target": "com.amazonaws.swf#DurationInSecondsOptional" },
+        "scheduleToCloseTimeout": { "target": "com.amazonaws.swf#DurationInSecondsOptional" },
+        "startToCloseTimeout": { "target": "com.amazonaws.swf#DurationInSecondsOptional" },
+        "taskList": {
+          "target": "com.amazonaws.swf#TaskList",
+          "traits": { "smithy.api#required": {} }
+        },
+        "taskPriority": { "target": "com.amazonaws.swf#TaskPriority" },
+        "decisionTaskCompletedEventId": {
+          "target": "com.amazonaws.swf#EventId",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "heartbeatTimeout": { "target": "com.amazonaws.swf#DurationInSecondsOptional" },
+        "immediatelyStart": {
+          "target": "smithy.api#Boolean",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.swf#ActivityTaskStartedEventAttributes": {
+      "type": "structure",
+      "members": {
+        "identity": { "target": "com.amazonaws.swf#Identity" },
+        "scheduledEventId": {
+          "target": "com.amazonaws.swf#EventId",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "clientToken": { "target": "smithy.api#String" }
+      }
+    },
+    "com.amazonaws.swf#DecisionTaskStartedEventAttributes": {
+      "type": "structure",
+      "members": {
+        "identity": { "target": "com.amazonaws.swf#Identity" },
+        "scheduledEventId": {
+          "target": "com.amazonaws.swf#EventId",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "clientToken": { "target": "smithy.api#String" },
+        "startedOnPreviousTaskCompletion": {
+          "target": "smithy.api#Boolean",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.swf#WorkflowExecutionInfo": {
+      "type": "structure",
+      "members": {
+        "execution": {
+          "target": "com.amazonaws.swf#WorkflowExecution",
+          "traits": { "smithy.api#required": {} }
+        },
+        "workflowType": {
+          "target": "com.amazonaws.swf#WorkflowType",
+          "traits": { "smithy.api#required": {} }
+        },
+        "startTimestamp": {
+          "target": "com.amazonaws.swf#Timestamp",
+          "traits": { "smithy.api#required": {} }
+        },
+        "closeTimestamp": { "target": "com.amazonaws.swf#Timestamp" },
+        "executionStatus": {
+          "target": "com.amazonaws.swf#ExecutionStatus",
+          "traits": { "smithy.api#required": {} }
+        },
+        "closeStatus": { "target": "com.amazonaws.swf#CloseStatus" },
+        "parent": { "target": "com.amazonaws.swf#WorkflowExecution" },
+        "tagList": { "target": "com.amazonaws.swf#TagList" },
+        "cancelRequested": {
+          "target": "com.amazonaws.swf#Canceled",
+          "traits": { "smithy.api#default": false }
+        },
+        "lastClosedEventId": {
+          "target": "com.amazonaws.swf#EventId",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "lastClosedTimestamp": { "target": "com.amazonaws.swf#Timestamp" },
+        "reopenGenerationId": {
+          "target": "smithy.api#Long",
+          "traits": { "smithy.api#default": 0, "smithy.api#required": {} }
+        },
+        "reopenable": {
+          "target": "smithy.api#Boolean",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.swf#WorkflowExecutionAlreadyStartedFault": {
+      "type": "structure",
+      "members": {
+        "message": { "target": "com.amazonaws.swf#ErrorMessage" },
+        "workflowExecution": { "target": "com.amazonaws.swf#WorkflowExecution" }
+      },
+      "traits": { "smithy.api#error": "client" }
+    },
+    "com.amazonaws.swf#ActivityType": { "type": "structure", "members": {} },
+    "com.amazonaws.swf#TaskList": { "type": "structure", "members": {} },
+    "com.amazonaws.swf#WorkflowExecution": { "type": "structure", "members": {} },
+    "com.amazonaws.swf#WorkflowType": { "type": "structure", "members": {} },
+    "com.amazonaws.swf#ActivityId": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 256 } }
+    },
+    "com.amazonaws.swf#Canceled": {
+      "type": "boolean",
+      "traits": { "smithy.api#default": false }
+    },
+    "com.amazonaws.swf#CloseStatus": {
+      "type": "enum",
+      "members": {
+        "COMPLETED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "COMPLETED" } },
+        "FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "FAILED" } },
+        "CANCELED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CANCELED" } },
+        "TERMINATED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "TERMINATED" } },
+        "CONTINUED_AS_NEW": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CONTINUED_AS_NEW" } },
+        "TIMED_OUT": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "TIMED_OUT" } }
+      }
+    },
+    "com.amazonaws.swf#Data": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 32768 } }
+    },
+    "com.amazonaws.swf#DurationInSecondsOptional": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 8 } }
+    },
+    "com.amazonaws.swf#ErrorMessage": { "type": "string" },
+    "com.amazonaws.swf#EventId": {
+      "type": "long",
+      "traits": { "smithy.api#default": 0 }
+    },
+    "com.amazonaws.swf#ExecutionStatus": {
+      "type": "enum",
+      "members": {
+        "OPEN": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "OPEN" } },
+        "CLOSED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CLOSED" } }
+      }
+    },
+    "com.amazonaws.swf#Identity": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 256 } }
+    },
+    "com.amazonaws.swf#ResourceTagKey": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 1, "max": 128 } }
+    },
+    "com.amazonaws.swf#ResourceTagValue": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 256 } }
+    },
+    "com.amazonaws.swf#Tag": {
+      "type": "string",
+      "traits": { "smithy.api#length": { "min": 0, "max": 256 } }
+    },
+    "com.amazonaws.swf#TagList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.swf#Tag" },
+      "traits": { "smithy.api#length": { "min": 0, "max": 5 } }
+    },
+    "com.amazonaws.swf#TaskPriority": { "type": "string" },
+    "com.amazonaws.swf#Timestamp": { "type": "timestamp" }
+  }
+}

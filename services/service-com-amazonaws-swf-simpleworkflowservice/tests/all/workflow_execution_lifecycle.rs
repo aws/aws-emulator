@@ -27,6 +27,16 @@ use service_com_amazonaws_swf_simpleworkflowservice::ops::types::{
 use service_com_amazonaws_swf_simpleworkflowservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
+/// The members this service answers with that its published model snapshot does not
+/// declare, pinned on the wire through this harness and against the overlay model they are
+/// generated from, which is why it is a child of this suite rather than a second suite
+/// beside it: every row it drives is one of these lifecycle operations. The `#[path]` is
+/// what keeps it one — this crate's `tests/all.rs` declares the suites directly under
+/// `tests/all/`, and a module of a `#[path]`-declared file resolves next to that file
+/// unless it says otherwise.
+#[path = "workflow_execution_lifecycle/local_model_additions.rs"]
+mod local_model_additions;
+
 /// The `X-Amz-Target` prefix from the crate's `OPERATIONS.md` wire-protocol section.
 const TARGET_PREFIX: &str = "SimpleWorkflowService";
 

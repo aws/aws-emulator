@@ -130,8 +130,9 @@ fn of_type(events: &[Value], event_type: &str) -> Vec<Value> {
 }
 
 /// Whether `value` has the canonical UUID form AWS reports a client token in:
-/// 8-4-4-4-12 lowercase hex digits separated by dashes.
-fn is_uuid_shaped(value: &str) -> bool {
+/// 8-4-4-4-12 lowercase hex digits separated by dashes. `pub(crate)` so a sibling suite
+/// checks a hand-over handle against the one form rather than keeping a second copy of it.
+pub(crate) fn is_uuid_shaped(value: &str) -> bool {
     let groups: Vec<&str> = value.split('-').collect();
     groups.len() == 5
         && groups
