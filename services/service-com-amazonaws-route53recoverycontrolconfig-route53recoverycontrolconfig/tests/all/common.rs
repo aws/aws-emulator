@@ -75,6 +75,21 @@ pub async fn call(
     call_in_region(router, REGION, method, path, body).await
 }
 
+/// Send one request and return `(status, the error code its `x-amzn-errortype` header
+/// names, parsed body)`.
+///
+/// For a refusal whose error code travels in that header and NOT in the body's `__type` —
+/// which is how the layer ahead of this service states its own refusals, so a suite about
+/// one has to read the header to see the code at all.
+pub async fn answered(
+    router: &MultiServiceRouter,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, String, Value) {
+    answered_in_region(router, REGION, method, path, body).await
+}
+
 /// The same request, addressed to and signed for `region` instead of [`REGION`] — for a
 /// suite whose rule is about the Region a call is made in, rather than about one Region.
 pub async fn call_in_region(
@@ -84,6 +99,20 @@ pub async fn call_in_region(
     path: &str,
     body: Option<Value>,
 ) -> (u16, Value) {
+    let (status, _error_type, parsed) =
+        answered_in_region(router, region, method, path, body).await;
+    (status, parsed)
+}
+
+/// The one request helper the three above are built from: `(status, the error code the
+/// `x-amzn-errortype` header names, parsed body)`, addressed to and signed for `region`.
+pub async fn answered_in_region(
+    router: &MultiServiceRouter,
+    region: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, String, Value) {
     let payload = body.map_or_else(Bytes::new, |value| {
         Bytes::from(serde_json::to_vec(&value).expect("the request body serializes"))
     });
@@ -103,13 +132,19 @@ pub async fn call_in_region(
 
     let response = router.dispatch(request).await;
     let status = response.status().as_u16();
+    let error_type = response
+        .headers()
+        .get("x-amzn-errortype")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let bytes = response.into_body();
     let parsed = if bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, parsed)
+    (status, error_type, parsed)
 }
 
 /// Create one cluster and return its `Cluster` body.

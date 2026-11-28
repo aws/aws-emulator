@@ -1350,11 +1350,16 @@ pub fn cannot_delete_default_message(resource: &str) -> String {
 }
 
 /// The `ValidationException$Message` for a request that must carry exactly ONE rule and
-/// carries both kinds of rule, or neither.
+/// carries both kinds of rule.
 ///
 /// Route 53 ARC words this refusal as one fixed sentence, with no part taken from the
 /// request: not the member names, not the rule's name, not the control panel it would
 /// have been created in.
+///
+/// A request carrying NEITHER kind names no resource for the front door ahead of these
+/// operations to authorize the call against, so that layer refuses it first — its own HTTP
+/// 401 `UnauthorizedException`, not this sentence
+/// ([`crate::service`]'s authorization-target stage).
 pub const INVALID_RULE_MESSAGE: &str = "Invalid Rule provided.";
 
 /// The `ValidationException$Message` for an update that addresses a safety rule of the

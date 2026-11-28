@@ -512,7 +512,28 @@ fn unverified_calls(stored_cluster: &str) -> Vec<Unverified> {
             operation: "CreateSafetyRule (a body the operation would refuse)",
             method: "POST",
             path: "/safetyrule".to_string(),
-            body: Some(json!({ "ClientToken": "unverified-rule" })),
+            // Both rule members, so this row turns on the CALLER and nothing else: such a
+            // body names the resource the front door authorizes a safety-rule write
+            // against, and a verified caller sending it is refused by the OPERATION
+            // (`tests/all/create_safety_rule_rule_choice.rs`).
+            body: Some(json!({
+                "AssertionRule": {
+                    "AssertedControls": [format!("{stored_cluster}/routingcontrol/control")],
+                    "ControlPanelArn": stored_cluster.replace("cluster/", "controlpanel/"),
+                    "Name": "unverified-assertion",
+                    "RuleConfig": { "Inverted": false, "Threshold": 1, "Type": "ATLEAST" },
+                    "WaitPeriodMs": 5000
+                },
+                "GatingRule": {
+                    "ControlPanelArn": stored_cluster.replace("cluster/", "controlpanel/"),
+                    "GatingControls": [format!("{stored_cluster}/routingcontrol/control")],
+                    "Name": "unverified-gating",
+                    "RuleConfig": { "Inverted": false, "Threshold": 1, "Type": "AND" },
+                    "TargetControls": [format!("{stored_cluster}/routingcontrol/control")],
+                    "WaitPeriodMs": 5000
+                },
+                "ClientToken": "unverified-rule"
+            })),
         },
     ]
 }

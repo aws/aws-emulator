@@ -22,15 +22,17 @@
 //!   couple the threshold to how many controls the rule names, so a threshold below, at
 //!   and above that number is served and read back unchanged;
 //! * an update changes the name and the wait period of the rule it addresses and nothing
-//!   else, and is refused for the other kind of rule, for an ARN holding no rule, and for
-//!   a name another rule of the same control panel already holds;
+//!   else, and is refused for the other kind of rule, for an ARN holding no rule, for a
+//!   name another rule of the same control panel already holds, and — by the front door
+//!   ahead of it, because such a request names no resource for the call to be authorized
+//!   against — for an update carrying neither kind;
 //! * a deleted rule is gone, and neither the control panel that scopes a rule nor a
 //!   routing control the rule references is deletable while the rule is there.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::common::{call, enc, error_code, panel_with_controls, router};
+use super::common::{answered, call, enc, error_code, panel_with_controls, router};
 
 /// The values `RuleType` declares, in the order the model declares them
 /// (`smithy_query(query="shape",shape="RuleType")`).
@@ -52,8 +54,8 @@ fn message(body: &Value) -> String {
     body["message"].as_str().unwrap_or_default().to_string()
 }
 
-/// The sentence a request carrying both kinds of rule, or neither, is refused with: one
-/// fixed sentence with no part taken from the request.
+/// The sentence a request carrying both kinds of rule is refused with: one fixed sentence
+/// with no part taken from the request.
 fn invalid_rule() -> String {
     "Invalid Rule provided.".to_string()
 }
@@ -580,7 +582,7 @@ async fn the_rule_configuration_is_stored_as_sent_whatever_the_threshold() {
 
 /// RULE: a create that only REFERENCES a resource this service does not hold is refused on
 /// its input with `ValidationException` (400) naming that resource, and a request carrying
-/// both kinds of rule or neither is refused the same way.
+/// both kinds of rule is refused the same way.
 #[tokio::test]
 async fn a_create_naming_an_unstored_resource_or_both_kinds_is_refused() {
     let router = router();
@@ -633,11 +635,6 @@ async fn a_create_naming_an_unstored_resource_or_both_kinds_is_refused() {
             "a gating rule whose TARGET control is unstored".to_string(),
             gating(&panel_arn, &controls[0], &unstored_control, "unstored-target"),
             does_not_exist("Routing Control", &unstored_control),
-        ),
-        (
-            "neither kind of rule".to_string(),
-            json!({ "Tags": { "suite": "safety-rules" } }),
-            invalid_rule(),
         ),
         (
             "both kinds of rule at once".to_string(),
@@ -880,9 +877,13 @@ async fn an_update_persists_the_name_and_wait_period_of_the_rule_it_addresses() 
         (
             "an update carrying neither kind".to_string(),
             json!({}),
-            400,
-            "ValidationException",
-            invalid_rule(),
+            401,
+            "UnauthorizedException",
+            // An update carries the ARN it addresses INSIDE one of its two optional
+            // members, so a request carrying neither names no resource for the call to be
+            // authorized against and is refused by the front door ahead of this operation
+            // (`tests/all/create_safety_rule_rule_choice.rs` spans that rule).
+            "Unauthorized".to_string(),
         ),
         (
             "a rename onto a name the panel's other rule holds".to_string(),
@@ -894,15 +895,17 @@ async fn an_update_persists_the_name_and_wait_period_of_the_rule_it_addresses() 
     ];
 
     for (case, body, expected_status, expected_code, expected_message) in &refusals {
-        let (status, answer) = call(&router, "PUT", "/safetyrule", Some(body.clone())).await;
+        // The error code is read off `x-amzn-errortype`, which every refusal here names it
+        // in — a modelled error of this service and the front door's own refusal alike;
+        // only the modelled ones also carry it in the body's `__type`.
+        let (status, code, answer) = answered(&router, "PUT", "/safetyrule", Some(body.clone())).await;
         assert_eq!(
             status, *expected_status,
             "case {case}: expected {expected_status}, got {status} {answer:?}"
         );
         assert_eq!(
-            error_code(&answer),
-            *expected_code,
-            "case {case}: expected {expected_code}, got {answer:?}"
+            code, *expected_code,
+            "case {case}: expected {expected_code}, got {code:?} in {answer:?}"
         );
         let actual = message(&answer);
         assert_eq!(

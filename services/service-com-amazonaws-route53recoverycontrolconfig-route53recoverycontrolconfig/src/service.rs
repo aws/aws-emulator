@@ -79,9 +79,23 @@
 //! one statement of that refusal, in [`service_common::front_door`]. Every refusal this
 //! service words itself, and every modelled error its handlers raise, passes through
 //! untouched.
+//!
+//! # And the stage after it: which resource the call is authorized against
+//!
+//! That same door then decides the caller's authorization FOR THE RESOURCE the request
+//! names, still ahead of everything behind it. All but two operations of this model name
+//! that resource in a URI label or in a body member the model requires; the two safety-rule
+//! writes carry it only inside two optional members, so a request to one of them can
+//! satisfy the model and name no resource at all — and such a request is refused by that
+//! layer, in the same 401 `UnauthorizedException` answer, ahead of the body-schema
+//! validation below and ahead of the operation's own `ValidationException`. That stage is
+//! [`authorization_target`], taken in `override_operation` because it is the one seam that
+//! sees the whole request before the modelled walk.
 
+mod authorization_target;
 mod front_door_stage;
 
+use authorization_target::UnauthorizedTarget;
 use front_door_stage::FrontDoorDefinition;
 use service_common::front_door::{FrontDoorTable, BAD_REQUEST_EXCEPTION, INVALID_REQUEST_BODY};
 use service_common::validation::SubmittedEcho;
@@ -228,6 +242,9 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// the generated table uses — and built from the SAME shared engine, so a wrapped
     /// operation reads and writes the one store.
     front_door: OperationRoutingTable,
+    /// The answer the same door gives a request it has no resource to authorize the caller
+    /// against, served INSTEAD of the operation that request named ([`authorization_target`]).
+    unauthorized_target: UnauthorizedTarget,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -286,6 +303,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: FrontDoorDefinition::new(crate::ServiceDefinition::new(engine)),
             front_door: front_door.finish(),
+            unauthorized_target: UnauthorizedTarget,
         }
     }
 }
@@ -320,6 +338,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // model does not name resolves to `None` here exactly as it does in the
         // generated table, so the router's routing-error path is unchanged.
         let key = self.entry.protocol().routing_key(req).ok()?;
+        // The door's own stage first: a request it has no resource to authorize the caller
+        // against is refused there, ahead of the body-schema validation the door behind
+        // this seam performs and ahead of the operation itself, so nothing the request
+        // asked for runs ([`authorization_target`]).
+        if !authorization_target::names_its_target(key, req) {
+            return Some(&self.unauthorized_target as &dyn ErasedOperation);
+        }
         self.front_door.get(key)
     }
 

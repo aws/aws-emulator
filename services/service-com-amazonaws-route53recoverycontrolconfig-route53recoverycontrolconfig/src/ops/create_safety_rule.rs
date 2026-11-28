@@ -9,8 +9,12 @@
 //!
 //! A request carries EXACTLY ONE of `AssertionRule` and `GatingRule`, and the stored rule
 //! is of that kind: the response fills the member of the kind created and leaves the other
-//! empty. A request carrying both, or neither, is refused `ValidationException` (400) on
-//! its input.
+//! empty. A request carrying BOTH is refused `ValidationException` (400) on its input. A
+//! request carrying NEITHER names no resource for the front door ahead of this operation to
+//! authorize the call against, so that layer refuses it before this handler runs
+//! ([`crate::service`]'s authorization-target stage, HTTP 401 `UnauthorizedException`); the
+//! branch below still answers for it, as the refusal this operation would give such a
+//! request if it ever reached it.
 //!
 //! ## Shape of an operation
 //!
@@ -187,7 +191,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
         // A safety rule is an assertion rule or a gating rule, never both and never
         // neither: the two members are the alternatives of one choice, so a request
-        // carrying both or neither is refused on its input before anything is looked up.
+        // carrying both is refused on its input before anything is looked up. A request
+        // carrying NEITHER names no resource at all, so the front door ahead of this
+        // operation refuses it first (`crate::service`'s authorization-target stage); this
+        // arm is what this operation would answer such a request, and the one that still
+        // answers a request carrying both.
         let (panel_arn, name, wait_period_ms, rule_config, controls) =
             match (input.assertion_rule, input.gating_rule) {
                 (Some(rule), None) => (

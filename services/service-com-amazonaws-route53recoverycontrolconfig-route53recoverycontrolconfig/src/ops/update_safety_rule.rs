@@ -154,8 +154,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
         // An update carries EXACTLY ONE of the two updates, each naming the rule it
-        // addresses: they are the alternatives of one choice, so both or neither is
-        // refused on the request's input.
+        // addresses: they are the alternatives of one choice, so a request carrying BOTH is
+        // refused on its input. One carrying NEITHER names no rule at all, so the front
+        // door ahead of this operation refuses it first (`crate::service`'s
+        // authorization-target stage); this arm is what this operation would answer such a
+        // request.
         let (safety_rule_arn, name, wait_period_ms, requested_kind) =
             match (input.assertion_rule_update, input.gating_rule_update) {
                 (Some(update), None) => (
