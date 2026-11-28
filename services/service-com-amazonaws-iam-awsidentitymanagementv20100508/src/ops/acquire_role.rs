@@ -586,10 +586,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "A list of tags that are attached to the role" (`Role$Tags`), from the
-        // template's own tag templates, keys and values rendered. AWS reserves the `aws:`
-        // tag-key prefix, so a rendering producing one is an "invalid … value … for an
-        // input parameter", exactly as `CreateRole` refuses one the request carried.
-        let tags: Vec<Tag> = version
+        // template's own tag templates, keys and values rendered. The rendered list is
+        // judged the way every supplied tag list of a PRINCIPAL is, through the one
+        // validation this crate holds (`crate::state::supplied_tags`): AWS reserves the
+        // `aws:` tag-key prefix, so a rendering producing one is an "invalid … value … for
+        // an input parameter" exactly as `CreateRole` refuses one the request carried, and
+        // a list naming one tag of the role twice does not say which value that tag takes.
+        let rendered: Vec<Tag> = version
             .role_tags_template
             .iter()
             .flatten()
@@ -598,14 +601,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 value: render(&template.value),
             })
             .collect();
-        if crate::state::has_reserved_tag_key(tags.iter().map(|tag| tag.key.as_str())) {
+        if let Some(refusal) = crate::state::supplied_tag_refusal(
+            crate::state::TagListTarget::Principal,
+            rendered.iter().map(|tag| tag.key.as_str()),
+        ) {
             return Err(AcquireRoleErrorModeled::InvalidInputException(
                 InvalidInputException {
-                    message: Some(crate::state::RESERVED_TAG_KEY_MESSAGE.to_string()),
+                    message: Some(refusal.to_string()),
                 },
             )
             .into());
         }
+        // What the acquired role HOLDS is a principal's tag set, so two renderings that
+        // name one tag of it carry one tag, and the per-resource tag bound is taken
+        // against the set the role ends up with — the one shared rule in `crate::state`,
+        // the same one `TagRole` writes a role's tags by.
+        let Some(tags) =
+            crate::state::merge_tags(crate::state::TagListTarget::Principal, None, rendered)
+        else {
+            return Err(AcquireRoleErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(crate::state::TAG_LIMIT_EXCEEDED_MESSAGE.to_string()),
+                },
+            )
+            .into());
+        };
 
         // "A list of managed policy ARNs" the template attaches. A managed policy is
         // attachable only if it EXISTS, resolved through the one resolution every

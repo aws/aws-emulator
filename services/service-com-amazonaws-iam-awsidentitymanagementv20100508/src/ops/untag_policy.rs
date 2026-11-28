@@ -256,6 +256,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // nothing rather than failing the call, and every key the request does not name
         // keeps its value and its position in the held order.
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Resource,
             held.policy.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );

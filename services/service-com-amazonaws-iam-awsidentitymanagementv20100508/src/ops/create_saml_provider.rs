@@ -261,7 +261,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The provider's tags are held sorted by key, because "the returned list of tags is
         // sorted by tag key" (`$Tags`).
-        let Some(mut tags) = crate::state::merge_tags(None, supplied_tags) else {
+        let Some(mut tags) = crate::state::merge_tags(
+            crate::state::TagListTarget::Resource,
+            None,
+            supplied_tags,
+        ) else {
             return Err(CreateSAMLProviderErrorModeled::LimitExceededException(
                 LimitExceededException {
                     message: Some(format!(

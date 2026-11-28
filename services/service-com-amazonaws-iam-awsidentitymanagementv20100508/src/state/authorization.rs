@@ -620,15 +620,17 @@ enum Caller<'a> {
 /// clause over it compares that text.
 ///
 /// One key holds one value, and a session tag is the more specific of the two, so where
-/// both name the same tag the session's value is the one in force — found without case,
-/// since tag keys "are not case sensitive, but case is preserved" (the same member), and
-/// folded over the whole of Unicode because a tag key is spelled with any letter the key's
-/// own pattern admits, not only an ASCII one.
+/// both name the same tag the session's value is the one in force — found through the ONE
+/// comparison this service reads a PRINCIPAL's tag key by
+/// ([`super::TagListTarget::same_tag_key`]), since tag keys "are not case sensitive, but
+/// case is preserved" (the same member) and a role's own tag set is read by that same rule.
 fn principal_tags(role: &Role, session_tags: &[(String, String)]) -> Vec<(String, String)> {
     let mut held: Vec<(String, String)> = session_tags.to_vec();
     for tag in role.tags.iter().flatten() {
-        let folded = tag.key.to_lowercase();
-        if !held.iter().any(|(key, _)| key.to_lowercase() == folded) {
+        if !held
+            .iter()
+            .any(|(key, _)| super::TagListTarget::Principal.same_tag_key(key, &tag.key))
+        {
             held.push((tag.key.clone(), tag.value.clone()));
         }
     }

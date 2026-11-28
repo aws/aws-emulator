@@ -9,10 +9,11 @@
 //!    ("a tag consists of a key name and an associated value", `TagRole`) — so the whole
 //!    request is refused HTTP 400 `InvalidInput` with the fixed sentence the operation words
 //!    that class with (`tests/all/duplicate_tag_key_wording_by_operation.rs` pins which
-//!    sentence that is) before anything is read or written, and nothing of it is stored. Keys
-//!    compare exactly, because "tag keys and values are case sensitive" ("Tagging
-//!    IAM resources", IAM User Guide), so two spellings of one word are two keys and such a
-//!    list is taken;
+//!    sentence that is) before anything is read or written, and nothing of it is stored.
+//!    WHEN two of the keys are one key is the surface's own comparison: for any resource
+//!    other than a user or a role the keys compare by their text, so two spellings of one
+//!    word are two keys and such a list is taken, while a principal reads a key without
+//!    case (`tests/all/principal_tag_key_case.rs`);
 //! 2. a tag call that would carry a resource past the published per-resource tag quota is
 //!    refused HTTP 409 `LimitExceeded` with the fixed sentence `The number of tags has
 //!    reached the maximum limit.`, which names neither the resource nor the figure — and the
@@ -410,24 +411,26 @@ async fn a_tag_list_naming_one_key_twice_is_refused_and_stores_nothing() {
     }
 }
 
-/// RULE 1, the other side of the comparison: keys differing only in CASE are different keys,
-/// so a list naming several spellings of one word is taken and every one of them is stored.
+/// RULE 1, the other side of the comparison: for a resource that is not one of IAM's
+/// principals, keys differing only in CASE are different keys, so a list naming several
+/// spellings of one word is taken and every one of them is stored. (A user's and a role's
+/// tag keys read without case, which is `tests/all/principal_tag_key_case.rs`'s rule.)
 #[tokio::test]
 async fn keys_differing_only_in_case_are_not_a_repeated_key() {
     let router = router();
     let label = "case-distinct";
     let list = tags(&[("Env", "prod"), ("env", "dev"), ("ENV", "test")]);
-    let (status, served) = SuppliedTo::TagUser
+    let (status, served) = SuppliedTo::TagPolicy
         .supply(&router, label, &[], &list)
         .await;
     assert_eq!(
         status, 200,
         "expected three spellings of one word to be taken, got {status}: {served}"
     );
-    let read = SuppliedTo::TagUser
+    let read = SuppliedTo::TagPolicy
         .read_back(&router, label)
         .await
-        .expect("the tagged user");
+        .expect("the tagged policy");
     assert_eq!(
         read,
         (expected_map(&list), list.len()),

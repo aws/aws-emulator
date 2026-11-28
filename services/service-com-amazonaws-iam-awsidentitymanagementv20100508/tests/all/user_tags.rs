@@ -24,7 +24,8 @@
 //! of a key, the case and path of the user, and the published length bounds of
 //! `tagKeyType` (1..128) and `tagValueType` (0..256). A list naming one key TWICE is
 //! refused rather than merged, which `tests/all/supplied_tag_lists.rs` states for
-//! every operation taking a tag list.
+//! every operation taking a tag list, and WHICH keys are one key on a principal is
+//! `tests/all/principal_tag_key_case.rs`'s rule.
 
 use std::collections::BTreeMap;
 
@@ -143,13 +144,15 @@ async fn tag_user_merges_its_tags_into_the_stored_set() {
             expected: tags(&[("k1", "v1-again"), ("k2", "v2")]),
         },
         MergeCase {
-            // "Tag keys and values are case sensitive" ("Tagging IAM resources",
-            // IAM User Guide), so two spellings of one word are two tags.
-            name: "keys differing only in case are distinct tags",
+            // Tag "key–value pairs are not case sensitive, but case is preserved"
+            // (`AssumeRoleRequest$Tags`, the STS model, of a principal's tags), so two
+            // spellings of one word are ONE tag of a user: the held spelling stays and
+            // the later value replaces the held one.
+            name: "a key supplied in another case overwrites the held tag",
             path: "/",
             initial: tags(&[("Env", "prod")]),
-            calls: vec![tags(&[("env", "dev"), ("ENV", "test")])],
-            expected: tags(&[("Env", "prod"), ("env", "dev"), ("ENV", "test")]),
+            calls: vec![tags(&[("env", "dev")]), tags(&[("ENV", "test")])],
+            expected: tags(&[("Env", "test")]),
         },
         MergeCase {
             name: "a value at the published minimum length",

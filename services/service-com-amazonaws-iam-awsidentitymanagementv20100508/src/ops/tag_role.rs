@@ -253,11 +253,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // "If a tag with the same key name already exists, then that tag is
-        // overwritten with the new value" — the merge, and the per-resource tag bound
-        // it is taken against, are the one shared rule in `crate::state`. Nothing is
+        // overwritten with the new value" — the merge, the comparison it decides "the
+        // same key name" by for a PRINCIPAL's tags, and the per-resource tag bound it
+        // is taken against, are the one shared rule in `crate::state`. Nothing is
         // stored when the bound is passed: "if you exceed the allowed maximum number
         // of tags, then the entire request fails".
-        let Some(merged) = crate::state::merge_tags(role.tags.as_ref(), input.tags) else {
+        let Some(merged) = crate::state::merge_tags(
+            crate::state::TagListTarget::Principal,
+            role.tags.as_ref(),
+            input.tags,
+        ) else {
             return Err(TagRoleErrorModeled::LimitExceededException(
                 LimitExceededException {
                     message: Some(crate::state::TAG_LIMIT_EXCEEDED_MESSAGE.to_string()),

@@ -240,6 +240,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // call. It keeps the held order, which is sorted by key, so what
         // `GetSAMLProvider` reports afterwards is still "sorted by tag key".
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Resource,
             provider.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );

@@ -275,7 +275,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // consumed by the merge: a tag's VALUE is what the caller chose to store, so only
         // the keys are recorded.
         let supplied_keys: Vec<String> = input.tags.iter().map(|tag| tag.key.clone()).collect();
-        let Some(mut merged) = crate::state::merge_tags(certificate.tags.as_ref(), input.tags)
+        let Some(mut merged) = crate::state::merge_tags(
+            crate::state::TagListTarget::Resource,
+            certificate.tags.as_ref(),
+            input.tags,
+        )
         else {
             return Err(TagServerCertificateErrorModeled::LimitExceededException(
                 LimitExceededException {

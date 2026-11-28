@@ -239,6 +239,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // sorted by tag key that `UploadServerCertificate` and `TagServerCertificate`
         // store, because "the returned list of tags is sorted by tag key".
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Resource,
             certificate.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );

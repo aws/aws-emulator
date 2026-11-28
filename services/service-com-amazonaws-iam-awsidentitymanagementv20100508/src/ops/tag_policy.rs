@@ -296,7 +296,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // it is taken against, are the one shared rule in `crate::state`. Nothing is
         // stored when the bound is passed: "if you exceed the allowed maximum number
         // of tags, then the entire request fails".
-        let Some(merged) = crate::state::merge_tags(held.policy.tags.as_ref(), input.tags) else {
+        let Some(merged) = crate::state::merge_tags(
+            crate::state::TagListTarget::Resource,
+            held.policy.tags.as_ref(),
+            input.tags,
+        ) else {
             return Err(TagPolicyErrorModeled::LimitExceededException(
                 LimitExceededException {
                     message: Some(crate::state::TAG_LIMIT_EXCEEDED_MESSAGE.to_string()),

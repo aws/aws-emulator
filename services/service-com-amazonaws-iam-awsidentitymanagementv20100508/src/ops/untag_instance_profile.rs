@@ -229,6 +229,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // so a named key the profile does not hold drops nothing rather than failing
         // the call.
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Resource,
             record.profile.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );

@@ -4345,24 +4345,44 @@ fn held_tags(held: Option<&Vec<Tag>>) -> &[Tag] {
 }
 
 /// The tag set an entity holding `held` carries after a tag call supplying
-/// `incoming`, or `None` when the merged set would pass
+/// `incoming` for `target`'s tags, or `None` when the merged set would pass
 /// [`MAX_TAGS_PER_ENTITY`].
 ///
 /// The rule every IAM tag operation follows, in one place: "if a tag with the same
 /// key name already exists, then that tag is overwritten with the new value"
 /// (`TagRole`), so a supplied key REPLACES the held value in place — the held
-/// order is preserved and only a key the entity does not hold yet is appended.
-/// Keys compare exactly: "tag keys and values are case sensitive" ("Tagging IAM
-/// resources", IAM User Guide), so two spellings of one word are two tags. A list
+/// order is preserved, the HELD key keeps the spelling it was stored under, and only
+/// a key the entity does not hold yet is appended. WHEN a supplied key is one the
+/// entity already holds is `target`'s comparison
+/// ([`TagListTarget::same_tag_key`]), so a user's or a role's tag is overwritten by
+/// any casing of its key while another resource's is overwritten by its text. A list
 /// naming one key twice never reaches here: it is refused before anything is read
 /// or written ([`supplied_tags::has_duplicate_tag_key`]).
 ///
 /// The merged set is what the bound is taken against, so re-tagging a held key is
-/// never refused however many tags the entity already carries.
-pub fn merge_tags(held: Option<&Vec<Tag>>, incoming: Vec<Tag>) -> Option<Vec<Tag>> {
+/// never refused however many tags the entity already carries — and a key that is
+/// held under another casing consumes no further room in a principal's set.
+pub fn merge_tags(
+    target: TagListTarget,
+    held: Option<&Vec<Tag>>,
+    incoming: Vec<Tag>,
+) -> Option<Vec<Tag>> {
+    // The bound comes FIRST, so the comparison below runs over a set already inside it.
+    // A supplied list longer than the quota can never merge into a set within it: its keys
+    // are distinct by the time it reaches here (a repeated key is refused before anything
+    // is read or written, [`supplied_tags::has_duplicate_tag_key`]), so the merged set is
+    // at least as long as the list. A held set is itself a merged set, so it is inside the
+    // bound too, and the work the loop does is bounded by the quota squared rather than by
+    // what the request supplies.
+    if incoming.len() > MAX_TAGS_PER_ENTITY {
+        return None;
+    }
     let mut merged: Vec<Tag> = held.cloned().unwrap_or_default();
     for tag in incoming {
-        match merged.iter_mut().find(|existing| existing.key == tag.key) {
+        match merged
+            .iter_mut()
+            .find(|existing| target.same_tag_key(&existing.key, &tag.key))
+        {
             Some(existing) => existing.value = tag.value,
             None => merged.push(tag),
         }
@@ -4432,24 +4452,29 @@ pub fn tag_page(
 }
 
 /// The tag set an entity holding `held` carries after an untag call naming
-/// `keys`.
+/// `keys` among `target`'s tags.
 ///
 /// The rule every IAM untag operation follows, in one place: the call "removes the
 /// specified tags from the role" (`UntagRole`), so each held tag whose key is named
 /// is dropped and every tag it does not name keeps its value and its position in
-/// the held order. Keys compare exactly: "tag keys and values are case sensitive"
-/// ("Tagging IAM resources", IAM User Guide), so a key spelled in another case
-/// names a different tag. A named key the entity does not hold removes nothing —
+/// the held order. WHICH held tag a named key names is `target`'s comparison
+/// ([`TagListTarget::same_tag_key`]), so a user's or a role's tag is removed by any
+/// casing of its key while another resource's is removed by its text. A named key
+/// the entity does not hold removes nothing —
 /// these operations model no error for one — so the call is idempotent and naming
 /// no keys at all leaves the held set as it was.
 pub fn remove_tags<'a, I: IntoIterator<Item = &'a str>>(
+    target: TagListTarget,
     held: Option<&Vec<Tag>>,
     keys: I,
 ) -> Vec<Tag> {
-    let removed: BTreeSet<&str> = keys.into_iter().collect();
+    let removed: BTreeSet<String> = keys
+        .into_iter()
+        .map(|key| target.tag_key_identity(key).into_owned())
+        .collect();
     held.into_iter()
         .flatten()
-        .filter(|tag| !removed.contains(tag.key.as_str()))
+        .filter(|tag| !removed.contains(target.tag_key_identity(&tag.key).as_ref()))
         .cloned()
         .collect()
 }

@@ -3,12 +3,15 @@
 //! `UntagRole`, end to end over the awsQuery wire, read back through `GetRole`.
 //!
 //! RULE under test: an untag call drops from the resource's stored tag set exactly
-//! the tags whose keys it names, comparing keys exactly, and leaves every other
+//! the tags whose keys it names, comparing a key as the tagged resource's own
+//! surface reads one — a role is one of IAM's principals, whose tag keys read
+//! without case — and leaves every other
 //! held tag with its value — so a named key the resource does not hold removes
 //! nothing and the call still succeeds, which makes it idempotent, and the keys it
 //! did remove are free to be tagged again. `UntagRole`'s own documentation:
 //! "removes the specified tags from the role", with "the tags with matching keys
-//! are removed from the specified role" (`UntagRole$TagKeys`).
+//! are removed from the specified role" (`UntagRole$TagKeys`), and the comparison
+//! itself is `tests/all/principal_tag_key_case.rs`'s rule.
 //!
 //! Every assertion drives a `MultiServiceRouter` holding this service over one
 //! shared `InMemoryEngine`, exactly as the production router does, so what is under
@@ -129,18 +132,19 @@ async fn untag_role_removes_exactly_the_named_keys() {
             expected: tags(&[("env", "prod")]),
         },
         RemoveCase {
-            // "Tag keys and values are case sensitive" ("Tagging IAM resources",
-            // IAM User Guide), so a key spelled in another case names another tag.
-            name: "keys differing only in case are distinct tags",
-            initial: tags(&[("Env", "prod"), ("env", "dev"), ("ENV", "test")]),
+            // Tag "key–value pairs are not case sensitive, but case is preserved"
+            // (`AssumeRoleRequest$Tags`, the STS model, of a principal's tags), so a
+            // key named in any case names the held tag of a role.
+            name: "a key named in another case removes the held tag",
+            initial: tags(&[("Env", "prod"), ("team", "storage")]),
             remove: keys(&["env"]),
-            expected: tags(&[("Env", "prod"), ("ENV", "test")]),
+            expected: tags(&[("team", "storage")]),
         },
         RemoveCase {
-            name: "a key whose case the role does not hold removes nothing",
+            name: "several spellings of one held key remove it once",
             initial: tags(&[("Env", "prod")]),
             remove: keys(&["env", "ENV"]),
-            expected: tags(&[("Env", "prod")]),
+            expected: Vec::new(),
         },
         RemoveCase {
             name: "a tag carrying the empty value is removed by its key",

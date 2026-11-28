@@ -255,7 +255,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // bound is passed: "if you exceed the allowed maximum number of tags, then the
         // entire request fails".
         let Some(merged) =
-            crate::state::merge_tags(record.profile.tags.as_ref(), input.tags)
+            crate::state::merge_tags(
+                crate::state::TagListTarget::Resource,
+                record.profile.tags.as_ref(),
+                input.tags,
+            )
         else {
             return Err(TagInstanceProfileErrorModeled::LimitExceededException(
                 LimitExceededException {

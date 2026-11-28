@@ -225,6 +225,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // exact key comparison it makes, are the one shared rule in `crate::state`, so a
         // named key the device does not hold drops nothing rather than failing the call.
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Resource,
             device.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );

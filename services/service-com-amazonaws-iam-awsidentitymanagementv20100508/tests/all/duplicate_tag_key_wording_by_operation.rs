@@ -11,7 +11,9 @@
 //! reads a tag key, while a list supplied for any OTHER IAM resource's tags (a policy, an
 //! instance profile, a virtual MFA device, an identity provider) is refused with that class
 //! sentence alone. Both sentences are fixed text: neither carries the repeated key, the
-//! values, the count or the resource addressed.
+//! values, the count or the resource addressed. WHICH keys are one key follows the same
+//! split — a principal reads a tag key without case, every other resource by its text — so
+//! the note the principal sentence carries is the comparison its own half makes.
 //!
 //! The suite is a TABLE whose rows differ along what the rule generalises over: which
 //! operation takes the list and which kind of resource's tags it is for (both halves of the
@@ -130,6 +132,12 @@ impl Target {
             _ => RESOURCE_SENTENCE,
         }
     }
+
+    /// Whether the list this operation takes is one of a PRINCIPAL's tag lists, which is
+    /// what decides whether two spellings of one word are one key in it.
+    fn is_principal(self) -> bool {
+        self.expected_sentence() == PRINCIPAL_SENTENCE
+    }
 }
 
 /// Create whatever the row's target needs to exist before the call, and answer the
@@ -226,11 +234,14 @@ fn provider_url(name: &str) -> String {
     format!("https://{name}.example.org")
 }
 
-/// One list shape a row supplies: the label it is named by in every assertion, and the tags
-/// in request order.
+/// One list shape a row supplies: the label it is named by in every assertion, the tags in
+/// request order, and whether a PRINCIPAL reads the list as naming one key twice (every
+/// surface refuses a key repeated in the same spelling; only a principal refuses two
+/// spellings of one word, reading a key without case).
 struct ListShape {
     case: &'static str,
     tags: &'static [(&'static str, &'static str)],
+    repeated_for_a_principal: bool,
 }
 
 /// The list shapes every target is driven with: the repetition first, in the middle and
@@ -240,10 +251,12 @@ const REPEATED: &[ListShape] = &[
     ListShape {
         case: "the only key, named twice with different values",
         tags: &[("env", "prod"), ("env", "dev")],
+        repeated_for_a_principal: true,
     },
     ListShape {
         case: "the only key, named twice with the same value",
         tags: &[("env", "prod"), ("env", "prod")],
+        repeated_for_a_principal: true,
     },
     ListShape {
         case: "the repetition last in a list of four",
@@ -253,27 +266,34 @@ const REPEATED: &[ListShape] = &[
             ("team", "storage"),
             ("env", "dev"),
         ],
+        repeated_for_a_principal: true,
     },
     ListShape {
         case: "the repetition first, and one key named three times",
         tags: &[("env", "a"), ("env", "b"), ("env", "c"), ("owner", "sre")],
+        repeated_for_a_principal: true,
     },
     ListShape {
         case: "two keys each named twice",
         tags: &[("env", "a"), ("team", "x"), ("env", "b"), ("team", "y")],
+        repeated_for_a_principal: true,
     },
 ];
 
-/// The list shapes the control is driven with: distinct keys, including two spellings of one
-/// word, which are two keys because "tag keys and values are case sensitive".
+/// The list shapes the control is driven with: distinct keys, and two spellings of one word,
+/// which are two keys of any resource but ONE key of a user or a role — tag "key–value pairs
+/// are not case sensitive, but case is preserved" (`AssumeRoleRequest$Tags`, the STS model,
+/// of a principal's tags), which is what the principal sentence notes.
 const DISTINCT: &[ListShape] = &[
     ListShape {
         case: "two distinct keys",
         tags: &[("env", "prod"), ("owner", "sre")],
+        repeated_for_a_principal: false,
     },
     ListShape {
         case: "three spellings of one word",
         tags: &[("Env", "a"), ("env", "b"), ("ENV", "c")],
+        repeated_for_a_principal: true,
     },
 ];
 
@@ -315,16 +335,25 @@ async fn the_repeated_key_refusal_is_worded_by_the_operation() {
     }
 }
 
-/// RULE's control: a list of DISTINCT keys is served by the same operations, so what the
-/// refusals above answer is the repetition and not the shape of the request — and the two
-/// sentences differ only in which operation took the list, never in whether it was refused.
+/// RULE's control: a list of keys that are DISTINCT on the surface it is supplied to is
+/// served by the same operations, so what the refusals above answer is the repetition and
+/// not the shape of the request — and the two sentences differ only in which operation took
+/// the list, never in whether it was refused. A list of two spellings of one word is
+/// distinct for every resource but a principal, which reads such a list as a repeated key
+/// and refuses it with its own sentence.
 #[tokio::test]
 async fn a_list_of_distinct_keys_is_served_by_every_one_of_them() {
     let router = router();
 
     for (row, target) in Target::ALL.iter().enumerate() {
         for (column, shape) in DISTINCT.iter().enumerate() {
-            let case = format!("{} serving {}", target.action(), shape.case);
+            let refused = target.is_principal() && shape.repeated_for_a_principal;
+            let case = format!(
+                "{} {} {}",
+                target.action(),
+                if refused { "refusing" } else { "serving" },
+                shape.case
+            );
             let name = format!("ok-{row}-{column}");
             let mut params = addressed(&router, *target, &name).await;
             params.extend(tag_parameters(shape.tags));
@@ -334,10 +363,24 @@ async fn a_list_of_distinct_keys_is_served_by_every_one_of_them() {
                 .collect();
 
             let (status, body) = call(&router, target.action(), &borrowed).await;
-            assert_eq!(
-                status, 200,
-                "case {case:?}: expected the distinct keys to be served, got {status}: {body}"
-            );
+            if refused {
+                assert_eq!(
+                    status, 400,
+                    "case {case:?}: expected a principal to read these as one key, got \
+                     {status}: {body}"
+                );
+                let message = element(&body, "Message");
+                assert_eq!(
+                    message, PRINCIPAL_SENTENCE,
+                    "case {case:?}: expected {PRINCIPAL_SENTENCE:?}, got {message:?}"
+                );
+            } else {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected the distinct keys to be served, got {status}: \
+                     {body}"
+                );
+            }
         }
     }
 }

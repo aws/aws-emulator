@@ -210,10 +210,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // "Removes the specified tags from the role": the removal, and the exact key
-        // comparison it makes, are the one shared rule in `crate::state`, so a named
-        // key the role does not hold drops nothing rather than failing the call.
+        // "Removes the specified tags from the role": the removal, and the comparison
+        // it names a held tag by for a PRINCIPAL's tags, are the one shared rule in
+        // `crate::state`, so a named key the role does not hold drops nothing rather
+        // than failing the call.
         let remaining = crate::state::remove_tags(
+            crate::state::TagListTarget::Principal,
             role.tags.as_ref(),
             input.tag_keys.iter().map(String::as_str),
         );
