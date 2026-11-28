@@ -364,8 +364,11 @@ async fn a_listing_that_cannot_resume_is_refused() {
         "case resuming from \"bogus\": expected the whole sentence, got {answer:?}"
     );
 
-    // `maxResults` is modelled `@range` 0..25: both published bounds are served, and
-    // one past either bound is refused naming the member and the whole range.
+    // `maxResults` is modelled `@range` 0..25: both published bounds are served, and one
+    // past either bound is refused with the validation layer's own constraint report, which
+    // is the answer THIS surface's recordings show for the member (the whole report, and
+    // the v1 control plane's own sentence for the same member, are asserted in
+    // `crate::aws_worded_refusals`).
     for (max_results, expected) in [(0, 200), (25, 200), (26, 400), (-1, 400)] {
         let answer = list_page(&router, Some(max_results), None).await;
         assert_eq!(
@@ -374,15 +377,19 @@ async fn a_listing_that_cannot_resume_is_refused() {
         );
         if expected == 400 {
             assert_eq!(
-                answer.error_type, "BadRequestException",
-                "case maxResults {max_results}: expected BadRequestException, got {answer:?}"
+                answer.error_type, "ValidationException",
+                "case maxResults {max_results}: expected ValidationException, got {answer:?}"
             );
+            let bound = if max_results < 0 {
+                "greater than or equal to 0"
+            } else {
+                "less than or equal to 25"
+            };
             assert!(
-                answer.message.contains("maxResults")
-                    && answer.message.contains("greater than 0")
-                    && answer.message.contains("less than or equal to 25"),
-                "case maxResults {max_results}: expected the refusal to name the member and its \
-                 range, got {answer:?}"
+                answer.message.contains("Value at 'maxResults'")
+                    && answer.message.contains(bound),
+                "case maxResults {max_results}: expected the report to name the member and the \
+                 bound {bound:?} it crossed, got {answer:?}"
             );
         }
     }

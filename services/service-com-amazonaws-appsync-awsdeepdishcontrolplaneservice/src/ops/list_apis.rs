@@ -145,6 +145,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A pure read: the page is cut from stored state only, so `ctx` is unused.
         let _ = ctx;
 
+        // The page size has to be one `MaxResults` admits. Checked FIRST, before anything
+        // else of the request is read, because this is the request-form check the boundary
+        // would have taken ahead of the handler — and it is taken HERE, with the
+        // framework's own constraint report under its `ValidationException` (400), because
+        // this surface's recordings show that error for this member where the v1 list
+        // operations answer the service's own page-size sentence
+        // (`crate::state::page_size_refusal`).
+        if let Some(message) = crate::state::page_size_refusal(i64::from(input.max_results)) {
+            return Err(crate::scaffolded::Scaffolded::validation(message));
+        }
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(ListApisErrorModeled::InternalFailureException(
                 InternalFailureException {

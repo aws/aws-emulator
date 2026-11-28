@@ -11,7 +11,18 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-appsync-awsdeepdishcontrolplaneservice.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.appsync#EvaluateCodeRequest")]
+// `skip_validation = ["code", "context"]`: `Code`'s and `Context`'s `@length` bounds are
+// checked in the handler instead (`crate::state::evaluated_code_refusal` /
+// `crate::state::evaluated_context_refusal`), because this operation answers a value
+// outside them with the framework's own CONSTRAINT REPORT — the member and the requirement,
+// quoting nothing of the submitted value — where the operations that STORE a definition
+// answer the service's own sentence for the same shape, and the boundary's refusal seam,
+// handed the broken clauses alone, cannot tell the two apart. See
+// `crate::state::stated_constraints` for why the choice belongs to the operation.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.appsync#EvaluateCodeRequest",
+    skip_validation = ["code", "context"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct EvaluateCodeInput {
     pub runtime: AppSyncRuntime,

@@ -68,13 +68,50 @@ fn length_refusal(member: &str, value: &str, min: usize, max: usize) -> Option<S
     ))
 }
 
+/// How many characters go to a kilobyte of template, which is the unit AppSync states a
+/// template's SIZE limit in.
+const TEMPLATE_KB: usize = 1_024;
+
+/// The DIRECTION a mapping template is written for, as AppSync names it in a refusal: the
+/// member without the `MappingTemplate` it ends in, so `requestMappingTemplate` is stated
+/// as `request` and `responseMappingTemplate` as `response` — the two the service words
+/// this refusal for, each in its own direction.
+fn template_direction(member: &str) -> &str {
+    member.strip_suffix("MappingTemplate").unwrap_or(member)
+}
+
+/// The text AppSync states a mapping template past its modelled ceiling with: the template's
+/// direction, and the ceiling in the unit the service states it in — fixed text whose
+/// variable parts are the direction the member names and the bound the model declares.
+///
+/// A template is refused for its SIZE in its own sentence rather than by the member-and-range
+/// wording every other value outside a `@length` takes ([`length_refusal`]), because a
+/// template past the ceiling is the one thing the caller is told to make SMALLER rather than
+/// to correct.
+fn template_size_message(member: &str) -> String {
+    format!(
+        "Invalid {} template given, must be less than {}kb in size.",
+        template_direction(member),
+        MAPPING_TEMPLATE_MAX_LEN / TEMPLATE_KB
+    )
+}
+
 /// The refusal text for a mapping template outside `MappingTemplate`'s modelled
 /// `@length`, or `None` for one inside it — including a member the request omits, which
 /// sets no template at all.
+///
+/// The two bounds are worded differently, as the service words them: a template past the
+/// ceiling takes the size sentence ([`template_size_message`]), and one below the minimum —
+/// i.e. an empty template, which is no template at all rather than an over-large one — takes
+/// the member-and-range wording.
 pub fn mapping_template_refusal(member: &str, template: Option<&str>) -> Option<String> {
+    let template = template?;
+    if template.chars().count() > MAPPING_TEMPLATE_MAX_LEN {
+        return Some(template_size_message(member));
+    }
     length_refusal(
         member,
-        template?,
+        template,
         MAPPING_TEMPLATE_MIN_LEN,
         MAPPING_TEMPLATE_MAX_LEN,
     )
@@ -145,9 +182,26 @@ mod tests {
     #[test]
     fn a_template_outside_the_modelled_length_is_refused_by_member() {
         let too_long = template(MAPPING_TEMPLATE_MAX_LEN + 1);
+        // An EMPTY template is no template at all: it takes the member-and-range wording.
         let cases: &[(&str, Option<&str>, Option<&str>, &str)] = &[
             ("an empty request template", Some(""), None, "request"),
             ("an empty response template", None, Some(""), "response"),
+        ];
+        for (case, request, response, member) in cases {
+            let refusal = mapping_templates_refusal(*request, *response);
+            let expected = format!(
+                "Invalid {member}MappingTemplate given. Must be between \
+                 {MAPPING_TEMPLATE_MIN_LEN} and {MAPPING_TEMPLATE_MAX_LEN} characters long."
+            );
+            assert_eq!(
+                refusal.as_deref(),
+                Some(expected.as_str()),
+                "case {case:?}: expected {expected:?}, got {refusal:?}"
+            );
+        }
+
+        // A template PAST the ceiling takes the size sentence, in its own direction.
+        let cases: &[(&str, Option<&str>, Option<&str>, &str)] = &[
             (
                 "an over-long request template",
                 Some(too_long.as_str()),
@@ -167,11 +221,11 @@ mod tests {
                 "request",
             ),
         ];
-        for (case, request, response, member) in cases {
+        for (case, request, response, direction) in cases {
             let refusal = mapping_templates_refusal(*request, *response);
             let expected = format!(
-                "Invalid {member}MappingTemplate given. Must be between \
-                 {MAPPING_TEMPLATE_MIN_LEN} and {MAPPING_TEMPLATE_MAX_LEN} characters long."
+                "Invalid {direction} template given, must be less than {}kb in size.",
+                MAPPING_TEMPLATE_MAX_LEN / TEMPLATE_KB
             );
             assert_eq!(
                 refusal.as_deref(),

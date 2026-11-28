@@ -11,7 +11,17 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-appsync-awsdeepdishcontrolplaneservice.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.appsync#ListApisRequest")]
+// `skip_validation = ["maxResults"]`: `MaxResults`'s `@range` is checked in the handler
+// instead (`crate::state::page_size_refusal`), because this surface answers a page size
+// outside it with the FRAMEWORK-level constraint error (400 `ValidationException`) where
+// the v1 list operations answer the service's own page-size sentence — and the boundary's
+// refusal seam, handed the broken clauses alone, cannot tell the two surfaces' `maxResults`
+// apart. See `crate::state::stated_constraints` for why the choice belongs to the
+// operation.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.appsync#ListApisRequest",
+    skip_validation = ["maxResults"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct ListApisInput {
     pub next_token: Option<String>,

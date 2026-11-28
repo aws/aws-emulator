@@ -193,6 +193,19 @@ pub fn caller_credentials_refusal(
 /// (HTTP 400).
 pub const INVALID_ENDPOINT_CONFIGURATION_MESSAGE: &str = "Invalid endpoint configuration.";
 
+/// AppSync's fixed, request-independent text for a relational-database configuration that
+/// names the RDS HTTP endpoint as its source type and carries no settings for it, carried
+/// by `BadRequestException` (HTTP 400).
+///
+/// It names the BLOCK the request left out, the way the per-type data-source configuration
+/// does ([`super::missing_data_source_config_message`], "Missing `<backend>` data source
+/// config"): a nested settings block the declared source type is set up through is a
+/// configuration of its own, so a request that omits it is told which block to add rather
+/// than that the endpoint it describes is unusable — there is no endpoint to judge yet. The
+/// block is `rdsHttpEndpointConfig`, "Amazon RDS HTTP endpoint settings", which the service
+/// names `RDS Http`.
+pub const MISSING_RDS_HTTP_CONFIG_MESSAGE: &str = "Missing RDS Http config";
+
 /// The refusal text for a candidate whose endpoint configuration names no endpoint
 /// AppSync could reach, or `None` for one that does.
 ///
@@ -208,8 +221,10 @@ pub const INVALID_ENDPOINT_CONFIGURATION_MESSAGE: &str = "Invalid endpoint confi
 /// * a `RELATIONAL_DATABASE` data source whose source type is `RDS_HTTP_ENDPOINT` is
 ///   reached through `relationalDatabaseConfig.rdsHttpEndpointConfig` ("Amazon RDS HTTP
 ///   endpoint settings") — the cluster's own ARN ("Amazon RDS cluster Amazon Resource
-///   Name") in the Region that endpoint is served in — so settings that are absent, or
-///   that name no cluster or no Region, name nowhere either.
+///   Name") in the Region that endpoint is served in — so settings that name no cluster or
+///   no Region name nowhere either. Settings that are ABSENT are refused as the missing
+///   block instead ([`MISSING_RDS_HTTP_CONFIG_MESSAGE`]), because there the fix is to add
+///   the block rather than to correct the endpoint inside it.
 ///
 /// Every other type is reached by an identifier or an ARN of its own rather than by an
 /// endpoint the request describes, so there is no endpoint configuration to judge.
@@ -229,25 +244,32 @@ pub fn endpoint_configuration_refusal(record: &DataSourceRecord) -> Option<&'sta
             .open_search_service_config
             .as_ref()
             .is_some_and(|config| !super::is_absolute_url(&config.endpoint));
-    let rds_endpoint_unusable = record.r#type == RELATIONAL_DATABASE_TYPE
-        && record
-            .relational_database_config
-            .as_ref()
-            .is_some_and(|config| {
-                config.relational_database_source_type.as_deref() == Some(RDS_HTTP_ENDPOINT_SOURCE)
-                    && config
-                        .rds_http_endpoint_config
-                        .as_ref()
-                        .is_none_or(|endpoint| {
-                            endpoint
-                                .db_cluster_identifier
-                                .as_deref()
-                                .is_none_or(str::is_empty)
-                                || endpoint.aws_region.as_deref().is_none_or(str::is_empty)
-                        })
-            });
-    (http_endpoint_unusable || search_endpoint_unusable || rds_endpoint_unusable)
-        .then_some(INVALID_ENDPOINT_CONFIGURATION_MESSAGE)
+    if http_endpoint_unusable || search_endpoint_unusable {
+        return Some(INVALID_ENDPOINT_CONFIGURATION_MESSAGE);
+    }
+    rds_endpoint_refusal(record)
+}
+
+/// The refusal text for a relational-database candidate whose RDS HTTP endpoint settings
+/// are absent or name no endpoint AppSync could reach, or `None` for one that does (and for
+/// a candidate that is not one).
+fn rds_endpoint_refusal(record: &DataSourceRecord) -> Option<&'static str> {
+    if record.r#type != RELATIONAL_DATABASE_TYPE {
+        return None;
+    }
+    let config = record.relational_database_config.as_ref()?;
+    if config.relational_database_source_type.as_deref() != Some(RDS_HTTP_ENDPOINT_SOURCE) {
+        return None;
+    }
+    let Some(endpoint) = config.rds_http_endpoint_config.as_ref() else {
+        return Some(MISSING_RDS_HTTP_CONFIG_MESSAGE);
+    };
+    let names_no_endpoint = endpoint
+        .db_cluster_identifier
+        .as_deref()
+        .is_none_or(str::is_empty)
+        || endpoint.aws_region.as_deref().is_none_or(str::is_empty);
+    names_no_endpoint.then_some(INVALID_ENDPOINT_CONFIGURATION_MESSAGE)
 }
 
 /// The one `RelationalDatabaseSourceType` the model declares: "the relational database
@@ -268,7 +290,8 @@ pub const RDS_HTTP_ENDPOINT_SOURCE: &str = "RDS_HTTP_ENDPOINT";
 ///    naming that backend ([`missing_data_source_config_message`]);
 /// 3. a relational-database configuration that names no source type
 ///    ([`MISSING_RELATIONAL_DATABASE_SOURCE_TYPE_MESSAGE`]);
-/// 4. an endpoint configuration that names no endpoint AppSync could reach
+/// 4. a nested settings block the declared source type is set up through that the request
+///    omits, or an endpoint configuration that names no endpoint AppSync could reach
 ///    ([`endpoint_configuration_refusal`]).
 ///
 /// Why 1 is about the MEMBERS rather than about how many there are: a recorded create
@@ -465,32 +488,32 @@ mod tests {
         }
 
         // A relational database whose source type names the RDS HTTP endpoint and whose
-        // endpoint settings are absent, or name no cluster or no Region.
+        // endpoint settings name no cluster or no Region: the settings are THERE, so what
+        // is refused is the endpoint they describe.
         for (case, endpoint) in [
-            ("no endpoint settings at all", None),
             (
                 "endpoint settings that name nothing",
-                Some(crate::ops::types::RdsHttpEndpointConfig::default()),
+                crate::ops::types::RdsHttpEndpointConfig::default(),
             ),
             (
                 "endpoint settings naming no cluster",
-                Some(crate::ops::types::RdsHttpEndpointConfig {
+                crate::ops::types::RdsHttpEndpointConfig {
                     aws_region: Some("eu-west-1".to_string()),
                     ..Default::default()
-                }),
+                },
             ),
             (
                 "endpoint settings naming no Region",
-                Some(crate::ops::types::RdsHttpEndpointConfig {
+                crate::ops::types::RdsHttpEndpointConfig {
                     db_cluster_identifier: Some("orders-cluster".to_string()),
                     ..Default::default()
-                }),
+                },
             ),
         ] {
             let mut record = candidate(RELATIONAL_DATABASE_TYPE, &["relationalDatabaseConfig"]);
             if let Some(config) = record.relational_database_config.as_mut() {
                 config.relational_database_source_type = Some(RDS_HTTP_ENDPOINT_SOURCE.to_string());
-                config.rds_http_endpoint_config = endpoint;
+                config.rds_http_endpoint_config = Some(endpoint);
             }
             let refusal = data_source_configuration_refusal(&record);
             assert_eq!(
@@ -499,6 +522,20 @@ mod tests {
                 "case {case:?}: expected the endpoint sentence, got {refusal:?}"
             );
         }
+
+        // The same source type with NO settings block at all names the block to add.
+        let mut record = candidate(RELATIONAL_DATABASE_TYPE, &["relationalDatabaseConfig"]);
+        if let Some(config) = record.relational_database_config.as_mut() {
+            config.relational_database_source_type = Some(RDS_HTTP_ENDPOINT_SOURCE.to_string());
+            config.rds_http_endpoint_config = None;
+        }
+        let refusal = data_source_configuration_refusal(&record);
+        assert_eq!(
+            refusal.as_deref(),
+            Some(MISSING_RDS_HTTP_CONFIG_MESSAGE),
+            "case \"no endpoint settings at all\": expected the missing-block sentence, got \
+             {refusal:?}"
+        );
 
         // A search endpoint that is no absolute URL.
         for (case, endpoint) in [

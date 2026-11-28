@@ -122,23 +122,38 @@ fn accepted_templates() -> Vec<(String, String)> {
 }
 
 /// The template table's refusals: the only values `MappingTemplate` rules out, which are
-/// the ones outside its `@length`.
-fn refused_templates() -> Vec<(String, String)> {
+/// the ones outside its `@length`, each with whether it is PAST the ceiling — which is what
+/// decides the sentence the service states it in ([`template_refusal`]).
+fn refused_templates() -> Vec<(String, String, bool)> {
     vec![
         (
             "an empty template, one character below the modelled minimum".to_string(),
             String::new(),
+            false,
         ),
         (
             "a multi-line template one character past the modelled maximum".to_string(),
             template_of(TEMPLATE_MAX_LEN + 1),
+            true,
         ),
     ]
 }
 
 /// The refusal AppSync states for `member` carrying a template outside the modelled
 /// bound, written out here rather than taken from the service.
-fn template_refusal(member: &str) -> String {
+///
+/// The two bounds are worded differently, as the service words them: a template PAST the
+/// ceiling is refused for its SIZE, stated in the unit the service states that limit in and
+/// naming the direction the member is written for, while one below the minimum is no
+/// template at all and is named by the member and the bound.
+fn template_refusal(member: &str, past_the_ceiling: bool) -> String {
+    if past_the_ceiling {
+        let direction = member.strip_suffix("MappingTemplate").unwrap_or(member);
+        return format!(
+            "Invalid {direction} template given, must be less than {}kb in size.",
+            TEMPLATE_MAX_LEN / 1_024
+        );
+    }
     format!(
         "Invalid {member} given. Must be between {TEMPLATE_MIN_LEN} and {TEMPLATE_MAX_LEN} \
          characters long."
@@ -403,7 +418,8 @@ async fn a_mapping_template_outside_the_modelled_length_is_refused() {
     let api_id = create_api(&router, "free-text-refusals").await;
     create_data_source(&router, &api_id, DATA_SOURCE).await;
 
-    for (index, (case, template)) in refused_templates().into_iter().enumerate() {
+    for (index, (case, template, past_the_ceiling)) in refused_templates().into_iter().enumerate()
+    {
         for member in ["requestMappingTemplate", "responseMappingTemplate"] {
             let on_request = member == "requestMappingTemplate";
             let (request, response) = if on_request {
@@ -427,9 +443,9 @@ async fn a_mapping_template_outside_the_modelled_length_is_refused() {
             );
             assert_eq!(
                 answer.message,
-                template_refusal(member),
+                template_refusal(member, past_the_ceiling),
                 "case {case:?}: expected {:?}, got {:?}",
-                template_refusal(member),
+                template_refusal(member, past_the_ceiling),
                 answer.message
             );
 
@@ -450,9 +466,9 @@ async fn a_mapping_template_outside_the_modelled_length_is_refused() {
             );
             assert_eq!(
                 function.message,
-                template_refusal(member),
+                template_refusal(member, past_the_ceiling),
                 "case {case:?}: expected {:?} from CreateFunction, got {:?}",
-                template_refusal(member),
+                template_refusal(member, past_the_ceiling),
                 function.message
             );
         }

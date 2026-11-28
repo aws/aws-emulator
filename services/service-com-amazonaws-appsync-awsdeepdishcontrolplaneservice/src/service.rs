@@ -103,10 +103,12 @@ const FRAMEWORK_REFUSAL_CODE: &str = "ValidationException";
 /// QueryDepthLimit,ResolverCountLimit")` — `MaxResults` 0..25 (every list operation's
 /// `maxResults`), `MaxBatchSize` 0..2000 (`CreateResolver`/`UpdateResolver`/
 /// `CreateFunction`/`UpdateFunction`), `QueryDepthLimit` 0..75 and
-/// `ResolverCountLimit` 0..10000 (`CreateGraphqlApi`/`UpdateGraphqlApi`). Those four
-/// shapes are the whole of it: every other numeric member of this model (the `ttl`
-/// and `expires` members among them) targets an unconstrained `Long`, so no other
-/// member can produce a range violation.
+/// `ResolverCountLimit` 0..10000 (`CreateGraphqlApi`/`UpdateGraphqlApi`). The one other
+/// `@range` shape of this model, `TTL` 0..3600 (a Lambda authorizer's cached-result
+/// lifetime), is stated in the service's own words for that limit
+/// ([`authorizer_ttl_refusal`]) rather than in one of the forms below; every remaining
+/// numeric member targets an unconstrained `Long`, so no other member can produce a
+/// range violation.
 ///
 /// The SENTENCE is the service's vocabulary rather than the model's, the way
 /// [`REFUSAL_LABELS`] is: AppSync does not state every limit alike — it states a batch
@@ -248,6 +250,44 @@ fn member_refusal(violations: &[Violation]) -> Option<Refused> {
     })
 }
 
+/// The member a Lambda authorizer's cached-result lifetime arrives on:
+/// `LambdaAuthorizerConfig$authorizerResultTtlInSeconds`, "the number of seconds a response
+/// should be cached for", targeting `TTL` — `@range` 0..3600, "the maximum value is one hour
+/// (3600 seconds)" (`smithy_query(query="shape", shape="LambdaAuthorizerConfig,TTL")`). It is
+/// reached as that member of a `CreateGraphqlApi` / `UpdateGraphqlApi` request's own
+/// `lambdaAuthorizerConfig` and of each of its `additionalAuthenticationProviders`, which is
+/// why the member is matched by name rather than by the whole path.
+const AUTHORIZER_RESULT_TTL_MEMBER: &str = "authorizerResultTtlInSeconds";
+
+/// AppSync's own refusal for a cached-result lifetime outside the window `TTL` declares:
+/// its `BadRequestException`, stating the LIFETIME and the bound the value crossed, with the
+/// comparison that was broken — "Authorizer result TTL cannot be > 3600".
+///
+/// The service states this limit in its own words rather than in the form it states a page
+/// size or a batch size in ([`RANGED_MEMBERS`]): the sentence names the lifetime as the
+/// service names it, not the request member, and carries the ONE bound the value crossed
+/// rather than the whole window — which is the value a caller has to move to, and is taken
+/// from the violation, so the bound stated is always the bound the model declares.
+///
+/// `None` when no violation is that member's range, which leaves every other member to the
+/// sentence the rest of this file states for it.
+fn authorizer_ttl_refusal(violations: &[Violation]) -> Option<Refused> {
+    violations.iter().find_map(|violation| {
+        if violated_member(&violation.path) != AUTHORIZER_RESULT_TTL_MEMBER {
+            return None;
+        }
+        let crossed = match &violation.kind {
+            ViolationKind::MaxValue(max) => format!("> {max}"),
+            ViolationKind::MinValue(min) => format!("< {min}"),
+            _ => return None,
+        };
+        Some(Refused {
+            code: BAD_REQUEST_CODE.to_string(),
+            message: format!("Authorizer result TTL cannot be {crossed}"),
+        })
+    })
+}
+
 /// The member every operation of this service names a reporting format in: the
 /// `OutputType` `GetIntrospectionSchema` renders a schema under and the
 /// `TypeDefinitionFormat` every type operation reports a definition in
@@ -311,12 +351,19 @@ const RECITED_VALUE_SETS: &[&[&str]] = &[RECITED_AUTHENTICATION_TYPES];
 /// the service recites them in the order it traverses its own: a recorded `CreateApi`
 /// refusal of all three of an `EventConfig`'s authorization-mode members states the
 /// publishing modes first, then the connection modes, then the subscription modes, where
-/// the model declares `connectionAuthModes` before either. A member absent from here keeps
-/// its place in the walk's order, after the members named below.
+/// the model declares `connectionAuthModes` before either; and the recorded
+/// `StartDataSourceIntrospection` refusals of two of an `RdsDataApiConfig`'s members state
+/// them in the REVERSE of the order the model declares them — the DATABASE the
+/// introspection would read, then the SECRET that logs in to it, then the CLUSTER its ARN
+/// reaches — where the model declares `resourceArn`, `secretArn`, `databaseName`. A member
+/// absent from here keeps its place in the walk's order, after the members named below,
+/// which is why only the members that MOVE are named.
 const RECITED_MEMBERS: &[&str] = &[
     "defaultPublishAuthModes",
     "connectionAuthModes",
     "defaultSubscribeAuthModes",
+    "databaseName",
+    "secretArn",
 ];
 
 /// Where `path`'s member sits in the order this service recites members in
@@ -332,10 +379,42 @@ fn recited_rank(path: &str) -> usize {
         .unwrap_or(RECITED_MEMBERS.len())
 }
 
+/// The CONFIGURATION whose own members this service recites EXPRESSION-FIRST: a value that
+/// breaks both the FORM its member declares and its SIZE is stated as the form it has to
+/// have and then the bound it crossed, where the framework's walk states the crossed bound
+/// first.
+///
+/// Keyed by the configuration the members sit on, because the order is a property of the
+/// surface that validates them rather than of a constraint class: a recorded
+/// `StartDataSourceIntrospection` refusal of a secret ARN that is both shorter than its
+/// minimum and no secret ARN at all states the expression clause ahead of the length one,
+/// and the other surfaces of this service state the crossed bound first. It is the same
+/// surface whose clauses quote the value they refused, where the others withhold it.
+const EXPRESSION_FIRST_CONFIG: &str = "rdsDataApiConfig";
+
+/// Where `violation` sits among the clauses of ONE member: `0` unless this service recites
+/// that member's clauses expression-first ([`EXPRESSION_FIRST_CONFIG`]), in which case the
+/// `@pattern` clause ranks ahead of every other class.
+///
+/// `0` for everything else, so the stable sort leaves a member's clauses in the order the
+/// framework's walk found them.
+fn recited_class_rank(violation: &Violation) -> usize {
+    let recited_expression_first = violation
+        .path
+        .split('.')
+        .next()
+        .is_some_and(|member| member == EXPRESSION_FIRST_CONFIG);
+    if !recited_expression_first || matches!(violation.kind, ViolationKind::Pattern(_)) {
+        return 0;
+    }
+    1
+}
+
 /// `violations` as this service recites them: one clause per offending member in the order
-/// the service traverses those members ([`RECITED_MEMBERS`]), each enumerated clause's
-/// permitted set in the order the service recites that enum's values
-/// ([`RECITED_VALUE_SETS`]).
+/// the service traverses those members ([`RECITED_MEMBERS`]), the clauses of ONE member in
+/// the order the surface carrying it states its constraint classes
+/// ([`recited_class_rank`]), and each enumerated clause's permitted set in the order the
+/// service recites that enum's values ([`RECITED_VALUE_SETS`]).
 ///
 /// The clauses themselves, and the envelope around them, stay the framework's: only the
 /// ORDER of the report is the service's. The sort is stable, so clauses of members this
@@ -355,7 +434,12 @@ fn recited(violations: &[Violation]) -> Vec<Violation> {
             violation
         })
         .collect();
-    stated.sort_by_key(|violation| recited_rank(&violation.path));
+    stated.sort_by_key(|violation| {
+        (
+            recited_rank(&violation.path),
+            recited_class_rank(violation),
+        )
+    });
     stated
 }
 
@@ -466,8 +550,8 @@ fn tagging_resource_arn(violation: &Violation) -> bool {
     violation.path == RESOURCE_ARN_MEMBER
 }
 
-/// AppSync's own refusal for a `resourceArn` whose VALUE cannot be a resource ARN at all
-/// — outside the shape's length bounds or its pattern.
+/// AppSync's own refusal for a TAGGING `resourceArn` whose VALUE cannot be a resource ARN
+/// at all — outside the shape's length bounds or its pattern.
 ///
 /// The tagging operations model `BadRequestException` and no constraint-violation error,
 /// so the framework's generic report (`ValidationException`, with every broken clause
@@ -478,13 +562,20 @@ fn tagging_resource_arn(violation: &Violation) -> bool {
 /// (`crate::state::invalid_resource_arn_message`), the one diagnosis that says which
 /// field of the ARN failed.
 ///
+/// Only the TAGGING surface's own member ([`tagging_resource_arn`]): the model declares a
+/// second member of that name, `RdsDataApiConfig$resourceArn`, which is an ARN of another
+/// vendor for another surface, and that one is stated as the constraint report every other
+/// member's declared form is stated in ([`declared_form_refusal`]) — the member PATH and
+/// the expression the model declares, which is the only diagnosis that says what shape of
+/// ARN that member expects.
+///
 /// `None` when no violation is of that member and kind, which leaves every other
 /// refusal to the wordings the rest of this file states.
 fn resource_arn_refusal(violations: &[Violation]) -> Option<Refused> {
     violations
         .iter()
         .find(|violation| {
-            violated_member(&violation.path) == RESOURCE_ARN_MEMBER
+            tagging_resource_arn(violation)
                 && matches!(
                     violation.kind,
                     ViolationKind::MinLength(_)
@@ -494,14 +585,7 @@ fn resource_arn_refusal(violations: &[Violation]) -> Option<Refused> {
         })
         .map(|violation| Refused {
             code: BAD_REQUEST_CODE.to_string(),
-            // Only the tagging surface's own member is read as an ARN of THIS vendor;
-            // for any other member of that name the sentence stays the bare one.
-            message: crate::state::invalid_resource_arn_message(
-                violation
-                    .value
-                    .as_deref()
-                    .filter(|_| tagging_resource_arn(violation)),
-            ),
+            message: crate::state::invalid_resource_arn_message(violation.value.as_deref()),
         })
 }
 
@@ -554,8 +638,13 @@ const CODE_MEMBER: &str = "code";
 /// generic constraint report, which would quote the whole submitted module back into the
 /// message; AppSync names the member's ceiling and nothing else. The ceiling is the one the
 /// broken constraint carries, so the sentence states the model's own bound, and it is the
-/// same sentence for every operation that carries the member — one over-long definition is
-/// refused one way whichever call wrote it.
+/// same sentence for every operation that WRITES the member — one over-long definition is
+/// refused one way whichever call stored it.
+///
+/// The operation that EVALUATES a definition rather than storing one states the framework's
+/// report for the same shape instead, so its `code` never reaches this seam: it is checked
+/// in that handler (`crate::state::evaluated_code_refusal`), which is the only place the
+/// two can be told apart.
 ///
 /// Only the MAXIMUM: a definition shorter than the modelled minimum keeps the framework's
 /// own report, which no recording words differently.
@@ -799,10 +888,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // required member, or a value outside a declared bound) to let this service
         // reword it. AppSync states three of those classes itself:
         //
-        // * a `resourceArn` whose value cannot be a resource ARN at all is its own
-        //   `BadRequestException` with the service's sentence for a malformed ARN —
+        // * a TAGGING `resourceArn` whose value cannot be a resource ARN at all is its
+        //   own `BadRequestException` with the service's sentence for a malformed ARN —
         //   naming the vendor it expected when the value is an ARN of another one
         //   (`resource_arn_refusal`) — the only client error its operations model;
+        // * a Lambda authorizer's cached-result lifetime outside its modelled window is
+        //   its own `BadRequestException` naming the lifetime and the bound the value
+        //   crossed (`authorizer_ttl_refusal`), which is the sentence the service states
+        //   that limit in rather than the form it states a page or batch size in;
         // * a member the model rules out outright — absent though required, or
         //   outside its modelled `@range` — is its own `BadRequestException` naming
         //   that member, and its range when it has one (`member_refusal`); the
@@ -829,6 +922,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // Every other refusal keeps the framework's wording and code.
         match refusal {
             Refusal::Invalid(violations) => resource_arn_refusal(violations)
+                .or_else(|| authorizer_ttl_refusal(violations))
                 .or_else(|| member_refusal(violations))
                 .or_else(|| format_refusal(violations))
                 .or_else(|| runtime_name_refusal(violations))

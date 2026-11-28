@@ -118,6 +118,12 @@ pub use free_text::*;
 mod api_name;
 pub use api_name::*;
 
+/// The members whose refusal is the framework's own CONSTRAINT REPORT rather than a
+/// sentence of this service's, and the checks their handlers take because that choice
+/// belongs to the operation.
+mod stated_constraints;
+pub use stated_constraints::*;
+
 /// How a modelled `@pattern` a handler checks itself is evaluated: compiled once, with
 /// the engine the request boundary's own walk uses.
 mod declared_pattern;

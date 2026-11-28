@@ -13,6 +13,10 @@
 //! > minimum and at most the maximum ("maxResults must be greater than 0 and less than or
 //! > equal to 25."). A value INSIDE the range — each published bound included — is served.
 //!
+//! One surface words that page size differently: the `/v2/apis…` listing answers the
+//! validation layer's own constraint report for it, which `crate::aws_worded_refusals`
+//! asserts.
+//!
 //! The rows differ along what the rule generalises over: the MEMBER, the OPERATION
 //! carrying it (and so the method and whether the value rides in the body or in a query
 //! parameter), WHICH bound the value crosses, and how far past it the value is. The bounds
@@ -142,10 +146,16 @@ fn batch_size_carriers(api_id: &str) -> Vec<BatchCarrier> {
     ]
 }
 
-/// Every list operation that carries `maxResults`, as a path to page.
+/// Every list operation of the v1 control plane that carries `maxResults`, as a path to
+/// page.
+///
+/// `ListApis` is NOT one of them: the `/v2/apis…` surface answers a page size outside the
+/// range with the validation layer's own constraint report rather than with the sentence
+/// this suite asserts, and that surface's refusal is asserted in
+/// `crate::aws_worded_refusals` — the same split `crate::event_api_name_form` holds for
+/// that surface's `name`.
 fn page_size_carriers(api_id: &str) -> Vec<(&'static str, String)> {
     vec![
-        ("ListApis", "/v2/apis".to_string()),
         ("ListGraphqlApis", "/v1/apis".to_string()),
         ("ListDomainNames", "/v1/domainnames".to_string()),
         ("ListDataSources", format!("/v1/apis/{api_id}/datasources")),

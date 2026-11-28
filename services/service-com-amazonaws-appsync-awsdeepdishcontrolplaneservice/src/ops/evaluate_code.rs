@@ -193,6 +193,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // holds no store guard, and a later caller sees exactly what it saw before.
         let _ = (ctx, &self.engine);
 
+        // The two members the model bounds by `@length` are checked FIRST, in the order
+        // the request shape declares them, because these are the request-form checks the
+        // boundary would have taken ahead of the handler — and they are taken HERE, with
+        // the framework's own constraint report, because this operation's recordings show
+        // that report for them where the operations that STORE a definition answer the
+        // service's own sentence for the very same shape
+        // (`crate::state::stated_constraints`). The report travels under this operation's
+        // own modelled `BadRequestException`, the one client error it declares.
+        if let Some(message) = crate::state::evaluated_code_refusal(&input.code) {
+            return Err(bad_request(message));
+        }
+        if let Some(message) = crate::state::evaluated_context_refusal(&input.context) {
+            return Err(bad_request(message));
+        }
+
         // "Currently, only the APPSYNC_JS runtime is supported" and its only version is
         // 1.0.0, so a request naming another version names a runtime nothing can run.
         if input.runtime.runtime_version != APPSYNC_JS_RUNTIME_VERSION {
