@@ -19,7 +19,9 @@
 //!   caller controls the length of what it sends, and a value that failed a MAXIMUM bound is
 //!   by definition longer than the member may hold, so echoing it whole reproduces in a
 //!   response body — which a client logs, traces and attaches to a ticket — exactly what the
-//!   service refused to store;
+//!   service refused to store. It holds for the value a clause states at a COLLECTION member
+//!   too — the list the request carried there, rendered — since that rendering is no shorter
+//!   than the value that broke the rule;
 //! * an enumerated type's admitted values are stated in the order THIS SERVICE lists that
 //!   set in ([`crate::state::STATED_VALUE_SETS`]), which is a property of the enumerated
 //!   type rather than of the member, the operation or the request that carried the value;
@@ -27,16 +29,19 @@
 //!   built from ([`crate::state::INVALID_SECRET_NAME_MESSAGE`]), the same sentence the
 //!   create's own charset check answers with, so one unusable name reads the same whether
 //!   the boundary or the handler refused it; and a value past one of the maximums this
-//!   service enforces ITSELF ([`STATED_MAXIMUMS`]) states that operation's own modelled
-//!   refusal instead of a constraint clause;
+//!   service enforces ITSELF ([`STATED_MAXIMUMS`]), or outside one of the grammars it states
+//!   itself ([`STATED_GRAMMARS`]), states that operation's own modelled refusal instead of a
+//!   constraint clause \u2014 as does a `SecretId` past the size a `SecretId` may be
+//!   ([`crate::state::SECRET_ID_TOO_LONG_MESSAGE`]);
 //! * a constraint one of a LIST member's elements broke is stated at that member, carrying
 //!   the element shape's whole declared constraint set ([`element_set`]) and the list the
 //!   REQUEST held there, where the framework reports the offending element alone and the one
 //!   constraint it broke. The set is read off the model by the member's own name, because a
 //!   list member of this model sits inside a structure its input nests as often as directly
 //!   on the input; the `@pattern` inside that set is quoted as the MODEL writes it, which is
-//!   the rendering a nested set states — a clause stated at a member of its own keeps the
-//!   unanchored rendering of the same expression.
+//!   the rendering a nested set states — a clause stated at a member of its own quotes the
+//!   expression this service PUBLISHES for that member's shape ([`PUBLISHED_AS_DECLARED`]),
+//!   which for most of them is the unanchored rendering of the same expression.
 //!
 //! One reading sits beside those: WHICH members a clause states no value for, which is the
 //! model's answer rather than a choice ([`WITHHELD_MEMBERS`]).
@@ -46,7 +51,7 @@ use std::sync::LazyLock;
 
 use ::aws_smithy_schema::Schema;
 use service_common::sensitive_members::WithheldMembers;
-use service_common::validation::{list_of_element, unanchored};
+use service_common::validation::{list_of_element, unanchored_unless_published_as_declared};
 use service_common::validation_message::{element_constraint_set, element_set_requirement};
 use smithy_server_runtime::{Refusal, Refused, Violation, ViolationKind};
 
@@ -83,6 +88,31 @@ const PARAMETER_CODE: &str = "InvalidParameterException";
 /// page-size rule is answered in.
 const REQUEST_CODE: &str = "InvalidRequestException";
 
+/// The code a refusal of a pagination token this service cannot resume from travels under:
+/// "The `NextToken` value is invalid." (`InvalidNextTokenException`, this service's Smithy
+/// model), which every paginated operation of this service models — so an SDK paginator
+/// reads "start the scan again" rather than the permanent client fault a constraint clause
+/// reports.
+const NEXT_TOKEN_CODE: &str = "InvalidNextTokenException";
+
+/// The `@pattern` expressions this service publishes EXACTLY as the model writes them,
+/// anchors included, keyed by the expression because what a service publishes belongs to the
+/// SHAPE and so holds for every member targeting it.
+///
+/// One shape of this model is published that way: `RotationTokenType`
+/// (`smithy_query(query="shape",shape="RotationTokenType")`), whose recorded refusal quotes
+/// the whole-value form. Every other expression of this model is published without the pair
+/// the model writes around it, which is the rendering the shared reading drops
+/// ([`unanchored_unless_published_as_declared`], which owns both rules).
+const PUBLISHED_AS_DECLARED: &[&str] = &[r"^[a-zA-Z0-9\-]+$"];
+
+/// How a clause of this service quotes a `@pattern` back: the expression this service
+/// publishes for the member's shape ([`PUBLISHED_AS_DECLARED`]). The CHECK always used the
+/// model's pattern as written.
+fn quoted_pattern(regex: &str) -> String {
+    unanchored_unless_published_as_declared(regex, PUBLISHED_AS_DECLARED)
+}
+
 /// How many bytes of a rejected value a clause of this service echoes before the rest is
 /// elided.
 const MAX_ECHOED_VALUE: usize = 64;
@@ -94,6 +124,22 @@ const ELISION: &str = " ...";
 /// top-level member (lowerCamel). It is the only member of this service's model at that
 /// path, so the name rule below reaches nothing else.
 const NAME_PATH: &str = "name";
+
+/// The member path a `SecretId` is reported at, as the framework spells a top-level member
+/// (lowerCamel) — the one member of this model at that path, and the member every operation
+/// addressed to one secret carries.
+const SECRET_ID_PATH: &str = "secretId";
+
+/// Whether `violation` is a `SecretId` past the size a `SecretId` may be.
+///
+/// A size limit belongs to the SHAPE the member targets (`SecretIdType`, this service's
+/// Smithy model), so it holds at every operation that carries one — and
+/// `InvalidParameterException` is one of this service's common errors, so every one of them
+/// models the refusal. A `SecretId` BELOW the minimum is not past a size limit and keeps its
+/// own answer.
+fn secret_id_past_the_size_limit(violation: &Violation) -> bool {
+    violation.path == SECRET_ID_PATH && matches!(violation.kind, ViolationKind::MaxLength(_))
+}
 
 /// One MAXIMUM this service refuses in its OWN words rather than with the shared
 /// constraint clause: the operation whose input declares it, the member path the boundary
@@ -122,6 +168,9 @@ struct StatedMaximum {
 /// Every maximum of this service stated that way, keyed by the operation as well as the
 /// member: a limit belongs to the parameter of ONE operation, and the same member name on
 /// another operation (a page size with a bound of its own) keeps the shared clause.
+///
+/// The path is the member path with every list POSITION dropped ([`positionless`]), so a
+/// member of a list's ELEMENTS is named once however many positions a request carried.
 const STATED_MAXIMUMS: &[StatedMaximum] = &[
     // The batched read's id list and its page size: both bound by the one batch that read
     // answers, and both modelled errors of that operation.
@@ -153,12 +202,103 @@ const STATED_MAXIMUMS: &[StatedMaximum] = &[
         code: PARAMETER_CODE,
         message: resource_policy_too_long_message,
     },
+    // How many values ONE filter carries (`crate::state::FILTER_VALUES_PER_FILTER`), at
+    // both operations that select with filters: the count is the `Filter` shape's, so the
+    // listing and the batched read answer it alike, and the sentence names the count
+    // instead of quoting the values back.
+    StatedMaximum {
+        operation: "BatchGetSecretValue",
+        path: "filters.member.values",
+        code: PARAMETER_CODE,
+        message: crate::state::too_many_filter_values_message,
+    },
+    StatedMaximum {
+        operation: "ListSecrets",
+        path: "filters.member.values",
+        code: PARAMETER_CODE,
+        message: crate::state::too_many_filter_values_message,
+    },
+    // A pagination token longer than one this service could have minted cannot be resumed
+    // from, which is this service's invalid-token refusal rather than a schema clause — at
+    // every operation that pages, each of which models that error.
+    StatedMaximum {
+        operation: "BatchGetSecretValue",
+        path: "nextToken",
+        code: NEXT_TOKEN_CODE,
+        message: invalid_next_token_message,
+    },
+    StatedMaximum {
+        operation: "ListSecrets",
+        path: "nextToken",
+        code: NEXT_TOKEN_CODE,
+        message: invalid_next_token_message,
+    },
+    StatedMaximum {
+        operation: "ListSecretVersionIds",
+        path: "nextToken",
+        code: NEXT_TOKEN_CODE,
+        message: invalid_next_token_message,
+    },
+    StatedMaximum {
+        operation: "ListResourcePolicies",
+        path: "nextToken",
+        code: NEXT_TOKEN_CODE,
+        message: invalid_next_token_message,
+    },
 ];
 
 /// The sentence a document past [`crate::state::RESOURCE_POLICY_CHARS`] is refused with,
 /// as a function so [`STATED_MAXIMUMS`] can name it beside the ones that state a bound.
 fn resource_policy_too_long_message() -> String {
     crate::state::RESOURCE_POLICY_TOO_LONG_MESSAGE.to_string()
+}
+
+/// The sentence a pagination token this service cannot resume from is refused with, the
+/// same one every operation's own handler answers an unusable cursor with
+/// ([`crate::state::INVALID_NEXT_TOKEN_MESSAGE`]), as a function so [`STATED_MAXIMUMS`] can
+/// name it.
+fn invalid_next_token_message() -> String {
+    crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string()
+}
+
+/// One GRAMMAR this service refuses in its OWN words rather than with the shared constraint
+/// clause: the member path the value is reported at ([`positionless`]), the modelled error
+/// code the refusal travels under, and the sentence built from the rejected value.
+///
+/// The counterpart of [`STATED_MAXIMUMS`] for a `@pattern`: a value outside the character
+/// set a parameter admits is a parameter the service cannot use, so it is answered with that
+/// operation's own modelled error and a sentence naming the value — never with the clause
+/// nesting the whole declared set, which travels under a code the operation does not model.
+/// A grammar belongs to the SHAPE the member targets, so a row holds for every operation
+/// that binds it.
+struct StatedGrammar {
+    path: &'static str,
+    code: &'static str,
+    /// The sentence, built from the value the request carried.
+    message: fn(&str) -> String,
+}
+
+/// Every grammar of this service stated that way: the values of a `Filter`, whose
+/// `@pattern` (`FilterValueStringType`, this service's Smithy model) is the character set a
+/// search value may be built from.
+const STATED_GRAMMARS: &[StatedGrammar] = &[StatedGrammar {
+    path: "filters.member.values.member",
+    code: PARAMETER_CODE,
+    message: crate::state::invalid_filter_value_message,
+}];
+
+/// `path` with every list POSITION dropped: `filters.1.member.values` reads
+/// `filters.member.values`, and a top-level member is unchanged.
+///
+/// A rule this service states for a member states it for that member wherever a request
+/// carried it, so the tables above are keyed by the path a member is reported at with the
+/// positions of the lists above it left out.
+fn positionless(path: &str) -> String {
+    let steps: Vec<&str> = path
+        .split('.')
+        .filter(|step| !step.bytes().all(|byte| byte.is_ascii_digit()))
+        .collect();
+    steps.join(".")
 }
 
 /// Whether `kind` is a value past a MAXIMUM the model declares — too long, or too large.
@@ -176,12 +316,42 @@ fn stated_maximum(operation: Option<&str>, violations: &[Violation]) -> Option<R
     let stated = STATED_MAXIMUMS.iter().find(|maximum| {
         maximum.operation == operation
             && violations.iter().any(|violation| {
-                violation.path == maximum.path && past_a_maximum(&violation.kind)
+                positionless(&violation.path) == maximum.path && past_a_maximum(&violation.kind)
             })
     })?;
     Some(Refused {
         code: stated.code.to_string(),
         message: (stated.message)(),
+    })
+}
+
+/// How this service states a grammar one of `violations` broke ([`STATED_GRAMMARS`]), or
+/// `None` when it states none — which leaves the shared constraint clause to answer.
+///
+/// The sentence names the value the request carried AS SENT, not held to the bound a
+/// constraint clause echoes under: that bound is a property of the clause this service's
+/// recordings show it in, and this sentence is the one AWS states with the value copied from
+/// the request. The value is still bounded — the member's own declared maximum, and the
+/// ceiling the collecting walk restores an echo under
+/// (`service_common::validation::MAX_RESTORED_ECHO`) — so one request cannot size the
+/// response it is refused with.
+///
+/// A violation whose value no walk could carry keeps the shared CLAUSE instead: this
+/// sentence is nothing but the fixed text and that value, so a refusal that could only state
+/// an empty one tells a caller less than the clause naming the member and its whole
+/// constraint set.
+fn stated_grammar(violations: &[Violation]) -> Option<Refused> {
+    let (stated, violation) = STATED_GRAMMARS.iter().find_map(|grammar| {
+        let broken = violations.iter().find(|violation| {
+            positionless(&violation.path) == grammar.path
+                && matches!(violation.kind, ViolationKind::Pattern(_))
+        })?;
+        Some((grammar, broken))
+    })?;
+    let value = violation.value.as_deref().filter(|value| !value.is_empty())?;
+    Some(Refused {
+        code: stated.code.to_string(),
+        message: (stated.message)(value),
     })
 }
 
@@ -218,6 +388,23 @@ pub(super) fn reword_quoting(
     if let Some(stated) = stated_maximum(operation, violations) {
         return Some(stated);
     }
+    // A value outside the character set a parameter admits is answered the same way, with
+    // the sentence naming that value ([`STATED_GRAMMARS`]).
+    if let Some(stated) = stated_grammar(violations) {
+        return Some(stated);
+    }
+    // A `SecretId` past the size a `SecretId` may be is refused for its SIZE, with the
+    // sentence naming that member — the same answer a handler that reads the identifier
+    // itself gives one that REACHES the limit without breaking the modelled bound
+    // ([`crate::state::unusable_secret_id`]), so an over-long identifier reads alike on
+    // either side of the model's own ceiling wherever that handler-side reading is in
+    // place.
+    if violations.iter().any(secret_id_past_the_size_limit) {
+        return Some(Refused {
+            code: PARAMETER_CODE.to_string(),
+            message: crate::state::SECRET_ID_TOO_LONG_MESSAGE.to_string(),
+        });
+    }
     // A name outside what a name may be is one refusal with one sentence, whichever bound
     // it fell outside. An ABSENT name is not an unusable one — it is a member the shape
     // requires — so it keeps the shared "must not be null" clause.
@@ -248,11 +435,14 @@ pub(super) fn reword_quoting(
         .map(|violation| violation.path.clone())
         .collect();
     // The envelope, the member paths, the `@pattern` rendering, the grouping over a list's
-    // elements and every requirement's wording are the shared ones.
+    // elements and every requirement's wording are the shared ones. The collection a
+    // grouped clause quotes is held to what a clause of this service echoes
+    // ([`echoed`]), exactly as the value half of every other clause is: a collection the
+    // caller sent is no shorter than the element that broke the rule.
     service_common::validation_message::aws_validation_refusal_over_elements_stating_quoting_withholding(
         &Refusal::Invalid(stated),
-        unanchored,
-        |collection| lists.get(collection).cloned(),
+        quoted_pattern,
+        |collection| lists.get(collection).map(|list| echoed(list)),
         |path| withheld.contains(path) || WITHHELD_MEMBERS.withholds_value(path),
         element_set,
     )
@@ -511,18 +701,218 @@ mod tests {
         );
     }
 
+    /// RULE: a clause quotes the expression this service PUBLISHES for the member's shape —
+    /// the whole-value form for the shapes it publishes that way
+    /// ([`PUBLISHED_AS_DECLARED`]), and the unanchored rendering of the model's text for
+    /// every other.
+    ///
+    /// The rows run over both renderings, over the two shapes this model declares a
+    /// `@pattern` on, and over a `@sensitive` member (whose clause states the expression and
+    /// no value) beside one that is not.
     #[test]
-    fn a_pattern_is_stated_without_its_whole_value_anchors() {
-        let stated = said(violation(
-            "rotationRules.duration",
-            ViolationKind::Pattern("^[0-9]+h$".to_string()),
-            Some("1x"),
-        ));
+    fn a_pattern_is_stated_as_the_service_publishes_that_shapes_expression() {
+        let rows: Vec<(&str, &str, &str, Option<&str>, String)> = vec![
+            (
+                "the rotation token's expression, published as declared",
+                "rotationToken",
+                r"^[a-zA-Z0-9\-]+$",
+                None,
+                format!(
+                    "1 validation error detected: Value at 'rotationToken' failed to satisfy \
+                     constraint: Member must satisfy regular expression pattern: {}",
+                    r"^[a-zA-Z0-9\-]+$"
+                ),
+            ),
+            (
+                "a rotation window, published without the pair",
+                "rotationRules.duration",
+                "^[0-9]+h$",
+                Some("1x"),
+                "1 validation error detected: Value '1x' at 'rotationRules.duration' failed to \
+                 satisfy constraint: Member must satisfy regular expression pattern: [0-9]+h"
+                    .to_string(),
+            ),
+        ];
+        for (case, path, pattern, value, expected) in rows {
+            let stated = said(violation(
+                path,
+                ViolationKind::Pattern(pattern.to_string()),
+                value,
+            ));
+            assert_eq!(
+                stated, expected,
+                "case {case:?}: expected {expected:?}, got {stated:?}"
+            );
+        }
+    }
+
+    /// RULE: a maximum or a grammar this service states itself is keyed by the member a
+    /// violation is reported at WITHOUT the positions of the lists above it, so the rule
+    /// holds at every position a request carried that member in.
+    #[test]
+    fn a_member_of_a_lists_elements_is_named_without_its_position() {
+        for (case, path, expected) in [
+            ("a top-level member", "nextToken", "nextToken"),
+            (
+                "a member inside a list's element",
+                "filters.1.member.values",
+                "filters.member.values",
+            ),
+            (
+                "an element of that member",
+                "filters.10.member.values.3.member",
+                "filters.member.values.member",
+            ),
+        ] {
+            let stated = positionless(path);
+            assert_eq!(
+                stated, expected,
+                "case {case:?}: expected {expected:?}, got {stated:?}"
+            );
+        }
+    }
+
+    /// RULE: a filter carrying more values than one filter admits, and a pagination token
+    /// past the ceiling a token has, are each answered with that operation's OWN modelled
+    /// refusal and the sentence stating the rule — at every operation that binds the member,
+    /// and whatever position the request carried it in.
+    #[test]
+    fn a_filter_and_a_token_past_their_ceilings_state_the_operations_own_refusal() {
+        let rows: Vec<(&str, &str, Violation, &str, String)> = vec![
+            (
+                "a filter of the batched read carrying too many values",
+                "BatchGetSecretValue",
+                violation(
+                    "filters.1.member.values",
+                    ViolationKind::MaxLength(10),
+                    Some("[a, b]"),
+                ),
+                PARAMETER_CODE,
+                crate::state::too_many_filter_values_message(),
+            ),
+            (
+                "a later filter of the listing carrying too many values",
+                "ListSecrets",
+                violation(
+                    "filters.3.member.values",
+                    ViolationKind::MaxLength(10),
+                    Some("[a, b]"),
+                ),
+                PARAMETER_CODE,
+                crate::state::too_many_filter_values_message(),
+            ),
+            (
+                "the batched read's pagination token",
+                "BatchGetSecretValue",
+                violation("nextToken", ViolationKind::MaxLength(4096), Some("QQQQ")),
+                NEXT_TOKEN_CODE,
+                crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+            ),
+            (
+                "the listing's pagination token",
+                "ListSecrets",
+                violation("nextToken", ViolationKind::MaxLength(4096), Some("QQQQ")),
+                NEXT_TOKEN_CODE,
+                crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+            ),
+            (
+                "the version listing's pagination token",
+                "ListSecretVersionIds",
+                violation("nextToken", ViolationKind::MaxLength(4096), Some("QQQQ")),
+                NEXT_TOKEN_CODE,
+                crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+            ),
+            (
+                "the policy listing's pagination token",
+                "ListResourcePolicies",
+                violation("nextToken", ViolationKind::MaxLength(4096), Some("QQQQ")),
+                NEXT_TOKEN_CODE,
+                crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+            ),
+        ];
+        for (case, operation, broken, code, message) in rows {
+            let stated = answered(operation, broken);
+            assert_eq!(
+                (stated.code.as_str(), stated.message.as_str()),
+                (code, message.as_str()),
+                "case {case:?}: expected the operation's own refusal, got {stated:?}"
+            );
+        }
+        // The contrast: a token BELOW its minimum is not a token past a ceiling, so it
+        // keeps the shared clause.
+        let below = answered(
+            "ListSecrets",
+            violation("nextToken", ViolationKind::MinLength(1), Some("")),
+        );
         assert_eq!(
-            stated,
-            "1 validation error detected: Value '1x' at 'rotationRules.duration' failed to \
-             satisfy constraint: Member must satisfy regular expression pattern: [0-9]+h",
-            "case \"an anchored pattern\": got {stated:?}"
+            below.code, CONSTRAINT_CODE,
+            "case \"an empty pagination token\": expected the shared clause, got {below:?}"
+        );
+    }
+
+    /// RULE: a filter value outside the character set a search value may be built from is
+    /// that operation's own parameter refusal naming the value as the request sent it, not a
+    /// constraint clause.
+    #[test]
+    fn a_filter_value_outside_its_grammar_names_that_value() {
+        let pattern = || ViolationKind::Pattern(r"^\!?[a-zA-Z0-9 :_@\/\+\=\.\-\!]*$".to_string());
+        // Past the bound a constraint CLAUSE of this service echoes under, which this
+        // sentence is not held to: AWS copies the value from the request.
+        let long = format!("{}#", "x".repeat(MAX_ECHOED_VALUE));
+        let rows: Vec<(&str, Violation, String)> = vec![
+            (
+                "a value carrying a character outside the set",
+                violation("filters.1.member.values.1.member", pattern(), Some("tag#")),
+                crate::state::invalid_filter_value_message("tag#"),
+            ),
+            (
+                "a later value of a later filter",
+                violation("filters.2.member.values.3.member", pattern(), Some("a*")),
+                crate::state::invalid_filter_value_message("a*"),
+            ),
+            (
+                "a value longer than a clause would echo",
+                violation(
+                    "filters.1.member.values.1.member",
+                    pattern(),
+                    Some(long.as_str()),
+                ),
+                crate::state::invalid_filter_value_message(&long),
+            ),
+        ];
+        for (case, broken, message) in rows {
+            let stated = answered("BatchGetSecretValue", broken);
+            assert_eq!(
+                (stated.code.as_str(), stated.message.as_str()),
+                (PARAMETER_CODE, message.as_str()),
+                "case {case:?}: expected the parameter refusal, got {stated:?}"
+            );
+        }
+        // The contrast: a filter value whose value no walk could carry keeps the shared
+        // clause, since this sentence is nothing but its fixed text and that value.
+        let unquotable = answered(
+            "BatchGetSecretValue",
+            violation("filters.1.member.values.1.member", pattern(), None),
+        );
+        assert_eq!(
+            unquotable.code, CONSTRAINT_CODE,
+            "case \"a filter value no clause could quote\": expected the shared clause, got \
+             {unquotable:?}"
+        );
+        // The contrast: a filter value past its LENGTH is not outside the grammar, so it
+        // keeps the clause nesting the element shape's whole set.
+        let long_value = answered(
+            "BatchGetSecretValue",
+            violation(
+                "filters.1.member.values.1.member",
+                ViolationKind::MaxLength(512),
+                Some("x"),
+            ),
+        );
+        assert_eq!(
+            long_value.code, CONSTRAINT_CODE,
+            "case \"a filter value past its maximum\": expected the shared clause, got \
+             {long_value:?}"
         );
     }
 
@@ -555,18 +945,44 @@ mod tests {
     }
 
     #[test]
-    fn a_value_set_the_service_states_no_order_for_is_stated_as_the_model_declares_it() {
-        let declared = ["asc", "desc"];
+    fn an_enum_clause_states_a_set_the_service_pins_no_order_of_as_the_model_declares_it() {
+        // `StatusType`, the replication status an answer reports
+        // (`smithy_query(query="shape",shape="StatusType")`): this service's recordings show
+        // no order of its own for it, so the clause states the set exactly as the violation
+        // presented it.
+        let declared = ["InProgress", "Failed", "InSync"];
         let stated = said(violation(
-            "sortOrder",
+            "status",
             ViolationKind::EnumValue(declared.iter().map(|value| value.to_string()).collect()),
-            Some("sideways"),
+            Some("Sideways"),
         ));
         assert_eq!(
             stated,
-            "1 validation error detected: Value 'sideways' at 'sortOrder' failed to satisfy \
-             constraint: Member must satisfy enum value set: [asc, desc]",
+            "1 validation error detected: Value 'Sideways' at 'status' failed to satisfy \
+             constraint: Member must satisfy enum value set: [InProgress, Failed, InSync]",
             "case \"a set with no stated order\": got {stated:?}"
+        );
+    }
+
+    /// RULE: an enumerated type this service states an order for is stated in THAT order
+    /// wherever the value was carried — `SortOrderType`'s set reads `[desc, asc]`, which is
+    /// neither the order the model declares nor the sorted one.
+    #[test]
+    fn the_sort_order_set_is_stated_in_the_order_the_service_lists_it() {
+        let declared: Vec<String> = crate::ops::types::SORT_ORDER_TYPE_VALUES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect();
+        let stated = said(violation(
+            "sortOrder",
+            ViolationKind::EnumValue(declared),
+            Some("ASC"),
+        ));
+        assert_eq!(
+            stated,
+            "1 validation error detected: Value 'ASC' at 'sortOrder' failed to satisfy \
+             constraint: Member must satisfy enum value set: [desc, asc]",
+            "case \"the sort order set\": got {stated:?}"
         );
     }
 

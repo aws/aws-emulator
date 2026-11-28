@@ -251,19 +251,37 @@ impl<O> StatedPerOperation<O> {
 /// answers in its own envelope.
 ///
 /// The collecting half is the tree's shared one
-/// (`service_common::validation::refusing_violations_with_lists`): one read of the request
-/// yields the framework's own violations (the protocol's deserializer for an absent
-/// `@required` member, `constraints::validate` over the built input) with each value echo
-/// restored to the bytes the caller sent, plus the request's own lists — the value a clause
+/// (`service_common::validation::refusing_violations_with_mapped_echoes`): one read of the
+/// request yields the framework's own violations (the protocol's deserializer for an absent
+/// `@required` member, `constraints::validate` over the built input), each paired with how a
+/// clause can state the value it is about, plus the request's own lists — the value a clause
 /// stated at a LIST member needs and no violation carries. Nothing is re-checked here, and no
 /// second copy of that walk lives in this crate: both halves are bounded where those bounds
 /// are stated.
+///
+/// Two restorations are made from that echo, both the shared ones, because the framework
+/// writes neither half the way AWS states it: a value the framework ELIDED into its own
+/// marker is restored to what the caller sent
+/// (`validation_message::quoting_the_whole_submitted_value`, after which this service applies
+/// its OWN echo bound), and a COLLECTION the framework summarised as `<n> items` is restored
+/// to the collection itself (`validation_message::quoting_the_submitted_collection`) — a list
+/// of structures included, which is the one value no list of scalars could supply.
 fn stated_refusal<O: Operation>(
     protocol: &dyn ServerHttpProtocol,
     req: &RtRequest,
 ) -> Option<(Vec<Violation>, Refused)> {
-    let (violations, lists) =
-        ::service_common::validation::refusing_violations_with_lists::<O>(protocol, req);
+    let (echoed, lists) =
+        ::service_common::validation::refusing_violations_with_mapped_echoes::<O>(protocol, req);
+    let violations: Vec<Violation> = echoed
+        .into_iter()
+        .map(|(violation, echo)| {
+            let quoted =
+                ::service_common::validation_message::quoting_the_whole_submitted_value(
+                    violation, &echo,
+                );
+            ::service_common::validation_message::quoting_the_submitted_collection(quoted, echo)
+        })
+        .collect();
     // The operation is named as well as its violations: a limit this service enforces
     // itself belongs to one operation's parameter, so the wording of such a refusal is that
     // operation's ([`validation`] holds the table).

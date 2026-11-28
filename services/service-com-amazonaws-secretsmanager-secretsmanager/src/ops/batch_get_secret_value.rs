@@ -528,6 +528,19 @@ fn entry_for(
         error_code: Some(code.to_string()),
         message: Some(message),
     };
+    // "The ARN or names of the secrets to retrieve"
+    // (`BatchGetSecretValueRequest$SecretIdList`, this service's Smithy model): an entry
+    // that is neither names no secret this service could hold, so it is answered as the
+    // unusable NAME it is and never looked up. A malformed id and a missing secret have
+    // opposite remediations, so they are different entries in `Errors` — and the entry is
+    // still one inside a 200, because "a problem with ONE secret" is reported per entry
+    // whatever that problem is.
+    if crate::state::unusable_secret_id(secret_id).is_some() {
+        return Err(error(
+            VALIDATION_ERROR_CODE,
+            crate::state::INVALID_SECRET_NAME_MESSAGE.to_string(),
+        ));
+    }
     let Some(key) = store.resolve(region, secret_id) else {
         return Err(error(
             "ResourceNotFoundException",
@@ -573,6 +586,12 @@ fn entry_for(
         value: version.value.clone(),
     })
 }
+
+/// The `ErrorCode` an entry carries when the id it names could never name a secret: the
+/// code the boundary validator answers a value outside the rules declared for its member
+/// with, which is the class a malformed identifier belongs to whether the request was
+/// refused whole or one of its entries alone was.
+const VALIDATION_ERROR_CODE: &str = "ValidationException";
 
 /// The `InvalidParameterException` message for a `SecretIdList` longer than one
 /// batch, stating the bound it exceeded (see [`crate::state::SECRETS_PER_BATCH`])

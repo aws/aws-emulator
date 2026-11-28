@@ -43,13 +43,18 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use service_com_amazonaws_secretsmanager_secretsmanager::ops::types::FILTER_NAME_STRING_TYPE_VALUES;
+use service_com_amazonaws_secretsmanager_secretsmanager::ops::types::{
+    FILTER_NAME_STRING_TYPE_VALUES, SORT_ORDER_TYPE_VALUES,
+};
 use service_com_amazonaws_secretsmanager_secretsmanager::state::{
-    system_tag_message, value_version_not_found_message, BOTH_SECRET_VALUES_MESSAGE,
-    DUPLICATE_TAG_KEYS_MESSAGE, DURATION_WITHOUT_SCHEDULE, INVALID_SECRET_NAME_MESSAGE,
+    invalid_filter_value_message, system_tag_message, too_many_filter_values_message,
+    value_version_not_found_message, BOTH_SECRET_VALUES_MESSAGE, DUPLICATE_TAG_KEYS_MESSAGE,
+    DURATION_WITHOUT_SCHEDULE, FILTER_VALUES_PER_FILTER, INVALID_NEXT_TOKEN_MESSAGE,
+    INVALID_ROTATION_TOKEN_MESSAGE, INVALID_SECRET_NAME_MESSAGE,
     NAME_SCHEDULED_FOR_DELETION_MESSAGE, NO_ROTATION_FUNCTION_MESSAGE, NO_SECRET_VALUE_MESSAGE,
-    STATED_FILTER_NAME_VALUE_SET, TAGS_PER_SECRET, TOO_MANY_TAGS_MESSAGE,
-    VERSION_ID_AND_STAGE_DISAGREE_MESSAGE,
+    ROTATION_TOKEN_CHARS, SECRET_ID_SIZE_LIMIT, SECRET_ID_TOO_LONG_MESSAGE, SECRET_NAME_CHARS,
+    STATED_FILTER_NAME_VALUE_SET, STATED_SORT_ORDER_VALUE_SET, TAGS_PER_SECRET,
+    TOO_MANY_TAGS_MESSAGE, VERSION_ID_AND_STAGE_DISAGREE_MESSAGE,
 };
 use service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -73,6 +78,17 @@ const STATE: &str = "InvalidRequestException";
 
 /// The modelled code for something the request named that the service does not hold.
 const NOT_FOUND: &str = "ResourceNotFoundException";
+
+/// The modelled code for a pagination token the service cannot resume from.
+const INVALID_TOKEN: &str = "InvalidNextTokenException";
+
+/// The published maximum of `NextTokenType` (`@length` 1..4096, this service's Smithy
+/// model): the longest pagination token any paginated member carries.
+const NEXT_TOKEN_MAX: usize = 4096;
+
+/// The published maximum of `SecretIdType` (`@length` 1..2048, this service's Smithy
+/// model), which is also the longest entry `SecretIdListType` admits.
+const SECRET_ID_LIST_ENTRY_MAX: usize = 2048;
 
 /// How many bytes of a rejected value this service's constraint clause echoes before the
 /// rest is elided, and what stands in for the rest. The rendering is this service's
@@ -896,65 +912,51 @@ const FILTER_VALUE_MAX: usize = 512;
 const VERSION_STAGE_MAX: usize = 256;
 
 /// The clause a constraint broken by one of `member`'s elements is stated with: the member
-/// itself, the whole list the request carried there, and the element shape's whole set.
+/// itself, the whole list the request carried there — held to what a clause of this service
+/// echoes ([`echoed_list`]) — and the element shape's whole set.
 fn element_clause(member: &str, held: &[&str], set: &str) -> String {
     format!(
-        "Value '[{}]' at '{member}' failed to satisfy constraint: {set}",
-        held.join(", ")
+        "Value '{}' at '{member}' failed to satisfy constraint: {set}",
+        echoed_list(held)
     )
+}
+
+/// `held` as a clause of this service quotes the list it was carried in: the rendered list,
+/// cut to [`ECHO_BOUND`] characters followed by [`ELISION`] when it is longer.
+fn echoed_list(held: &[&str]) -> String {
+    echoed_value(&format!("[{}]", held.join(", ")))
+}
+
+/// `rendered` as a clause of this service quotes a value: as sent while it is inside
+/// [`ECHO_BOUND`] characters, and that bounded prefix followed by [`ELISION`] when it is
+/// longer.
+fn echoed_value(rendered: &str) -> String {
+    if rendered.chars().count() <= ECHO_BOUND {
+        return rendered.to_string();
+    }
+    let prefix: String = rendered.chars().take(ECHO_BOUND).collect();
+    format!("{prefix}{ELISION}")
 }
 
 #[tokio::test]
 async fn a_constraint_one_of_a_lists_elements_broke_is_stated_at_that_list() {
     // A constraint declared on a list's ELEMENT shape is checked element by element, and the
     // refusal states it once at the LIST member: the value echoed is the whole list the
-    // member held, and the requirement is the element shape's WHOLE declared set rather than
-    // the one constraint that happened to fail — so a caller is told what every element of
-    // that member has to satisfy, and two offending elements of one list are ONE validation
-    // error about one member.
+    // member held, and the requirement is the element shape's WHOLE declared set rather
+    // than the one constraint that happened to fail — so a caller is told what every element
+    // of that member has to satisfy, and two offending elements of one list are ONE
+    // validation error about one member.
     //
     // The rows differ along which member carried the list (three operations, three element
-    // shapes), which constraint the element broke (`@pattern` and both ends of `@length`),
-    // how many elements the list held, which position offended, and how deep the list sits
-    // (a list of its own, and one inside a structure inside a list).
+    // shapes), which end of `@length` the element broke, how many elements the list held,
+    // which position offended, how deep the list sits (a list of its own, and one inside a
+    // structure inside a list), and whether the rendered list is inside the echo bound or
+    // past it.
     let router = emulator();
     create(&router, "clauses/elements", "setup").await;
     let over_long_value = run("x", FILTER_VALUE_MAX + 1);
     let over_long_stage = run("v", VERSION_STAGE_MAX + 1);
     let rows: Vec<(String, &str, Value, String)> = vec![
-        (
-            "one value outside the element pattern".to_string(),
-            "ListSecrets",
-            json!({"Filters": [{"Key": "name", "Values": ["clauses*"]}]}),
-            element_clause("filters.1.member.values", &["clauses*"], FILTER_VALUE_SET),
-        ),
-        (
-            "a later value outside the element pattern".to_string(),
-            "ListSecrets",
-            json!({"Filters": [{"Key": "name", "Values": ["fine", "clauses*"]}]}),
-            element_clause(
-                "filters.1.member.values",
-                &["fine", "clauses*"],
-                FILTER_VALUE_SET,
-            ),
-        ),
-        (
-            "two values of one list outside the element pattern".to_string(),
-            "ListSecrets",
-            json!({"Filters": [{"Key": "name", "Values": ["a*", "b?"]}]}),
-            element_clause("filters.1.member.values", &["a*", "b?"], FILTER_VALUE_SET),
-        ),
-        (
-            "a value of the second filter in the list".to_string(),
-            "ListSecrets",
-            json!({
-                "Filters": [
-                    {"Key": "name", "Values": ["ok"]},
-                    {"Key": "description", "Values": ["bad*"]},
-                ],
-            }),
-            element_clause("filters.2.member.values", &["bad*"], FILTER_VALUE_SET),
-        ),
         (
             "a value one character past the element maximum".to_string(),
             "ListSecrets",
@@ -966,10 +968,39 @@ async fn a_constraint_one_of_a_lists_elements_broke_is_stated_at_that_list() {
             ),
         ),
         (
+            "a value past the maximum beside one inside it".to_string(),
+            "ListSecrets",
+            json!({"Filters": [{"Key": "name", "Values": ["fine", over_long_value.clone()]}]}),
+            element_clause(
+                "filters.1.member.values",
+                &["fine", over_long_value.as_str()],
+                FILTER_VALUE_SET,
+            ),
+        ),
+        (
+            "a value of the second filter in the list".to_string(),
+            "ListSecrets",
+            json!({
+                "Filters": [
+                    {"Key": "name", "Values": ["ok"]},
+                    {"Key": "description", "Values": [over_long_value.clone()]},
+                ],
+            }),
+            element_clause(
+                "filters.2.member.values",
+                &[over_long_value.as_str()],
+                FILTER_VALUE_SET,
+            ),
+        ),
+        (
             "a filter value of the batched read".to_string(),
             "BatchGetSecretValue",
-            json!({"Filters": [{"Key": "name", "Values": ["clauses!!*"]}]}),
-            element_clause("filters.1.member.values", &["clauses!!*"], FILTER_VALUE_SET),
+            json!({"Filters": [{"Key": "name", "Values": [over_long_value.clone()]}]}),
+            element_clause(
+                "filters.1.member.values",
+                &[over_long_value.as_str()],
+                FILTER_VALUE_SET,
+            ),
         ),
         (
             "an id below the element minimum, in a list of its own".to_string(),
@@ -1006,12 +1037,16 @@ async fn a_constraint_one_of_a_lists_elements_broke_is_stated_at_that_list() {
         "ListSecrets",
         json!({
             "MaxResults": MAX_RESULTS_MAX + 1,
-            "Filters": [{"Key": "name", "Values": ["both*"]}],
+            "Filters": [{"Key": "name", "Values": [over_long_value.clone()]}],
         }),
         case,
     )
     .await;
-    let grouped = element_clause("filters.1.member.values", &["both*"], FILTER_VALUE_SET);
+    let grouped = element_clause(
+        "filters.1.member.values",
+        &[over_long_value.as_str()],
+        FILTER_VALUE_SET,
+    );
     let scalar = format!(
         "Value '{}' at 'maxResults' failed to satisfy constraint: Member must have value less \
          than or equal to {MAX_RESULTS_MAX}",
@@ -1482,4 +1517,775 @@ fn absent_secret_ids(name: &str) -> Vec<(String, String)> {
         ("a full ARN".to_string(), arn),
         ("a partial ARN".to_string(), partial),
     ]
+}
+
+/// The published maximum of `FiltersListType` (`@length` 0..10, this service's Smithy
+/// model): how many filters one selection carries.
+const FILTERS_PER_REQUEST: usize = 10;
+
+/// One `Filter` as a request carries it, and as a clause renders it.
+struct SentFilter {
+    key: &'static str,
+    values: Vec<String>,
+}
+
+impl SentFilter {
+    /// The filter as a request body member.
+    fn sent(&self) -> Value {
+        json!({"Key": self.key, "Values": self.values})
+    }
+
+    /// The filter as a clause renders a modelled structure: the shape's name over the
+    /// members that were set, each `<member>=<value>`, in the order the model declares them
+    /// (`smithy_query(query="shape",shape="Filter")`).
+    fn rendered(&self) -> String {
+        format!(
+            "Filter(key={}, values=[{}])",
+            self.key,
+            self.values.join(", ")
+        )
+    }
+}
+
+/// `count` filters a request may carry, each selecting on `name` with a value of its own.
+fn sent_filters(count: usize) -> Vec<SentFilter> {
+    (0..count)
+        .map(|index| SentFilter {
+            key: "name",
+            values: vec![format!("clauses-filter-{index}")],
+        })
+        .collect()
+}
+
+/// Those filters as a request body member.
+fn sent_filter_list(filters: &[SentFilter]) -> Value {
+    Value::Array(filters.iter().map(SentFilter::sent).collect())
+}
+
+/// Those filters as a clause quotes the member that held them: the rendered list, held to
+/// what a clause of this service echoes.
+fn echoed_filter_list(filters: &[SentFilter]) -> String {
+    let rendered: Vec<String> = filters.iter().map(SentFilter::rendered).collect();
+    echoed_value(&format!("[{}]", rendered.join(", ")))
+}
+
+/// THE RULE: a COLLECTION member's own `@length` refusal quotes the collection the request
+/// carried at that member — rendered as a value renders inside a clause, a list of modelled
+/// structures included — held to what a clause of this service echoes, rather than stating
+/// no value at all.
+///
+/// The rows run over both operations that take `Filters`, over the collection's element kind
+/// (a list of structures and a list of strings), and over the two sides of the echo bound;
+/// the accepted rows show that the published maximum ITSELF is served.
+#[tokio::test]
+async fn a_collection_past_its_length_quotes_the_collection_the_request_carried() {
+    let router = emulator();
+    create(&router, "clauses-filter-0", "setup").await;
+    for operation in ["BatchGetSecretValue", "ListSecrets"] {
+        // The published maximum is served: it is being past it that is refused.
+        let at_the_bound = sent_filters(FILTERS_PER_REQUEST);
+        let case = format!("{operation} with {FILTERS_PER_REQUEST} filters");
+        ok(
+            &router,
+            operation,
+            json!({"Filters": sent_filter_list(&at_the_bound)}),
+            &case,
+        )
+        .await;
+
+        let over_the_bound = sent_filters(FILTERS_PER_REQUEST + 1);
+        let case = format!("{operation} with {} filters", FILTERS_PER_REQUEST + 1);
+        let answered = err(
+            &router,
+            operation,
+            json!({"Filters": sent_filter_list(&over_the_bound)}),
+            &case,
+        )
+        .await;
+        refused(
+            &case,
+            answered,
+            CONSTRAINT,
+            &one_violation(&format!(
+                "Value '{}' at 'filters' failed to satisfy constraint: Member must have length \
+                 less than or equal to {FILTERS_PER_REQUEST}",
+                echoed_filter_list(&over_the_bound)
+            )),
+        );
+    }
+
+    // The same rule over a list of STRINGS, and over a rendering INSIDE the echo bound: an
+    // empty list is quoted as the empty list it was.
+    let case = "a staging-label list below its minimum";
+    let answered = err(
+        &router,
+        "PutSecretValue",
+        json!({
+            "SecretId": "clauses-filter-0",
+            "SecretString": "v",
+            "ClientRequestToken": token("no-stages"),
+            "VersionStages": [],
+        }),
+        case,
+    )
+    .await;
+    refused(
+        case,
+        answered,
+        CONSTRAINT,
+        &one_violation(
+            "Value '[]' at 'versionStages' failed to satisfy constraint: Member must have \
+             length greater than or equal to 1",
+        ),
+    );
+}
+
+/// THE RULE: a filter carrying more values than one filter admits is refused with Secrets
+/// Manager's OWN parameter error naming that count, and a filter value outside the character
+/// set a search value may be built from with its own parameter error naming the value —
+/// neither with the shared constraint clause, whose code an operation does not model.
+///
+/// The rows run over both operations that take `Filters`, over the position in the filter
+/// list, over which character outside the set the value carries, and over the values the
+/// grammar admits (which are served).
+#[tokio::test]
+async fn a_filters_values_are_refused_as_the_service_states_them() {
+    let router = emulator();
+    create(&router, "clauses-filter-0", "setup").await;
+    let too_many: Vec<String> = (0..=FILTER_VALUES_PER_FILTER)
+        .map(|index| format!("value-{index}"))
+        .collect();
+    for operation in ["BatchGetSecretValue", "ListSecrets"] {
+        // A filter at the published count of values is served.
+        let case = format!("{operation} with {FILTER_VALUES_PER_FILTER} filter values");
+        let at_the_bound: Vec<String> = too_many
+            .iter()
+            .take(FILTER_VALUES_PER_FILTER)
+            .cloned()
+            .collect();
+        ok(
+            &router,
+            operation,
+            json!({"Filters": [{"Key": "name", "Values": at_the_bound}]}),
+            &case,
+        )
+        .await;
+
+        let case = format!("{operation} with {} filter values", too_many.len());
+        let answered = err(
+            &router,
+            operation,
+            json!({"Filters": [{"Key": "name", "Values": too_many.clone()}]}),
+            &case,
+        )
+        .await;
+        refused(
+            &case,
+            answered,
+            PARAMETER,
+            &too_many_filter_values_message(),
+        );
+
+        // At a later position in the filter list, the same refusal.
+        let case = format!("{operation} with too many values on the second filter");
+        let answered = err(
+            &router,
+            operation,
+            json!({
+                "Filters": [
+                    {"Key": "name", "Values": ["ok"]},
+                    {"Key": "description", "Values": too_many.clone()},
+                ],
+            }),
+            &case,
+        )
+        .await;
+        refused(
+            &case,
+            answered,
+            PARAMETER,
+            &too_many_filter_values_message(),
+        );
+
+        // A value outside the grammar is refused naming that value, whichever character
+        // outside the set it carries, whichever position it sits in, and however long it
+        // is: this sentence copies the value from the request.
+        let long_outside = format!("{}#", run("x", ECHO_BOUND * 2));
+        for outside in [
+            "clauses#",
+            "clauses*",
+            "value?",
+            "a,b",
+            "ü",
+            long_outside.as_str(),
+        ] {
+            let case = format!("{operation} with the filter value {outside:?}");
+            let answered = err(
+                &router,
+                operation,
+                json!({"Filters": [{"Key": "name", "Values": [outside]}]}),
+                &case,
+            )
+            .await;
+            refused(
+                &case,
+                answered,
+                PARAMETER,
+                &invalid_filter_value_message(outside),
+            );
+        }
+        let case = format!("{operation} with an out-of-grammar value at a later position");
+        let answered = err(
+            &router,
+            operation,
+            json!({"Filters": [{"Key": "name", "Values": ["fine", "late#"]}]}),
+            &case,
+        )
+        .await;
+        refused(
+            &case,
+            answered,
+            PARAMETER,
+            &invalid_filter_value_message("late#"),
+        );
+
+        // Every character the grammar admits is served, the leading negation mark
+        // included ("You can prefix your search value with an exclamation mark",
+        // `Filter$Values`, this service's Smithy model).
+        for admitted in ["!clauses-filter-0", "a b:c_d@e/f+g=h.i-j!", ""] {
+            let case = format!("{operation} with the filter value {admitted:?}");
+            ok(
+                &router,
+                operation,
+                json!({"Filters": [{"Key": "name", "Values": [admitted]}]}),
+                &case,
+            )
+            .await;
+        }
+    }
+}
+
+/// THE RULE: a pagination token this service cannot resume from is refused as an invalid
+/// pagination token — the class every paginated operation of this service models — and never
+/// as a schema violation, whether the token is past the ceiling a token has or simply names
+/// no cursor.
+///
+/// The rows run over every operation that pages, over both sides of the published ceiling,
+/// and over a token that is well sized but names nothing.
+#[tokio::test]
+async fn a_pagination_token_the_service_cannot_resume_from_is_an_invalid_token() {
+    let router = emulator();
+    create(&router, "tokens", "setup").await;
+    let name_filter = json!([{"Key": "name", "Values": ["tokens"]}]);
+    let past_the_ceiling = run("Q", NEXT_TOKEN_MAX + 1);
+    let at_the_ceiling = run("Q", NEXT_TOKEN_MAX);
+    let rows: Vec<(String, &str, Value)> = vec![
+        (
+            format!("the batched read with a {}-character token", NEXT_TOKEN_MAX + 1),
+            "BatchGetSecretValue",
+            json!({"Filters": name_filter.clone(), "NextToken": past_the_ceiling.clone()}),
+        ),
+        (
+            format!("the batched read with a {NEXT_TOKEN_MAX}-character token"),
+            "BatchGetSecretValue",
+            json!({"Filters": name_filter.clone(), "NextToken": at_the_ceiling.clone()}),
+        ),
+        (
+            format!("the listing with a {}-character token", NEXT_TOKEN_MAX + 1),
+            "ListSecrets",
+            json!({"NextToken": past_the_ceiling.clone()}),
+        ),
+        (
+            format!("the listing with a {NEXT_TOKEN_MAX}-character token"),
+            "ListSecrets",
+            json!({"NextToken": at_the_ceiling.clone()}),
+        ),
+        (
+            format!("the version listing with a {}-character token", NEXT_TOKEN_MAX + 1),
+            "ListSecretVersionIds",
+            json!({"SecretId": "tokens", "NextToken": past_the_ceiling}),
+        ),
+        (
+            format!("the version listing with a {NEXT_TOKEN_MAX}-character token"),
+            "ListSecretVersionIds",
+            json!({"SecretId": "tokens", "NextToken": at_the_ceiling.clone()}),
+        ),
+        (
+            format!("the policy listing with a {}-character token", NEXT_TOKEN_MAX + 1),
+            "ListResourcePolicies",
+            json!({"SecretId": "tokens", "NextToken": run("Q", NEXT_TOKEN_MAX + 1)}),
+        ),
+        (
+            format!("the policy listing with a {NEXT_TOKEN_MAX}-character token"),
+            "ListResourcePolicies",
+            json!({"SecretId": "tokens", "NextToken": at_the_ceiling}),
+        ),
+    ];
+    for (case, operation, body) in rows {
+        let answered = err(&router, operation, body, &case).await;
+        assert!(
+            !answered.1.contains("validation error"),
+            "case {case:?}: expected the invalid-token sentence, got {:?}",
+            answered.1
+        );
+        refused(&case, answered, INVALID_TOKEN, INVALID_NEXT_TOKEN_MESSAGE);
+    }
+}
+
+/// THE RULE: a `SecretId` is read before anything is looked up — an identifier at or past
+/// the size limit the service states for one is an invalid parameter, and a shorter one that
+/// is neither a secret's ARN nor a name a secret can be created under carries the one
+/// sentence stating what a name may be built from — so neither is reported as a secret the
+/// account does not hold.
+///
+/// The rows run over both halves of the rule, over the length relative to each published
+/// bound, over which character outside the name set the identifier carries, and over the
+/// identifiers that CAN name a secret (which resolve, or are reported missing).
+#[tokio::test]
+async fn a_secret_id_the_service_cannot_use_is_refused_before_any_lookup() {
+    let router = emulator();
+    create(&router, "policies", "setup").await;
+    let past_the_size_limit: Vec<(String, String)> = vec![
+        (
+            format!("an id of {SECRET_ID_SIZE_LIMIT} characters"),
+            run("a", SECRET_ID_SIZE_LIMIT),
+        ),
+        (
+            format!("an id of {} characters", SECRET_ID_SIZE_LIMIT + 1),
+            run("a", SECRET_ID_SIZE_LIMIT + 1),
+        ),
+        (
+            format!("an id of {} characters", SECRET_ID_SIZE_LIMIT * 2),
+            run("a", SECRET_ID_SIZE_LIMIT * 2),
+        ),
+    ];
+    for (case, secret_id) in &past_the_size_limit {
+        let answered = err(
+            &router,
+            "DeleteResourcePolicy",
+            json!({"SecretId": secret_id}),
+            case,
+        )
+        .await;
+        assert!(
+            !answered.1.contains("aaaa"),
+            "case {case:?}: expected the sentence to carry no part of the id, got {:?}",
+            answered.1
+        );
+        refused(case, answered, PARAMETER, SECRET_ID_TOO_LONG_MESSAGE);
+    }
+
+    let not_a_name: Vec<(String, String)> = vec![
+        (
+            format!("an id of {} characters", SECRET_NAME_CHARS + 1),
+            run("a", SECRET_NAME_CHARS + 1),
+        ),
+        ("an id carrying a space".to_string(), "my policy".to_string()),
+        ("an id carrying a hash".to_string(), "policies#1".to_string()),
+        (
+            "an ARN of another service's resource".to_string(),
+            format!(
+                "arn:aws:iam::{}:role/not-a-secret",
+                ::engine::emulator_account_id()
+            ),
+        ),
+    ];
+    for (case, secret_id) in &not_a_name {
+        let answered = err(
+            &router,
+            "DeleteResourcePolicy",
+            json!({"SecretId": secret_id}),
+            case,
+        )
+        .await;
+        refused(case, answered, CONSTRAINT, INVALID_SECRET_NAME_MESSAGE);
+    }
+
+    // An identifier that CAN name a secret is looked up: a secret the account holds is
+    // served, and one it does not hold is reported missing — in every form a `SecretId`
+    // takes.
+    for (form, absent) in absent_secret_ids("absent-policy-secret") {
+        let case = format!("an absent secret addressed by {form}");
+        let answered = err(
+            &router,
+            "DeleteResourcePolicy",
+            json!({"SecretId": absent}),
+            &case,
+        )
+        .await;
+        refused(&case, answered, NOT_FOUND, NOT_FOUND_MESSAGE);
+    }
+    let case = "a secret the account holds";
+    let answered = ok(
+        &router,
+        "DeleteResourcePolicy",
+        json!({"SecretId": "policies"}),
+        case,
+    )
+    .await;
+    assert_eq!(
+        answered.get("Name").and_then(Value::as_str),
+        Some("policies"),
+        "case {case:?}: expected the addressed secret back, got {answered}"
+    );
+}
+
+/// THE RULE's per-entry half: a `SecretIdList` entry the service cannot use fails THAT entry
+/// alone — the batch answers 200, serves every other selection, and reports the entry as the
+/// invalid name it is rather than as a secret that is missing.
+///
+/// The rows run over the forms an entry cannot name a secret in (a length past the name
+/// maximum, up to the longest entry the member admits; a character outside the name set; an
+/// ARN of another service's resource) and over an absent-but-usable name, which is reported
+/// missing instead.
+#[tokio::test]
+async fn a_batched_read_reports_an_unusable_id_as_an_invalid_name() {
+    let router = emulator();
+    create(&router, "batch-real", "setup").await;
+    let rows: Vec<(String, String, &str, &str)> = vec![
+        (
+            format!("an entry of {SECRET_ID_LIST_ENTRY_MAX} characters"),
+            run("a", SECRET_ID_LIST_ENTRY_MAX),
+            CONSTRAINT,
+            INVALID_SECRET_NAME_MESSAGE,
+        ),
+        (
+            format!("an entry of {} characters", SECRET_NAME_CHARS + 1),
+            run("a", SECRET_NAME_CHARS + 1),
+            CONSTRAINT,
+            INVALID_SECRET_NAME_MESSAGE,
+        ),
+        (
+            "an entry carrying a space".to_string(),
+            "batch real".to_string(),
+            CONSTRAINT,
+            INVALID_SECRET_NAME_MESSAGE,
+        ),
+        (
+            "an entry that is another service's ARN".to_string(),
+            format!(
+                "arn:aws:iam::{}:role/not-a-secret",
+                ::engine::emulator_account_id()
+            ),
+            CONSTRAINT,
+            INVALID_SECRET_NAME_MESSAGE,
+        ),
+        (
+            "an absent but usable name".to_string(),
+            "batch-absent".to_string(),
+            NOT_FOUND,
+            NOT_FOUND_MESSAGE,
+        ),
+    ];
+    for (case, entry, code, message) in rows {
+        let read = ok(
+            &router,
+            "BatchGetSecretValue",
+            json!({"SecretIdList": [entry.clone(), "batch-real"]}),
+            &case,
+        )
+        .await;
+        let served: Vec<&str> = read
+            .get("SecretValues")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("case {case:?}: no SecretValues in {read}"))
+            .iter()
+            .filter_map(|value| value.get("Name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            served,
+            vec!["batch-real"],
+            "case {case:?}: expected the usable selection to be served, got {read}"
+        );
+        let errors = read
+            .get("Errors")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("case {case:?}: no Errors in {read}"));
+        let reported: Vec<(&str, &str, &str)> = errors
+            .iter()
+            .map(|entry| {
+                let member = |name: &str| entry.get(name).and_then(Value::as_str).unwrap_or("");
+                (member("SecretId"), member("ErrorCode"), member("Message"))
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            vec![(entry.as_str(), code, message)],
+            "case {case:?}: expected one entry reporting the id as sent, got {read}"
+        );
+    }
+}
+
+/// THE RULE: the value a clause quotes at a LIST member is held to what a clause of this
+/// service echoes, exactly as the value of a scalar member's own clause is — so a caller
+/// never receives an unbounded echo of what it sent.
+///
+/// The rows run over the list's element shape, over whether the rendered list is inside the
+/// echo bound or past it, and over the operation that carried it.
+#[tokio::test]
+async fn the_list_a_clause_quotes_is_held_to_the_echo_bound() {
+    let router = emulator();
+    create(&router, "elisions", "setup").await;
+    let at_the_tag_key_bound = run("t", TAG_KEY_MAX);
+    let past_the_tag_key_bound = run("u", TAG_KEY_MAX + 1);
+    let keys = [
+        at_the_tag_key_bound.as_str(),
+        past_the_tag_key_bound.as_str(),
+    ];
+    let case = "a tag key one character past its maximum, beside one at it";
+    let answered = err(
+        &router,
+        "UntagResource",
+        json!({"SecretId": "elisions", "TagKeys": keys}),
+        case,
+    )
+    .await;
+    refused(
+        case,
+        answered.clone(),
+        CONSTRAINT,
+        &one_violation(&format!(
+            "Value '{}' at 'tagKeys' failed to satisfy constraint: {TAG_KEY_SET}",
+            echoed_list(&keys)
+        )),
+    );
+    assert!(
+        answered.1.ends_with(TAG_KEY_SET) && answered.1.contains(ELISION),
+        "case {case:?}: expected the rendered list elided, got {:?}",
+        answered.1
+    );
+    assert!(
+        !answered.1.contains(&run("u", ECHO_BOUND + 1)),
+        "case {case:?}: the clause must echo at most {ECHO_BOUND} characters of the list, got \
+         {:?}",
+        answered.1
+    );
+
+    // A rendered list INSIDE the bound is quoted whole, with no marker.
+    let case = "a tag key below its minimum, in a short list";
+    let answered = err(
+        &router,
+        "UntagResource",
+        json!({"SecretId": "elisions", "TagKeys": ["keep", ""]}),
+        case,
+    )
+    .await;
+    refused(
+        case,
+        answered,
+        CONSTRAINT,
+        &one_violation(&format!(
+            "Value '[keep, ]' at 'tagKeys' failed to satisfy constraint: {TAG_KEY_SET}"
+        )),
+    );
+}
+
+/// What every element of an `UntagResource` `TagKeys` list has to satisfy, as the clause
+/// stated at that member nests it: the whole set `TagKeyType` declares (`@length` 1..128;
+/// `smithy_query(query="shape",shape="TagKeyType")`).
+const TAG_KEY_SET: &str = "Member must satisfy constraint: [Member must have length less than \
+     or equal to 128, Member must have length greater than or equal to 1]";
+
+/// THE RULE: a `@pattern` clause quotes the expression this service publishes for the
+/// member's shape — the whole-value form where that is what it publishes — so a caller
+/// repairing its value reads exactly the rule that was enforced.
+#[tokio::test]
+async fn a_pattern_clause_quotes_the_expression_the_service_publishes() {
+    let router = emulator();
+    let stored = "v";
+    create(&router, "patterns", "setup").await;
+    // A token of the minimum modelled length (`RotationTokenType`, `@length` 36..256), so
+    // the only rule it breaks is the character set.
+    let outside = format!("{}#", run("a", 35));
+    let case = "a rotation token carrying a character outside its set";
+    let answered = err(
+        &router,
+        "PutSecretValue",
+        json!({
+            "SecretId": "patterns",
+            "SecretString": "replaced",
+            "ClientRequestToken": token("rotation-token"),
+            "RotationToken": outside.clone(),
+        }),
+        case,
+    )
+    .await;
+    assert!(
+        !answered.1.contains(&outside),
+        "case {case:?}: a sensitive member's value is never echoed, got {:?}",
+        answered.1
+    );
+    refused(
+        case,
+        answered,
+        CONSTRAINT,
+        &one_violation(
+            "Value at 'rotationToken' failed to satisfy constraint: Member must satisfy \
+             regular expression pattern: ^[a-zA-Z0-9\\-]+$",
+        ),
+    );
+
+    // The refused write stored nothing: the secret still holds the value it was created
+    // with.
+    let read = ok(
+        &router,
+        "GetSecretValue",
+        json!({"SecretId": "patterns"}),
+        case,
+    )
+    .await;
+    assert_eq!(
+        read.get("SecretString").and_then(Value::as_str),
+        Some(stored),
+        "case {case:?}: expected the refused write to leave the value as it was, got {read}"
+    );
+
+    // A token the model's length and character set DO admit, but that is not the form a
+    // rotation's identifier has, is the service's own parameter refusal — and stores
+    // nothing either. The rows run over the forms such a token takes.
+    let shaped_wrong: Vec<(String, String)> = vec![
+        (
+            format!("a token of {ROTATION_TOKEN_CHARS} characters that is not an identifier"),
+            run("a", ROTATION_TOKEN_CHARS),
+        ),
+        (
+            "a token with the hyphens in the wrong places".to_string(),
+            format!("{}-{}", run("a", 20), run("b", 15)),
+        ),
+        (
+            "a token longer than an identifier".to_string(),
+            run("a", ROTATION_TOKEN_CHARS * 2),
+        ),
+    ];
+    for (case, rotation_token) in &shaped_wrong {
+        let answered = err(
+            &router,
+            "PutSecretValue",
+            json!({
+                "SecretId": "patterns",
+                "SecretString": "replaced",
+                "ClientRequestToken": token(case),
+                "RotationToken": rotation_token,
+            }),
+            case,
+        )
+        .await;
+        refused(case, answered, PARAMETER, INVALID_ROTATION_TOKEN_MESSAGE);
+        let read = ok(
+            &router,
+            "GetSecretValue",
+            json!({"SecretId": "patterns"}),
+            case,
+        )
+        .await;
+        assert_eq!(
+            read.get("SecretString").and_then(Value::as_str),
+            Some(stored),
+            "case {case:?}: expected the refused write to stake no version, got {read}"
+        );
+    }
+
+    // A token OF that form is accepted, and the write it carries stores its value. The
+    // form is eight, four, four, four and twelve hexadecimal characters joined by hyphens.
+    let case = "a token of the form a rotation's identifier has";
+    let minted = "0123abcd-4567-89ef-0123-456789abcdef";
+    assert_eq!(
+        minted.len(),
+        ROTATION_TOKEN_CHARS,
+        "case {case:?}: expected a token of {ROTATION_TOKEN_CHARS} characters, got {}",
+        minted.len()
+    );
+    ok(
+        &router,
+        "PutSecretValue",
+        json!({
+            "SecretId": "patterns",
+            "SecretString": "rotated",
+            "ClientRequestToken": token(case),
+            "RotationToken": minted,
+        }),
+        case,
+    )
+    .await;
+    let read = ok(
+        &router,
+        "GetSecretValue",
+        json!({"SecretId": "patterns"}),
+        case,
+    )
+    .await;
+    assert_eq!(
+        read.get("SecretString").and_then(Value::as_str),
+        Some("rotated"),
+        "case {case:?}: expected the accepted write to store its value, got {read}"
+    );
+
+    // A shape this service publishes WITHOUT the whole-value pair keeps the unanchored
+    // rendering of the same expression.
+    let case = "a rotation window outside its pattern";
+    let answered = err(
+        &router,
+        "RotateSecret",
+        json!({"SecretId": "patterns", "RotationRules": {"Duration": "1x"}}),
+        case,
+    )
+    .await;
+    refused(
+        case,
+        answered,
+        CONSTRAINT,
+        &one_violation(
+            "Value '1x' at 'rotationRules.duration' failed to satisfy constraint: Member must \
+             satisfy regular expression pattern: [0-9]+h",
+        ),
+    );
+}
+
+/// THE RULE: an enumerated type's admitted values are stated in the order THIS SERVICE lists
+/// that set, which is a property of the type rather than of the value that was rejected.
+///
+/// The rows run over the values outside the domain (including the upper-case spellings of
+/// the admitted ones), and the accepted rows show every admitted value is served.
+#[tokio::test]
+async fn an_enum_clause_states_the_sort_order_set_in_the_services_order() {
+    let router = emulator();
+    create(&router, "orders", "setup").await;
+    let set = STATED_SORT_ORDER_VALUE_SET.join(", ");
+    let mut sorted_model: Vec<&str> = SORT_ORDER_TYPE_VALUES.to_vec();
+    sorted_model.sort_unstable();
+    let mut sorted_stated: Vec<&str> = STATED_SORT_ORDER_VALUE_SET.to_vec();
+    sorted_stated.sort_unstable();
+    assert_eq!(
+        sorted_stated, sorted_model,
+        "case \"the stated sort orders\": the stated set must hold exactly the model's values"
+    );
+    for rejected in ["ASC", "DESC", "Asc", "sideways"] {
+        let case = format!("the sort order {rejected:?}");
+        let answered = err(
+            &router,
+            "ListSecrets",
+            json!({"SortOrder": rejected}),
+            &case,
+        )
+        .await;
+        refused(
+            &case,
+            answered,
+            CONSTRAINT,
+            &one_violation(&format!(
+                "Value '{rejected}' at 'sortOrder' failed to satisfy constraint: Member must \
+                 satisfy enum value set: [{set}]"
+            )),
+        );
+    }
+    for admitted in SORT_ORDER_TYPE_VALUES {
+        let case = format!("the sort order {admitted:?}");
+        ok(
+            &router,
+            "ListSecrets",
+            json!({"SortOrder": admitted}),
+            &case,
+        )
+        .await;
+    }
 }

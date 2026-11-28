@@ -7,7 +7,10 @@
 //!
 //! `RotationToken` identifies the caller of a cross-account managed rotation to
 //! IAM; it does not take part in choosing or storing the value, and this emulator
-//! does not evaluate IAM, so it is accepted and has no effect on what is stored.
+//! does not evaluate IAM, so one of the form this service mints has no effect on
+//! what is stored — while one outside that form identifies no rotation at all and
+//! the write is refused before any version is staked
+//! ([`crate::state::is_valid_rotation_token`]).
 //!
 //! The new value is stored under the secret's own KMS key, so storing it means
 //! encrypting it under that key ([`crate::state::envelope`]): a key KMS will not
@@ -254,6 +257,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.version_stages.as_deref().unwrap_or_default(),
             ),
         )?;
+        // "A unique identifier that indicates the source of the request."
+        // (`PutSecretValueRequest$RotationToken`, this service's Smithy model.) The
+        // identifier is one this service mints for a rotation, so a token outside that
+        // form identifies no rotation and the request cannot be served at all: it is
+        // refused for the parameter it carries, before any version is staked, encrypted or
+        // stored. The token's length and character set are the model's and were checked at
+        // the request boundary; what is read here is the form.
+        if let Some(rotation_token) = input.rotation_token.as_deref() {
+            if !crate::state::is_valid_rotation_token(rotation_token) {
+                return Err(invalid_parameter(
+                    crate::state::INVALID_ROTATION_TOKEN_MESSAGE,
+                ));
+            }
+        }
         // This operation "creates a new version of your secret", so it always
         // stakes a version — and the version's id is the token the CALLER
         // generates: "If you generate a raw HTTP request to the Secrets Manager

@@ -295,16 +295,32 @@ pub const STATED_FILTER_NAME_VALUE_SET: [&str; 7] = [
     "primary-region",
 ];
 
+/// The order this service states `SortOrderType`'s admitted values in when it refuses a
+/// value outside them.
+///
+/// The VALUES are the model's own ([`crate::ops::types::SORT_ORDER_TYPE_VALUES`]); the
+/// ORDER is the one Secrets Manager's own refusal of an unknown sort order states them in,
+/// which is not the order the model declares them in (the model lists `asc` then `desc`).
+/// A value set is a SET, so the order a message states it in belongs to the service rather
+/// than to the model, and it is fixed text — nothing of the request varies it.
+pub const STATED_SORT_ORDER_VALUE_SET: [&str; 2] = ["desc", "asc"];
+
 /// Every enum value set this service states an order of its own for: one row per
 /// enumerated type, the MODEL's values (the generated catalogue, matched as a set) beside
 /// the service's ordering of them. A type absent from this table is stated as the violation
 /// presents it, because this service has shown no other order for it. The lookup and the
 /// restating are [`service_common::validation_message`]'s.
 pub const STATED_VALUE_SETS: &service_common::validation_message::StatedEnumValueSets<'static> =
-    &[(
-        crate::ops::types::FILTER_NAME_STRING_TYPE_VALUES,
-        &STATED_FILTER_NAME_VALUE_SET,
-    )];
+    &[
+        (
+            crate::ops::types::FILTER_NAME_STRING_TYPE_VALUES,
+            &STATED_FILTER_NAME_VALUE_SET,
+        ),
+        (
+            crate::ops::types::SORT_ORDER_TYPE_VALUES,
+            &STATED_SORT_ORDER_VALUE_SET,
+        ),
+    ];
 
 /// The message a tag list that names one key twice is refused with.
 ///
@@ -942,12 +958,145 @@ pub const REPLICA_SYNC_DELAY: Duration = Duration::from_millis(750);
 /// charset is enforced in the handler.
 pub const SECRET_NAME_EXTRA_CHARS: &str = "/_+=.@-";
 
+/// How many characters the identifier of one rotation is: `RotationTokenType`'s own minimum
+/// (`@length` 36..256, this service's Smithy model), which is the width of the identifier
+/// form Secrets Manager mints a rotation under — eight, four, four, four and twelve
+/// hexadecimal characters joined by hyphens.
+pub const ROTATION_TOKEN_CHARS: usize = 36;
+
+/// The `InvalidParameterException` message a `RotationToken` outside that form is refused
+/// with: one fixed sentence, which carries no part of the token — the member is
+/// `@sensitive`.
+pub const INVALID_ROTATION_TOKEN_MESSAGE: &str = "Invalid rotation token value format.";
+
+/// Whether `token` is the FORM a rotation token has.
+///
+/// "A unique identifier that indicates the source of the request"
+/// (`PutSecretValueRequest$RotationToken`, this service's Smithy model): the identifier is
+/// one Secrets Manager itself mints for a rotation, so a value that is not of that form
+/// identifies no rotation whatever its length and character set — which is a parameter the
+/// service cannot use rather than a shape constraint. The modelled `@length` minimum and
+/// character set ([`ROTATION_TOKEN_CHARS`], `^[a-zA-Z0-9\-]+$`) admit the form and are
+/// checked at the request boundary; this is the form itself.
+///
+/// Recorded behaviour shows a token that satisfies that length and character set and is not
+/// an identifier being refused; WHICH forms are identifiers is read off the modelled minimum
+/// — the width of the identifier form — rather than from a recording of each width, so a
+/// token of another width is refused under the same rule.
+#[must_use]
+pub fn is_valid_rotation_token(token: &str) -> bool {
+    token.len() == ROTATION_TOKEN_CHARS && ::uuid::Uuid::try_parse(token).is_ok()
+}
+
 /// Whether `name` is a secret name this service accepts.
 pub fn is_valid_secret_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || SECRET_NAME_EXTRA_CHARS.contains(c))
+}
+
+/// The longest name a secret is created under: `NameType`'s own maximum (`@length` 1..512,
+/// this service's Smithy model), which is what a `SecretId` carrying a NAME may be.
+pub const SECRET_NAME_CHARS: usize = 512;
+
+/// The size limit Secrets Manager states for a `SecretId` ITSELF, past which the identifier
+/// is refused as an invalid parameter before anything is looked up.
+///
+/// `SecretIdType` is modelled `@length` 1..2048 (this service's Smithy model) and the
+/// service's own size check refuses an identifier that REACHES that ceiling: a recorded
+/// refusal of a 2048-character `SecretId` carries [`SECRET_ID_TOO_LONG_MESSAGE`] rather than
+/// a constraint clause or a lookup miss (`issues/things-that-now-work/\
+/// 20261127T233456Z-secretsmanager-9-net-new-causes-batchgetsecretvalue-refusals-take.md`,
+/// cause 9), so this is stated as the length at which the check bites rather than as the
+/// model's bound.
+pub const SECRET_ID_SIZE_LIMIT: usize = 2048;
+
+/// The `InvalidParameterException` message a `SecretId` at or past
+/// [`SECRET_ID_SIZE_LIMIT`] is refused with: one fixed sentence naming the member, which
+/// carries no part of the identifier the caller sent.
+pub const SECRET_ID_TOO_LONG_MESSAGE: &str = "SecretId exceeds size limit.";
+
+/// Why a `SecretId` names nothing this service could look up — decided from the identifier
+/// ALONE, before any store read, since both answers are properties of the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnusableSecretId {
+    /// The identifier reaches [`SECRET_ID_SIZE_LIMIT`]: past the size the service accepts
+    /// for one at all, which is an invalid PARAMETER
+    /// ([`SECRET_ID_TOO_LONG_MESSAGE`]).
+    PastSizeLimit,
+    /// The identifier is within that size and is neither a secret's ARN nor a name a secret
+    /// can be created under, so it names no secret ([`INVALID_SECRET_NAME_MESSAGE`]).
+    NotAName,
+}
+
+/// Why `secret_id` is a `SecretId` this service cannot use, or `None` for one it can look
+/// up.
+///
+/// The two readings a `SecretId` gets before any lookup: "The ARN or name of the secret"
+/// (`GetSecretValueRequest$SecretId`, this service's Smithy model) is the whole domain, so
+/// an identifier that is neither names nothing — a MISSING secret and an identifier that
+/// could never name one are different answers, and the second is decided here.
+#[must_use]
+pub fn unusable_secret_id(secret_id: &str) -> Option<UnusableSecretId> {
+    if secret_id.chars().count() >= SECRET_ID_SIZE_LIMIT {
+        return Some(UnusableSecretId::PastSizeLimit);
+    }
+    (!names_a_secret(secret_id)).then_some(UnusableSecretId::NotAName)
+}
+
+/// Whether `secret_id` is a form that can name a secret at all: a secret's ARN (the full
+/// one, or the partial ARN a caller builds without the six random characters), or a name
+/// within [`SECRET_NAME_CHARS`] built from the documented character set
+/// ([`is_valid_secret_name`]), the reserved `<service>!<name>` form included
+/// ([`service_owned::claimed_owner`]).
+///
+/// The ARN half is the tree's one reading of what a secret's ARN is
+/// ([`::service_common::arn::SECRETS_MANAGER_SECRET`]), which admits both the full and the
+/// partial form: the two differ only in the trailing six characters of the resource name
+/// ([`partial_arn`]), not in any field.
+#[must_use]
+fn names_a_secret(secret_id: &str) -> bool {
+    if ::service_common::arn::SECRETS_MANAGER_SECRET.admits(secret_id) {
+        return true;
+    }
+    secret_id.chars().count() <= SECRET_NAME_CHARS
+        && service_owned::claimed_owner(secret_id)
+            .map_or_else(|| is_valid_secret_name(secret_id), |_| true)
+}
+
+/// How many values one `Filter` carries, and how many filters one request carries.
+///
+/// `Filter$Values` targets `FilterValuesStringList`, modelled `@length` 1..10, and
+/// `FiltersListType` is modelled `@length` 0..10 (this service's Smithy model), so ten is
+/// the count either list admits.
+pub const FILTER_VALUES_PER_FILTER: usize = 10;
+
+/// The `InvalidParameterException` message a filter carrying more than
+/// [`FILTER_VALUES_PER_FILTER`] values is refused with.
+///
+/// Secrets Manager counts a filter's values itself and answers with its own parameter
+/// refusal naming that count, rather than with the shared constraint clause: the sentence
+/// states the limit and carries no value the caller sent.
+#[must_use]
+pub fn too_many_filter_values_message() -> String {
+    format!(
+        "The filter list has too many filters. You can include up to \
+         {FILTER_VALUES_PER_FILTER} filters."
+    )
+}
+
+/// The `InvalidParameterException` message a filter value outside the filter-value grammar
+/// is refused with: fixed text plus the value the request carried, which is what tells a
+/// caller which of its values is at fault.
+///
+/// The grammar is `FilterValueStringType`'s `@pattern`
+/// (`^\!?[a-zA-Z0-9 :_@\/\+\=\.\-\!]*$`, this service's Smithy model): a value carrying a
+/// character outside it is a parameter the service cannot use, not a shape constraint it
+/// reports a clause for.
+#[must_use]
+pub fn invalid_filter_value_message(value: &str) -> String {
+    format!("Invalid filter values format: {value}")
 }
 
 /// Whether a secret satisfies one `Filter`.

@@ -151,6 +151,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // "The ARN or name of the secret to delete the attached resource-based policy for."
+        // (`DeleteResourcePolicyRequest$SecretId`, this service's Smithy model.) An
+        // identifier outside what a `SecretId` may be names nothing this service could hold,
+        // so it is refused for WHAT IT IS before anything is resolved — an over-long one as
+        // a parameter past the size limit stated for one, a shorter one that is neither an
+        // ARN nor a usable name with the one sentence stating what a name may be built from.
+        // Either is a permanent fault in the request, which a missing-resource answer would
+        // send a client to retry or to provision instead of to correct.
+        if let Some(unusable) = crate::state::unusable_secret_id(&input.secret_id) {
+            return Err(match unusable {
+                crate::state::UnusableSecretId::PastSizeLimit => {
+                    DeleteResourcePolicyErrorModeled::InvalidParameterException(
+                        InvalidParameterException {
+                            message: Some(crate::state::SECRET_ID_TOO_LONG_MESSAGE.to_string()),
+                        },
+                    )
+                    .into()
+                }
+                crate::state::UnusableSecretId::NotAName => {
+                    crate::scaffolded::Scaffolded::validation(
+                        crate::state::INVALID_SECRET_NAME_MESSAGE,
+                    )
+                }
+            });
+        }
         // IAM authorizes every call to this service against the policies in force —
         // the caller's identity-based ones and the secret's own resource-based policy —
         // BEFORE the operation reads or writes anything, so a caller no policy allows
