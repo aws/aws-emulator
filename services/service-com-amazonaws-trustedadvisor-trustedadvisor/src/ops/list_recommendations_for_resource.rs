@@ -257,11 +257,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ListRecommendationsForResourceErrorModeled::AccessDeniedException(denied).into(),
             );
         }
+        // The three filters this read cuts on, and the TWO predicates that
+        // state them — the SAME ones every other list of this service selects
+        // with: `status` is the flagged resource's own status, the test
+        // [`crate::state::ResourceFilters`] states for the resource lists, and
+        // `pillar` and `checkArn` are the recommendation's, the membership and
+        // equality tests [`crate::state::RecommendationFilters`] states for the
+        // recommendation listings. So a row of this pair is kept by the resource
+        // predicate applied to its resource and the recommendation predicate
+        // applied to its recommendation, and neither test can drift from the
+        // lists that share it. The filters this operation does not model stay
+        // `None`, which keeps every resource and every recommendation.
+        let resource_filters = crate::state::ResourceFilters {
+            status: input.status.as_deref(),
+            exclusion_status: None,
+            region_code: None,
+        };
+        let recommendation_filters = crate::state::RecommendationFilters {
+            r#type: None,
+            status: None,
+            pillar: input.pillar.as_deref(),
+            aws_service: None,
+            source: None,
+            check_identifier: input.check_arn.as_deref(),
+            after_last_updated_at: None,
+            before_last_updated_at: None,
+        };
         // The cursor's scope names this AWS resource AND this read's filters,
         // so a token issued for one resource (or under another filter set)
-        // cannot resume another sequence. `language` is deliberately not part of
-        // it: it changes no row and no order. Built from the request alone, so
-        // the refusal it decides below needs nothing off the store.
+        // cannot resume another sequence. Spelled out here rather than taken
+        // from either filter struct's `scope`: the names in a scope are the ones
+        // THIS request carries — `checkArn`, which the recommendation listings
+        // model as `checkIdentifier` — and the two structs each contribute
+        // filters this operation does not model. `language` is deliberately not
+        // part of it: it changes no row and no order. Built from the request
+        // alone, so the refusal it decides below needs nothing off the store.
         let scope = crate::state::list_scope(
             &format!("recommendations-for-resource/{}", input.aws_resource_arn),
             &[
@@ -335,22 +365,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // and it is the check that makes a resource ARN resolve at all,
                 // since `aws_resource_arn_of` reads that check's resource type.
                 let check_arn = recommendation.check_arn.clone()?;
-                // The filters: `status` is the flagged resource's status (the
-                // member this row reports), `pillar` is membership in the
-                // recommendation's pillars, and `checkArn` is the check behind
-                // it. An absent filter keeps the row.
-                let kept = input
-                    .status
-                    .as_ref()
-                    .is_none_or(|status| &resource.status == status)
-                    && input.pillar.as_ref().is_none_or(|pillar| {
-                        recommendation.pillars.iter().any(|stored| stored == pillar)
-                    })
-                    && input
-                        .check_arn
-                        .as_ref()
-                        .is_none_or(|check| &check_arn == check);
-                if !kept {
+                // The filters, through the two shared predicates built above:
+                // the resource one over the flagged resource, the
+                // recommendation one over the recommendation behind it. An
+                // absent filter keeps the row.
+                if !resource_filters.keeps(resource)
+                    || !recommendation_filters.keeps(recommendation)
+                {
                     return None;
                 }
                 Some((
