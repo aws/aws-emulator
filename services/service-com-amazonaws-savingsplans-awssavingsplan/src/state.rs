@@ -786,34 +786,29 @@ pub fn savings_plan_arn(savings_plan_id: &str) -> String {
     )
 }
 
-/// Whether an ARN's partition field names an AWS partition.
+/// The partition field every ARN of ours carries, as the model's
+/// `SavingsPlanArn` pattern spells it: the literal `arn:aws:` prefix, with no
+/// alternative for a suffixed partition.
+const ARN_PARTITION: &str = "aws";
+
+/// Whether an ARN's partition field is the one a Savings Plan ARN carries.
 ///
-/// The partition group of the `SavingsPlanArn` pattern is `aws([-a-z]*)?`, so
-/// `aws` and every suffixed partition — `aws-cn`, `aws-us-gov`, `aws-iso-b` —
-/// are all admitted, and this mirrors that group rather than naming the
-/// partitions one by one: a new partition is a new suffix, not a new rule.
-///
-/// The checked-in model used to carry a narrower `^arn:aws:` for that group,
-/// which refused a China or GovCloud plan ARN at the boundary validator. The
-/// live service accepts those and QUOTES the partition-tolerant expression in
-/// its own `ValidationException` (fixture
-/// `savingsplans-tagging-error-paths-unknown-resource`), so the model's pattern
-/// was corrected to the one AWS enforces and states.
+/// The `SavingsPlanArn` pattern anchors the partition as the literal `aws`, so
+/// this mirrors that group rather than guessing a wider family: an ARN in some
+/// other partition is not a well-formed value of the shape at all, and the
+/// boundary validator refuses it before any handler runs.
 fn is_aws_partition(field: &str) -> bool {
-    match field.strip_prefix("aws") {
-        Some(suffix) => suffix.chars().all(|ch| ch == '-' || ch.is_ascii_lowercase()),
-        None => false,
-    }
+    field == ARN_PARTITION
 }
 
 /// The Savings Plan id inside a `SavingsPlanArn`, or `None` when the ARN names
 /// some other service or some other resource type.
 ///
 /// The model's `@pattern` already refused anything that is not ARN-shaped
-/// before the handler ran, so this only has to reject a well-formed ARN that is
-/// not one of ours — which the partition never makes it: an ARN in any AWS
-/// partition is a Savings Plan ARN, and whether a plan with it exists is a
-/// question for the store (a 404), not for the shape of the ARN (a 400).
+/// before the handler ran, so what is left to reject is a well-formed ARN that
+/// names another service namespace. Whether a plan with a Savings Plan ARN
+/// exists is a question for the store (a 404), not for the shape of the ARN
+/// (a 400).
 pub fn savings_plan_id_from_arn(arn: &str) -> Option<&str> {
     let mut fields = arn.splitn(6, ':');
     let (

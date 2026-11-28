@@ -48,7 +48,7 @@
 //! ## Input
 //!
 //! * `resourceArn` (SavingsPlanArn, pattern
-//!   ^arn:aws([-a-z]*)?:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{
+//!   ^arn:aws:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{
 //!   …) **required** — The Amazon Resource Name (ARN) of the resource.
 //! * `tagKeys` (TagKeyList) **required** — The tag keys.
 //!

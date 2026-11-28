@@ -14,9 +14,10 @@
 //!   `ResourceNotFoundException` whose message names the ARN the caller sent:
 //!   `Resource with resourceArn: <arn> doesn't exist`.
 //!
-//! The ARN pattern admits every AWS partition (`aws([-a-z]*)?`), so an
-//! `aws-cn` / `aws-us-gov` / `aws-iso-*` plan ARN is a well-formed ARN that the
-//! store simply does not hold — a 404, not a boundary 400.
+//! The ARN pattern anchors the partition as the literal `aws`, so an `aws-cn` /
+//! `aws-us-gov` / `aws-iso-*` plan ARN is not a well-formed value of the shape
+//! at all: it is refused at the boundary (a 400) rather than looked for in the
+//! store (a 404).
 //!
 //! Everything goes through the same `MultiServiceRouter` the emulator boots,
 //! reusing the harness in [`crate::savings_plans_lifecycle`].
@@ -28,10 +29,13 @@ use crate::savings_plans_lifecycle::{text, Emulator, ONE_YEAR};
 /// The expression `SavingsPlanArn` declares, VERBATIM — the contract a caller is
 /// told to satisfy, so the clause quotes it exactly as the model spells it.
 ///
+/// `pub(crate)` so the sibling suites of this test target quote ONE copy of the
+/// model's expression rather than each repeating it.
+///
 /// Source: `smithy_query(query="shape",shape="SavingsPlanArn",
 /// model_path="services/service-com-amazonaws-savingsplans-awssavingsplan/\
 /// smithy-model/com-amazonaws-savingsplans-awssavingsplan.json")`.
-const SAVINGS_PLAN_ARN_PATTERN: &str = r"^arn:aws([-a-z]*)?:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$";
+pub(crate) const SAVINGS_PLAN_ARN_PATTERN: &str = r"^arn:aws:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$";
 
 /// The expression `PaginationToken` declares, from the same model query — a
 /// second `@pattern` member, on a different operation, to show the rule is not
@@ -62,9 +66,10 @@ async fn a_refused_resource_arn_is_named_from_the_request_object_inwards() {
     let emulator = Emulator::new();
 
     // (case, resourceArn) — one row per way an ARN can miss the pattern: not an
-    // ARN at all, absent partition/account/region shape, and each UUID field
-    // the pattern constrains (`[1-5]` version, `[89ab]` variant).
-    let refused: [(&str, &str); 8] = [
+    // ARN at all, absent partition/account/region shape, a partition other than
+    // the literal `aws` the pattern pins, and each UUID field the pattern
+    // constrains (`[1-5]` version, `[89ab]` variant).
+    let refused: [(&str, &str); 11] = [
         ("not an ARN at all", "not-an-arn"),
         ("empty", ""),
         (
@@ -74,6 +79,18 @@ async fn a_refused_resource_arn_is_named_from_the_request_object_inwards() {
         (
             "an upper-case partition",
             "arn:AWS:savingsplans::000000000000:savingsplan/11111111-1111-1111-8111-111111111111",
+        ),
+        (
+            "the China partition",
+            "arn:aws-cn:savingsplans::000000000000:savingsplan/33333333-3333-3333-a333-333333333333",
+        ),
+        (
+            "the GovCloud partition",
+            "arn:aws-us-gov:savingsplans::123456789012:savingsplan/44444444-4444-4444-b444-444444444444",
+        ),
+        (
+            "an isolated partition, with a region",
+            "arn:aws-iso-b:savingsplans:eu-west-1:999999999999:savingsplan/55555555-5555-5555-8555-555555555555",
         ),
         (
             "an account id that is not 12 digits",
@@ -258,35 +275,35 @@ async fn several_violations_are_each_rooted_at_the_request_object() {
 }
 
 /// A well-formed Savings Plan ARN that names no plan of ours is a 404 naming
-/// the ARN the caller sent — in EVERY AWS partition, since the pattern admits
-/// them all, and for every operation that takes a `resourceArn` and reads the
-/// store.
+/// the ARN the caller sent — for every operation that takes a `resourceArn` and
+/// reads the store, and whatever the fields the pattern leaves open say.
 #[tokio::test]
 async fn an_unknown_plan_is_reported_with_the_arn_the_caller_sent() {
     let emulator = Emulator::new();
 
-    // (case, resourceArn) — the partition group `aws([-a-z]*)?` and the region
-    // alternative `([a-z]{2}-[a-z]+-\d{1}|)` of `SavingsPlanArn`, spanned.
+    // (case, resourceArn) — the fields `SavingsPlanArn` leaves a caller free to
+    // vary, spanned: the region alternative `([a-z]{2}-[a-z]+-\d{1}|)`, the
+    // account id, and the `[1-5]` version and `[89ab]` variant of the uuid.
     let unknown: [(&str, &str); 5] = [
         (
-            "the commercial partition, no region",
+            "no region",
             "arn:aws:savingsplans::000000000000:savingsplan/11111111-1111-1111-8111-111111111111",
         ),
         (
-            "the commercial partition, with a region",
+            "a region",
             "arn:aws:savingsplans:us-east-1:000000000000:savingsplan/22222222-2222-2222-9222-222222222222",
         ),
         (
-            "the China partition",
-            "arn:aws-cn:savingsplans::000000000000:savingsplan/33333333-3333-3333-a333-333333333333",
+            "another account id",
+            "arn:aws:savingsplans::123456789012:savingsplan/33333333-3333-3333-a333-333333333333",
         ),
         (
-            "the GovCloud partition",
-            "arn:aws-us-gov:savingsplans::123456789012:savingsplan/44444444-4444-4444-b444-444444444444",
+            "the last uuid version and variant the pattern admits",
+            "arn:aws:savingsplans::999999999999:savingsplan/44444444-4444-5444-b444-444444444444",
         ),
         (
-            "an isolated partition, with a region",
-            "arn:aws-iso-b:savingsplans:eu-west-1:999999999999:savingsplan/55555555-5555-5555-8555-555555555555",
+            "a long region name",
+            "arn:aws:savingsplans:ap-southeast-1:000000000000:savingsplan/55555555-5555-1555-8555-555555555555",
         ),
     ];
 
@@ -322,7 +339,7 @@ async fn an_unknown_plan_is_reported_with_the_arn_the_caller_sent() {
 }
 
 /// The control for the two error paths above: a plan that DOES exist is still
-/// tagged and read back through its own ARN, so neither the widened pattern nor
+/// tagged and read back through its own ARN, so neither the pattern refusal nor
 /// the not-found template swallowed the success path.
 #[tokio::test]
 async fn an_existing_plans_arn_still_round_trips_through_the_tagging_operations() {

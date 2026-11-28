@@ -68,7 +68,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListTagsForResource
 
 - **Route:** `POST /ListTagsForResource -> 200`
-- **Input:** `resourceArn` (string, pattern ^arn:aws([-a-z]*)?:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required)
+- **Input:** `resourceArn` (string, pattern ^arn:aws:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required)
 - **Output:** `tags` (map<string,string>)
 - **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`
 
@@ -82,13 +82,13 @@ contents — read that shape in the model above when you need its own members.
 ## TagResource
 
 - **Route:** `POST /TagResource -> 200`
-- **Input:** `resourceArn` (string, pattern ^arn:aws([-a-z]*)?:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required), `tags` (map<string,string>, required)
+- **Input:** `resourceArn` (string, pattern ^arn:aws:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required), `tags` (map<string,string>, required)
 - **Output:** (no members)
 - **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ServiceQuotaExceededException (HTTP 402)`, `ValidationException (HTTP 400)`
 
 ## UntagResource
 
 - **Route:** `POST /UntagResource -> 200`
-- **Input:** `resourceArn` (string, pattern ^arn:aws([-a-z]*)?:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required), `tagKeys` (list<string>, required)
+- **Input:** `resourceArn` (string, pattern ^arn:aws:[a-z]+:([a-z]{2}-[a-z]+-\d{1}|):(\d{12}):savingsplan\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{ …, required), `tagKeys` (list<string>, required)
 - **Output:** (no members)
 - **Errors:** `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`

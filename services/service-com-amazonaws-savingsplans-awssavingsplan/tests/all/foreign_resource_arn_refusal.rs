@@ -5,14 +5,15 @@
 //! service is a 400 `ValidationException` whose message names the ARN the
 //! caller sent, identically on every one of those operations.
 //!
-//! The pattern `SavingsPlanArn` declares pins the partition, the region, the
-//! account and the `savingsplan/<uuid>` resource, but leaves the service field
-//! as `[a-z]+` (letters only — a namespace carrying a digit never reaches a
-//! handler) — so the one thing left for a handler to refuse is an ARN whose
-//! service namespace is another all-letter one. `ListTagsForResource`,
-//! `TagResource` and `UntagResource` each used to carry their own copy of that
-//! refusal; the rows below drive the shared path through all three and assert
-//! they answer with the same status, the same code and the same message.
+//! The pattern `SavingsPlanArn` declares pins the partition to the literal
+//! `aws`, the region, the account and the `savingsplan/<uuid>` resource, but
+//! leaves the service field as `[a-z]+` (letters only — a namespace carrying a
+//! digit never reaches a handler) — so the one thing left for a handler to
+//! refuse is an ARN whose service namespace is another all-letter one.
+//! `ListTagsForResource`, `TagResource` and `UntagResource` each used to carry
+//! their own copy of that refusal; the rows below drive the shared path through
+//! all three and assert they answer with the same status, the same code and the
+//! same message.
 //!
 //! Everything goes through the same `MultiServiceRouter` the emulator boots,
 //! reusing the harness in [`crate::savings_plans_lifecycle`].
@@ -48,9 +49,10 @@ fn request(operation: &str, resource_arn: &str) -> Value {
 }
 
 /// An ARN that satisfies the model's pattern, assembled field by field so a row
-/// can vary one field at a time.
-fn arn(partition: &str, service: &str, region: &str, account: &str, resource_id: &str) -> String {
-    format!("arn:{partition}:{service}:{region}:{account}:savingsplan/{resource_id}")
+/// can vary one field at a time. The partition is fixed, since `SavingsPlanArn`
+/// pins it to the literal `aws`.
+fn arn(service: &str, region: &str, account: &str, resource_id: &str) -> String {
+    format!("arn:aws:{service}:{region}:{account}:savingsplan/{resource_id}")
 }
 
 /// The one refusal, run through every operation that takes a `resourceArn`:
@@ -60,14 +62,13 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
     let emulator = Emulator::new();
 
     // (case, resourceArn) — each row satisfies `SavingsPlanArn`'s pattern and
-    // differs from the next along a field the rule does NOT look at (partition,
-    // region, account, resource uuid) or along the one it does (the service
-    // namespace, which is never ours here).
+    // differs from the next along a field the rule does NOT look at (region,
+    // account, resource uuid) or along the one it does (the service namespace,
+    // which is never ours here).
     let foreign: [(&str, String); 7] = [
         (
             "another service, no region",
             arn(
-                "aws",
                 "iam",
                 "",
                 "000000000000",
@@ -77,7 +78,6 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
         (
             "another service, a region",
             arn(
-                "aws",
                 "sns",
                 "eu-west-1",
                 "123456789012",
@@ -85,9 +85,8 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
             ),
         ),
         (
-            "another service in the China partition",
+            "another service, a China region",
             arn(
-                "aws-cn",
                 "kms",
                 "cn-north-1",
                 "210987654321",
@@ -95,9 +94,8 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
             ),
         ),
         (
-            "another service in GovCloud",
+            "another service, no region and another account",
             arn(
-                "aws-us-gov",
                 "lambda",
                 "",
                 "999999999999",
@@ -107,7 +105,6 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
         (
             "a namespace that merely starts like ours",
             arn(
-                "aws",
                 "savingsplan",
                 "us-east-1",
                 "000000000000",
@@ -117,7 +114,6 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
         (
             "a namespace that merely extends ours",
             arn(
-                "aws",
                 "savingsplansx",
                 "",
                 "000000000000",
@@ -127,7 +123,6 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
         (
             "a single-letter namespace",
             arn(
-                "aws",
                 "q",
                 "ap-southeast-2",
                 "000000000000",
@@ -171,13 +166,12 @@ async fn a_foreign_resource_arn_is_refused_identically_on_every_tagging_operatio
 async fn one_of_our_arns_gets_past_the_refusal_on_every_tagging_operation() {
     let emulator = Emulator::new();
 
-    // (case, resourceArn) — ours, in every partition the pattern admits, with
-    // and without a region, and across the uuid versions it allows.
+    // (case, resourceArn) — ours, with and without a region, across the account
+    // ids and the uuid versions the pattern allows.
     let ours: [(&str, String); 4] = [
         (
             "no region",
             arn(
-                "aws",
                 ARN_NAMESPACE,
                 "",
                 "000000000000",
@@ -187,7 +181,6 @@ async fn one_of_our_arns_gets_past_the_refusal_on_every_tagging_operation() {
         (
             "a region",
             arn(
-                "aws",
                 ARN_NAMESPACE,
                 "us-east-1",
                 "123456789012",
@@ -195,9 +188,8 @@ async fn one_of_our_arns_gets_past_the_refusal_on_every_tagging_operation() {
             ),
         ),
         (
-            "the China partition",
+            "a China region",
             arn(
-                "aws-cn",
                 ARN_NAMESPACE,
                 "cn-north-1",
                 "210987654321",
@@ -205,9 +197,8 @@ async fn one_of_our_arns_gets_past_the_refusal_on_every_tagging_operation() {
             ),
         ),
         (
-            "GovCloud",
+            "another account, no region",
             arn(
-                "aws-us-gov",
                 ARN_NAMESPACE,
                 "",
                 "999999999999",
