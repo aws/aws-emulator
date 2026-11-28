@@ -3,7 +3,9 @@
 //! @op TagResource
 //! Attaches tag key/value pairs to the billing view the `resourceArn` names,
 //! writing them into that view's stored record (a key already present takes the
-//! request's value).
+//! request's value). `ResourceTag$value` is optional, so an entry that omits it
+//! is stored with no value at all, which a later read reports as an absent
+//! member rather than as the empty value.
 //!
 //! A tag is customer metadata on a customer-owned resource, so only a CUSTOM
 //! billing view is taggable: a managed view is refused with the modeled

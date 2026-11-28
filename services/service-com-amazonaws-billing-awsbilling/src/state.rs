@@ -517,8 +517,17 @@ pub struct BillingView {
     /// both members, and a status that needs no explaining — a `HEALTHY` view —
     /// carries the EMPTY list rather than an absent one.
     pub health_status_reasons: Vec<String>,
-    /// The view's resource tags, by key.
-    pub tags: BTreeMap<String, String>,
+    /// The view's resource tags, by key — each holding the value the request
+    /// that wrote it carried, which is `None` when that request carried none.
+    ///
+    /// `ResourceTag$value` is optional and its own `@length` minimum is 0, so a
+    /// tag written with no value and a tag written with the empty value are two
+    /// different inputs, and the member a read fills with them is optional too:
+    /// keeping the `Option` is what lets the tagging plane report each of them
+    /// back as it was submitted, the way [`BillingView::description`] reports the
+    /// other optional request string stored on this record. See
+    /// [`requested_tag_set`], which every writer of this map collects through.
+    pub tags: BTreeMap<String, Option<String>>,
 }
 
 impl BillingView {
@@ -1667,6 +1676,12 @@ pub fn feature_access_denied(operation: &str, feature: &str) -> AccessDeniedExce
 /// The tag set one request asks for, keyed by tag key — or the message that
 /// refuses a list carrying the same key twice.
 ///
+/// Each key maps to the value its entry carried, kept as the `Option` the wire
+/// gave: `ResourceTag$value` is not `@required` and `ResourceTagValue` is
+/// `@length` 0..256, so an entry that omits the member and one that sends `""`
+/// are distinct inputs, and substituting a value for the omitted one would make
+/// a tag read back carrying a value its writer never submitted.
+///
 /// A tag set is keyed by key, so one request may not carry a key twice: the two
 /// entries would decide the stored value by arrival order, and collecting them
 /// into the keyed set would silently drop one of the two values. The modelled
@@ -1676,11 +1691,13 @@ pub fn feature_access_denied(operation: &str, feature: &str) -> AccessDeniedExce
 /// a view's tag set answer identical input identically. The caller renders the
 /// `Err` as its own modeled `ValidationException` over the `resourceTags`
 /// member, and writes nothing.
-pub fn requested_tag_set(tags: &[ResourceTag]) -> Result<BTreeMap<String, String>, String> {
-    let mut requested: BTreeMap<String, String> = BTreeMap::new();
+pub fn requested_tag_set(
+    tags: &[ResourceTag],
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut requested: BTreeMap<String, Option<String>> = BTreeMap::new();
     for tag in tags {
         if requested
-            .insert(tag.key.clone(), tag.value.clone().unwrap_or_default())
+            .insert(tag.key.clone(), tag.value.clone())
             .is_some()
         {
             return Err(format!("the tag key {} is given more than once", tag.key));

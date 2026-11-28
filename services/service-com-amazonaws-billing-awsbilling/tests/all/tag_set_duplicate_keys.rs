@@ -56,9 +56,10 @@ fn refused(case: &'static str, tags: Vec<Value>) -> TagListRow {
     }
 }
 
-/// A row whose list must be stored, every entry's value under its own key (an
-/// entry that omits `value` stores the empty value the model's 0-length
-/// `ResourceTagValue` allows).
+/// A row whose list must be stored, every entry's value under its own key. The
+/// map below reads a reported tag that carries no `value` member the same as one
+/// carrying the empty value, so this table is about which lists are REFUSED;
+/// which of the two a stored tag reports is pinned by `tag_value_absence.rs`.
 fn accepted(case: &'static str, tags: Vec<Value>) -> TagListRow {
     let expected = tags
         .iter()

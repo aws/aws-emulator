@@ -10,6 +10,10 @@
 //! resource with `ResourceNotFoundException` (404). A taggable resource with no tags
 //! answers an empty list.
 //!
+//! Each tag is reported as it was submitted: `ResourceTag$value` is optional here
+//! as it is on the writers' input, so a tag stored with no value is reported with
+//! that member absent rather than carrying a value the caller never sent.
+//!
 //! The caller-account boundary is decided before either of those lines, as it is for
 //! every operation that identifies a billing view by ARN: an ARN whose embedded
 //! account id is not the caller's is `AccessDeniedException` (403), so the answer
@@ -196,13 +200,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `tags` is a BTreeMap, so the list is in key order on every read and a
         // caller comparing two responses sees a difference only where one is.
+        // Each stored value is reported exactly as the writer submitted it: the
+        // stored `None` of a tag written without a value reports an absent
+        // `value` member, which the model allows and which a tag written with
+        // the empty value is distinguishable from.
         Ok(ListTagsForResourceOutput {
             resource_tags: Some(
                 view.tags
                     .iter()
                     .map(|(key, value)| ResourceTag {
                         key: key.clone(),
-                        value: Some(value.clone()),
+                        value: value.clone(),
                     })
                     .collect(),
             ),

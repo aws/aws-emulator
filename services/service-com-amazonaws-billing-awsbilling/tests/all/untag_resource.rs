@@ -362,7 +362,9 @@ async fn untagging_refuses_a_managed_view_and_an_unknown_resource() {
             .billing_views
             .get_mut(PRIMARY_ARN)
             .expect("the account's PRIMARY view exists before any call");
-        primary.tags.insert("seeded".to_string(), "v".to_string());
+        primary
+            .tags
+            .insert("seeded".to_string(), Some("v".to_string()));
     }
 
     let (status, body) = call(
@@ -383,8 +385,8 @@ async fn untagging_refuses_a_managed_view_and_an_unknown_resource() {
         .get(PRIMARY_ARN)
         .expect("the account's PRIMARY view is still stored");
     assert_eq!(
-        primary.tags.get("seeded").map(String::as_str),
-        Some("v"),
+        primary.tags.get("seeded").map(Option::as_deref),
+        Some(Some("v")),
         "a refused UntagResource must leave the managed view's tags alone, got {:?}",
         primary.tags
     );

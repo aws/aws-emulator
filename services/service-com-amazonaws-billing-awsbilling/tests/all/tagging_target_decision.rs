@@ -142,7 +142,8 @@ async fn every_tagging_operation_refuses_a_managed_view_identically() {
                 view.name = format!("managed-{suffix}");
                 view.tags.clear();
                 if tagged {
-                    view.tags.insert("env".to_string(), "staging".to_string());
+                    view.tags
+                        .insert("env".to_string(), Some("staging".to_string()));
                 }
             });
             rows.push((case, arn));

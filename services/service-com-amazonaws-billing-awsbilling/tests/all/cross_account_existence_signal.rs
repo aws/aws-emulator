@@ -77,7 +77,7 @@ fn plant_record(engine: &Arc<engine::InMemoryEngine>, arn: &str, source_views: V
         view.source_views = source_views;
         view.tags = BTreeMap::from([(
             format!("{PLANTED_MARKER}-key"),
-            format!("{PLANTED_MARKER}-value"),
+            Some(format!("{PLANTED_MARKER}-value")),
         )]);
     });
 }

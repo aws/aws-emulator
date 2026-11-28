@@ -26,7 +26,9 @@
 //! one rule every writer of a tag set in this service shares
 //! ([`crate::state::requested_tag_set`]): a `resourceTags` list that gives the
 //! same key twice is refused with `ValidationException` (400), since the stored
-//! value would otherwise be decided by arrival order.
+//! value would otherwise be decided by arrival order, and a tag entry that omits
+//! the optional `value` is stored without one rather than with a value the
+//! request never carried.
 //!
 //! ## Shape of an operation
 //!

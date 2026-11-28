@@ -85,7 +85,7 @@ fn plant_foreign_view(engine: &Arc<engine::InMemoryEngine>, arn: &str, view_type
         )];
         view.tags = BTreeMap::from([(
             format!("{FOREIGN_MARKER}-key"),
-            format!("{FOREIGN_MARKER}-value"),
+            Some(format!("{FOREIGN_MARKER}-value")),
         )]);
     });
 }
