@@ -300,8 +300,11 @@ const RPC_PEER_SERVICE: &str = "ELBProxy";
 /// the service ([`RPC_PEER_SERVICE`]).
 ///
 /// That one form is the peer's, and the peer claims exactly it, so this front door declines
-/// it and one request keeps one claimant. The label is compared without regard to case, as
-/// a host-borne service name is.
+/// it and one request keeps one claimant. A request in that form naming a service NOTHING
+/// here publishes is a different case: it reached the endpoint this API is published at, so
+/// the API published there answers it as the unresolvable action it is, which is what
+/// `core/router/tests/all/elbproxy_shared_signing_name_routing.rs` pins. The label is
+/// compared without regard to case, as a host-borne service name is.
 fn addresses_the_rpc_peer(parts: &http::request::Parts) -> bool {
     let path = parts.uri.path();
     ::service_common::nth_path_segment(path, 0) == Some(::service_common::RPCV2_CBOR_PATH_SEGMENT)

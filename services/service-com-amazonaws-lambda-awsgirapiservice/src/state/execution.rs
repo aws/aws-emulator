@@ -177,6 +177,10 @@ pub mod guest_sqlite;
 /// imports — and the IANA database its zones are read from.
 pub mod guest_zoneinfo;
 
+/// The COMPRESSION interface of that same standard library — the `bz2` and `lzma` modules a
+/// handler imports — and the libraries whose streams they read and write.
+pub mod guest_compression;
+
 /// The CONNECTED PAIRS a run holds inside this process, which the socket interface answers for
 /// `socketpair` and the waiting interface reports readiness on.
 pub mod guest_pipes;
@@ -184,6 +188,11 @@ pub mod guest_pipes;
 /// The CONFIGURATION interface of that same standard library — the `sysconfig` module a
 /// handler, or a module of the library itself, imports to ask about the installation.
 pub mod guest_sysconfig;
+
+/// The THREAD POOL of that same standard library — the `concurrent.futures`
+/// `ThreadPoolExecutor` a handler hands its work to — whose work items are performed on the
+/// invocation's own thread.
+pub mod guest_executor;
 
 /// What a call of that interface PERFORMS: one program of the execution environment, resolved
 /// against its own `PATH` and mounts and run over its filesystem in this process.

@@ -209,6 +209,12 @@ pub const BINARY_ID_PREFIX: &str = "binary:";
 /// ([`runtime_stdlib`]), so the import succeeds and only the call needing the absent
 /// capability is refused.
 ///
+/// The two EXTENSION modules the compression half of the standard library is written over
+/// (`_bz2`, `_lzma`) are supplied that same way ([`super::guest_compression`]): compressing
+/// bytes reaches nothing outside this process, so the engines are this crate's own libraries
+/// and the modules `bz2` and `lzma` import are supplied on the import path rather than
+/// registered as extensions of the engine's pool.
+///
 /// Two of the names here are registered but PATCHED before guest code runs, because the
 /// frozen standard library needs the rest of each: `_io`, whose host file-opening calls
 /// are replaced by refusals, and `time`, whose `sleep` is replaced by the clamped one. See
@@ -1716,8 +1722,11 @@ fn runtime_modules() -> ::serde_json::Map<String, ::serde_json::Value> {
 /// interface the standard library's own `selectors` is built out of
 /// ([`super::guest_select`]), the signal and child-process interfaces beside them
 /// ([`super::guest_signal`], [`super::guest_process`]) and the database interface whose
-/// statements run on the engine this crate embeds ([`super::guest_sqlite`]). Resolved before
-/// the frozen standard
+/// statements run on the engine this crate embeds ([`super::guest_sqlite`]), the COMPRESSION
+/// engines the `bz2` and `lzma` modules are written over ([`super::guest_compression`]), and
+/// the THREAD
+/// POOL whose work items are performed on the invocation's own thread
+/// ([`super::guest_executor`]). Resolved before the frozen standard
 /// library and after the deployment package's own entries and the content the function's
 /// layers mount, which is where a runtime's own standard library sits.
 fn runtime_stdlib() -> ::serde_json::Map<String, ::serde_json::Value> {
@@ -1730,6 +1739,8 @@ fn runtime_stdlib() -> ::serde_json::Map<String, ::serde_json::Value> {
         .chain(super::guest_zoneinfo::runtime_stdlib_modules())
         .chain(super::guest_sysconfig::runtime_stdlib_modules())
         .chain(super::guest_pipes::runtime_stdlib_modules())
+        .chain(super::guest_compression::runtime_stdlib_modules())
+        .chain(super::guest_executor::runtime_stdlib_modules())
         .map(|module| (module.path, ::serde_json::Value::String(module.source)))
         .collect()
 }
@@ -2216,6 +2227,24 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<Py
             Ok(vm
                 .ctx
                 .new_str(super::guest_zoneinfo::answered(&verb, &named))
+                .into())
+        },
+    );
+    // ONE CALL on a COMPRESSION engine this runtime embeds, which the `bz2` and `lzma` modules
+    // of its standard library are written over ([`super::guest_compression`]): the bytes
+    // handed over are compressed, or the stream they hold is read, by a library computing in
+    // this process. Nothing is dispatched, no host path is opened and no call count is spent —
+    // it is arithmetic over the bytes of the call — and the bounds on one call are that
+    // module's own, where no guest code can reach them.
+    set_function(
+        vm,
+        &module,
+        "compression",
+        move |args: FuncArgs, vm: &VirtualMachine| {
+            let (verb, document): (String, String) = args.bind(vm)?;
+            Ok(vm
+                .ctx
+                .new_str(super::guest_compression::answered(&verb, &document))
                 .into())
         },
     );
@@ -4343,6 +4372,7 @@ mod tests {
         let expected = ::serde_json::json!([
             "aws",
             "child",
+            "compression",
             "db_auth_token",
             "durable",
             "durable_callback",

@@ -34,9 +34,11 @@
 //! The thread interface itself stays the interpreter's own and the standard library's
 //! `threading` is the frozen one, driving it exactly as it drives a platform's: what is replaced
 //! here are the calls that START a thread and the identity reading that says which thread is
-//! running ([`install`]). The names that reach ACROSS the threads of a process — the main
-//! thread's interrupt, and the host sentinel a thread state releases — stay refused, because
-//! there is no second thread of this process to reach.
+//! running ([`install`]), and what is COMPLETED is the reentrant lock's own surface
+//! ([`install_reentrant_lock_surface`]) — the calls `threading.Condition` drives its lock
+//! through, which this interpreter's reentrant lock does not carry. The names that reach ACROSS
+//! the threads of a process — the main thread's interrupt, and the host sentinel a thread state
+//! releases — stay refused, because there is no second thread of this process to reach.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -186,8 +188,84 @@ pub(super) fn install(vm: &VirtualMachine, run: RunAccess) -> PyResult<()> {
     let identifying = vm.new_function("get_ident", move |_args: FuncArgs, vm: &VirtualMachine| {
         Ok::<PyObjectRef, PyBaseExceptionRef>(vm.ctx.new_int(current_ident(main_ident)).into())
     });
-    installed(vm, &threads, "get_ident", identifying.into())
+    installed(vm, &threads, "get_ident", identifying.into())?;
+    install_reentrant_lock_surface(vm, &threads)
 }
+
+/// Complete the REENTRANT LOCK of that same `_thread` module with the calls the standard
+/// library drives one through, which this interpreter's own carries none of.
+///
+/// `threading.Condition` reads three of them off the lock it was built on — whether the running
+/// thread owns it, how to give up every level of it while waiting, and how to take those levels
+/// back afterwards — and a lock that carries none of them is driven through the generic readings
+/// `Condition` keeps for a lock that is not reentrant. One of those readings cannot judge a
+/// REENTRANT lock at all: it asks whether the lock can be taken, which the thread already
+/// holding it is always granted, so a `Condition` on a reentrant lock answers that its lock is
+/// not held — and `wait` and `notify` then raise instead of waiting and waking. A `Condition`
+/// built with no lock of its own builds exactly such a reentrant one, which is what
+/// `concurrent.futures.Future`, `queue`'s own conditions and every handler that writes
+/// `threading.Condition()` stand on.
+///
+/// The four calls are the ones `_thread`'s reentrant lock has where a platform provides it, and
+/// they are answered from the lock's OWN state — whether it is held, and how many times it has
+/// been taken. The threads of an invocation run one at a time on the invocation's own thread
+/// ([`super::guest_thread`]), so a lock held at all is held by the thread that is running, which
+/// is what ownership is here.
+fn install_reentrant_lock_surface(vm: &VirtualMachine, threads: &PyObjectRef) -> PyResult<()> {
+    let reentrant = threads.get_attr("RLock", vm)?;
+    let surface = super::host_posix::built_type(vm, SURFACE_TYPE, REENTRANT_LOCK_SURFACE)?;
+    for name in ["_is_owned", "_recursion_count", "_release_save", "_acquire_restore"] {
+        // A lock that already carries one of them keeps its own: what is completed here is
+        // what the interpreter's lock does not have.
+        if reentrant.get_attr(name, vm).is_ok() {
+            continue;
+        }
+        let call = surface.get_attr(name, vm)?;
+        reentrant.set_attr(name, call, vm)?;
+        if reentrant.get_attr(name, vm).is_err() {
+            return Err(vm.new_runtime_error(format!(
+                "the reentrant-lock call this emulator installs on _thread.RLock.{name} did not \
+                 take effect, so no function is run in this interpreter"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The name the source below defines the surface under.
+const SURFACE_TYPE: &str = "_ReentrantLockSurface";
+
+/// The calls [`install_reentrant_lock_surface`] completes `_thread`'s reentrant lock with,
+/// written over the lock's own state: whether it is held (`locked()`) and how many times it has
+/// been taken (`locked_count`).
+const REENTRANT_LOCK_SURFACE: &str = r#"
+class _ReentrantLockSurface:
+    """The calls the standard library drives a reentrant lock through."""
+
+    def _is_owned(self):
+        """Whether the thread that is running holds this lock.
+
+        An invocation's threads run one at a time on the invocation's own thread, so a lock
+        that is held is held by the thread asking.
+        """
+        return self.locked()
+
+    def _recursion_count(self):
+        """How many times the holder has taken this lock, and zero when it is free."""
+        return self.locked_count if self.locked() else 0
+
+    def _release_save(self):
+        """Give up EVERY level of this lock, answering how many were given up."""
+        count = self.locked_count
+        for _ in range(count):
+            self.release()
+        return count
+
+    def _acquire_restore(self, state):
+        """Take back the levels `_release_save` gave up."""
+        for _ in range(state):
+            self.acquire()
+"#;
 
 /// Put `call` on `_thread` under `name` and read it BACK, so a call that could not be replaced
 /// refuses the run rather than leaving the interpreter's own reachable.

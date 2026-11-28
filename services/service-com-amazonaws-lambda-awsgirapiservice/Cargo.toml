@@ -144,6 +144,37 @@ brotli = "9"
 # * and the CRC-32 it checksums bytes with (`zlib.crc32`), which is also the checksum a gzip
 #   member carries.
 crc32fast = "1"
+# The two other COMPRESSION engines of this runtime's PYTHON standard library, which the `bz2`
+# and `lzma` modules a handler imports are written over
+# (`state::execution::guest_compression`). Both are LIBRARIES computing over the bytes they are
+# handed, in this process: neither opens a socket, starts a process, loads a shared library or
+# reads a host path.
+#
+# * `bzip2` on its default `libbz2-rs-sys` backend is the bzip2 format's own implementation
+#   rewritten in Rust, so a bzip2 stream is read and written by Rust throughout;
+# * `liblzma` is the xz project's own implementation of the `.xz` and the legacy `.lzma`
+#   streams, built from the sources it vendors (`static`, with the binding generator left out
+#   of the build) and linked into this binary. It is taken rather than a Rust codec because the
+#   format's own implementation is the one that reads and writes every stream of it: the Rust
+#   codec tried first writes an `.xz` stream its own reader cannot read back once the payload
+#   passes one LZMA2 chunk.
+#   It is a NATIVE component, and the one in this set that is: `liblzma-sys` compiles the
+#   vendored xz C sources with `cc` at build time — the `xz` release those sources are is the
+#   one that sys crate's own 0.4 line carries (the 5.8 line), identified by the pinned
+#   `liblzma-sys` version and its checksum in Cargo.lock, which is also what an advisory
+#   database is asked about; the `uncheck_liblzma_version` escape is NOT taken, so the build
+#   refuses sources whose version its bindings do not expect. That C, and the `unsafe` binding
+#   layer over it, are outside this crate's forbidden `unsafe_code` exactly as the QuickJS
+#   sources `rquickjs-sys` compiles and the SQLite sources `rusqlite`'s `bundled` feature
+#   compiles already are. What reaches that decoder is CALLER bytes — a handler's
+#   `lzma.decompress` — so the seam that hands them over bounds them in host code no guest can
+#   reach (`state::execution::guest_compression`: `MAX_CALL_BYTES` on what one call may be
+#   handed and may answer, `MEMORY_LIMIT` on what the engine may allocate to read one stream),
+#   a stream it cannot read is reported as the failure the module raises for one, and the
+#   invocation's own deadline, step and memory bounds hold the rest. Nothing is decoded at
+#   build time and no stream is read from a host path.
+bzip2 = "0.6"
+liblzma = { version = "0.4", default-features = false, features = ["static"] }
 # The hexadecimal the guest hands bytes over and reads digests back as.
 hex = { workspace = true }
 # The regular-expression engine the WHOLE-VALUE reading of a `@pattern` whose branches are

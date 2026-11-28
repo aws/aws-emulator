@@ -20,6 +20,8 @@ Issue-Commit: f4372f081be041f1c06808452ec2531466fafcb7
 
 # Lambda: the Python execution environment's extension modules, and the npm-bundle path — the five causes of the ten-cause runtime report that do NOT pass
 
+> _RESOLVED in part, and split again: the COMPRESSION half of cause 3 (`bz2` and `lzma`) and the THREAD half of cause 4 (`concurrent.futures.ThreadPoolExecutor`, and the reentrant lock the standard library's conditions are built on) are fixed, and cause 5 (the implementation name) was fixed before them. The causes that remain host-reaching — the Node child process, the four npm-bundle checks whose own helper times out, `ctypes` loading the host's libc and the `ssl` library identity — are re-filed as `issues/things-that-do-not-work/20261111T081112Z-lambda-the-host-reaching-causes-of-the-managed-runtimes.md` so they are not recorded as working._
+
 > _Split out of `issues/things-that-now-work/20261111T081112Z-lambda-managed-runtimes-are-stub-interpreters-10-node.md`, whose five Node.js causes are fixed (the core-module surface, the WHATWG globals, the password-based key derivation, the `exports` subpath map and the trailing separator on a reported path). This report carries the replay keys that do NOT pass, re-filed here so they are not recorded as working. Everything below is what that fix established about them; a later fixer starts from here rather than from scratch._
 
 ## Operation
