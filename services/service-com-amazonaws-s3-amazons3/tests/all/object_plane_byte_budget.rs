@@ -5,13 +5,13 @@
 //! Every assertion drives a real HTTP request through the router, so what is pinned is the
 //! wire behaviour a client doing ordinary object traffic sees.
 //!
-//! The rule under test: the emulator's capacity ceilings are not part of the modelled API
-//! surface. S3 constrains the size of ONE payload — the 5 MiB minimum for a part other than
-//! the last and the 5 GiB maximum for a part or a `PutObject` body (Amazon S3 User Guide,
-//! *Amazon S3 multipart upload limits*) — and bounds what a bucket HOLDS not at all, while
-//! `UploadPart` models no error whatsoever
+//! The rule under test: the emulator's capacity guard is not part of the modelled API
+//! surface, and nothing about it is judged per bucket. S3 constrains the size of ONE payload
+//! — the 5 MiB minimum for a part other than the last and the 5 GiB maximum for a part or a
+//! `PutObject` body (Amazon S3 User Guide, *Amazon S3 multipart upload limits*) — and bounds
+//! what a bucket HOLDS not at all, while `UploadPart` models no error whatsoever
 //! (`smithy_query(query="operation",operation="UploadPart")` reports `errors: []`). So the
-//! budgets this emulator keeps to bound its own memory are sized ABOVE the traffic AWS
+//! one budget this emulator keeps to bound its own memory is sized ABOVE the traffic AWS
 //! accepts: a write whose size S3 accepts is RECORDED however many MiB the bucket already
 //! holds, and a multipart upload of many MiB completes and reads back byte-exact.
 //!
@@ -21,9 +21,7 @@
 //! object here is larger than a bucket's whole allowance used to be, and the bucket ends up
 //! holding several times it.
 
-use service_com_amazonaws_s3_amazons3::state::{
-    MAX_OBJECT_BYTES_PER_BUCKET, MAX_OBJECT_BYTES_TOTAL,
-};
+use service_com_amazonaws_s3_amazons3::state::MAX_RETAINED_BYTES_TOTAL;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::bucket_lifecycle::{router, send, send_bytes, Answer};
@@ -178,19 +176,14 @@ async fn one_bucket_takes_more_bytes_than_a_single_upload_carries() {
 
 #[tokio::test]
 async fn the_budgets_are_above_the_traffic_aws_accepts() {
-    // The structural half of the same rule: the budgets that bound this process's memory are
-    // sized above an ordinary session's multipart traffic — several files of this size in one
-    // bucket, and several such buckets — so no write AWS accepts meets them on the way.
-    let bucket_allowance = MAX_OBJECT_BYTES_PER_BUCKET;
-    let store_allowance = MAX_OBJECT_BYTES_TOTAL;
+    // The structural half of the same rule: the ONE budget that bounds this process's
+    // memory is sized above an ordinary session's multipart traffic — many files of this
+    // size, in one bucket or spread over several — so no write AWS accepts meets it on the
+    // way, and no budget of a BUCKET's own exists for one to meet instead.
+    let store_allowance = MAX_RETAINED_BYTES_TOTAL;
     assert!(
-        bucket_allowance >= 4 * FILE_BYTES,
-        "case \"one bucket's allowance\": it must take several files of {FILE_BYTES} bytes, \
-         got {bucket_allowance}"
-    );
-    assert!(
-        store_allowance > bucket_allowance,
-        "case \"the whole store's allowance\": it must take more than one full bucket \
-         ({bucket_allowance}), got {store_allowance}"
+        store_allowance >= 32 * FILE_BYTES,
+        "case \"the whole store's allowance\": it must take many files of {FILE_BYTES} \
+         bytes, got {store_allowance}"
     );
 }

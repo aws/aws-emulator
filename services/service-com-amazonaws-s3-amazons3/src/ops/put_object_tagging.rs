@@ -341,26 +341,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
             Some(crate::state::ObjectTagWrite::NoSuchKey) => {
                 return Err(PutObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into())
             }
-            // The emulator's own ceilings, not AWS limits (S3 bounds neither the number of
-            // objects nor their total size), so no AWS error code describes them: they go
-            // out through the framework's 400 `ValidationException` channel, the same
-            // channel `PutObject` uses for the same two budgets.
-            Some(crate::state::ObjectTagWrite::ByteBudgetReached { would_hold }) => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "tagging {:?} would leave the bucket {:?} holding {would_hold} bytes \
-                     of objects, past the {} bytes this emulator keeps per bucket",
-                    input.key,
-                    input.bucket,
-                    crate::state::MAX_OBJECT_BYTES_PER_BUCKET
-                )));
-            }
-            Some(crate::state::ObjectTagWrite::TotalByteBudgetReached { would_hold }) => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "tagging {:?} would leave this emulator holding {would_hold} bytes of \
-                     objects across every bucket, past the {} bytes it keeps in total",
-                    input.key,
-                    crate::state::MAX_OBJECT_BYTES_TOTAL
-                )));
+            // The store's own memory guard, which is no quota of the API: S3 bounds neither
+            // what a bucket holds nor what an account holds, so the answer is the code it
+            // publishes for a request it cannot handle, worded where every write of this
+            // service words it ([`crate::service::object_write::store_full`]).
+            Some(crate::state::ObjectTagWrite::TotalByteBudgetReached { .. }) => {
+                return Err(crate::service::object_write::store_full());
             }
         }
 

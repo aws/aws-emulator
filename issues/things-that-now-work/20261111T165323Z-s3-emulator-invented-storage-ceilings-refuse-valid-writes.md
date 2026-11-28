@@ -11,6 +11,32 @@ Issue-Commit: f0a035afe3a6d4bc3a732ff8fc28ae95e972cd65
 
 > _Note: this issue was identified against the code base at commit `f0a035afe3a6d4bc3a732ff8fc28ae95e972cd65`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
+## Resolution (three of the four causes)
+
+- Causes 1, 2 and 3 — FIXED: the object store keeps no per-bucket object-count ceiling, no
+  per-bucket byte ceiling and no account-wide byte ceiling at all, so a write within the
+  payload size S3 accepts is served whatever the bucket, the key or the account already
+  holds; a versioned key's versions are charged against nothing; and the one bound that is
+  left — the whole-store memory guard that keeps this process bounded, raised to 250,000
+  stored versions and 1 GiB of retained bytes, orders of magnitude above the traffic the API
+  admits — is answered, if it is ever met, with S3's own `ServiceUnavailable` (HTTP 503,
+  "Service is unable to handle request.") rather than the `ValidationException` that is not
+  in S3's vocabulary. Four of this report's five checks pass.
+  `tests/all/object_store_capacity_is_not_a_quota.rs` pins the rule end to end: a table of
+  object counts and sizes filling ONE bucket, 1,001 distinct keys served and then paged
+  through `ListObjectsV2`, 1,001 versions of ONE key served and paged through
+  `ListObjectVersions`, and nine 15 MiB objects across three buckets read back byte-exact.
+- Cause 4 (a 20 MiB `UploadPart` refused with a bare HTTP 413) — STILL OPEN, and NOT a
+  handler defect: the refusal is `MAX_PRODUCTION_BODY_BYTES = 16 * 1024 * 1024` in
+  `vendor/server/src/lib.rs`, applied by `read_production_body` on the production serve path
+  before any service sees the request, so no service crate can admit such a body or word the
+  refusal in an S3 `<Error>` envelope. The same core cap, and the check
+  `s3.upload-part-of-twenty-mib-completes-and-reads-back-exactly` with it, is owned by
+  `20261118T090000Z-s3-2-causes-left-open-a-32-mib-putobject-and-the-v1-metadata-table-sentence.md`
+  (whose cause 1 is the same cap refusing a 32 MiB `PutObject`, and which already names this
+  report's cause 4 as the same blocker). The core change it needs: raise that cap, or make it
+  configurable per service, so a service's own documented limits are what bound a write.
+
 ## Operation
 PutObject
 

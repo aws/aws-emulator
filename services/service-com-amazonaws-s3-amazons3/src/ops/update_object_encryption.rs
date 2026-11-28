@@ -364,28 +364,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(crate::state::ObjectEncryptionWrite::NoSuchObject) => {
                 return Err(no_such_object())
             }
-            // The emulator's own ceilings, not AWS limits (S3 bounds neither the number of
-            // objects nor their total size), so no AWS error code describes them: they go
-            // out through the framework's 400 refusal channel, the same channel
-            // `PutObjectRetention` uses for the same two budgets.
-            Some(crate::state::ObjectEncryptionWrite::ByteBudgetReached { would_hold }) => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "the encryption configuration on {:?} would leave the bucket {:?} \
-                     holding {would_hold} bytes of objects, past the {} bytes this emulator \
-                     keeps per bucket",
-                    input.key,
-                    input.bucket,
-                    crate::state::MAX_OBJECT_BYTES_PER_BUCKET
-                )));
-            }
-            Some(crate::state::ObjectEncryptionWrite::TotalByteBudgetReached { would_hold }) => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "the encryption configuration on {:?} would leave this emulator holding \
-                     {would_hold} bytes of objects across every bucket, past the {} bytes it \
-                     keeps in total",
-                    input.key,
-                    crate::state::MAX_OBJECT_BYTES_TOTAL
-                )));
+            // The store's own memory guard, which is no quota of the API: S3 bounds neither
+            // what a bucket holds nor what an account holds, so the answer is the code it
+            // publishes for a request it cannot handle, worded where every write of this
+            // service words it ([`crate::service::object_write::store_full`]).
+            Some(crate::state::ObjectEncryptionWrite::TotalByteBudgetReached { .. }) => {
+                return Err(crate::service::object_write::store_full());
             }
         }
 

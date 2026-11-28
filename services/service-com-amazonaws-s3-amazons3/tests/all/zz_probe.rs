@@ -69,8 +69,8 @@ fn parsed_content_range(answer: &Answer) -> (usize, usize, usize) {
 async fn the_part_discovery_probe_reads_the_whole_object_back_in_pieces() {
     let router = router();
 
-    // One bucket per case, so each object is judged against this emulator's per-bucket byte
-    // budget on its own.
+    // One bucket per case, so each object's parts and assembled bytes are kept apart from
+    // the next case's.
     let cases: [(&str, &str, Vec<Vec<u8>>, bool); 4] = [
         (
             "a two-part upload",

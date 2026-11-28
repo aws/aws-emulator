@@ -281,6 +281,31 @@ impl KeyRefusal {
 /// long").
 pub const KEY_TOO_LONG_MESSAGE: &str = "Your key is too long";
 
+/// The refusal a write this emulator can no longer HOLD is answered with: the code S3
+/// publishes for a request it is unable to handle ([`state::SERVICE_UNAVAILABLE_CODE`], HTTP
+/// 503) carrying that code's own fixed sentence.
+///
+/// It is NOT a quota refusal, because S3 announces no quota over what is stored: a bucket
+/// holds any number of objects, a key any number of versions, and `PutObject` and
+/// `UploadPart` model no capacity error at all
+/// (`smithy_query(query="operation",operation="PutObject,UploadPart")`). The condition is
+/// this PROCESS having no more room for its object store
+/// ([`state::MAX_STORED_VERSIONS_TOTAL`], [`state::MAX_RETAINED_BYTES_TOTAL`] — sized far
+/// above the traffic the API admits, so no ordinary session meets them), which is a state of
+/// the server rather than a fault in the request, and the code S3 publishes for that is the
+/// one a client already retries.
+///
+/// The ONE place that envelope is built, so every write that can meet the guard — a put, a
+/// copy, a part upload, a completion, a subresource write and the delete marker of a delete
+/// — refuses identically, and nothing is stored when it does.
+pub fn store_full<E>() -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::unmodeled(
+        state::SERVICE_UNAVAILABLE_CODE,
+        state::SERVICE_UNAVAILABLE_STATUS,
+        state::SERVICE_UNAVAILABLE_MESSAGE,
+    )
+}
+
 /// The query parameter that addresses the RENAME of an object: `?renameObject`, as the model
 /// pins it on the operation's URI (`smithy_query(query="operation",operation="RenameObject")`
 /// reports `http {method: "PUT", uri: "/{Bucket}/{Key+}?renameObject"}`).

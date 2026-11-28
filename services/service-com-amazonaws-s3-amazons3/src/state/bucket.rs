@@ -2370,9 +2370,10 @@ impl Bucket {
     ///
     /// PRIVATE, so a delete goes through
     /// [`ComAmazonawsS3Amazons3State::remove_object`] and cannot name a bucket that does
-    /// not exist. NOTHING is written when the answer is a ceiling: a delete marker is a
-    /// stored version like any other, so it is refused rather than recorded once the bucket
-    /// is at [`MAX_OBJECTS_PER_BUCKET`] stored versions.
+    /// not exist, which is also where the one guard on laying a marker lives: a marker is a
+    /// stored version like any other, so it is bounded by what the whole STORE holds rather
+    /// than by anything this bucket does — S3 bounds the versions one key or one bucket
+    /// keeps not at all.
     pub(super) fn remove_object(&mut self, key: &str, minted: Option<String>) -> ObjectDeletion {
         let held_object = self.object(key).is_some();
 
@@ -2391,12 +2392,6 @@ impl Bucket {
         // which is why it displaces whatever null version the key held.
         let version_id = if self.versioning_enabled() { minted } else { None };
         let displaces_null = version_id.is_none() && self.null_version_position(key).is_some();
-        // The marker is a stored version like any other, so it is refused rather than
-        // recorded once the bucket is full — unless it takes the place of the null version
-        // it displaces, which leaves the count where it was.
-        if !displaces_null && self.stored_versions() >= MAX_OBJECTS_PER_BUCKET {
-            return ObjectDeletion::VersionCountReached;
-        }
         if displaces_null {
             self.remove_null_version(key);
         }
@@ -2497,15 +2492,13 @@ impl Bucket {
     /// bucket receive the version ID null".
     ///
     /// PRIVATE, and reached only through
-    /// [`ComAmazonawsS3Amazons3State::put_object`]: the per-bucket ceilings checked here
-    /// cannot see the service-wide ones, so a handler calling this directly would bypass
-    /// them. NOTHING is written unless the answer is [`ObjectWrite::Created`] or
-    /// [`ObjectWrite::Replaced`]: an over-long key, metadata past
-    /// [`MAX_OBJECT_METADATA_BYTES`], a bucket at [`MAX_OBJECTS_PER_BUCKET`] stored
-    /// versions and a write past [`MAX_OBJECT_BYTES_PER_BUCKET`] retained bytes are each
-    /// refused here. Replacing an object releases everything it retained, so the budget is
-    /// over what the bucket WOULD hold, not over everything ever written — while a
-    /// versioned write releases nothing, because the version it supersedes is still there.
+    /// [`ComAmazonawsS3Amazons3State::put_object`]: the whole-store memory guard cannot be
+    /// seen from here, so a handler calling this directly would bypass it. NOTHING is
+    /// written unless the answer is [`ObjectWrite::Created`] or [`ObjectWrite::Replaced`]:
+    /// an over-long key and metadata past [`MAX_OBJECT_METADATA_BYTES`] are each refused
+    /// here. No ceiling of the BUCKET's own is judged at all — "you can store any number of
+    /// objects in a bucket", and a versioning-enabled key keeps any number of versions — so
+    /// what one bucket holds is bounded only by what the whole store holds.
     pub(super) fn put_object(&mut self, key: &str, mut object: Object, minted: Option<String>) -> ObjectWrite {
         if key.len() > MAX_OBJECT_KEY_BYTES {
             return ObjectWrite::KeyTooLong { bytes: key.len() };
@@ -2540,13 +2533,6 @@ impl Bucket {
         // The write adds an entry unless it replaces the key's current version in place,
         // which it does only when that version is not retained and there is one.
         let adds_version = retaining || self.current_version(key).is_none();
-        if adds_version && self.stored_versions() >= MAX_OBJECTS_PER_BUCKET {
-            return ObjectWrite::ObjectCountReached;
-        }
-        let would_hold = self.retained_bytes_after_write(key, retaining) + object.retained_bytes();
-        if would_hold > MAX_OBJECT_BYTES_PER_BUCKET {
-            return ObjectWrite::ByteBudgetReached { would_hold };
-        }
         let chain = self.versions.entry(key.to_string()).or_default();
         if adds_version {
             chain.insert(0, StoredVersion::Object(Box::new(object)));
@@ -2640,15 +2626,17 @@ impl Bucket {
     /// How many versions this bucket stores, over every key: each key's current version
     /// plus every noncurrent one it keeps, delete markers included.
     ///
-    /// What [`MAX_OBJECTS_PER_BUCKET`] counts, because a retained noncurrent version holds
-    /// this process's memory exactly as a current one does.
+    /// What the store's own [`MAX_STORED_VERSIONS_TOTAL`] counts over every bucket, because
+    /// a retained noncurrent version holds this process's memory exactly as a current one
+    /// does. Nothing of the bucket's own is judged against it: S3 bounds neither the objects
+    /// one bucket holds nor the versions one key keeps.
     pub fn stored_versions(&self) -> usize {
         self.versions.values().map(Vec::len).sum()
     }
 
     /// How many bytes this bucket's objects retain — payloads AND every string kept
     /// beside them, over every version it stores, so no part of a stored object escapes
-    /// the budgets.
+    /// the store's byte budget.
     ///
     /// The parts of the multipart uploads it has in progress are counted too: a part held
     /// against an upload occupies this process's memory exactly as a stored object's

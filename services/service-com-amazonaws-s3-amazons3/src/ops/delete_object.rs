@@ -682,7 +682,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObject<Eng>
                 .of_version(version_id.clone())]
             }
             crate::state::ObjectDeletion::NothingThere
-            | crate::state::ObjectDeletion::VersionCountReached
             | crate::state::ObjectDeletion::TotalVersionCountReached => Vec::new(),
         };
         let pending = crate::state::notifications::pending(
@@ -713,28 +712,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObject<Eng>
                     ),
                 })
             }
-            // A delete marker is a stored version, so the emulator's own ceilings bound it
-            // like a write: past them the marker is refused rather than recorded, through
-            // the same 400 `ValidationException` channel `PutObject` uses for them (S3
-            // itself bounds neither the number of versions nor their size, so no AWS error
-            // code describes this).
-            crate::state::ObjectDeletion::VersionCountReached => {
-                Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "the bucket {:?} already holds the maximum of {} object versions this \
-                     emulator keeps per bucket, so the delete marker for {:?} cannot be \
-                     recorded; delete a version first",
-                    input.bucket,
-                    crate::state::MAX_OBJECTS_PER_BUCKET,
-                    input.key
-                )))
-            }
+            // A delete marker is a stored version, so the store's own memory guard bounds it
+            // like a write: past it the marker is refused rather than recorded, with the code
+            // S3 publishes for a request it cannot handle, worded where every write of this
+            // service words it ([`crate::service::object_write::store_full`]). S3 itself
+            // bounds neither the number of versions a key keeps nor their size.
             crate::state::ObjectDeletion::TotalVersionCountReached => {
-                Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "this emulator already holds the maximum of {} object versions across \
-                     every bucket, so the delete marker for {:?} cannot be recorded; delete \
-                     a version first",
-                    crate::state::MAX_OBJECTS_TOTAL, input.key
-                )))
+                Err(crate::service::object_write::store_full())
             }
         }
     }

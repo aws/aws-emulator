@@ -926,25 +926,40 @@ fn a_removal_reports_what_it_released_and_frees_the_byte_budget() {
         "a delete releases only the key it named"
     );
 
-    // The bytes the removed object retained are released with it: the per-bucket
-    // budget is over what the bucket WOULD hold, so a write that fills it succeeds
-    // after a delete that freed room for it. An object retains its payload AND the
-    // strings kept beside it, so the room left is the budget less what "kept" holds
-    // and less the empty object's own overhead.
-    let overhead = object(0).retained_bytes();
+    // The bytes the removed object retained are released with it: what the store measures
+    // is what it WOULD hold, so after the delete the bucket retains only what is left.
     let held = object(4).retained_bytes();
-    let fills_the_bucket = MAX_OBJECT_BYTES_PER_BUCKET - held - overhead;
     assert_eq!(
-        store.put_object("one", "large", object(fills_the_bucket)),
-        Some(ObjectWrite::Created),
-        "a write that exactly fits the per-bucket budget is recorded"
+        store
+            .bucket("one")
+            .expect("bucket one exists")
+            .retained_bytes(),
+        held,
+        "the removed object's bytes are released, leaving only what \"kept\" retains"
     );
+    // And no ceiling of the BUCKET's own bounds a write — "you can store any number of
+    // objects in a bucket" — so two objects whose bytes together are more than this
+    // emulator ever kept per bucket are both recorded beside the one already there.
+    let large = 48 * 1024 * 1024;
+    for key in ["large", "larger-still"] {
+        assert_eq!(
+            store.put_object("one", key, object(large)),
+            Some(ObjectWrite::Created),
+            "case {key:?}: a write of {large} bytes into a bucket that already holds \
+             objects must be recorded"
+        );
+    }
     assert!(
-        matches!(
-            store.put_object("one", "one-too-many", object(8)),
-            Some(ObjectWrite::ByteBudgetReached { .. })
-        ),
-        "a write past the per-bucket budget is refused"
+        store
+            .bucket("one")
+            .expect("bucket one exists")
+            .retained_bytes()
+            > 2 * large,
+        "both large writes must be retained, got {}",
+        store
+            .bucket("one")
+            .expect("bucket one exists")
+            .retained_bytes()
     );
     assert_eq!(
         store.remove_object("one", "large"),
@@ -952,9 +967,9 @@ fn a_removal_reports_what_it_released_and_frees_the_byte_budget() {
         "the large object was stored"
     );
     assert_eq!(
-        store.put_object("one", "one-too-many", object(8)),
+        store.put_object("one", "one-more", object(8)),
         Some(ObjectWrite::Created),
-        "the delete released the bytes the refused write needed"
+        "a write after the delete is recorded"
     );
 
     let mut tables = tables_store();

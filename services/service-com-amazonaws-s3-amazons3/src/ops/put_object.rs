@@ -1234,10 +1234,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
         // PutObject to only update a single piece of metadata for an existing object."
         //
         // The store reports what the write did, because it may refuse: a bucket this
-        // emulator does not hold, an over-long key, and the four ceilings (per bucket and
-        // service-wide) that keep its object store bounded whatever a caller does. Each is
-        // answered as a refusal, so nothing is recorded and the caller is told; none of
-        // them is a 501, which would claim the operation is unwritten.
+        // emulator does not hold, an over-long key, metadata past the published 2 KB, and
+        // the one memory guard that keeps its object store bounded whatever a caller does.
+        // Each is answered as a refusal, so nothing is recorded and the caller is told; none
+        // of them is a 501, which would claim the operation is unwritten.
         let Some(outcome) = store.put_object(&input.bucket, &input.key, object) else {
             return Err(PutObjectErrorModeled::NoSuchBucket(NoSuchBucket {}).into());
         };
@@ -1260,42 +1260,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
             crate::state::ObjectWrite::MetadataTooLarge { bytes } => {
                 return Err(crate::scaffolded::Scaffolded::metadata_too_large(bytes));
             }
-            // The emulator's own ceilings, not AWS quotas (S3 bounds neither the number of
-            // objects nor their total size), so no AWS error code describes them: they go
-            // out through the framework's 400 `ValidationException` channel, the same
-            // channel `CreateBucket` uses for the unmodelled bucket quota.
-            crate::state::ObjectWrite::ObjectCountReached => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "the bucket {:?} already holds the maximum of {} objects this \
-                     emulator keeps per bucket; delete an object before writing {:?}",
-                    input.bucket,
-                    crate::state::MAX_OBJECTS_PER_BUCKET,
-                    input.key
-                )));
-            }
-            crate::state::ObjectWrite::ByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "storing {:?} would leave the bucket {:?} holding {would_hold} bytes \
-                     of objects, past the {} bytes this emulator keeps per bucket",
-                    input.key,
-                    input.bucket,
-                    crate::state::MAX_OBJECT_BYTES_PER_BUCKET
-                )));
-            }
-            crate::state::ObjectWrite::TotalObjectCountReached => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "this emulator already holds the maximum of {} objects across every \
-                     bucket; delete an object before writing {:?}",
-                    crate::state::MAX_OBJECTS_TOTAL, input.key
-                )));
-            }
-            crate::state::ObjectWrite::TotalByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "storing {:?} would leave this emulator holding {would_hold} bytes of \
-                     objects across every bucket, past the {} bytes it keeps in total",
-                    input.key,
-                    crate::state::MAX_OBJECT_BYTES_TOTAL
-                )));
+            // The store's own memory guard, which is no quota of the API: S3 bounds neither
+            // what a bucket holds nor what an account holds, and this operation models no
+            // capacity error at all, so the answer is the code S3 publishes for a request it
+            // cannot handle ([`crate::service::object_write::store_full`]).
+            crate::state::ObjectWrite::TotalVersionCountReached
+            | crate::state::ObjectWrite::TotalByteBudgetReached { .. } => {
+                return Err(crate::service::object_write::store_full());
             }
         }
 

@@ -651,43 +651,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjects<Eng
                             ),
                         });
                     }
-                    // A delete marker is a stored version, so the emulator's own ceilings
-                    // bound it like a write: past them the marker is not recorded. That is
+                    // A delete marker is a stored version, so the store's own memory guard
+                    // bounds it like a write: past it the marker is not recorded. That is
                     // THIS identifier's failure, not the request's — "for each key, Amazon
                     // S3 performs a delete operation and returns the result of that
                     // delete, success or failure, in the response" — so it is reported as
                     // this key's `Errors` entry beside the keys that did delete, rather
                     // than as a status that would leave the deletes already applied
-                    // unreported. The code is the one the rest of this service answers its
-                    // own ceilings with (`ValidationException`, the framework's 400
-                    // channel): S3 bounds neither the number of versions nor their size,
-                    // so no AWS error code describes them.
-                    Some(crate::state::ObjectDeletion::VersionCountReached) => {
-                        errors.push(Error {
-                            key: Some(key.to_string()),
-                            version_id: None,
-                            code: Some(VERSION_CEILING_CODE.to_string()),
-                            message: Some(format!(
-                                "the bucket {:?} already holds the maximum of {} object \
-                                 versions this emulator keeps per bucket, so the delete \
-                                 marker for {key:?} cannot be recorded; delete a version \
-                                 first",
-                                input.bucket,
-                                crate::state::MAX_OBJECTS_PER_BUCKET
-                            )),
-                        });
-                    }
+                    // unreported. The code is the one S3 publishes for a request it is
+                    // unable to handle, which is what this condition is: S3 bounds neither
+                    // the number of versions a key keeps nor their size, so no quota of the
+                    // API is being announced.
                     Some(crate::state::ObjectDeletion::TotalVersionCountReached) => {
                         errors.push(Error {
                             key: Some(key.to_string()),
                             version_id: None,
-                            code: Some(VERSION_CEILING_CODE.to_string()),
-                            message: Some(format!(
-                                "this emulator already holds the maximum of {} object \
-                                 versions across every bucket, so the delete marker for \
-                                 {key:?} cannot be recorded; delete a version first",
-                                crate::state::MAX_OBJECTS_TOTAL
-                            )),
+                            code: Some(crate::state::SERVICE_UNAVAILABLE_CODE.to_string()),
+                            message: Some(crate::state::SERVICE_UNAVAILABLE_MESSAGE.to_string()),
                         });
                     }
                 },
@@ -731,12 +711,3 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjects<Eng
 /// published number ([`crate::service::data_events::data_event_resources`], which names the
 /// objects a delete's record reports and runs before this handler refuses an over-long list).
 pub const MAX_KEYS_PER_DELETE: usize = 1_000;
-
-/// The `Code` an `Errors` entry carries when the delete marker an identifier needs could
-/// not be recorded because this emulator is at its own ceiling on stored versions.
-///
-/// Not an AWS code: S3 bounds neither the number of object versions nor their total size,
-/// so none of its codes describes this. It is the name of the framework's own 400 refusal
-/// channel, which is how every other ceiling in this service is reported (`PutObject`'s
-/// count and byte budgets, `CreateBucket`'s bucket quota).
-const VERSION_CEILING_CODE: &str = "ValidationException";

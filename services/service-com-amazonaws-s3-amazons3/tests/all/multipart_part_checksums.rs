@@ -867,7 +867,7 @@ fn manifest_cases() -> Vec<ManifestCase> {
 async fn a_full_object_upload_completes_from_the_digests_its_part_writes_answered() {
     for row in manifest_cases() {
         // A store per row, so one row's parts and object cannot crowd another's out of the
-        // byte budget this emulator keeps per bucket.
+        // memory budget this emulator keeps for its whole object store.
         let router = router();
         let name = "multipart-full-object-manifest-bucket";
         bucket(&router, name).await;

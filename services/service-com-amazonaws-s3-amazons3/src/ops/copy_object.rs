@@ -1372,42 +1372,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
             crate::state::ObjectWrite::MetadataTooLarge { bytes } => {
                 return Err(crate::scaffolded::Scaffolded::metadata_too_large(bytes));
             }
-            // The emulator's own ceilings, not AWS quotas, so no AWS error code describes
-            // them: they go out through the framework's 400 `ValidationException` channel,
-            // the same channel `PutObject` uses for them.
-            crate::state::ObjectWrite::ObjectCountReached => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "the bucket {:?} already holds the maximum of {} objects this \
-                     emulator keeps per bucket; delete an object before copying {:?} \
-                     into it",
-                    input.bucket,
-                    crate::state::MAX_OBJECTS_PER_BUCKET,
-                    input.key
-                )));
-            }
-            crate::state::ObjectWrite::ByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "copying {:?} would leave the bucket {:?} holding {would_hold} bytes \
-                     of objects, past the {} bytes this emulator keeps per bucket",
-                    input.key,
-                    input.bucket,
-                    crate::state::MAX_OBJECT_BYTES_PER_BUCKET
-                )));
-            }
-            crate::state::ObjectWrite::TotalObjectCountReached => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "this emulator already holds the maximum of {} objects across every \
-                     bucket; delete an object before copying {:?}",
-                    crate::state::MAX_OBJECTS_TOTAL, input.key
-                )));
-            }
-            crate::state::ObjectWrite::TotalByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "copying {:?} would leave this emulator holding {would_hold} bytes of \
-                     objects across every bucket, past the {} bytes it keeps in total",
-                    input.key,
-                    crate::state::MAX_OBJECT_BYTES_TOTAL
-                )));
+            // The store's own memory guard, which is no quota of the API: S3 bounds neither
+            // what a bucket holds nor what an account holds, so the answer is the code it
+            // publishes for a request it cannot handle, worded in the one place every write
+            // of this service words it ([`crate::service::object_write::store_full`]).
+            crate::state::ObjectWrite::TotalVersionCountReached
+            | crate::state::ObjectWrite::TotalByteBudgetReached { .. } => {
+                return Err(crate::service::object_write::store_full());
             }
         }
 

@@ -38,8 +38,8 @@ use std::time::SystemTime;
 use md5::{Digest, Md5};
 use service_com_amazonaws_s3_amazons3::state::{
     ComAmazonawsS3Amazons3State, Object, ObjectEncryption, ObjectWrite, DEFAULT_STORAGE_CLASS,
-    MAX_OBJECTS_PER_BUCKET, MAX_OBJECTS_TOTAL, MAX_OBJECT_BYTES_PER_BUCKET,
-    MAX_OBJECT_BYTES_TOTAL, MAX_OBJECT_KEY_BYTES, MAX_OBJECT_METADATA_BYTES,
+    MAX_OBJECT_KEY_BYTES, MAX_OBJECT_METADATA_BYTES, MAX_RETAINED_BYTES_TOTAL,
+    MAX_STORED_VERSIONS_TOTAL,
 };
 use service_com_amazonaws_s3_amazons3::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -713,10 +713,10 @@ async fn object_writes_and_reads_are_refused_outside_what_is_stored() {
 }
 
 #[tokio::test]
-async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
-    // This suite needs the store itself, to stand a bucket at each ceiling without
-    // dispatching a thousand requests. The engine is the SAME one the router hands the
-    // service, so what is seeded here is what the handler sees.
+async fn object_writes_are_bounded_only_by_the_published_key_and_metadata_limits() {
+    // This suite needs the store itself, to stand a bucket past every capacity figure this
+    // emulator ever kept without dispatching thousands of requests. The engine is the SAME
+    // one the router hands the service, so what is seeded here is what the handler sees.
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -754,9 +754,9 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
         );
     }
 
-    // What the budgets count is what an object RETAINS, not its payload alone: the
-    // strings kept beside it and every metadata key and value are part of the footprint,
-    // so none of them can escape a ceiling.
+    // What the store's memory guard counts is what an object RETAINS, not its payload
+    // alone: the strings kept beside it and every metadata key and value are part of the
+    // footprint, so none of them escapes the one budget that bounds this process.
     let plain = sized_object(10);
     let mut annotated = sized_object(10);
     annotated
@@ -822,12 +822,15 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
         );
     }
 
-    // The per-bucket count ceiling: the store refuses a FRESH key past it, by any name,
-    // while a key the bucket already holds is a replacement and stays allowed.
+    // No ceiling of the BUCKET's own bounds how many objects it holds — "you can store any
+    // number of objects in a bucket" — so a bucket is seeded past every count this emulator
+    // ever kept per bucket and still takes a write over the wire. Seeded through the store
+    // because the point is the COUNT, not the dispatch.
+    const KEYS_PAST_EVERY_FORMER_CEILING: usize = 1_200;
     {
         let state = engine.state::<ComAmazonawsS3Amazons3State>();
         let mut store = state.lock();
-        for index in 0..MAX_OBJECTS_PER_BUCKET {
+        for index in 0..KEYS_PAST_EVERY_FORMER_CEILING {
             let outcome = store.put_object(
                 "count-bound-bucket",
                 &format!("filler-{index}"),
@@ -836,29 +839,14 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
             assert_eq!(
                 outcome,
                 Some(ObjectWrite::Created),
-                "case {index}: seeding the bucket up to the ceiling must record every \
-                 object, got {outcome:?}"
-            );
-        }
-        for name in ["one-more", "another/key.bin"] {
-            assert_eq!(
-                store.put_object("count-bound-bucket", name, one_byte_object()),
-                Some(ObjectWrite::ObjectCountReached),
-                "case {name:?}: a fresh key past {MAX_OBJECTS_PER_BUCKET} objects must be \
-                 refused by the store"
+                "case {index}: a bucket takes any number of objects, so object {index} \
+                 must be recorded, got {outcome:?}"
             );
         }
         assert_eq!(
             store.put_object("count-bound-bucket", "filler-0", one_byte_object()),
             Some(ObjectWrite::Replaced),
-            "a key the bucket already holds adds no entry, so it must still be accepted"
-        );
-        // A bucket that is NOT at its ceiling still takes writes, so the refusals above
-        // are the bucket's own ceiling rather than a store-wide stop.
-        assert_eq!(
-            store.put_object("key-bound-bucket", "another-object", one_byte_object()),
-            Some(ObjectWrite::Created),
-            "the ceiling is per bucket, so another bucket must still accept a write"
+            "a key the bucket already holds is a replacement"
         );
         // And a name that is not a bucket is refused rather than created.
         assert_eq!(
@@ -867,30 +855,34 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
             "a write naming a bucket this emulator does not hold must record nothing"
         );
     }
-    let past_count = put_object(&router, "count-bound-bucket", "over-the-ceiling", b"x", &[]).await;
-    assert_eq!(
-        past_count.status, 400,
-        "case \"past the object ceiling\": expected the write to be refused with HTTP \
-         400, got {} with body {:?}",
-        past_count.status,
-        text(&past_count)
-    );
-    assert_eq!(
-        past_count.error_code(),
-        "ValidationException",
-        "case \"past the object ceiling\": expected the framework's refusal code, got {:?}",
-        past_count.error_code()
-    );
+    for (case, key) in [
+        ("a fresh key past every former ceiling", "over-the-ceiling"),
+        ("a deep fresh key", "deep/path/one-more.bin"),
+    ] {
+        let answer = put_object(&router, "count-bound-bucket", key, b"x", &[]).await;
+        assert_eq!(
+            answer.status, 200,
+            "case {case:?}: a bucket holding {KEYS_PAST_EVERY_FORMER_CEILING} objects must \
+             still serve a write, got {} with body {:?}",
+            answer.status,
+            text(&answer)
+        );
+        let read_back = get_object(&router, "count-bound-bucket", key, "", &[]).await;
+        assert_eq!(
+            read_back.status, 200,
+            "case {case:?}: the write must read back, got GetObject {}",
+            read_back.status
+        );
+    }
 
-    // The per-bucket byte budget, in the other dimension: a handful of large objects
-    // reaches it even though the count ceiling is nowhere near. The budget counts what an
-    // object RETAINS — payload plus the strings kept beside it — so the rows are sized by
-    // retained footprint.
-    let chunk = MAX_OBJECT_BYTES_PER_BUCKET / 8;
+    // The other dimension, and the same rule: S3 bounds what one bucket HOLDS not at all,
+    // so objects summing well past every per-bucket budget this emulator ever kept are all
+    // recorded in one bucket, whatever each of them retains.
+    let chunk = 24 * 1024 * 1024;
     {
         let state = engine.state::<ComAmazonawsS3Amazons3State>();
         let mut store = state.lock();
-        for index in 0..8 {
+        for index in 0..4 {
             let outcome = store.put_object(
                 "byte-bound-bucket",
                 &format!("chunk-{index}"),
@@ -899,30 +891,20 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
             assert_eq!(
                 outcome,
                 Some(ObjectWrite::Created),
-                "case {index}: seeding the bucket up to its byte budget must record every \
-                 object, got {outcome:?}"
+                "case {index}: a bucket holding {} bytes must still record a {chunk}-byte \
+                 object, got {outcome:?}",
+                index * chunk
             );
         }
-        // At the budget exactly: one more byte, under any fresh key, is refused.
-        for name in ["one-byte-more", "deep/path/one-byte-more"] {
-            assert!(
-                matches!(
-                    store.put_object("byte-bound-bucket", name, sized_object(1)),
-                    Some(ObjectWrite::ByteBudgetReached { .. })
-                ),
-                "case {name:?}: a write past {MAX_OBJECT_BYTES_PER_BUCKET} stored bytes \
-                 must be refused by the store"
-            );
-        }
-        // Replacing an object releases everything it retained, so a same-size
-        // replacement fits.
+        // Replacing an object releases everything it retained, so what the bucket holds
+        // does not grow with a same-size replacement.
         assert_eq!(
             store.put_object("byte-bound-bucket", "chunk-0", object_retaining(chunk)),
             Some(ObjectWrite::Replaced),
-            "a replacement that retains the same bytes must still be accepted"
+            "a replacement that retains the same bytes must be recorded as a replacement"
         );
-        // An object with NO payload still retains its strings, so at the budget it is
-        // refused too — the ceiling counts the footprint, not just the body.
+        // An object with NO payload still retains its strings, and is recorded like any
+        // other: nothing about the footprint is a ceiling.
         let mut empty_with_metadata = sized_object(0);
         empty_with_metadata
             .metadata
@@ -932,44 +914,64 @@ async fn the_object_store_is_bounded_in_count_bytes_and_key_length() {
             "empty-with-metadata",
             empty_with_metadata,
         );
-        assert!(
-            matches!(outcome, Some(ObjectWrite::ByteBudgetReached { .. })),
-            "case \"empty body with metadata\": a payload-free object still retains bytes, \
-             so it must be refused at the budget, got {outcome:?}"
+        assert_eq!(
+            outcome,
+            Some(ObjectWrite::Created),
+            "case \"empty body with metadata\": a payload-free object must be recorded, got \
+             {outcome:?}"
         );
     }
     let past_bytes = put_object(&router, "byte-bound-bucket", "over-the-budget", b"x", &[]).await;
     assert_eq!(
-        past_bytes.status, 400,
-        "case \"past the byte budget\": expected the write to be refused with HTTP 400, \
-         got {} with body {:?}",
+        past_bytes.status, 200,
+        "case \"a bucket holding {} bytes\": the write must be served, got {} with body {:?}",
+        4 * chunk,
         past_bytes.status,
         text(&past_bytes)
     );
-    let absent = get_object(&router, "byte-bound-bucket", "over-the-budget", "", &[]).await;
+    let stored = get_object(&router, "byte-bound-bucket", "over-the-budget", "", &[]).await;
     assert_eq!(
-        absent.status, 404,
-        "case \"past the byte budget\": a refused write must store nothing, got GetObject \
-         {}",
-        absent.status
+        stored.status, 200,
+        "case \"a bucket holding {} bytes\": the write must read back, got GetObject {}",
+        4 * chunk,
+        stored.status
     );
 }
 
 #[tokio::test]
-async fn the_object_store_is_bounded_across_every_bucket() {
-    // The per-bucket ceilings alone would leave the store bounded only by their product
-    // with the bucket quota, so these are the ones that bound this process: whatever a
-    // caller does, over however many buckets, the object store holds at most
-    // MAX_OBJECTS_TOTAL objects and MAX_OBJECT_BYTES_TOTAL bytes of payload. Seeded
-    // through the store, which is the SAME one the router hands the service.
+async fn the_object_store_bounds_this_process_rather_than_a_bucket_or_an_account() {
+    // What bounds the store is this PROCESS's memory and nothing the API announces: AWS
+    // publishes no quota on what one bucket or one account holds, so there is ONE pair of
+    // whole-store figures and they are sized far above the traffic the API admits. Both
+    // halves of that are asserted here — the figures, and that writes spread over several
+    // buckets, summing past every capacity figure this emulator ever kept, are all
+    // recorded. Seeded through the store, which is the SAME one the router hands the
+    // service.
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
     router.register_service(EmulatedService::new(Arc::clone(&engine)));
 
-    // Enough buckets to reach the service-wide byte budget with each of them inside its
-    // own per-bucket budget, plus one more to write into once the store is full.
-    let buckets_to_fill = MAX_OBJECT_BYTES_TOTAL / MAX_OBJECT_BYTES_PER_BUCKET;
+    // An ordinary session of uploads leaves hundreds of MiB and thousands of versions in
+    // the store, so the guard has to be ABOVE that to be a memory bound rather than a
+    // quota a client meets.
+    let byte_budget = MAX_RETAINED_BYTES_TOTAL;
+    let version_budget = MAX_STORED_VERSIONS_TOTAL;
+    assert!(
+        byte_budget >= 512 * 1024 * 1024,
+        "case \"the store's byte budget\": it must take hundreds of MiB of uploads, got \
+         {byte_budget}"
+    );
+    assert!(
+        version_budget >= 100_000,
+        "case \"the store's version budget\": it must take tens of thousands of writes, \
+         got {version_budget}"
+    );
+
+    // Six buckets, each holding a 24 MiB object: 144 MiB across the store, which is more
+    // than this emulator ever kept in total, let alone per bucket.
+    let chunk = 24 * 1024 * 1024;
+    let buckets_to_fill = 6;
     for index in 0..=buckets_to_fill {
         bucket(&router, &format!("total-bound-{index}")).await;
     }
@@ -981,78 +983,68 @@ async fn the_object_store_is_bounded_across_every_bucket() {
             let outcome = store.put_object(
                 &format!("total-bound-{index}"),
                 "payload.bin",
-                object_retaining(MAX_OBJECT_BYTES_PER_BUCKET),
+                object_retaining(chunk),
             );
             assert_eq!(
                 outcome,
                 Some(ObjectWrite::Created),
-                "case {index}: filling bucket {index} to its own budget must be accepted, \
-                 got {outcome:?}"
+                "case {index}: a store already holding {} bytes must record a {chunk}-byte \
+                 object, got {outcome:?}",
+                index * chunk
             );
         }
-        // The store now holds exactly MAX_OBJECT_BYTES_TOTAL bytes: one more byte is
-        // refused, in the empty bucket and in a bucket that is itself at its budget.
+        // With 144 MiB across the store, one more byte is still recorded — in the empty
+        // bucket and in a bucket that already holds its own object.
         for name in [
             format!("total-bound-{buckets_to_fill}"),
             "total-bound-0".to_string(),
         ] {
             let outcome = store.put_object(&name, "one-byte-more", sized_object(1));
-            assert!(
-                matches!(
-                    outcome,
-                    Some(
-                        ObjectWrite::TotalByteBudgetReached { .. }
-                            | ObjectWrite::ByteBudgetReached { .. }
-                    )
-                ),
-                "case {name:?}: a write past {MAX_OBJECT_BYTES_TOTAL} stored bytes must be \
-                 refused by the store, got {outcome:?}"
+            assert_eq!(
+                outcome,
+                Some(ObjectWrite::Created),
+                "case {name:?}: a write into a store holding {} bytes must be recorded, got \
+                 {outcome:?}",
+                buckets_to_fill * chunk
             );
         }
-        // Replacing an object releases everything it retained, so a same-size replacement
-        // fits even with the store full.
+        // Replacing an object releases everything it retained, so what the store holds
+        // does not grow with a same-size replacement.
         assert_eq!(
-            store.put_object(
-                "total-bound-0",
-                "payload.bin",
-                object_retaining(MAX_OBJECT_BYTES_PER_BUCKET)
-            ),
+            store.put_object("total-bound-0", "payload.bin", object_retaining(chunk)),
             Some(ObjectWrite::Replaced),
-            "a replacement that retains the same bytes must still be accepted"
+            "a replacement that retains the same bytes must be recorded as a replacement"
         );
     }
 
-    // And over the wire: a fresh key in the empty bucket is refused rather than recorded.
+    // And over the wire: a fresh key in the empty bucket is served and reads back.
     let empty_bucket = format!("total-bound-{buckets_to_fill}");
-    let refused = put_object(&router, &empty_bucket, "dags/dag.py", b"# dag", &[]).await;
+    let stored = put_object(&router, &empty_bucket, "dags/dag.py", b"# dag", &[]).await;
     assert_eq!(
-        refused.status, 400,
-        "case \"store full\": expected the write to be refused with HTTP 400, got {} with \
-         body {:?}",
-        refused.status,
-        text(&refused)
+        stored.status, 200,
+        "case \"a store holding {} bytes\": the write must be served, got {} with body {:?}",
+        buckets_to_fill * chunk,
+        stored.status,
+        text(&stored)
     );
+    let read_back = get_object(&router, &empty_bucket, "dags/dag.py", "", &[]).await;
     assert_eq!(
-        refused.error_code(),
-        "ValidationException",
-        "case \"store full\": expected the framework's refusal code, got {:?}",
-        refused.error_code()
-    );
-    let absent = get_object(&router, &empty_bucket, "dags/dag.py", "", &[]).await;
-    assert_eq!(
-        absent.status, 404,
-        "case \"store full\": a refused write must store nothing, got GetObject {}",
-        absent.status
+        read_back.body.as_ref(),
+        b"# dag",
+        "case \"a store holding {} bytes\": the write must read back byte-exact, got {:?}",
+        buckets_to_fill * chunk,
+        text(&read_back)
     );
 
-    // The object-count ceiling across buckets, in the other dimension: one-byte objects
-    // reach MAX_OBJECTS_TOTAL long before the byte budget, spread over as many buckets as
-    // the per-bucket ceiling needs.
+    // The other dimension, over many buckets: thousands of one-byte objects spread over
+    // several buckets are all recorded, because no count anywhere — per key, per bucket or
+    // per account — is a ceiling a client can meet.
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
     router.register_service(EmulatedService::new(Arc::clone(&engine)));
-    let buckets_needed = MAX_OBJECTS_TOTAL / MAX_OBJECTS_PER_BUCKET;
+    let buckets_needed = 4;
+    let objects_each = 1_200;
     for index in 0..=buckets_needed {
         bucket(&router, &format!("count-total-{index}")).await;
     }
@@ -1060,7 +1052,7 @@ async fn the_object_store_is_bounded_across_every_bucket() {
         let state = engine.state::<ComAmazonawsS3Amazons3State>();
         let mut store = state.lock();
         for bucket_index in 0..buckets_needed {
-            for object_index in 0..MAX_OBJECTS_PER_BUCKET {
+            for object_index in 0..objects_each {
                 let outcome = store.put_object(
                     &format!("count-total-{bucket_index}"),
                     &format!("filler-{object_index}"),
@@ -1069,8 +1061,9 @@ async fn the_object_store_is_bounded_across_every_bucket() {
                 assert_eq!(
                     outcome,
                     Some(ObjectWrite::Created),
-                    "case ({bucket_index}, {object_index}): seeding the store up to \
-                     {MAX_OBJECTS_TOTAL} objects must record every one, got {outcome:?}"
+                    "case ({bucket_index}, {object_index}): every one of \
+                     {objects_each} objects in each of {buckets_needed} buckets must be \
+                     recorded, got {outcome:?}"
                 );
             }
         }
@@ -1081,14 +1074,15 @@ async fn the_object_store_is_bounded_across_every_bucket() {
         );
         assert_eq!(
             outcome,
-            Some(ObjectWrite::TotalObjectCountReached),
-            "a fresh key past {MAX_OBJECTS_TOTAL} objects across every bucket must be \
-             refused by the store, got {outcome:?}"
+            Some(ObjectWrite::Created),
+            "a fresh key with {} objects already in the store must be recorded, got \
+             {outcome:?}",
+            buckets_needed * objects_each
         );
         assert_eq!(
             store.put_object("count-total-0", "filler-0", one_byte_object()),
             Some(ObjectWrite::Replaced),
-            "a key a bucket already holds adds no entry, so it must still be accepted"
+            "a key a bucket already holds is a replacement"
         );
     }
     let past_total = put_object(
@@ -1100,9 +1094,10 @@ async fn the_object_store_is_bounded_across_every_bucket() {
     )
     .await;
     assert_eq!(
-        past_total.status, 400,
-        "case \"object count full\": expected the write to be refused with HTTP 400, got \
-         {} with body {:?}",
+        past_total.status, 200,
+        "case \"a store holding {} objects\": the write must be served, got {} with body \
+         {:?}",
+        buckets_needed * objects_each,
         past_total.status,
         text(&past_total)
     );

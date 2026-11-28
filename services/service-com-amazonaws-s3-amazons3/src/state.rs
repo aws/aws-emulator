@@ -187,48 +187,39 @@ pub const ARCHIVED_STORAGE_CLASSES: [&str; 2] = ["GLACIER", "DEEP_ARCHIVE"];
 /// before this check, and a key is allocated per stored object.
 pub const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 
-/// How many objects one bucket in this emulator may hold.
+/// How many object versions this emulator's object store holds, across every bucket.
 ///
-/// NOT a fidelity claim: S3 publishes no such limit ("you can store any number of objects
-/// in a bucket"). It is the emulator's own ceiling, because every object it records lives
-/// in this process's memory — set generously so no realistic workflow meets it, and
-/// enforced so a caller looping on `PutObject` with fresh keys cannot grow the store
-/// without bound. A write past it is refused rather than recorded, the way a create past
-/// [`MAX_BUCKETS_PER_ACCOUNT`] is.
-pub const MAX_OBJECTS_PER_BUCKET: usize = 1_000;
+/// NOT a quota of the API, in any dimension AWS exposes: S3 bounds neither what ONE bucket
+/// holds ("you can store any number of objects in a bucket") nor how many versions one key
+/// keeps, so nothing here is judged per bucket, per key or per account, and the 1,000 figure
+/// S3 publishes about a listing is that listing's default PAGE SIZE
+/// (`smithy_query(query="operation",operation="ListObjectsV2")` reports
+/// `paginated {inputToken: ContinuationToken, outputToken: NextContinuationToken, pageSize:
+/// MaxKeys}`) rather than anything about storage. What remains is the one bound on this
+/// PROCESS: every version the store records — a current object, a noncurrent version behind
+/// it, a delete marker — occupies this emulator's memory for as long as it runs, so a caller
+/// looping on writes would otherwise grow it without end.
+///
+/// Sized orders of magnitude above the traffic the API admits, so no session an SDK or the
+/// CLI drives reaches it: a quarter of a million stored versions is far more than any
+/// workload a test double is handed, and the store's own byte budget
+/// ([`MAX_RETAINED_BYTES_TOTAL`]) bounds what those versions carry. A write that would pass
+/// it is refused with the code S3 answers a request it cannot handle with
+/// ([`SERVICE_UNAVAILABLE_CODE`]), never with a quota the API announces.
+pub const MAX_STORED_VERSIONS_TOTAL: usize = 250_000;
 
-/// How many bytes of object payload one bucket in this emulator may hold in total.
+/// How many bytes of object payload this emulator's object store retains, across every
+/// bucket.
 ///
-/// NOT a fidelity claim, in either direction: AWS bounds what one bucket holds not at all,
-/// and the only size constraints it enforces are on a SINGLE payload — 5 GiB per
-/// `PutObject`, and 5 MiB to 5 GiB per part of a multipart upload. This is the emulator's
-/// own budget, because an object's bytes are kept verbatim in this process's memory, and it
-/// is therefore set ABOVE the traffic AWS accepts rather than below it: an SDK or the CLI
-/// uploading a file of tens of MiB in 8 MiB parts, several such files into one bucket, and
-/// the parts of an upload in flight beside the objects already stored. A write past it is
-/// refused rather than recorded — a refusal that is the emulator's own and says so, never a
-/// quota the API announces.
-pub const MAX_OBJECT_BYTES_PER_BUCKET: usize = 64 * 1024 * 1024;
-
-/// How many objects this emulator will hold ACROSS every bucket.
-///
-/// The per-bucket ceilings alone would leave total memory bounded only by their product
-/// with [`MAX_BUCKETS_PER_ACCOUNT`], so the service-wide ones below are what actually
-/// bound this process: whatever a caller does — one bucket or ten thousand — the object
-/// store holds at most this many objects and [`MAX_OBJECT_BYTES_TOTAL`] bytes of payload.
-pub const MAX_OBJECTS_TOTAL: usize = 10_000;
-
-/// How many bytes of object payload this emulator will hold across every bucket.
-///
-/// Same reason as [`MAX_OBJECTS_TOTAL`], and the same order as the service-wide retained
-/// budgets of this workspace's peer services (appconfig's
-/// `MAX_TOTAL_HOSTED_CONFIGURATION_BYTES`, codeguruprofiler's `MAX_RETAINED_PROFILE_BYTES`).
-/// A write that would take the whole store past it is refused rather than recorded.
-///
-/// Sized above [`MAX_OBJECT_BYTES_PER_BUCKET`] for the same reason that one is sized above
-/// the traffic AWS accepts: several buckets each holding the multipart uploads of an
-/// ordinary session is traffic S3 serves, so it is traffic this store records.
-pub const MAX_OBJECT_BYTES_TOTAL: usize = 128 * 1024 * 1024;
+/// The bytes half of [`MAX_STORED_VERSIONS_TOTAL`], and the same kind of bound: an object's
+/// payload is kept verbatim in this process's memory, so one number has to cap what every
+/// bucket holds between them. It is NOT a fidelity claim in either direction — AWS bounds
+/// what a bucket or an account holds not at all, and the only size constraints it enforces
+/// are on a SINGLE payload (5 GiB per `PutObject`, 5 MiB to 5 GiB per part of a multipart
+/// upload) — so this is set far above the traffic AWS accepts rather than below it: a
+/// gibibyte is many times what any one request can carry and many times what an ordinary
+/// session of uploads, multipart or otherwise, leaves in the store.
+pub const MAX_RETAINED_BYTES_TOTAL: usize = 1024 * 1024 * 1024;
 
 /// How many sessions `CreateSession` keeps vended at once.
 ///
@@ -295,7 +286,10 @@ pub const MAX_OBJECT_METADATA_BYTES: usize = 2 * 1024;
 
 /// What [`ComAmazonawsS3Amazons3State::put_object`] did, so the caller answers each
 /// outcome without re-deriving it — and cannot record an object without having gone
-/// through the key, count and byte-budget checks, per bucket AND service-wide.
+/// through the key and metadata checks and the store's own memory guard.
+///
+/// There is no per-bucket outcome, in either dimension, because there is no per-bucket
+/// ceiling: a bucket holds as many objects, versions and bytes as the whole store does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectWrite {
     /// The object was recorded at a key the bucket did not hold.
@@ -307,17 +301,11 @@ pub enum ObjectWrite {
     /// The request's user-defined metadata is larger than
     /// [`MAX_OBJECT_METADATA_BYTES`]; nothing was written.
     MetadataTooLarge { bytes: usize },
-    /// The bucket already holds [`MAX_OBJECTS_PER_BUCKET`] objects at other keys; nothing
-    /// was written.
-    ObjectCountReached,
-    /// Recording the object would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`]
-    /// retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// This emulator already holds [`MAX_OBJECTS_TOTAL`] objects across every bucket;
-    /// nothing was written.
-    TotalObjectCountReached,
+    /// This emulator already holds [`MAX_STORED_VERSIONS_TOTAL`] object versions across
+    /// every bucket; nothing was written.
+    TotalVersionCountReached,
     /// Recording the object would take the whole store past
-    /// [`MAX_OBJECT_BYTES_TOTAL`] retained bytes; nothing was written.
+    /// [`MAX_RETAINED_BYTES_TOTAL`] retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
@@ -342,37 +330,30 @@ pub enum ObjectDeletion {
         version_id: Option<String>,
         displaced_object: bool,
     },
-    /// The bucket is at [`MAX_OBJECTS_PER_BUCKET`] stored versions, so the delete marker
-    /// this delete would lay was refused rather than recorded; nothing was written.
-    VersionCountReached,
-    /// This emulator is at [`MAX_OBJECTS_TOTAL`] stored versions across every bucket, so
-    /// the delete marker was refused rather than recorded; nothing was written.
+    /// This emulator is at [`MAX_STORED_VERSIONS_TOTAL`] stored versions across every
+    /// bucket, so the delete marker was refused rather than recorded; nothing was written.
     TotalVersionCountReached,
 }
 
 /// What [`ComAmazonawsS3Amazons3State::replace_object_tags`] did, so the caller answers
 /// each outcome without re-deriving it — and cannot record a tag set without having gone
-/// through the byte budgets a stored object's tags count against, per bucket AND
-/// service-wide.
+/// through the byte budget a stored object's tags count against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectTagWrite {
     /// The object's tag set is now the one that was handed in.
     Applied,
     /// The bucket exists but holds no object at that key; nothing was written.
     NoSuchKey,
-    /// Keeping the tag set would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`]
-    /// retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// Keeping the tag set would take the whole store past [`MAX_OBJECT_BYTES_TOTAL`]
+    /// Keeping the tag set would take the whole store past [`MAX_RETAINED_BYTES_TOTAL`]
     /// retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
 /// What [`ComAmazonawsS3Amazons3State::replace_object_retention`] did, so the caller
 /// answers each outcome without re-deriving it — and cannot record a retention without
-/// having gone through the byte budgets a stored object's members count against, per
-/// bucket AND service-wide. The shape [`ObjectTagWrite`] has, for the same reason: a
-/// retention is one more string kept beside an object.
+/// having gone through the byte budget a stored object's members count against. The shape
+/// [`ObjectTagWrite`] has, for the same reason: a retention is one more string kept beside
+/// an object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRetentionWrite {
     /// The addressed object version's retention is now the one that was handed in (or
@@ -380,20 +361,17 @@ pub enum ObjectRetentionWrite {
     Applied,
     /// The bucket exists but holds no such object version; nothing was written.
     NoSuchObject,
-    /// Keeping the retention would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`]
-    /// retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// Keeping the retention would take the whole store past [`MAX_OBJECT_BYTES_TOTAL`]
+    /// Keeping the retention would take the whole store past [`MAX_RETAINED_BYTES_TOTAL`]
     /// retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
 /// What [`ComAmazonawsS3Amazons3State::replace_object_encryption`] did, so the caller
 /// answers each outcome without re-deriving it — and cannot record an encryption
-/// configuration without having gone through the byte budgets a stored object's members
-/// count against, per bucket AND service-wide. The shape [`ObjectRetentionWrite`] has, for
-/// the same reason: an encryption configuration is a handful of caller-supplied strings
-/// kept beside an object ([`ObjectEncryption::retained_bytes`] counts them).
+/// configuration without having gone through the byte budget a stored object's members
+/// count against. The shape [`ObjectRetentionWrite`] has, for the same reason: an
+/// encryption configuration is a handful of caller-supplied strings kept beside an object
+/// ([`ObjectEncryption::retained_bytes`] counts them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectEncryptionWrite {
     /// The addressed object version's encryption configuration is now the one that was
@@ -401,11 +379,8 @@ pub enum ObjectEncryptionWrite {
     Applied,
     /// The bucket exists but holds no such object version; nothing was written.
     NoSuchObject,
-    /// Keeping the configuration would take the bucket past
-    /// [`MAX_OBJECT_BYTES_PER_BUCKET`] retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
     /// Keeping the configuration would take the whole store past
-    /// [`MAX_OBJECT_BYTES_TOTAL`] retained bytes; nothing was written.
+    /// [`MAX_RETAINED_BYTES_TOTAL`] retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
@@ -427,48 +402,41 @@ pub enum ObjectLegalHoldWrite {
 
 /// What [`ComAmazonawsS3Amazons3State::replace_object_acl`] did, so the caller answers
 /// each outcome without re-deriving it — and cannot record an ACL without having gone
-/// through the byte budgets a stored object's members count against, per bucket AND
-/// service-wide. The shape [`ObjectRetentionWrite`] has, for the same reason: an ACL is a
-/// list of caller-supplied strings kept beside an object ([`acl_grants_bytes`] measures
-/// it).
+/// through the byte budget a stored object's members count against. The shape
+/// [`ObjectRetentionWrite`] has, for the same reason: an ACL is a list of caller-supplied
+/// strings kept beside an object ([`acl_grants_bytes`] measures it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectAclWrite {
     /// The addressed object version's ACL is now the one that was handed in.
     Applied,
     /// The bucket exists but holds no such object version; nothing was written.
     NoSuchObject,
-    /// Keeping the ACL would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`] retained
-    /// bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// Keeping the ACL would take the whole store past [`MAX_OBJECT_BYTES_TOTAL`] retained
-    /// bytes; nothing was written.
+    /// Keeping the ACL would take the whole store past [`MAX_RETAINED_BYTES_TOTAL`]
+    /// retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
 /// What [`ComAmazonawsS3Amazons3State::restore_object_version`] did, so the caller answers
 /// each outcome without re-deriving it — and cannot record a restore without having gone
-/// through the byte budgets a stored object's members count against, per bucket AND
-/// service-wide. The shape [`ObjectRetentionWrite`] has, for the same reason: a restore is
-/// one more record kept beside an object.
+/// through the byte budget a stored object's members count against. The shape
+/// [`ObjectRetentionWrite`] has, for the same reason: a restore is one more record kept
+/// beside an object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRestoreWrite {
     /// The addressed object version now carries the restore that was handed in.
     Applied,
     /// The bucket exists but holds no such object version; nothing was written.
     NoSuchObject,
-    /// Keeping the restore would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`]
-    /// retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// Keeping the restore would take the whole store past [`MAX_OBJECT_BYTES_TOTAL`]
+    /// Keeping the restore would take the whole store past [`MAX_RETAINED_BYTES_TOTAL`]
     /// retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
 /// What [`ComAmazonawsS3Amazons3State::put_object_annotation`] did, so the caller answers
 /// each outcome without re-deriving it — and cannot record an annotation without having
-/// gone through the per-object annotation ceiling and the byte budgets a stored object's
-/// members count against, per bucket AND service-wide. The shape [`ObjectRestoreWrite`]
-/// has, for the same reason: an annotation is one more payload kept beside an object.
+/// gone through the per-object annotation ceiling and the byte budget a stored object's
+/// members count against. The shape [`ObjectRestoreWrite`] has, for the same reason: an
+/// annotation is one more payload kept beside an object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationWrite {
     /// The addressed object version now carries the annotation that was handed in, under
@@ -482,11 +450,8 @@ pub enum AnnotationWrite {
     /// the ceiling in force ([`MAX_ANNOTATIONS_PER_OBJECT`]), so the caller reports the two
     /// counts the refusal states without re-deriving either.
     LimitReached { would_hold: usize, limit: usize },
-    /// Keeping the annotation would take the bucket past [`MAX_OBJECT_BYTES_PER_BUCKET`]
-    /// retained bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
-    /// Keeping the annotation would take the whole store past [`MAX_OBJECT_BYTES_TOTAL`]
-    /// retained bytes; nothing was written.
+    /// Keeping the annotation would take the whole store past
+    /// [`MAX_RETAINED_BYTES_TOTAL`] retained bytes; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
@@ -648,7 +613,7 @@ pub fn annotation_name_rejection(name: &str) -> Option<AnnotationNameRejection> 
 /// NOT a fidelity claim: S3 publishes no limit on concurrent multipart uploads of a
 /// bucket, and the model bounds nothing either (`MultipartUploadId` is a plain string,
 /// `smithy_query(query="shape",shape="MultipartUploadId")`). It is the emulator's own
-/// ceiling, for the same reason as [`MAX_OBJECTS_PER_BUCKET`]: every upload this store
+/// ceiling, for the same reason as [`MAX_STORED_VERSIONS_TOTAL`]: every upload this store
 /// records lives in this process's memory, so a caller looping on
 /// `CreateMultipartUpload` must not grow it without bound. An initiation past it is
 /// refused rather than recorded.
@@ -656,8 +621,8 @@ pub const MAX_MULTIPART_UPLOADS_PER_BUCKET: usize = 1_000;
 
 /// How many in-progress multipart uploads this emulator keeps ACROSS every bucket.
 ///
-/// Same reason as [`MAX_OBJECTS_TOTAL`]: the per-bucket ceiling alone would leave the
-/// total bounded only by its product with [`MAX_BUCKETS_PER_ACCOUNT`], so this is what
+/// Same reason as [`MAX_STORED_VERSIONS_TOTAL`]: the per-bucket ceiling alone would leave
+/// the total bounded only by its product with [`MAX_BUCKETS_PER_ACCOUNT`], so this is what
 /// bounds the uploads this process holds whatever a caller does.
 pub const MAX_MULTIPART_UPLOADS_TOTAL: usize = 10_000;
 
@@ -675,7 +640,8 @@ pub const MAX_RETIRED_MULTIPART_UPLOADS_PER_BUCKET: usize = MAX_MULTIPART_UPLOAD
 
 /// What [`ComAmazonawsS3Amazons3State::create_multipart_upload`] did, so the caller
 /// answers each outcome without re-deriving it — and cannot record an upload without
-/// having gone through the key, metadata and count checks, per bucket AND service-wide.
+/// having gone through the key, metadata and count checks, per bucket AND service-wide —
+/// the counts of in-progress UPLOADS, which are what this emulator keeps in flight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultipartUploadCreation {
     /// The upload was recorded, and is addressed by this id from now on.
@@ -718,7 +684,9 @@ pub const MIN_MULTIPART_PART_BYTES: usize = 5 * 1024 * 1024;
 
 /// What [`ComAmazonawsS3Amazons3State::upload_part`] did, so the caller answers each
 /// outcome without re-deriving it — and cannot record a part without having gone through
-/// the byte budgets, per bucket AND service-wide.
+/// the store's byte budget. A part is bounded by nothing else: "Part size: 5 MiB to 5 GiB"
+/// is the only size rule S3 publishes about one, and `UploadPart` models no error at all
+/// (`smithy_query(query="operation",operation="UploadPart")` reports `errors: []`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PartUpload {
     /// The part was recorded against the upload. `replaced` is whether the upload already
@@ -729,11 +697,8 @@ pub enum PartUpload {
     /// The bucket has no such upload in progress under that id and key; nothing was
     /// written.
     NoSuchUpload,
-    /// Recording the part would leave the bucket holding more than
-    /// [`MAX_OBJECT_BYTES_PER_BUCKET`] bytes; nothing was written.
-    ByteBudgetReached { would_hold: usize },
     /// Recording the part would leave this emulator holding more than
-    /// [`MAX_OBJECT_BYTES_TOTAL`] bytes across every bucket; nothing was written.
+    /// [`MAX_RETAINED_BYTES_TOTAL`] bytes across every bucket; nothing was written.
     TotalByteBudgetReached { would_hold: usize },
 }
 
@@ -758,7 +723,7 @@ pub enum UploadAbort {
 
 /// What [`ComAmazonawsS3Amazons3State::complete_multipart_upload`] did, so the caller
 /// answers each outcome without re-deriving it — and cannot turn an upload into an object
-/// without having gone through the object-write ceilings, per bucket AND service-wide.
+/// without having gone through the object-write checks the store applies to every write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadCompletion {
     /// The parts became the object at the upload's key, and the upload is no longer in

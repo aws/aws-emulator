@@ -3214,14 +3214,15 @@ fn refusal_reason(
         Some(ObjectWrite::KeyTooLong { bytes }) => {
             format!("the object key is {bytes} bytes long, which Amazon S3 does not accept")
         }
-        Some(ObjectWrite::ObjectCountReached | ObjectWrite::TotalObjectCountReached) => {
-            format!("the destination Amazon S3 bucket {bucket} cannot hold another object")
+        // What is left of the object store's own refusals is the emulator's whole-store
+        // memory guard, which is about this process rather than about the destination bucket
+        // — so the reason says so instead of claiming a limit of that bucket's.
+        Some(ObjectWrite::TotalVersionCountReached) => {
+            format!("Amazon S3 cannot hold another object for the export to {bucket}")
         }
-        Some(
-            ObjectWrite::ByteBudgetReached { .. } | ObjectWrite::TotalByteBudgetReached { .. },
-        ) => format!(
-            "the destination Amazon S3 bucket {bucket} cannot hold the bytes of the export"
-        ),
+        Some(ObjectWrite::TotalByteBudgetReached { .. }) => {
+            format!("Amazon S3 cannot hold the bytes of the export to {bucket}")
+        }
         Some(ObjectWrite::MetadataTooLarge { bytes }) => {
             format!("the object's metadata is {bytes} bytes, which Amazon S3 does not accept")
         }

@@ -1,9 +1,10 @@
 Issue-Severity: HIGH
 Issue-Corpus: simparity-behavioral-aws-v1
 Issue-Corpus-Kind: behavioral
-Issue-Trace-Ids: s3.single-put-object-of-thirty-two-mib-round-trips-exactly s3.bucket-metadata-table-v1-surface-closed
+Issue-Trace-Ids: s3.single-put-object-of-thirty-two-mib-round-trips-exactly s3.bucket-metadata-table-v1-surface-closed s3.upload-part-of-twenty-mib-completes-and-reads-back-exactly
 Issue-Shape-Id: com.amazonaws.s3#AmazonS3
 Issue-Key: s3|PutObject|413
+Issue-Key: s3|UploadPart|413
 Issue-Key: s3.bucket-metadata-table-v1-surface-closed|run#7|AssertionError|assert get_code == "V1APIsNotAllowed", (
 Issue-Commit: bfa988ebb91b850d9b371924f94981e6ac902256
 
@@ -38,8 +39,13 @@ Fix: the core's request-body cap — raise it (or make it configurable) so a ser
 documented limits are what bound a write, and render an over-cap refusal in the claiming
 service's envelope rather than as a bare status. Same vendor cap as cause 4 of
 20261111T165323Z-s3-emulator-invented-storage-ceilings-refuse-valid-writes.md (a 20 MiB
-UploadPart), which that issue also attributes to the handler.
-Traces: s3.single-put-object-of-thirty-two-mib-round-trips-exactly.
+UploadPart): that report's other three causes are fixed and it has moved to things-that-now-work
+with a Resolution section, so its cause-4 check
+(`s3.upload-part-of-twenty-mib-completes-and-reads-back-exactly`, `Issue-Key: s3|UploadPart|413`)
+is carried here from now on — it is the same cap, measured the same way, and no service crate
+reaches it.
+Traces: s3.single-put-object-of-thirty-two-mib-round-trips-exactly,
+s3.upload-part-of-twenty-mib-completes-and-reads-back-exactly.
 
 Cause 2 of 2: the V1 S3 Metadata table operations answer `NotImplemented` where AWS answers
 `V1APIsNotAllowed`, and the sentence that refusal carries cannot be sourced from the material

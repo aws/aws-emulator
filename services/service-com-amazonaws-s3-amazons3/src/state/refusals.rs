@@ -1504,6 +1504,25 @@ pub const INTERNAL_ERROR_MESSAGE: &str = "We encountered an internal error. Plea
 /// The HTTP status [`INTERNAL_ERROR_CODE`] is rendered with: 500, from the same list.
 pub const INTERNAL_ERROR_STATUS: u16 = 500;
 
+/// The code S3 answers a request it is unable to handle with: "ServiceUnavailable — Service
+/// is unable to handle request" (same published list of error codes), at HTTP 503.
+///
+/// What this emulator answers a write it cannot HOLD with: reaching
+/// [`MAX_STORED_VERSIONS_TOTAL`] or [`MAX_RETAINED_BYTES_TOTAL`] is this process running out
+/// of the memory its object store lives in, which is a condition of the server rather than
+/// anything wrong with the request — so the answer is the code S3 publishes for a request it
+/// cannot serve right now, and a retry is the SDK's documented response to it. No quota is
+/// announced, because S3 publishes none: a bucket holds any number of objects, a key any
+/// number of versions, and a payload up to 5 GiB.
+pub const SERVICE_UNAVAILABLE_CODE: &str = "ServiceUnavailable";
+
+/// See [`SERVICE_UNAVAILABLE_CODE`] — the fixed text S3 sends with it, from that same list,
+/// nothing of which comes from the request.
+pub const SERVICE_UNAVAILABLE_MESSAGE: &str = "Service is unable to handle request.";
+
+/// The HTTP status [`SERVICE_UNAVAILABLE_CODE`] is rendered with: 503, from the same list.
+pub const SERVICE_UNAVAILABLE_STATUS: u16 = 503;
+
 /// How many default-encryption rules this emulator records for one bucket.
 ///
 /// NOT a fidelity claim, for the same reason as [`MAX_OWNERSHIP_CONTROLS_RULES`]:
@@ -1524,9 +1543,9 @@ pub const MAX_REPLICATION_RULES: usize = 1_000;
 /// How many destinations ONE write replicates to, and how many bytes of replicas it copies.
 ///
 /// This emulator's own ceilings, not AWS quotas: a stored configuration may name up to
-/// [`MAX_REPLICATION_RULES`] destinations and an object may be as large as
-/// [`MAX_OBJECT_BYTES_PER_BUCKET`], and the work ONE write would do is the PRODUCT of the
-/// two — both of them a caller's to choose. So the fan-out one call performs is bounded
+/// [`MAX_REPLICATION_RULES`] destinations and an object may be as large as the store's whole
+/// byte budget allows, and the work ONE write would do is the PRODUCT of the two — both of
+/// them a caller's to choose. So the fan-out one call performs is bounded
 /// here, in the place that performs it ([`ComAmazonawsS3Amazons3State::replicate_write`]),
 /// rather than by each factor separately: at most this many copies, carrying at most
 /// [`MAX_REPLICATION_BYTES_PER_WRITE`] bytes between them. Past either, the copies are not
@@ -1536,8 +1555,9 @@ pub const MAX_REPLICATION_DESTINATIONS_PER_WRITE: usize = 10;
 
 /// See [`MAX_REPLICATION_DESTINATIONS_PER_WRITE`] — the bytes half of the same bound, so a
 /// write of a large object fans out to fewer destinations rather than copying the product of
-/// the two ceilings.
-pub const MAX_REPLICATION_BYTES_PER_WRITE: usize = 4 * MAX_OBJECT_BYTES_PER_BUCKET;
+/// the two ceilings. Sized well above the bytes one request can carry, so the replication an
+/// ordinary write owes is always performed in full.
+pub const MAX_REPLICATION_BYTES_PER_WRITE: usize = 256 * 1024 * 1024;
 
 /// How many S3 Intelligent-Tiering configurations one bucket may carry.
 ///

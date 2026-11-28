@@ -738,26 +738,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::PartUpload::NoSuchUpload => {
                 return Err(UploadPartCopyErrorModeled::NoSuchUpload(NoSuchUpload {}).into());
             }
-            // The emulator's own ceilings, not AWS quotas (S3 bounds neither the number of
-            // objects nor their total size), so no AWS error code describes them: they go out
-            // through the framework's 400 `ValidationException` channel, the same channel
-            // `UploadPart` answers its own byte budgets through.
-            crate::state::PartUpload::ByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "copying part {} would leave the bucket {:?} holding {would_hold} bytes, \
-                     past the {} bytes this emulator keeps per bucket",
-                    input.part_number,
-                    input.bucket,
-                    crate::state::MAX_OBJECT_BYTES_PER_BUCKET
-                )));
-            }
-            crate::state::PartUpload::TotalByteBudgetReached { would_hold } => {
-                return Err(crate::scaffolded::Scaffolded::validation(format!(
-                    "copying part {} would leave this emulator holding {would_hold} bytes \
-                     across every bucket, past the {} bytes it keeps in total",
-                    input.part_number,
-                    crate::state::MAX_OBJECT_BYTES_TOTAL
-                )));
+            // The store's own memory guard, which is no quota of the API: S3 bounds what a
+            // bucket holds not at all, so the answer is the code it publishes for a request
+            // it cannot handle, worded where every write of this service words it
+            // ([`crate::service::object_write::store_full`]).
+            crate::state::PartUpload::TotalByteBudgetReached { .. } => {
+                return Err(crate::service::object_write::store_full());
             }
         }
 
