@@ -88,7 +88,9 @@ use super::types::*;
 
 use std::time::SystemTime;
 
-use crate::state::{domain_not_on_latest_software_version, internal_failure, AssociationRefusal};
+use crate::state::{
+    domain_not_on_latest_software_version, internal_failure, package_not_found, AssociationRefusal,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -229,6 +231,9 @@ fn refuse(refusal: AssociationRefusal) -> DissociatePackageError {
             DissociatePackageErrorModeled::ValidationException(
                 domain_not_on_latest_software_version(),
             )
+        }
+        AssociationRefusal::PackageUnresolved(_) => {
+            DissociatePackageErrorModeled::ValidationException(package_not_found())
         }
         AssociationRefusal::Conflict(payload) => {
             DissociatePackageErrorModeled::ConflictException(payload)

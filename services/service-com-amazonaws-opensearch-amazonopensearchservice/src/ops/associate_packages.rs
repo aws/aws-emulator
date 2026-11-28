@@ -88,8 +88,8 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use crate::state::{
-    domain_does_not_exist, domain_not_found, duplicate_packages_in_request, package_not_found,
-    AssociationRefusal, AssociationRequest, Package,
+    batch_package_not_found, domain_does_not_exist, domain_not_found,
+    duplicate_packages_in_request, AssociationRefusal, AssociationRequest, Package,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -229,7 +229,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         for entry in &input.package_list {
             if store.visible_package(&entry.package_id).is_none() {
                 return Err(AssociatePackagesErrorModeled::ValidationException(
-                    package_not_found(),
+                    batch_package_not_found(&entry.package_id),
                 )
                 .into());
             }
@@ -281,13 +281,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The shared refusal, as THIS operation's error channel names it.
 ///
-/// The decision reports an unresolvable `DomainName` as a condition; the sentence is
-/// this operation's, the same one it refuses such a batch with before any entry is
-/// planned.
+/// The decision reports an unresolvable `DomainName` and an unresolvable `PackageID` as
+/// conditions; the sentences are this operation's — the domain one the same it refuses
+/// such a batch with before any entry is planned, and the package one the batch sentence
+/// that names the id the account has no package for, so a caller that listed several is
+/// told which one it was.
 fn refuse(refusal: AssociationRefusal) -> AssociatePackagesError {
     match refusal {
         AssociationRefusal::DomainUnresolved(domain_name) => {
             AssociatePackagesErrorModeled::ValidationException(domain_does_not_exist(&domain_name))
+        }
+        AssociationRefusal::PackageUnresolved(package_id) => {
+            AssociatePackagesErrorModeled::ValidationException(batch_package_not_found(&package_id))
         }
         AssociationRefusal::Conflict(payload) => {
             AssociatePackagesErrorModeled::ConflictException(payload)

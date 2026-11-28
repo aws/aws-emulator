@@ -97,6 +97,10 @@ use super::types::*;
 /// The largest page this operation answers with: `MaxResults` is `@range(max: 100)`.
 const MAX_PAGE_SIZE: i32 = 100;
 
+/// [`MAX_PAGE_SIZE`] as a count of results — the page a request that names no page size
+/// is answered in, and the ceiling on the page one that does names.
+const MAX_PAGE: usize = MAX_PAGE_SIZE as usize;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -260,17 +264,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // "An optional parameter that specifies the maximum number of results to
-        // return. You can use nextToken to get the next page of results." The bound on a
-        // page is the one the REQUEST named; a request that named none (`MaxResults` is
-        // `@default(0)`) named no bound at all, so the listing it selected is reported
-        // COMPLETE in one answer and there is no token to hand out — which is what the
-        // recorded answer of an unfiltered call carries, every offering the Region
-        // publishes, and what the sibling published-catalog reads of this service answer.
-        // Every value reaching here other than that default is in `1..=MAX_PAGE_SIZE`.
-        let page_size = usize::try_from(input.max_results)
-            .ok()
-            .filter(|size| *size > 0)
-            .unwrap_or(selected.len());
+        // return. You can use nextToken to get the next page of results." The model
+        // defaults it to 0, so a request that asks for no particular page size gets the
+        // LARGEST page the model allows rather than the whole catalog in one answer:
+        // this listing spans every instance type the Region publishes times every term
+        // times every payment option, so it is read page by page, which is what the
+        // recorded answer of an unfiltered call carries — a page and a token to resume
+        // from. Every other value reaching here is in `1..=MAX_PAGE_SIZE`, the bound
+        // check above having refused the rest. It is the same reading of the same
+        // modelled default every other paged listing of this service makes.
+        let page_size = match usize::try_from(input.max_results) {
+            Ok(0) | Err(_) => MAX_PAGE,
+            Ok(size) => size.min(MAX_PAGE),
+        };
         let end = start.saturating_add(page_size).min(selected.len());
         let page: Vec<ReservedInstanceOffering> = selected[start..end]
             .iter()

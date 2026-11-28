@@ -168,13 +168,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::service_state(&*self.engine).ok_or_else(crate::state::state_unavailable)?;
 
         // `ARN` is `@length(min: 20, max: 2048)` with pattern `.*`, so the request
-        // boundary enforces only the length: a value that is not an ARN at all is a
-        // malformed request rather than an ARN naming nothing.
-        if !crate::state::is_arn(&input.arn) {
-            return Err(AddTagsErrorModeled::ValidationException(
-                crate::state::malformed_arn("ARN", &input.arn),
-            )
-            .into());
+        // boundary enforces only the length: a value that cannot be read as the ARN of a
+        // resource this service tags names nothing in any account, so it is refused for
+        // its FORM before the account's resources are consulted
+        // ([`crate::state::malformed_tagging_arn_refusal`]).
+        if let Some(refusal) = crate::state::malformed_tagging_arn_refusal(&input.arn) {
+            return Err(AddTagsErrorModeled::ValidationException(refusal).into());
         }
 
         let mut store = state.lock();
@@ -192,7 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         merged.extend(crate::state::tag_set(input.tag_list));
         if merged.len() > crate::state::TAG_QUOTA {
             return Err(AddTagsErrorModeled::LimitExceededException(
-                crate::state::tag_quota_exceeded(&arn, merged.len()),
+                crate::state::tag_quota_exceeded(),
             )
             .into());
         }

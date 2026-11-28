@@ -93,7 +93,10 @@ use super::types::*;
 use std::collections::BTreeSet;
 use std::time::SystemTime;
 
-use crate::state::{domain_does_not_exist, domain_not_found, AssociationRefusal, AssociationRequest};
+use crate::state::{
+    domain_does_not_exist, domain_not_found, package_not_found, AssociationRefusal,
+    AssociationRequest,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -232,12 +235,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The shared refusal, as THIS operation's error channel names it.
 ///
-/// The decision reports an unresolvable `DomainName` as a condition; the sentence is
-/// this operation's, which names the domain the call could not resolve.
+/// The decision reports an unresolvable `DomainName` and an unresolvable `PackageID` as
+/// conditions; the sentences are this operation's — the domain one names the domain the
+/// call could not resolve, and the package one is the fixed sentence this service words a
+/// SINGLE package's refusal with, which carries no part of the request.
 fn refuse(refusal: AssociationRefusal) -> AssociatePackageError {
     match refusal {
         AssociationRefusal::DomainUnresolved(domain_name) => {
             AssociatePackageErrorModeled::ValidationException(domain_does_not_exist(&domain_name))
+        }
+        AssociationRefusal::PackageUnresolved(_) => {
+            AssociatePackageErrorModeled::ValidationException(package_not_found())
         }
         AssociationRefusal::Conflict(payload) => {
             AssociatePackageErrorModeled::ConflictException(payload)

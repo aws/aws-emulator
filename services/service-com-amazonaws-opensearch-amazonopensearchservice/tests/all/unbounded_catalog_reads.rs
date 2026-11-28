@@ -14,9 +14,15 @@
 //! reported in one answer, which therefore carries no `NextToken` at all.
 //!
 //! The rows differ along what the rule generalises over: the catalog read (the
-//! engine-version catalog, the instance-type catalog and the Reserved Instance offering
-//! catalog, which is larger than the largest page the model admits), and how the absent
-//! bound is expressed (no `maxResults` at all, and the modelled default `maxResults=0`).
+//! engine-version catalog and the instance-type catalog) and how the absent bound is
+//! expressed (no `maxResults` at all, and the modelled default `maxResults=0`).
+//!
+//! The Reserved Instance offering catalog is the counter-case and is NOT one of those
+//! rows: AWS answers it page by page, so this service answers a request that names no
+//! bound in its own largest page and names where to resume
+//! ([`super::reserved_offering_service_page`]). What the two cases below assert about it
+//! is that following that token reaches every offering, and that a bound a request does
+//! name is honoured.
 
 use std::collections::BTreeSet;
 
@@ -56,11 +62,6 @@ fn catalogs() -> Vec<Catalog> {
             case: "instance types",
             path: format!("{PREFIX}/opensearch/instanceTypeDetails/{PUBLISHED_RELEASE}"),
             member: "InstanceTypeDetails",
-        },
-        Catalog {
-            case: "reserved instance offerings",
-            path: format!("{PREFIX}/opensearch/reservedInstanceOfferings"),
-            member: "ReservedInstanceOfferings",
         },
     ]
 }

@@ -104,7 +104,8 @@ use super::types::*;
 use crate::state::vpc_network::{
     malformed_security_group_refusal, placed_vpc, resolve_security_groups, resolve_subnets,
     security_groups_outside_vpc_refusal, security_groups_refusal, subnet_outside_vpc,
-    unknown_security_group_refusal, ResolvedSecurityGroups,
+    unknown_security_group_refusal, unknown_subnet_refusal, ResolvedSecurityGroups,
+    ResolvedSubnets,
 };
 use crate::state::{
     request_region, subnet_outside_endpoint_vpc, vpc_endpoint_being_modified,
@@ -192,12 +193,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // made while the store is held, and the answer decides a refusal rather than
         // anything written, so a refused call changes nothing. An emulator with no EC2 to
         // ask resolves nothing, and nothing is what it refuses on.
-        let placements = match input.vpc_options.subnet_ids.as_deref() {
-            None => Vec::new(),
+        let subnets = match input.vpc_options.subnet_ids.as_deref() {
+            None => ResolvedSubnets::default(),
             Some(subnet_ids) => {
                 resolve_subnets(ctx, &request_region(ctx.parts()), subnet_ids).await
             }
         };
+
+        // A subnet the account's network has no record of names nothing the endpoint could
+        // be moved into, so the change is refused with that identifier before anything else
+        // about the placement is judged and the endpoint keeps the subnets it had
+        // ([`crate::state::vpc_network::unknown_subnet_refusal`]) — the mirror of the
+        // unknown-group refusal below, and grounded only in what EC2 ANSWERED.
+        if let Some(refusal) =
+            unknown_subnet_refusal(input.vpc_options.subnet_ids.as_deref(), &subnets)
+        {
+            return Err(UpdateVpcEndpointErrorModeled::ValidationException(refusal).into());
+        }
+
+        let ResolvedSubnets { placements, .. } = subnets;
 
         // A value that is no security-group identifier at all names nothing in any account,
         // so it is refused for its FORM before anything is resolved or asked

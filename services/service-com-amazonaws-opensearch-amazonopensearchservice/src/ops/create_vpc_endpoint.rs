@@ -97,7 +97,8 @@ use super::types::*;
 use crate::state::vpc_network::{
     malformed_security_group_refusal, placed_vpc, placed_vpc_options, resolve_security_groups,
     resolve_subnets, security_groups_outside_vpc_refusal, security_groups_refusal,
-    subnets_span_two_vpcs, unknown_security_group_refusal, ResolvedSecurityGroups,
+    subnets_span_two_vpcs, unknown_security_group_refusal, unknown_subnet_refusal,
+    ResolvedSecurityGroups, ResolvedSubnets,
 };
 use crate::state::{
     request_region, subnets_in_two_vpcs, vpc_endpoint_domain_unavailable, vpc_endpoint_host,
@@ -188,12 +189,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // async hop cannot be made while the store is held. An emulator with no EC2 to
         // ask resolves nothing, and then the endpoint reports neither member rather than
         // one this service invented.
-        let placements = match input.vpc_options.subnet_ids.as_deref() {
-            None => Vec::new(),
+        let subnets = match input.vpc_options.subnet_ids.as_deref() {
+            None => ResolvedSubnets::default(),
             Some(subnet_ids) => {
                 resolve_subnets(ctx, &request_region(ctx.parts()), subnet_ids).await
             }
         };
+
+        // A subnet the account's network has no record of names nothing an endpoint could
+        // be created in, so it is refused with that identifier before anything else about
+        // the placement — or about the domain — is judged, and nothing is minted
+        // ([`crate::state::vpc_network::unknown_subnet_refusal`]). Grounded only in what
+        // EC2 ANSWERED, so an identifier it was never asked about refuses nothing.
+        if let Some(refusal) =
+            unknown_subnet_refusal(input.vpc_options.subnet_ids.as_deref(), &subnets)
+        {
+            return Err(CreateVpcEndpointErrorModeled::ValidationException(refusal).into());
+        }
+
+        let ResolvedSubnets { placements, .. } = subnets;
 
         // An endpoint lives in exactly ONE VPC — the one its subnets name — so a request
         // whose subnets the account's network puts in different VPCs names no placement

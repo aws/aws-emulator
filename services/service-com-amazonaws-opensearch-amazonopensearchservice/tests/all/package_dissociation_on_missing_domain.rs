@@ -18,10 +18,12 @@
 //! * a refusal's WORDING belongs to the operation that answers, not to the decision
 //!   the operations share: for a `DomainName` that resolves to no domain, the call that
 //!   unlinks a single package is refused with the service's fixed sentence about a
-//!   domain that is not on the latest software version, while the calls that link a
-//!   package are refused with the sentence naming the domain that does not exist —
-//!   over the table of such names and over a table of `PackageID`s the pattern admits,
-//!   including one of a package the account holds;
+//!   domain that is not on the latest software version, the calls that link a package
+//!   are refused with the sentence naming the domain that does not exist, and the call
+//!   that unlinks SEVERAL answers about the link it was asked to remove — a domain this
+//!   account does not hold holds no link either — over the table of such names and over
+//!   a table of `PackageID`s the pattern admits, including one of a package the account
+//!   holds;
 //! * that sentence is bound to the name that could not be resolved, not to the
 //!   operation: on a domain that EXISTS, the same call keeps the service's own sentence
 //!   for a package that resolves to nothing and for a link the domain is not holding,
@@ -133,7 +135,8 @@ async fn each_package_call_refuses_a_name_no_domain_holds_with_its_own_sentence(
                 );
             }
 
-            // And the batch that unlinks packages, which refuses such a name whatever
+            // And the batch that unlinks packages, which answers such a name as the LINK
+            // it names not being there — it discloses nothing about the domain — whatever
             // its `PackageList` carries.
             let case = format!("DissociatePackages({name:?}, {name_case} / {id_case})");
             let answer = dissociate_many(
@@ -146,11 +149,16 @@ async fn each_package_call_refuses_a_name_no_domain_holds_with_its_own_sentence(
                 (
                     400,
                     "ValidationException".to_owned(),
-                    format!("The domain {name} does not exist.")
+                    PACKAGE_NOT_ASSOCIATED.to_owned()
                 ),
-                "case {case}: expected the refusal naming the domain, got {} with {:?}",
+                "case {case}: expected the service's not-associated sentence, got {} with {:?}",
                 answer.status,
                 answer.body
+            );
+            let message = answer.body["message"].as_str().unwrap_or_default();
+            assert!(
+                !message.contains(name.as_str()),
+                "case {case}: the sentence discloses nothing about the domain, got {message:?}"
             );
         }
 

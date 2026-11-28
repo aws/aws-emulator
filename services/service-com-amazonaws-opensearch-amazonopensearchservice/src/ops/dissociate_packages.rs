@@ -89,8 +89,8 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use crate::state::{
-    domain_does_not_exist, duplicate_packages_in_request, internal_failure, AssociationRefusal,
-    Package,
+    batch_package_not_found, duplicate_packages_in_request, internal_failure,
+    package_not_associated, AssociationRefusal, Package,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -181,18 +181,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A name that names no domain is refused by the lookup this settling precedes.
         let _ = store.settled_mut(&input.domain_name, now);
 
-        // The domain the call names is resolved whatever else the request carries, so
-        // a name that names no domain is refused even by a call that goes on to name
-        // no package at all: the domain is what the call acts on. It is the SAME
-        // refusal the per-package decision below makes for an unresolvable domain, so
-        // a batch that names one is refused identically however many packages it
-        // carries.
-        if !store.domains.contains_key(&input.domain_name) {
-            return Err(DissociatePackagesErrorModeled::ValidationException(
-                domain_does_not_exist(&input.domain_name),
-            )
-            .into());
-        }
+        // The domain is NOT resolved on its own here: this call acts on the LINKS the
+        // request names, and a `DomainName` that names no domain of this account holds
+        // no link for any package either — so it is refused as the link it names not
+        // being there, by the per-entry decision below, and the answer discloses nothing
+        // about whether the domain exists.
 
         // A domain holds ONE association per package, so the same package cannot be
         // named twice by one call: that request asks for two removals of one link, and
@@ -258,13 +251,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The shared refusal, as THIS operation's error channel names it.
 ///
-/// The decision reports an unresolvable `DomainName` as a condition; the sentence is
-/// this operation's, the same one it refuses such a batch with before any entry is
-/// planned.
+/// The decision reports an unresolvable `DomainName` and an unresolvable `PackageID` as
+/// conditions, and the sentences are this operation's. A `DomainName` that resolves to
+/// nothing is answered as the LINK not being there — the fixed sentence for a package the
+/// domain is not holding — because that is what this call acts on: a domain this account
+/// does not have holds no association for the package either, and the refusal carries no
+/// part of the request. A `PackageID` the account has no package for is answered with the
+/// batch sentence that names it, the same one the batch association refuses such an id
+/// with.
 fn refuse(refusal: AssociationRefusal) -> DissociatePackagesError {
     match refusal {
-        AssociationRefusal::DomainUnresolved(domain_name) => {
-            DissociatePackagesErrorModeled::ValidationException(domain_does_not_exist(&domain_name))
+        AssociationRefusal::DomainUnresolved(_) => {
+            DissociatePackagesErrorModeled::ValidationException(package_not_associated())
+        }
+        AssociationRefusal::PackageUnresolved(package_id) => {
+            DissociatePackagesErrorModeled::ValidationException(batch_package_not_found(
+                &package_id,
+            ))
         }
         AssociationRefusal::Conflict(payload) => {
             DissociatePackagesErrorModeled::ConflictException(payload)

@@ -2,7 +2,7 @@
 
 //! End-to-end tests for WHAT the two published catalogs of this service carry: the
 //! per-entry capabilities and node roles of the instance-type catalog, and the span of
-//! the Reserved Instance offering catalog an unbounded read answers with.
+//! the Reserved Instance offering catalog a walk of its pages reports.
 //!
 //! Every case drives the real wire path — a `restJson1` HTTP request through the
 //! multi-service router into the mounted service — so what is asserted is what a client
@@ -26,10 +26,9 @@
 //!   entry's FAMILY can be provisioned in, so a family the service publishes for the data
 //!   tier alone reports the data role and nothing else — and the limit catalog, which
 //!   publishes limits per role, publishes a block for exactly those roles;
-//! * `DescribeReservedInstanceOfferings` answers a request that names no `MaxResults`
-//!   with the WHOLE offering catalog of the Region: every instance type it publishes,
-//!   each with both published terms and each payment option, in one answer with no
-//!   continuation token.
+//! * `DescribeReservedInstanceOfferings` publishes the WHOLE offering catalog of the
+//!   Region: every instance type it publishes, each with both published terms and each
+//!   payment option, read page by page as the service answers it.
 
 use std::collections::BTreeSet;
 
@@ -43,7 +42,7 @@ use super::instance_type_catalog::{
     UNENCRYPTED_FAMILIES,
 };
 use super::instance_type_limits::{describe_limits, limits_by_role};
-use super::reserved_instance_offerings::{describe, offerings};
+use super::reserved_instance_offerings::whole_catalog;
 
 /// The engine releases the capability table spans: both engines, and both sides of the
 /// release the two encryption features are available from.
@@ -229,20 +228,13 @@ async fn a_family_published_for_the_data_tier_alone_reports_the_data_role() {
 }
 
 #[tokio::test]
-async fn an_unbounded_offering_read_reports_the_whole_published_catalog() {
+async fn the_published_offering_catalog_spans_every_instance_type_term_and_option() {
     let emulator = Emulator::new();
 
-    // A request that names no `MaxResults` names no bound, so one answer carries the
-    // Region's whole offering catalog and nothing to resume from.
+    // The whole catalog the Region publishes, walked page by page the way a client walks
+    // it — the reader the offering suite already owns.
     let case = "the unfiltered offering catalog";
-    let answer = describe(&emulator, "").await;
-    let catalog = offerings(&answer, case);
-    assert!(
-        answer.body["NextToken"].is_null(),
-        "case {case}: the answer reports the whole catalog, so it names nothing to resume \
-         from, got {:?}",
-        answer.body["NextToken"]
-    );
+    let catalog = whole_catalog(&emulator, case).await;
 
     // What the catalog has to span, read off the answer: every instance type the
     // service publishes a listing entry for, each with both published terms and each
@@ -288,14 +280,14 @@ async fn an_unbounded_offering_read_reports_the_whole_published_catalog() {
                 assert!(
                     reserved.contains(&combination),
                     "case {case}: expected an offering for {instance_type} / {term}s / \
-                     {option} in the unbounded answer, got {} offerings",
+                     {option} in the walked catalog, got {} offerings",
                     catalog.len()
                 );
             }
         }
     }
 
-    // The completeness is not an artifact of a small catalog: the answer is larger than
+    // The completeness is not an artifact of a small catalog: the catalog is larger than
     // the largest page `MaxResults` admits, which is the bound a request may name.
     assert!(
         catalog.len() > 100,

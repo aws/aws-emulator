@@ -223,7 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let tags = tag_set(input.tag_list.unwrap_or_default());
         if tags.len() > TAG_QUOTA {
             return Err(AddDirectQueryDataSourceErrorModeled::LimitExceededException(
-                tag_quota_exceeded(&arn, tags.len()),
+                tag_quota_exceeded(),
             )
             .into());
         }

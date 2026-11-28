@@ -1119,10 +1119,12 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
         // Resolved against the packages VISIBLE to this account
         // ([`Self::visible_package`]): a plugin package the service publishes is
         // associated with a domain exactly as one the account created is, so an id the
-        // catalog publishes names a package here too.
+        // catalog publishes names a package here too. The condition is REPORTED, not
+        // worded: the sentence an unresolvable `PackageID` is refused with belongs to
+        // the operation that answers.
         let package = self
             .visible_package(&request.package_id)
-            .ok_or_else(|| AssociationRefusal::Validation(package_not_found()))?;
+            .ok_or_else(|| AssociationRefusal::PackageUnresolved(request.package_id.clone()))?;
 
         // A package can be put on a domain only once its content is in place: until
         // then there is no version of it to associate, which is the conflict between
@@ -1154,7 +1156,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
                 )));
             }
             if self.visible_package(prerequisite).is_none() {
-                return Err(AssociationRefusal::Validation(package_not_found()));
+                return Err(AssociationRefusal::PackageUnresolved(prerequisite.clone()));
             }
             // A prerequisite "must be linked to the domain before or simultaneously
             // with the package association": one the domain already holds satisfies
@@ -1258,7 +1260,7 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             .ok_or_else(|| AssociationRefusal::DomainUnresolved(domain_name.to_string()))?;
         let package = self
             .visible_package(package_id)
-            .ok_or_else(|| AssociationRefusal::Validation(package_not_found()))?;
+            .ok_or_else(|| AssociationRefusal::PackageUnresolved(package_id.to_string()))?;
 
         // The service runs one change to a domain's package associations at a time, so
         // a call made while another associate or dissociate on the SAME domain has not

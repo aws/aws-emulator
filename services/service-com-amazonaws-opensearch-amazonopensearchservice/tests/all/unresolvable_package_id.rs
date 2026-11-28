@@ -12,10 +12,13 @@
 //! The rule under test, which holds for every operation that CHANGES what a
 //! `PackageID` resolves to rather than for the ones a report cited: an id the account
 //! holds no package under is a bad input VALUE, so the call is refused with
-//! `ValidationException` at the HTTP 400 the model declares it at, carrying the
-//! service's fixed sentence for that condition and no part of the request — and nothing
-//! is written. The listing of the DOMAINS an id is associated with is the other side of
-//! that boundary: it reports a set, so it is served with that set empty (see
+//! `ValidationException` at the HTTP 400 the model declares it at, and nothing is
+//! written. The SENTENCE is the one the service words that operation's refusal with: an
+//! operation acting on ONE package states its fixed sentence, which carries no part of
+//! the request, and one acting on SEVERAL states the batch sentence that names the id —
+//! which is what tells a caller that listed many packages which of them the account has
+//! no package for. The listing of the DOMAINS an id is associated with is the other side
+//! of that boundary: it reports a set, so it is served with that set empty (see
 //! [`super::absent_scope_listings`]).
 //!
 //! So the assertions span a SET of inputs: every operation of the family crossed with
@@ -39,6 +42,26 @@ use super::package_associations::{
 
 /// The domain every row that names one acts on.
 const DOMAIN: &str = "unresolvable-pkg";
+
+/// Whether `op` acts on SEVERAL packages at once, which is what decides which of the two
+/// sentences the service refuses an unresolvable `PackageID` with.
+fn acts_on_several_packages(op: Op) -> bool {
+    matches!(
+        op,
+        Op::AssociatePackages | Op::AssociatePackagesPrerequisite | Op::DissociatePackages
+    )
+}
+
+/// The message the service refuses `package_id` with on `op`: the batch sentence naming
+/// the id for the operations that act on several packages at once, and the fixed sentence
+/// for the ones that act on one.
+fn expected_refusal(op: Op, package_id: &str) -> String {
+    if acts_on_several_packages(op) {
+        format!("Operation not allowed. Package with id {package_id} not found.")
+    } else {
+        PACKAGE_NOT_FOUND.to_string()
+    }
+}
 
 /// Which operation of the package family a row drives. Every operation whose input
 /// carries a `PackageID` — the batch and single forms of associating and dissociating,
@@ -328,20 +351,25 @@ async fn every_operation_that_resolves_a_package_id_refuses_one_that_names_no_pa
                 "case {case}: expected ValidationException, got {:?}",
                 answer.body
             );
+            let expected = expected_refusal(op, package_id);
             assert_eq!(
                 answer.body["message"].as_str(),
-                Some(PACKAGE_NOT_FOUND),
-                "case {case}: expected the fixed sentence, got {:?}",
+                Some(expected.as_str()),
+                "case {case}: expected {expected:?}, got {:?}",
                 answer.body
             );
-            assert!(
-                !answer.body["message"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .contains(package_id),
-                "case {case}: the refusal carries no part of the request, got {:?}",
-                answer.body
-            );
+            // The single-package sentence carries no part of the request; the batch one
+            // carries exactly the id the request named and nothing else of it.
+            if !acts_on_several_packages(op) {
+                assert!(
+                    !answer.body["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains(package_id),
+                    "case {case}: the refusal carries no part of the request, got {:?}",
+                    answer.body
+                );
+            }
         }
 
         // The other side of the boundary: the listing of the domains this id is

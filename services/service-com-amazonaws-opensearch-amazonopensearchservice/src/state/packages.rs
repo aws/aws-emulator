@@ -724,6 +724,22 @@ pub fn package_not_found() -> ValidationException {
     }
 }
 
+/// The refusal the operations that act on SEVERAL packages at once answer a `PackageID`
+/// that resolves to no package of this account with.
+///
+/// The same condition [`package_not_found`] states, worded as those operations word
+/// their refusals: the fixed text around the id the REQUEST named — the one variable
+/// part — so a caller that listed several packages is told WHICH of them the account
+/// has no package for. The class is the same client-input refusal (HTTP 400), for the
+/// reason [`package_not_found`] gives.
+pub fn batch_package_not_found(package_id: &str) -> ValidationException {
+    ValidationException {
+        message: Some(format!(
+            "Operation not allowed. Package with id {package_id} not found."
+        )),
+    }
+}
+
 /// The `ConflictException` payload for associating a package whose content is not in
 /// place: a package can be put on a domain only once its copy has left it
 /// [`PACKAGE_STATUS_AVAILABLE`], so a call made before that conflicts with the
@@ -900,6 +916,16 @@ pub enum AssociationRefusal {
     /// operation's refusal with. The class (client input, HTTP 400) is the same for
     /// all of them.
     DomainUnresolved(String),
+    /// A `PackageID` the call names — the package itself or one of its prerequisites —
+    /// resolves to no package visible to this account, carried as the id that could
+    /// not be resolved.
+    ///
+    /// On its own variant for the reason [`Self::DomainUnresolved`] is: the two
+    /// package operations that act on SEVERAL packages at once word this condition
+    /// with the service's batch sentence, which names the id, and the two that act on
+    /// one package word it with the sentence that names nothing of the request. The
+    /// class (client input, HTTP 400) is the same for all of them.
+    PackageUnresolved(String),
     /// The package or the association is in a status that cannot serve the call.
     Conflict(ConflictException),
     /// The request is not one the domain can serve as asked — a value it carries

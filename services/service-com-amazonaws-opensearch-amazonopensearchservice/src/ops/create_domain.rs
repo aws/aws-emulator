@@ -298,7 +298,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|options| options.subnet_ids.as_deref())
         {
             None => Vec::new(),
-            Some(subnet_ids) => resolve_subnets(ctx, &region, subnet_ids).await,
+            Some(subnet_ids) => resolve_subnets(ctx, &region, subnet_ids).await.placements,
         };
 
         // Which VPC each security group the request names governs traffic in is EC2's to
@@ -728,7 +728,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let tags = crate::state::tag_set(input.tag_list.unwrap_or_default());
         if tags.len() > TAG_QUOTA {
             return Err(CreateDomainErrorModeled::LimitExceededException(
-                crate::state::tag_quota_exceeded(&domain_arn(&name, &region), tags.len()),
+                crate::state::tag_quota_exceeded(),
             )
             .into());
         }

@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::APPLICATION_STATUS_VALUES;
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
     APPLICATION_DOES_NOT_EXIST, APPLICATION_QUOTA, APPLICATION_STATUS_ACTIVE,
-    APPLICATION_STATUS_CREATING, TAG_QUOTA,
+    APPLICATION_STATUS_CREATING, TAG_QUOTA, TAG_QUOTA_EXCEEDED,
 };
 
 use super::application_deletion::delete_application;
@@ -816,10 +816,9 @@ async fn a_create_naming_more_tags_than_a_resource_may_carry_is_refused() {
         );
         assert_eq!(
             created.body["message"],
-            json!(format!(
-                "tagList carries {count} tags, more than the {TAG_QUOTA} a resource may have."
-            )),
-            "case {count} tags: the refusal names the member and the bound, got {:?}",
+            json!(TAG_QUOTA_EXCEEDED),
+            "case {count} tags: the refusal is the service's fixed sentence for the bound, got \
+             {:?}",
             created.body
         );
 

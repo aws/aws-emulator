@@ -597,12 +597,6 @@ async fn a_request_that_cannot_be_served_dissociates_nothing() {
             "ValidationException",
         ),
         (
-            "a domain nothing created, naming no package at all",
-            json!({ "DomainName": "dissoc-no-such-domain", "PackageList": [] }),
-            400,
-            "ValidationException",
-        ),
-        (
             "a package nothing created",
             json!({ "DomainName": domain, "PackageList": [UNKNOWN_PACKAGE_ID] }),
             400,
@@ -728,28 +722,39 @@ async fn a_request_that_cannot_be_served_dissociates_nothing() {
     // A request that names NO package at all is served rather than refused, because an
     // empty `PackageList` asks for no removal: the call reports the empty set and the
     // domain's associations are exactly what they were — the same answer the associate
-    // path gives an empty list, so the two forms of the batch call agree.
-    let empty = dissociate_many(
-        &emulator,
-        json!({ "DomainName": domain, "PackageList": [] }),
-    )
-    .await;
-    assert_eq!(
-        empty.status, 200,
-        "case a call naming no package: expected 200, got {} with {:?}",
-        empty.status, empty.body
-    );
-    assert_eq!(
-        empty.body["DomainPackageDetailsList"],
-        json!([]),
-        "case a call naming no package: expected no records, got {:?}",
-        empty.body
-    );
-    for index in [0_usize, 1] {
+    // path gives an empty list, so the two forms of the batch call agree. It holds for a
+    // `DomainName` the account holds no domain under too: this call answers about the
+    // LINKS it was asked to remove, and a request that names none asks for nothing, so
+    // there is nothing to refuse and nothing is disclosed about the domain.
+    for (case, name) in [
+        ("a call naming no package", domain),
+        (
+            "a call naming no package on a domain nothing created",
+            "dissoc-no-such-domain",
+        ),
+    ] {
+        let empty = dissociate_many(
+            &emulator,
+            json!({ "DomainName": name, "PackageList": [] }),
+        )
+        .await;
         assert_eq!(
-            stored_status(&emulator, domain, &ids[index]).as_deref(),
-            Some(DOMAIN_PACKAGE_STATUS_ACTIVE),
-            "case a call naming no package: the association with package {index} is as it was"
+            empty.status, 200,
+            "case {case}: expected 200, got {} with {:?}",
+            empty.status, empty.body
         );
+        assert_eq!(
+            empty.body["DomainPackageDetailsList"],
+            json!([]),
+            "case {case}: expected no records, got {:?}",
+            empty.body
+        );
+        for index in [0_usize, 1] {
+            assert_eq!(
+                stored_status(&emulator, domain, &ids[index]).as_deref(),
+                Some(DOMAIN_PACKAGE_STATUS_ACTIVE),
+                "case {case}: the association with package {index} is as it was"
+            );
+        }
     }
 }

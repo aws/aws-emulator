@@ -28,9 +28,9 @@
 //! * paging is a partition: over a table of page sizes, the pages concatenate back to
 //!   the full listing in order with nothing repeated or dropped, every page is within
 //!   its size, only the last page carries no token, a request that names no page size is
-//!   answered with the whole listing and no token, a page size outside the
-//!   modelled bound is refused at either end, and a token the operation never issued is
-//!   refused;
+//!   answered in the largest page the model admits and names where to resume, a page size
+//!   outside the modelled bound is refused at either end, and a token the operation never
+//!   issued is refused;
 //! * the read changes nothing a later caller sees: the same request twice answers
 //!   identically, before and after paged and filtered reads.
 
@@ -116,9 +116,9 @@ fn hourly_cost(offering: &Value, case: &str) -> f64 {
 
 /// The whole catalog, walked through the continuation tokens the answers hand out.
 ///
-/// A request that names no `MaxResults` names no bound, so the first answer already
-/// reports the whole listing and carries no token; the walk is written as a walk anyway,
-/// so the helper reports the whole listing however many answers that takes.
+/// A request that names no `MaxResults` names no bound of its own, so each answer carries
+/// the service's own page and, while offerings remain, the token to resume from: the walk
+/// is what reports the whole listing, in however many answers that takes.
 pub(crate) async fn whole_catalog(emulator: &Emulator, case: &str) -> Vec<Value> {
     let mut collected: Vec<Value> = Vec::new();
     let mut token: Option<String> = None;
@@ -606,25 +606,27 @@ async fn pages_partition_the_catalog() {
     }
 
     // `MaxResults` is `@default(0)`, so a request may name no page size at all — or name
-    // zero, which is that default. Naming no bound is not naming a bound of the service's
-    // choosing: the whole listing is reported in one answer, the way the recorded answer of
-    // an unfiltered call reports every offering the Region publishes, so there is nothing
-    // left to resume from.
+    // zero, which is that default. Naming no bound leaves the listing bounded by the
+    // service's own largest page (`@range(max: 100)`), the way the recorded answer of an
+    // unfiltered call carries a page of the catalog and the token to resume from; the
+    // whole rule lives in [`super::reserved_offering_service_page`].
     for unbounded in ["", "maxResults=0"] {
         let case = format!("unbounded {unbounded:?}");
         let answer = describe(&emulator, unbounded).await;
         let page = offerings(&answer, &case);
         assert_eq!(
             page,
-            catalog.clone(),
-            "case {case}: expected the whole published catalog of {} offerings, got {}",
+            catalog[..100].to_vec(),
+            "case {case}: expected the first 100 offerings of the published catalog of {}, \
+             got {}",
             catalog.len(),
             page.len()
         );
-        assert!(
-            answer.body["NextToken"].is_null(),
-            "case {case}: the answer reports the whole listing, so it names nothing to \
-             resume from, got {:?}",
+        assert_eq!(
+            answer.body["NextToken"].as_str(),
+            catalog[100]["ReservedInstanceOfferingId"].as_str(),
+            "case {case}: offerings remain, so the answer names the first one it did not \
+             report, got {:?}",
             answer.body["NextToken"]
         );
     }

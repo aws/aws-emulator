@@ -246,6 +246,8 @@ mod reserved_instances;
 mod projections;
 /// The payloads this service refuses a request with, one per condition.
 mod refusals;
+/// The `ARN` the tagging operations take, read for its FORM.
+mod tagged_resource_arns;
 
 pub use analyzers::*;
 pub use application_id::*;
@@ -267,6 +269,7 @@ pub use reserved_instance_offerings::*;
 pub use reserved_instances::*;
 pub use snapshots::*;
 pub use store::*;
+pub use tagged_resource_arns::*;
 pub use vpc_endpoints::*;
 
 use crate::ops::types::{
@@ -751,25 +754,31 @@ pub fn tag_list(tags: &TagSet) -> Vec<Tag> {
         .collect()
 }
 
+/// The message every refusal of a call that would leave a resource carrying more than
+/// [`TAG_QUOTA`] tags carries ([`tag_quota_exceeded`]).
+///
+/// The service's own fixed sentence for that condition: it is the WHOLE message and has
+/// no variable part — neither the resource the tags were named for, nor how many were
+/// named, nor the limit in force appears in it.
+pub const TAG_QUOTA_EXCEEDED: &str =
+    "You have exceeded the maximum number of tags allowed for this resource";
+
 /// The `LimitExceededException` payload for a call that would leave a resource
 /// carrying more than [`TAG_QUOTA`] tags.
-pub fn tag_quota_exceeded(arn: &str, requested: usize) -> LimitExceededException {
+pub fn tag_quota_exceeded() -> LimitExceededException {
     LimitExceededException {
-        message: Some(format!(
-            "{arn} would carry {requested} tags, more than the {TAG_QUOTA} a resource may have."
-        )),
+        message: Some(TAG_QUOTA_EXCEEDED.to_string()),
     }
 }
 
 /// The same bound as [`tag_quota_exceeded`], reported through the client-input error
-/// channel for a CREATE whose model declares no `LimitExceededException`: the resource
-/// does not exist yet, so the refusal names the member that carried the tags rather
-/// than an ARN nothing has been minted under.
-pub fn tag_quota_exceeded_on_create(member: &str, requested: usize) -> ValidationException {
+/// channel for a CREATE whose model declares no `LimitExceededException`.
+///
+/// The condition is the same one and so is the sentence the service states it with
+/// ([`TAG_QUOTA_EXCEEDED`]): only the modelled shape the refusal travels in differs.
+pub fn tag_quota_exceeded_on_create() -> ValidationException {
     ValidationException {
-        message: Some(format!(
-            "{member} carries {requested} tags, more than the {TAG_QUOTA} a resource may have."
-        )),
+        message: Some(TAG_QUOTA_EXCEEDED.to_string()),
     }
 }
 

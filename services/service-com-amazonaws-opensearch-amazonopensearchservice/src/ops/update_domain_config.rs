@@ -510,7 +510,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             None => Vec::new(),
             Some(subnet_ids) => {
-                resolve_subnets(ctx, &crate::state::request_region(ctx.parts()), subnet_ids).await
+                resolve_subnets(ctx, &crate::state::request_region(ctx.parts()), subnet_ids)
+                    .await
+                    .placements
             }
         };
 

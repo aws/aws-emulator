@@ -85,6 +85,39 @@ pub struct SubnetPlacement {
     pub availability_zone: Option<String>,
 }
 
+/// What the service that OWNS subnets answered about the subnets a request named: the
+/// subnets it reported, and which identifiers it answered about at all.
+///
+/// The two travel together for the reason [`ResolvedSecurityGroups`] carries both: a subnet
+/// ABSENT from the answer means one of two different things — EC2 holds no such subnet, or
+/// EC2 was never asked (no EC2 in this process, a hop that failed, an identifier past the
+/// resolution's own ceiling) — and only the first is evidence about the account's network
+/// ([`unknown_subnet_refusal`]).
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedSubnets {
+    /// The subnets EC2 reported, in the order the request named them.
+    pub placements: Vec<SubnetPlacement>,
+    /// The identifiers EC2 ANSWERED about — the ones a question was put to it about and
+    /// answered. An identifier outside this list is one nothing is known about.
+    answered: Vec<String>,
+}
+
+impl ResolvedSubnets {
+    /// Whether EC2 answered about `subnet_id`, so what it reported for it — a subnet, or
+    /// nothing — is evidence about the account's network.
+    #[must_use]
+    pub fn answered_about(&self, subnet_id: &str) -> bool {
+        self.answered.iter().any(|asked| asked == subnet_id)
+    }
+
+    /// Whether EC2 reported a subnet for `subnet_id`.
+    fn reported(&self, subnet_id: &str) -> bool {
+        self.placements
+            .iter()
+            .any(|placement| placement.subnet_id == subnet_id)
+    }
+}
+
 /// An AWS SDK client for EC2 over the in-process callback into this same emulator.
 ///
 /// The callback is the framework's documented seam for calling another emulated service:
@@ -124,11 +157,12 @@ fn ec2(
 }
 
 /// Every subnet of `subnet_ids` the account has in `region`, as EC2 reports it, in the
-/// order the request named them.
+/// order the request named them, beside the identifiers EC2 ANSWERED about.
 ///
-/// An identifier EC2 reports no subnet for is simply ABSENT from the answer, and so is
+/// An identifier EC2 reports no subnet for is simply ABSENT from the placements, and so is
 /// every identifier when there is no EC2 to ask: this resolves what the account's network
-/// says, and says nothing of its own about what it could not resolve.
+/// says, and says nothing of its own about what it could not resolve — which is why the
+/// identifiers EC2 answered about travel back beside the subnets ([`ResolvedSubnets`]).
 ///
 /// EVERY identifier the request named is asked about, deduplicated and in hops of
 /// [`IDS_PER_HOP`] ([`asked_ids`]) — so a placement is resolved whole rather than only as
@@ -138,22 +172,28 @@ pub async fn resolve_subnets(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     subnet_ids: &[String],
-) -> Vec<SubnetPlacement> {
+) -> ResolvedSubnets {
     let asked = asked_ids(subnet_ids);
     if asked.is_empty() {
-        return Vec::new();
+        return ResolvedSubnets::default();
     }
     let Some(client) = ec2(ctx, region) else {
-        return Vec::new();
+        return ResolvedSubnets::default();
     };
     let mut reported: Vec<::aws_sdk_ec2::types::Subnet> = Vec::new();
+    // The identifiers a hop that ANSWERED carried: what EC2 said nothing about is the rest,
+    // and a hop that failed leaves its own identifiers among them.
+    let mut answered: Vec<String> = Vec::new();
     for hop in asked.chunks(IDS_PER_HOP) {
         let by_id = ::aws_sdk_ec2::types::Filter::builder()
             .name(SUBNET_ID_FILTER)
             .set_values(Some(hop.to_vec()))
             .build();
         match client.describe_subnets().filters(by_id).send().await {
-            Ok(output) => reported.extend(output.subnets().iter().cloned()),
+            Ok(output) => {
+                reported.extend(output.subnets().iter().cloned());
+                answered.extend(hop.iter().cloned());
+            }
             Err(error) => {
                 // At `warn`: a deployment where this hop fails is one where the network
                 // behind an endpoint is never resolved, which is worth seeing — and it IS
@@ -177,7 +217,7 @@ pub async fn resolve_subnets(
     // REQUEST named them, so what a caller is told about is the subnet it listed rather than
     // whichever row EC2 happened to answer first, and a repeated identifier is one placement
     // rather than a copy per mention.
-    asked
+    let placements = asked
         .iter()
         .filter_map(|subnet_id| {
             let subnet = by_id.get(subnet_id.as_str())?;
@@ -187,7 +227,44 @@ pub async fn resolve_subnets(
                 availability_zone: subnet.availability_zone().map(str::to_owned),
             })
         })
-        .collect()
+        .collect();
+    ResolvedSubnets {
+        placements,
+        answered,
+    }
+}
+
+/// How this service states that an identifier names no subnet of the account: the fixed
+/// text around the identifier the REQUEST sent, in single quotes.
+///
+/// A subnet belongs to the service that owns subnets, so what the caller is told is that
+/// the identifier it sent names none there — the identifier is the one variable part, and
+/// nothing else of the request appears.
+fn subnet_does_not_exist(subnet_id: &str) -> String {
+    format!("The subnet ID '{subnet_id}' does not exist")
+}
+
+/// The first entry of `subnet_ids` the account holds no subnet for, and the refusal naming
+/// it, or `None` where every entry names a subnet — which includes every entry EC2 was not
+/// asked about.
+///
+/// `VPCOptions$SubnetIds` names subnets of the service that OWNS them, so an identifier
+/// that service answered no subnet for names nothing a placement could be created in: the
+/// call is refused with the identifier the request sent and nothing is written. The mirror
+/// of [`unknown_security_group_refusal`], grounded the same way
+/// ([`ResolvedSubnets::answered_about`]): an identifier EC2 was never asked about — an
+/// emulator with no EC2 mounted, a hop that failed — is evidence of nothing and refuses
+/// nothing.
+pub fn unknown_subnet_refusal(
+    subnet_ids: Option<&[String]>,
+    resolved: &ResolvedSubnets,
+) -> Option<ValidationException> {
+    let unknown = subnet_ids?
+        .iter()
+        .find(|id| resolved.answered_about(id) && !resolved.reported(id))?;
+    Some(ValidationException {
+        message: Some(subnet_does_not_exist(unknown)),
+    })
 }
 
 /// The ONE VPC every resolved subnet belongs to, or `None` where they resolve to none or
