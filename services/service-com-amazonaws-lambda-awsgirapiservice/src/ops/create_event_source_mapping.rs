@@ -1108,16 +1108,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Standing the mapping's poller up is what this call started: "Lambda reads items
         // from the event source and invokes the function", and the reading is the poller's.
-        // Which poller depends on the kind of source — the queue loop, the reader of a
-        // broker's queue, or this mapping's own reader of a shard source's shards — and each
-        // decides for itself whether it has anything to do. The store's lock is released
-        // first (each poller takes it itself) and nothing here waits for a poll: they run on
-        // their own clock.
+        // Which reader that is depends on the kind of source, and each decides for itself
+        // whether it has anything to do ([`crate::state::arm_mapping_pollers`]). The store's
+        // lock is released first (each reader takes it itself) and nothing here waits for a
+        // poll: they run on their own clock.
         drop(store);
-        crate::state::drive_sqs_pollers(ctx, &self.engine);
-        crate::state::drive_mq_pollers(ctx, &self.engine);
-        crate::state::drive_kafka_pollers(ctx, &self.engine);
-        crate::state::event_source_poller::drive_mapping(ctx, &self.engine, &uuid);
+        crate::state::arm_mapping_pollers(ctx, &self.engine);
 
         Ok(reported)
     }

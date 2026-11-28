@@ -216,6 +216,18 @@ pub fn drive_mq_pollers<Eng: Send + Sync + 'static>(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     engine: &Arc<Eng>,
 ) {
+    drive_mq_pollers_of(ctx, engine, None);
+}
+
+/// The same, over the mapping `only` names alone when it names one — the selection the caller
+/// that arms the pollers of the mappings it REPORTED hands down
+/// ([`super::arm_reported_mapping_pollers`]) — and over every broker mapping of the store when
+/// it names none.
+pub fn drive_mq_pollers_of<Eng: Send + Sync + 'static>(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    engine: &Arc<Eng>,
+    only: Option<&str>,
+) {
     let Some(state) = service_state(&**engine) else {
         return;
     };
@@ -226,6 +238,7 @@ pub fn drive_mq_pollers<Eng: Send + Sync + 'static>(
         let mut store = state.lock();
         wanted_broker_mappings(&store)
             .into_iter()
+            .filter(|uuid| only.is_none_or(|named| named == uuid))
             .filter(|uuid| store.claim_event_source_poller(uuid))
             .map(|uuid| PollerClaim {
                 state: ::engine::ServiceState::clone(&state),

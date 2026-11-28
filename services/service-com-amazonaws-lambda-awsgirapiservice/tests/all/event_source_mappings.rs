@@ -586,13 +586,33 @@ pub(crate) async fn create_running_function(
     timeout: i64,
     variables: &Value,
 ) {
+    create_running_function_as(router, case, name, ROLE, source, timeout, variables).await;
+}
+
+/// The same, as the execution role `role` names rather than as the role every other suite's
+/// function runs as ([`ROLE`]).
+///
+/// The one thing a suite over what the POLLER may do needs of the create: Lambda reads an
+/// event source acting as the invoked function's execution role, so a suite that writes that
+/// role itself (through IAM's own calls) has to be able to say which role the function runs
+/// as — everything else about the create, the wait for `Active` included, is the same, so it
+/// lives here rather than in a copy per suite.
+pub(crate) async fn create_running_function_as(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    role: &str,
+    source: &str,
+    timeout: i64,
+    variables: &Value,
+) {
     let created = call(
         router,
         "POST",
         FUNCTIONS_URI,
         &json!({
             "FunctionName": name,
-            "Role": ROLE,
+            "Role": role,
             "Runtime": RUNNING_RUNTIME,
             "Handler": RUNNING_HANDLER,
             "Timeout": timeout,

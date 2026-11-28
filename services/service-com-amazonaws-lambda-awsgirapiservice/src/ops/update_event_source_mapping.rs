@@ -841,17 +841,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let reported = event_source_mapping_configuration(record.reported());
 
         // An update may be what ENABLES a mapping, or what re-targets it onto another queue
-        // or function, so it arms the pollers exactly as the create does — the queue loop,
-        // the reader of a broker's queue, and this mapping's own reader of a Kinesis data
-        // stream's shards, each of which decides for itself whether it has anything to do (a
-        // mapping that already had a reader keeps the one it has: the claim keeps a second
-        // from starting). The store's lock is released first, because each poller takes it
-        // itself.
+        // or function, so it arms the pollers exactly as the create does, through the one call
+        // that arms them ([`crate::state::arm_mapping_pollers`]): each reader decides for
+        // itself whether it has anything to do, and a mapping that already had a reader keeps
+        // the one it has (the claim keeps a second from starting). The store's lock is
+        // released first, because each poller takes it itself.
         drop(store);
-        crate::state::drive_sqs_pollers(ctx, &self.engine);
-        crate::state::drive_mq_pollers(ctx, &self.engine);
-        crate::state::drive_kafka_pollers(ctx, &self.engine);
-        crate::state::event_source_poller::drive_mapping(ctx, &self.engine, &input.uuid);
+        crate::state::arm_mapping_pollers(ctx, &self.engine);
 
         Ok(reported)
     }

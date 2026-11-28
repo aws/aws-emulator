@@ -5,6 +5,13 @@
 //! names, brought up to whatever the clock has already made due, and the modelled
 //! not-found when this account holds no mapping of that id.
 //!
+//! The `State` it reports is a statement about the mapping's DATA PLANE — "when true, the
+//! event source mapping is active. When false, Lambda pauses polling and invocation" — so
+//! reporting it is also where the poller that state implies is made sure of, for THIS mapping
+//! and no other, which is the one thing this read does beside materialising what the clock
+//! already owed (see [`crate::state::arm_reported_mapping_pollers`]): a mapping is never
+//! reported as polling while nothing polls it, and nothing a caller is answered turns on it.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -240,7 +247,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(GetEventSourceMappingErrorModeled::ServiceException(
@@ -273,7 +280,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        Ok(event_source_mapping_configuration(record.reported()))
+        let reported = event_source_mapping_configuration(record.reported());
+
+        // The `State` this answer carries is a statement about the mapping's DATA PLANE —
+        // "when true, the event source mapping is active. When false, Lambda pauses polling
+        // and invocation" — so reporting it is also where the poller that state implies is
+        // made sure of, for THIS mapping and no other
+        // ([`crate::state::arm_reported_mapping_pollers`]): the reading is owed by the
+        // mapping's own setting at this instant rather than by this call, and a mapping that
+        // already has its poller, one that is paused and one being deleted are armed by
+        // nothing. The store's lock is released first, because each poller takes it itself.
+        drop(store);
+        crate::state::arm_reported_mapping_pollers(ctx, &self.engine, &[input.uuid]);
+
+        Ok(reported)
     }
 }
 

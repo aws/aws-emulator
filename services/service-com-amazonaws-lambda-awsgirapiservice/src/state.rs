@@ -262,6 +262,13 @@ pub use mq_poller::drive_mq_pollers;
 pub mod kafka_poller;
 pub use kafka_poller::drive_kafka_pollers;
 
+/// And WHO ARMS all of those, which is every operation that creates, changes or reports a
+/// mapping rather than the create alone: [`poller_supervision`] holds that one call, so a
+/// mapping can never report a polling `State` while nothing polls it. Re-exported here for
+/// the same reason as the readers above.
+pub mod poller_supervision;
+pub use poller_supervision::{arm_mapping_pollers, arm_reported_mapping_pollers};
+
 /// The instants this crate publishes as CALENDAR TEXT rather than as an epoch count — a
 /// function URL's Common Log Format instant and an Amazon MQ record's `basicProperties`
 /// timestamp — live in [`calendar_fields`], each one `chrono` format of the instant, so

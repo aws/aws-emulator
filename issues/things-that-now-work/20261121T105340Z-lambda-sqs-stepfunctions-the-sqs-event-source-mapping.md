@@ -38,3 +38,36 @@ Actual (emulator): no delivery is observed at all; the check makes no progress a
 2. CreateEventSourceMapping(EventSourceArn=<A arn>, FunctionName=<fn>, BatchSize=1, Enabled=true); poll GetEventSourceMapping until State == 'Enabled'.
 3. SendMessage a marker to A and poll the function's record destination. Expected: delivered within seconds. Observed: never — the check is killed at its 60 s cap.
 4. (Blocked by 3) SendMessage a different marker to B and assert the function is never invoked with it and that B's ApproximateNumberOfMessages stays >= 1.
+
+## Resolution
+
+PARTIAL, and the recorded check is STILL FAILING: the replay of
+`lambda__sqs__stepfunctions.sqs-esm-mismatched-queue-arn-not-triggered-negative` continues to
+answer `Check timed out after 60.0s` with no assertion graded. This report is filed here
+because the one way the emulator itself can produce the reported symptom was found and fixed,
+and because the rule the check is about is now pinned by tests; it is NOT a claim that the
+recorded check passes.
+
+What was fixed: a mapping was polled only while the background task the create or the update
+armed was alive, and nothing else armed one — so a mapping whose task ended, or that was
+created where there was no runtime to spawn onto, went on reporting `State: "Enabled"` with
+nothing reading its source and no later call could recover it. Arming now has one owner
+(`crate::state::poller_supervision`), and the operations that REPORT a mapping —
+`GetEventSourceMapping` and `ListEventSourceMappings` — make sure of the pollers the states
+they report imply, for the mappings they reported and no others.
+
+What remains open: the divergence the recording carries is the harness's 60 s cap over the
+whole check rather than any answer the emulator gives, and it is not reproducible here. The
+recorded shape — three queues, the execution role carrying the policies AWS publishes for a
+queue-triggered function, `CreateFunction` and the wait for `Active`, the mapping and the wait
+for `Enabled`, the message to the unnamed queue, the absence window and the positive delivery —
+was driven end to end both in process and against the started binary (over TLS, with request
+authentication, signed), and completes in a few seconds of emulator work per run, each delivery
+inside a second; the two sibling shapes the same recorded file reports (a FIFO source with two
+message groups, and the `Enabled` -> `Disabled` -> `Enabled` gate) deliver too. What spends the
+cap in the replay environment is not observable from inside the emulator, which is why this
+cause is recorded as partial rather than closed.
+
+Tests pinning the rule:
+* `services/service-com-amazonaws-lambda-awsgirapiservice/tests/all/zz_repro_mismatched.rs`
+* `core/router/tests/all/queue_mapping_delivers_only_from_the_queue_it_names.rs`

@@ -14,6 +14,14 @@
 //! [`crate::state::event_source_arn_refusal`]) — because a value that names no event source
 //! is not a filter that happens to match nothing.
 //!
+//! Each entry carries the `State` its mapping is in, which is a statement about that mapping's
+//! DATA PLANE — "when true, the event source mapping is active. When false, Lambda pauses
+//! polling and invocation" — so this listing makes sure of the pollers the states IT reported
+//! imply, exactly as the read of one mapping does for its own (see
+//! [`crate::state::arm_reported_mapping_pollers`]): a mapping is never reported as polling
+//! while nothing polls it, a mapping this page did not report is none of this call's business,
+//! and nothing a caller is answered turns on it.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -280,7 +288,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let truncated = start + page.len() < entries.len();
 
-        Ok(ListEventSourceMappingsOutput {
+        let listed = ListEventSourceMappingsOutput {
             event_source_mappings: Some(
                 page.iter()
                     .map(|mapping| mapping.listed())
@@ -294,7 +302,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .last()
                 .filter(|_| truncated)
                 .map(|mapping| mapping.uuid.clone()),
-        })
+        };
+        // The mappings THIS page reported, which are the ones whose pollers it is in a
+        // position to make sure of below.
+        let reported: Vec<String> = page.iter().map(|mapping| mapping.uuid.clone()).collect();
+
+        // Each entry carries the `State` its mapping is in, which is a statement about that
+        // mapping's DATA PLANE — "when true, the event source mapping is active. When false,
+        // Lambda pauses polling and invocation" — so this listing makes sure of the pollers
+        // the states IT reported imply, exactly as the read of one mapping does for its own
+        // ([`crate::state::arm_reported_mapping_pollers`]): the reading is owed by those
+        // mappings' own settings at this instant rather than by this call, a mapping the page
+        // did not report is none of this call's business, and a mapping that already has its
+        // poller, one that is paused and one being deleted are armed by nothing. The store's
+        // lock is released first, because each poller takes it itself.
+        drop(store);
+        crate::state::arm_reported_mapping_pollers(ctx, &self.engine, &reported);
+
+        Ok(listed)
     }
 }
 
