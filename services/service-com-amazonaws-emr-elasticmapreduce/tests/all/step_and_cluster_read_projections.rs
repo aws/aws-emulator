@@ -298,7 +298,24 @@ async fn a_step_that_never_ran_reports_no_resource_manager() {
 // RULE 2 — the precision every Date member is served at
 // ---------------------------------------------------------------------------
 
+/// The magnitude at or above which a number of this surface is a timestamp: epoch seconds of
+/// 2001-09-09T01:46:40Z, decades before any instant this service can serve and orders of
+/// magnitude above every count, size and concurrency level these reads also report.
+const EPOCH_SECONDS_FLOOR: f64 = 1_000_000_000.0;
+
 /// Every epoch-seconds number `body` carries, with the path it sits at.
+///
+/// A timestamp is recognised by its MAGNITUDE rather than by its form: this protocol renders
+/// one as epoch seconds, so an instant whose millisecond part is zero is rendered as a WHOLE
+/// number — the shape a count has — and a collector keyed on the fractional form would miss it
+/// and report a read that served a timestamp as serving none.
+///
+/// The members it therefore walks are the `com.amazonaws.emr#Date` ones these reads carry —
+/// `Cluster$Status$Timeline` (`CreationDateTime`, `ReadyDateTime`, `EndDateTime`),
+/// `Step$Status$Timeline`, `InstanceGroup$Status$Timeline` and
+/// `SecurityConfigurationSummary$CreationDateTime` — beside which every other number of this
+/// surface is a count, a size or a concurrency level, orders of magnitude below
+/// [`EPOCH_SECONDS_FLOOR`].
 fn epoch_numbers(path: &str, body: &Value, into: &mut Vec<(String, f64)>) {
     match body {
         Value::Object(members) => {
@@ -312,10 +329,10 @@ fn epoch_numbers(path: &str, body: &Value, into: &mut Vec<(String, f64)>) {
             }
         }
         Value::Number(number) => {
-            // A timestamp is the only member of this surface served as a fractional
-            // number, and every one of them is far above this bound: a count, a size or a
-            // concurrency level is a whole number and is left alone.
-            if let Some(seconds) = number.as_f64().filter(|_| number.as_i64().is_none()) {
+            if let Some(seconds) = number
+                .as_f64()
+                .filter(|seconds| *seconds >= EPOCH_SECONDS_FLOOR)
+            {
                 into.push((path.to_string(), seconds));
             }
         }
