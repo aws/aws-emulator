@@ -78,7 +78,7 @@ use ::serde_json::{Map, Value};
 
 use crate::ops::types::{
     AlarmConfiguration, AutomationExecution, FailureDetails, ResolvedTargets, StepExecution, Target,
-    TargetLocation,
+    TargetLocation, TargetsSummary,
 };
 
 use super::ComAmazonawsSsmAmazonssmState;
@@ -1610,7 +1610,7 @@ impl AutomationExecutionRecord {
     /// parameter, a runbook that declares no output and a start that named no target,
     /// rather than being left out: a client that indexes any of them finds it on every
     /// read.
-    pub fn to_automation_execution(&self) -> AutomationExecution {
+    pub fn to_automation_execution(&self, targets_summary: Option<TargetsSummary>) -> AutomationExecution {
         let running = self.running_step();
         AutomationExecution {
             automation_execution_id: Some(self.execution_id.clone()),
@@ -1676,6 +1676,12 @@ impl AutomationExecutionRecord {
             // "Variables defined for the automation": a runbook declares none through this
             // operation's members.
             variables: None,
+            // "A summary of the child executions that a rate control execution started for
+            // its targets. This field is returned only for rate control executions" — which
+            // is what the caller resolved before this report was built
+            // ([`ComAmazonawsSsmAmazonssmState::rate_control_targets_summary`]), because the
+            // children's own records are what it counts.
+            targets_summary,
         }
     }
 }
@@ -1895,6 +1901,56 @@ impl ComAmazonawsSsmAmazonssmState {
         for key in parents {
             self.advance_rate_control(&key, now);
         }
+    }
+
+    /// The summary of the child executions a rate control execution started for its
+    /// targets, or `None` for an execution that is not one: "this field is returned only for
+    /// rate control executions" (`AutomationExecution$TargetsSummary`).
+    ///
+    /// A rate control execution is the one that fans a target parameter out over the targets
+    /// it resolved, running a child execution per target rather than steps of its own
+    /// ([`AutomationExecutionRecord::child`]), so the children it holds are the targets the
+    /// summary counts and each count is read off the child's own record: a child is STARTED
+    /// once the parent's `MaxConcurrency` has released it, COMPLETED once it has ended
+    /// whether it succeeded or failed, and FAILED when it ended at any status but success —
+    /// "failed, timed out, or were canceled".
+    pub fn rate_control_targets_summary(
+        &self,
+        execution: &AutomationExecutionRecord,
+    ) -> Option<TargetsSummary> {
+        if execution.children.is_empty() {
+            return None;
+        }
+        let children: Vec<&AutomationExecutionRecord> = execution
+            .children
+            .iter()
+            .filter_map(|child_id| self.automation_execution(&execution.region, child_id))
+            .collect();
+        let counted = |held: usize| i32::try_from(held).unwrap_or(i32::MAX);
+        Some(TargetsSummary {
+            // "The total number of targets in the rate control execution": one child per
+            // target it resolved.
+            total_count: counted(execution.children.len()),
+            started_count: counted(
+                children
+                    .iter()
+                    .filter(|child| child.runnable_at.is_some())
+                    .count(),
+            ),
+            completed_count: counted(children.iter().filter(|child| child.ended()).count()),
+            successful_count: counted(
+                children
+                    .iter()
+                    .filter(|child| child.ended() && child.status == STATUS_SUCCESS)
+                    .count(),
+            ),
+            failed_count: counted(
+                children
+                    .iter()
+                    .filter(|child| child.ended() && child.status != STATUS_SUCCESS)
+                    .count(),
+            ),
+        })
     }
 
     /// Release the children of one rate-controlled execution that its `MaxConcurrency`

@@ -151,7 +151,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::state::cloud_connectors::{
             cloud_connector_filter_value_missing, cloud_connector_page_size,
-            is_cloud_connector_filter_key, is_cloud_connector_id, CloudConnectorRecord,
+            filter_keys_are_not_combinable, is_cloud_connector_filter_key, is_cloud_connector_id,
+            CloudConnectorRecord, CLOUD_CONNECTOR_FILTER_KEYS_NOT_COMBINABLE,
             CLOUD_CONNECTOR_FILTER_KEY_MISSING,
         };
         use crate::state::{invalid_filter_key_message, request_region, INVALID_NEXT_TOKEN};
@@ -195,6 +196,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
             }
             filters.push((key, values));
+        }
+        // "You can't combine Azure filter keys (`SubscriptionId` and `TenantId`) with GCP
+        // filter keys (`ProjectId` and `OrganizationId`) in the same request"
+        // (`CloudConnectorFilter$FilterValues`): one connector's configuration is of ONE
+        // provider, so the two families name properties no connector has at once.
+        if filter_keys_are_not_combinable(filters.iter().map(|(key, _)| *key)) {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                CLOUD_CONNECTOR_FILTER_KEYS_NOT_COMBINABLE,
+            ));
         }
 
         let page_size = cloud_connector_page_size(input.max_results)

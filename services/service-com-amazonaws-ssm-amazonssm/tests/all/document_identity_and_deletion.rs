@@ -9,9 +9,10 @@
 //!    with the union over its steps, and content whose steps restrict nothing is
 //!    compatible with every platform the model lists — reported in the order the modelled
 //!    `PlatformType` enum declares them.
-//! 2. Every document carries the `DocumentId` Systems Manager assigned it, stable across
-//!    reads and across the versions an update appends, and its tag set as a list that is
-//!    EMPTY rather than absent when it carries no tag. A describe additionally reports the
+//! 2. Every document reports its tag set as a list that is EMPTY rather than absent when
+//!    it carries no tag, and NO read reports a `DocumentId`: no shape of this service's
+//!    model declares that member, so a client reads a document's identity off the name it
+//!    is addressed by and the version members beside it. A describe additionally reports the
 //!    classification members as empty lists for a document nothing classified.
 //! 3. `DeleteDocument` removes what a create persisted: the document (or the one version
 //!    the call named) and the associations that applied it, so every later read of that
@@ -123,23 +124,11 @@ fn string_list(value: &Value, member: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `DocumentId` a report carries, as the one string it is.
-fn document_id(description: &Value) -> String {
-    description["DocumentId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// Whether `id` is shaped the way a system-assigned Systems Manager identifier is: the
-/// canonical lowercase hyphenated 8-4-4-4-12 form.
-fn is_shaped_id(id: &str) -> bool {
-    let groups: Vec<&str> = id.split('-').collect();
-    groups.len() == 5
-        && groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
-        && groups
-            .iter()
-            .all(|group| group.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()))
+/// Whether a report carries a `DocumentId` at all: no shape this service's model declares
+/// has that member (`smithy_query(query="shape", shape="DocumentDescription")`), so every
+/// read answers without one.
+fn reports_a_document_id(description: &Value) -> bool {
+    description.get("DocumentId").is_some()
 }
 
 /// The names a listing of this Region's documents reports, walked page by page.
@@ -374,11 +363,11 @@ mainSteps:
     );
 }
 
-/// RULE: every document carries the id Systems Manager assigned it — stable across reads
-/// and across the versions an update appends, different for every document — and its tag
-/// set as a list that is empty rather than absent when it carries no tag.
+/// RULE: every document reports its tag set as a list that is empty rather than absent when
+/// it carries no tag, and no read reports a `DocumentId` — no shape of the model declares
+/// one — whichever read answers and however many versions the document holds.
 #[tokio::test]
-async fn every_document_carries_a_stable_id_and_a_tag_list() {
+async fn every_document_carries_a_tag_list_and_no_document_id() {
     let router = router();
     let content = command_with_step("aws:runShellScript", None);
     // (case, name, the tags the create submits, the tag list every read must report)
@@ -413,16 +402,12 @@ async fn every_document_carries_a_stable_id_and_a_tag_list() {
             body["Tags"] = submitted.clone();
         }
         let created = create_ok(&router, case, &body).await;
-        let id = document_id(&created);
         assert!(
-            is_shaped_id(&id),
-            "case {case}: expected a system-assigned DocumentId, got {id:?} in {created}"
+            !reports_a_document_id(&created),
+            "case {case}: no member of the created document's report is a DocumentId, got \
+             {created}"
         );
-        assert!(
-            !seen.contains(&id),
-            "case {case}: two documents must not share one DocumentId, got {id:?} after {seen:?}"
-        );
-        seen.push(id.clone());
+        seen.push((*name).to_string());
         assert_eq!(
             created["Tags"], *expected_tags,
             "case {case}: expected the create to report Tags {expected_tags}, got {created}"
@@ -437,13 +422,17 @@ async fn every_document_carries_a_stable_id_and_a_tag_list() {
             );
         }
 
-        // Two reads report the same id, and the same tag list.
+        // Two reads report the same document, and the same tag list.
         for round in ["first read", "second read"] {
             let read = describe_ok(&router, case, name).await;
             assert_eq!(
-                document_id(&read),
-                id,
-                "case {case} {round}: a read must report the id the create assigned, got {read}"
+                read["Name"].as_str(),
+                Some(*name),
+                "case {case} {round}: a read must report the document the create named, got {read}"
+            );
+            assert!(
+                !reports_a_document_id(&read),
+                "case {case} {round}: no member of a read is a DocumentId, got {read}"
             );
             assert_eq!(
                 read["Tags"], *expected_tags,
@@ -474,30 +463,32 @@ async fn every_document_carries_a_stable_id_and_a_tag_list() {
         );
         let updated = response["DocumentDescription"].clone();
         assert_eq!(
-            (document_id(&updated), updated["LatestVersion"].clone()),
-            (id.clone(), json!("2")),
-            "case {case}: an appended version keeps the document's id, got {updated}"
+            (updated["Name"].clone(), updated["LatestVersion"].clone()),
+            (json!(name), json!("2")),
+            "case {case}: an appended version belongs to the same document, got {updated}"
         );
     }
 
-    // A document Systems Manager publishes carries an id of the same shape, stable across
-    // reads, and distinct from every created document's.
+    // A document Systems Manager publishes is read the same way: two reads report the one
+    // document under the name it is addressed by, and neither carries a DocumentId.
     let first = describe_ok(&router, "the published document", PUBLISHED_SHELL_DOCUMENT).await;
     let second = describe_ok(&router, "the published document again", PUBLISHED_SHELL_DOCUMENT).await;
-    let published_id = document_id(&first);
-    assert!(
-        is_shaped_id(&published_id),
-        "case the published document: expected a system-assigned DocumentId, got {first}"
+    assert_eq!(
+        first["Name"].as_str(),
+        Some(PUBLISHED_SHELL_DOCUMENT),
+        "case the published document: expected the name it was read by, got {first}"
     );
     assert_eq!(
-        document_id(&second),
-        published_id,
-        "case the published document: two reads report one id, got {second}"
+        first, second,
+        "case the published document: two reads report one document, got {second}"
     );
     assert!(
-        !seen.contains(&published_id),
-        "case the published document: its id must differ from every created one, got \
-         {published_id:?} after {seen:?}"
+        !reports_a_document_id(&first),
+        "case the published document: no member of its report is a DocumentId, got {first}"
+    );
+    assert!(
+        !seen.contains(&PUBLISHED_SHELL_DOCUMENT.to_string()),
+        "case the published document: its name must differ from every created one, got {seen:?}"
     );
     assert_eq!(
         first["Tags"],
@@ -588,10 +579,14 @@ mainSteps:
             body["VersionName"] = row.selector["VersionName"].clone();
         }
         let created = create_ok(&router, case, &body).await;
-        let created_id = document_id(&created);
         assert!(
             listed_names(&router, case).await.contains(&row.name.to_string()),
             "case {case}: the created document must be listed before the delete"
+        );
+        assert_eq!(
+            created["LatestVersion"].clone(),
+            json!("1"),
+            "case {case}: a created document holds one version, got {created}"
         );
 
         let mut request = json!({ "Name": row.name });
@@ -616,17 +611,22 @@ mainSteps:
             "case {case}: a deleted document is gone from the listing"
         );
 
-        // The name is free again, and the document created under it is a NEW document.
+        // The name is free again, and the document created under it is a NEW document: its
+        // version history starts over, so nothing of the deleted one is left behind.
         let recreated = create_ok(
             &router,
             case,
             &json!({ "Name": row.name, "Content": shell, "DocumentType": "Command" }),
         )
         .await;
-        assert_ne!(
-            document_id(&recreated),
-            created_id,
-            "case {case}: a recreated document is a new document with a new id, got {recreated}"
+        assert_eq!(
+            (
+                recreated["LatestVersion"].clone(),
+                recreated["DocumentVersion"].clone()
+            ),
+            (json!("1"), json!("1")),
+            "case {case}: a recreated document is a new document whose history starts over, \
+             got {recreated}"
         );
     }
 }

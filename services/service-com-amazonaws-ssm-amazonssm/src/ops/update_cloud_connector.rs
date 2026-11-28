@@ -90,6 +90,9 @@
 //! * `InternalServerError` (HTTP 500) — An error occurred on the server side.
 //! * `ResourceNotFoundException` (HTTP 400) — The specified parameter to be shared could not
 //!   be found.
+//! * `ServiceQuotaExceededException` (HTTP 400) — The request exceeds the service quota.
+//!   Service quotas, also referred to as limits, are the maximum number of service resources
+//!   or operations for your Amazon Web Services account.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -111,6 +114,7 @@ pub enum UpdateCloudConnectorErrorModeled {
     ConflictException(ConflictException),
     InternalServerError(InternalServerError),
     ResourceNotFoundException(ResourceNotFoundException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -214,11 +218,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &region,
                 crate::state::cloud_connector_validation::FederatedConnector {
                     role_arn: &role_arn,
-                    config_connector_arn: &config_connector_arn,
-                    tenant_id: crate::state::cloud_connectors::configuration_tenant_id(
-                        configuration,
-                    ),
-                    application_id: crate::state::cloud_connectors::configuration_application_id(
+                    config_connector_arn: config_connector_arn.as_deref(),
+                    azure_identity: crate::state::cloud_connectors::configuration_azure_identity(
                         configuration,
                     ),
                 },

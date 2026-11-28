@@ -151,7 +151,7 @@ pub const SETTINGS: &[SettingDefinition] = &[
         reset_awaits_approval: true,
     },
     SettingDefinition {
-        id: "/ssm/managed-instance/default-ec2-instance-management-role",
+        id: super::default_host_management::ROLE_SETTING_ID,
         default_value: UNSET_VALUE,
         values: &[],
         reset_awaits_approval: false,

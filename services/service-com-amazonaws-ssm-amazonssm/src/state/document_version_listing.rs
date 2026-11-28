@@ -41,6 +41,9 @@ pub fn document_version_info(
         // `Status` value", which it words for a failure; nothing here failed.
         status_information: None,
         review_status: record.review_status(),
+        // "This field specifies the cloud providers that this version of the document can
+        // run against": the version's own, as the version it was minted by named them.
+        cloud_providers: Some(version.cloud_providers.clone()),
     }
 }
 

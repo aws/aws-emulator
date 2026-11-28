@@ -42,5 +42,7 @@ pub struct CloudConnectorSummary {
     pub role_arn: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub provider: Option<String>,
+    pub config_connector_arn: Option<String>,
 }
 

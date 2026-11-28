@@ -256,6 +256,7 @@ pub struct UnsupportedPlatformType {
 #[derive(Debug, Clone)]
 pub enum CloudConnectorConfiguration {
     AzureConfiguration(AzureConfiguration),
+    GcpConfiguration(GcpConfiguration),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#AzureConfiguration")]
@@ -280,6 +281,29 @@ pub enum ConfigurationTargets {
 pub struct AzureSubscription {
     pub id: String,
     pub display_name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ssm#GcpConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpConfiguration {
+    pub organization_id: Option<String>,
+    pub workload_identity_pool_provider: String,
+    pub service_account_email: String,
+    pub targets: Option<GcpConfigurationTargets>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.ssm#GcpConfigurationTargets")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum GcpConfigurationTargets {
+    Projects(Vec<GcpProject>),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ssm#GcpProject")]
+#[derive(Debug, Clone, Default)]
+pub struct GcpProject {
+    pub project_id: String,
+    pub project_display_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#ConflictException")]
@@ -318,7 +342,6 @@ pub struct AttachmentsSource {
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#DocumentDescription")]
 #[derive(Debug, Clone, Default)]
 pub struct DocumentDescription {
-    pub document_id: Option<String>,
     pub sha1: Option<String>,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
@@ -349,6 +372,7 @@ pub struct DocumentDescription {
     pub review_status: Option<String>,
     pub category: Option<Vec<String>>,
     pub category_enum: Option<Vec<String>>,
+    pub cloud_providers: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#DocumentParameter")]
@@ -893,9 +917,12 @@ pub struct ThrottlingException {
     pub service_code: Option<String>,
 }
 
-// `ValidationException` is NOT derived here: this service keys its text member lower case
-// on the wire, which the derive cannot express, so the shape is written out in
-// `super::validation_exception_wire` and re-exported beside these.
+#[smithy_macros::smithy(shape = "com.amazonaws.ssm#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: Option<String>,
+    pub reason_code: Option<String>,
+}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#CloudWatchOutputConfig")]
 #[derive(Debug, Clone, Default)]
@@ -1023,8 +1050,36 @@ pub struct CommandFilter {
     pub value: String,
 }
 
-// `com.amazonaws.ssm#Command` is declared in `super::command_wire` instead of here: the
-// wire carries five members this model does not declare, which the derive cannot express.
+#[smithy_macros::smithy(shape = "com.amazonaws.ssm#Command")]
+#[derive(Debug, Clone, Default)]
+pub struct Command {
+    pub command_id: Option<String>,
+    pub document_name: Option<String>,
+    pub document_version: Option<String>,
+    pub comment: Option<String>,
+    pub expires_after: Option<::aws_smithy_types::DateTime>,
+    pub parameters: Option<std::collections::HashMap<String, Vec<String>>>,
+    pub instance_ids: Option<Vec<String>>,
+    pub targets: Option<Vec<Target>>,
+    pub requested_date_time: Option<::aws_smithy_types::DateTime>,
+    pub status: Option<String>,
+    pub status_details: Option<String>,
+    pub output_s3_region: Option<String>,
+    pub output_s3_bucket_name: Option<String>,
+    pub output_s3_key_prefix: Option<String>,
+    pub max_concurrency: Option<String>,
+    pub max_errors: Option<String>,
+    pub target_count: i32,
+    pub completed_count: i32,
+    pub error_count: i32,
+    pub delivery_timed_out_count: i32,
+    pub service_role: Option<String>,
+    pub notification_config: Option<NotificationConfig>,
+    pub cloud_watch_output_config: Option<CloudWatchOutputConfig>,
+    pub timeout_seconds: Option<i32>,
+    pub alarm_configuration: Option<AlarmConfiguration>,
+    pub triggered_alarms: Option<Vec<AlarmStateInformation>>,
+}
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#ComplianceStringFilter")]
 #[derive(Debug, Clone, Default)]
@@ -1203,7 +1258,11 @@ pub const CALENDAR_STATE_VALUES: &[&str] = &["CLOSED", "OPEN"];
 
 
 /// The values `CloudConnectorFilterKey` accepts on the wire.
-pub const CLOUD_CONNECTOR_FILTER_KEY_VALUES: &[&str] = &["SubscriptionId", "TenantId"];
+pub const CLOUD_CONNECTOR_FILTER_KEY_VALUES: &[&str] = &["OrganizationId", "ProjectId", "SubscriptionId", "TenantId"];
+
+
+/// The values `CloudProvider` accepts on the wire.
+pub const CLOUD_PROVIDER_VALUES: &[&str] = &["AWS", "Azure", "GCP"];
 
 
 /// The values `CommandFilterKey` accepts on the wire.
@@ -1240,6 +1299,10 @@ pub const COMPLIANCE_UPLOAD_TYPE_VALUES: &[&str] = &["COMPLETE", "PARTIAL"];
 
 /// The values `ConnectionStatus` accepts on the wire.
 pub const CONNECTION_STATUS_VALUES: &[&str] = &["connected", "notconnected"];
+
+
+/// The values `DHMCPermissionModel` accepts on the wire.
+pub const D_H_M_C_PERMISSION_MODEL_VALUES: &[&str] = &["SELF_MANAGED", "SERVICE_MANAGED"];
 
 
 /// The values `DeletionMode` accepts on the wire.
@@ -1490,6 +1553,10 @@ pub const PING_STATUS_VALUES: &[&str] = &["ConnectionLost", "Inactive", "Online"
 pub const PLATFORM_TYPE_VALUES: &[&str] = &["Linux", "MacOS", "Windows"];
 
 
+/// The values `Provider` accepts on the wire.
+pub const PROVIDER_VALUES: &[&str] = &["Azure", "GCP"];
+
+
 /// The values `RebootOption` accepts on the wire.
 pub const REBOOT_OPTION_VALUES: &[&str] = &["NoReboot", "RebootIfNeeded"];
 
@@ -1527,7 +1594,7 @@ pub const SIGNAL_TYPE_VALUES: &[&str] = &["Approve", "Reject", "Resume", "Revoke
 
 
 /// The values `SourceType` accepts on the wire.
-pub const SOURCE_TYPE_VALUES: &[&str] = &["AWS::EC2::Instance", "AWS::IoT::Thing", "AWS::SSM::ManagedInstance", "Microsoft.Compute/virtualMachines"];
+pub const SOURCE_TYPE_VALUES: &[&str] = &["AWS::EC2::Instance", "AWS::IoT::Thing", "AWS::SSM::ManagedInstance", "Microsoft.Compute/virtualMachines", "compute.googleapis.com/Instance"];
 
 
 /// The values `StepExecutionFilterKey` accepts on the wire.
@@ -1539,11 +1606,11 @@ pub const STOP_TYPE_VALUES: &[&str] = &["Cancel", "Complete"];
 
 
 /// The values `ValidationFindingCode` accepts on the wire.
-pub const VALIDATION_FINDING_CODE_VALUES: &[&str] = &["AwsRoleAssumptionFailed", "OutboundWebIdentityFederationDisabled", "ProviderCredentialCreationFailed", "SubscriptionAccessible", "TargetInaccessible", "TargetStateWarning", "TargetUnusable", "TenantSummary", "WebIdentityTokenFailed"];
+pub const VALIDATION_FINDING_CODE_VALUES: &[&str] = &["AwsRoleAssumptionFailed", "OutboundWebIdentityFederationDisabled", "ProviderCredentialCreationFailed", "SubscriptionAccessible", "TargetApiDisabled", "TargetInaccessible", "TargetMissingPermissions", "TargetStateWarning", "TargetUnusable", "TenantSummary", "WebIdentityTokenFailed"];
 
 
 /// The values `ValidationFindingScopeType` accepts on the wire.
-pub const VALIDATION_FINDING_SCOPE_TYPE_VALUES: &[&str] = &["azure:subscription", "azure:tenant"];
+pub const VALIDATION_FINDING_SCOPE_TYPE_VALUES: &[&str] = &["azure:subscription", "azure:tenant", "gcp:organization", "gcp:project"];
 
 
 /// The values `ValidationFindingType` accepts on the wire.

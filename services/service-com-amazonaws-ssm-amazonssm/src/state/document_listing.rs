@@ -308,6 +308,9 @@ pub fn document_identifier(
         // "The user in your organization who created the document": the emulator
         // authenticates no human author, so there is none to report.
         author: None,
+        // "This field specifies the cloud providers that this version of the document can
+        // run against": the version's own, which is what the listing reports of it.
+        cloud_providers: Some(version.cloud_providers.clone()),
     }
 }
 

@@ -18,7 +18,7 @@ pub struct CreateCloudConnectorInput {
     pub role_arn: String,
     pub description: Option<String>,
     pub configuration: CloudConnectorConfiguration,
-    pub config_connector_arn: String,
+    pub config_connector_arn: Option<String>,
     pub tags: Option<Vec<Tag>>,
 }
 

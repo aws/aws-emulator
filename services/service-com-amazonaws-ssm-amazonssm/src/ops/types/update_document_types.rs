@@ -22,6 +22,7 @@ pub struct UpdateDocumentInput {
     pub document_version: Option<String>,
     pub document_format: Option<String>,
     pub target_type: Option<String>,
+    pub cloud_providers: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#UpdateDocumentResult")]

@@ -465,7 +465,7 @@ async fn a_filter_value_outside_its_published_set_names_the_key_and_the_set() {
         (
             "SourceTypes",
             "AWS::EC2::Instance, AWS::SSM::ManagedInstance, AWS::IoT::Thing, \
-             Microsoft.Compute/virtualMachines",
+             Microsoft.Compute/virtualMachines, compute.googleapis.com/Instance",
         ),
     ];
 

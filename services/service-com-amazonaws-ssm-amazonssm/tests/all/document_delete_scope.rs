@@ -301,8 +301,8 @@ async fn a_delete_removes_only_the_version_its_selector_names() {
         // resolves to its default version.
         let read = describe_ok(&router, REGION, case, &json!({ "Name": row.name })).await;
         assert_eq!(
-            (read["DocumentId"].clone(), read["DocumentVersion"].clone()),
-            (created["DocumentId"].clone(), json!("1")),
+            (read["Name"].clone(), read["DocumentVersion"].clone()),
+            (created["Name"].clone(), json!("1")),
             "case {case}: a version delete leaves the document and its default version, \
              got {read}"
         );

@@ -110,8 +110,16 @@ pub const FINDING_CODE_PROVIDER_CREDENTIAL_CREATION_FAILED: &str =
 pub const FINDING_SCOPE_TENANT: &str = "azure:tenant";
 
 /// The `ValidationFindingScopeType` of a finding about ONE Azure subscription the connector
-/// targets. The other value of the same enum.
+/// targets. Another value of the same enum.
 pub const FINDING_SCOPE_SUBSCRIPTION: &str = "azure:subscription";
+
+/// The `ValidationFindingScopeType` of a finding about the GCP ORGANIZATION a connector
+/// targets (same enum), which is the scope a GCP connector's federation is reported at.
+pub const FINDING_SCOPE_ORGANIZATION: &str = "gcp:organization";
+
+/// The `ValidationFindingScopeType` of a finding about ONE GCP project the connector
+/// targets. The last value of the same enum.
+pub const FINDING_SCOPE_PROJECT: &str = "gcp:project";
 
 /// What a validation of a connector whose federation holds reports about its tenant: the
 /// application the connector acts as in that tenant, which is what the configuration names.
@@ -194,22 +202,22 @@ pub struct FederatedConnector<'a> {
     /// communicate with the third-party cloud environment."
     pub role_arn: &'a str,
     /// "The ARN of the Amazon Web Services Config connector associated with this cloud
-    /// connector", which is where the verified provider credential lives.
-    pub config_connector_arn: &'a str,
-    /// The tenant the connector acts in (`AzureConfiguration$TenantId`).
-    pub tenant_id: &'a str,
-    /// The application registration it acts as there (`AzureConfiguration$ApplicationId`).
-    pub application_id: &'a str,
+    /// connector", which is where the verified provider credential lives — `None` for a
+    /// connector created without one, which names no record to put that question to.
+    pub config_connector_arn: Option<&'a str>,
+    /// The Azure tenant the connector acts in and the application registration it acts as
+    /// there (`AzureConfiguration$TenantId`, `$ApplicationId`), or `None` for a
+    /// configuration of another provider, which names neither.
+    pub azure_identity: Option<(&'a str, &'a str)>,
 }
 
 impl<'a> FederatedConnector<'a> {
-    /// The four values of a connector this service already holds.
+    /// The same values read off a connector this service already holds.
     pub fn of(record: &'a super::cloud_connectors::CloudConnectorRecord) -> Self {
         Self {
             role_arn: &record.role_arn,
-            config_connector_arn: &record.config_connector_arn,
-            tenant_id: record.tenant_id(),
-            application_id: record.application_id(),
+            config_connector_arn: record.config_connector_arn.as_deref(),
+            azure_identity: record.azure_identity(),
         }
     }
 }
@@ -227,6 +235,12 @@ impl<'a> FederatedConnector<'a> {
 /// ([`super::provider_credentials::azure_credentials_are_unobtainable`]). A create resolves
 /// this BEFORE it mints a connector and refuses with the failing step's own sentence; a
 /// validation reports it as a finding of the connector it is asked about.
+///
+/// The last step is put only about a connector that names BOTH a Config connector to read the
+/// verified credential from and the Azure pair it would be verified for: a connector created
+/// without a Config connector names no record to read, and a configuration of another
+/// provider names no Azure tenant and application to read one for, so in neither case has
+/// anything answered that no credential stands behind it.
 pub async fn federation_failure(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -244,12 +258,17 @@ pub async fn federation_failure(
     if super::provider_credentials::outbound_federation_is_disabled(ctx, region).await {
         return Some(FederationFailure::OutboundFederationDisabled);
     }
+    let (config_connector_arn, (tenant_id, application_id)) =
+        match (connector.config_connector_arn, connector.azure_identity) {
+            (Some(config_connector_arn), Some(identity)) => (config_connector_arn, identity),
+            _ => return None,
+        };
     super::provider_credentials::azure_credentials_are_unobtainable(
         ctx,
         region,
-        connector.config_connector_arn,
-        connector.tenant_id,
-        connector.application_id,
+        config_connector_arn,
+        tenant_id,
+        application_id,
     )
     .await
     .then_some(FederationFailure::ProviderCredential)
@@ -282,22 +301,43 @@ fn finding(
 /// (`failure`).
 ///
 /// Every finding is read out of what the connector's own configuration persisted and what
-/// the services holding the records answered about it (`failure`) — the tenant it targets,
-/// the application it acts as, the subscriptions it targets — so two validations of one
-/// unchanged connector report the same findings and a validation changes none of them.
+/// the services holding the records answered about it (`failure`) — the tenant or the
+/// organization it targets, the application it acts as, the subscriptions or projects it
+/// targets — so two validations of one unchanged connector report the same findings and a
+/// validation changes none of them.
 ///
-/// The order is total, which is what lets a page resume at the finding it stopped on: the
-/// tenant it targets first, then what the step that failed answered, then its targets in the
-/// order the configuration lists them.
+/// The order is total, which is what lets a page resume at the finding it stopped on: what
+/// the connector targets as a whole first, then what the step that failed answered, then its
+/// targets in the order the configuration lists them.
+///
+/// The scopes are the provider's own (`ValidationFindingScopeType`): an Azure connector is
+/// reported at its tenant and its subscriptions, a GCP one at its organization and its
+/// projects. Only an Azure connector carries the two INFO findings the model declares codes
+/// for — `TenantSummary` and `SubscriptionAccessible` — so a GCP connector whose federation
+/// holds has nothing to report and reports no finding at all.
 pub fn findings(
     record: &super::cloud_connectors::CloudConnectorRecord,
     failure: Option<FederationFailure>,
 ) -> Vec<ValidationFinding> {
-    let tenant_id = record.tenant_id();
+    match record.azure_identity() {
+        Some((tenant_id, application_id)) => {
+            azure_findings(record, failure, tenant_id, application_id)
+        }
+        None => gcp_findings(record, failure),
+    }
+}
+
+/// [`findings`] for a connector whose configuration names an Azure tenant and application.
+fn azure_findings(
+    record: &super::cloud_connectors::CloudConnectorRecord,
+    failure: Option<FederationFailure>,
+    tenant_id: &str,
+    application_id: &str,
+) -> Vec<ValidationFinding> {
     let mut findings = vec![finding(
         FINDING_TYPE_INFO,
         FINDING_CODE_TENANT_SUMMARY,
-        tenant_summary_message(record.application_id()),
+        tenant_summary_message(application_id),
         FINDING_SCOPE_TENANT,
         tenant_id,
     )];
@@ -331,6 +371,42 @@ pub fn findings(
             message.to_string(),
             FINDING_SCOPE_SUBSCRIPTION,
             subscription_id,
+        ));
+    }
+    findings
+}
+
+/// [`findings`] for a connector whose configuration targets Google Cloud Platform.
+///
+/// A failing federation is reported at the ORGANIZATION the configuration names, which is the
+/// whole of what the connector reaches there, and every targeted project is a target the
+/// connector cannot reach while it fails — the same reading the Azure half takes of a
+/// targeted subscription. A connector whose federation holds reports nothing: the modelled
+/// finding codes state no reachable GCP target.
+fn gcp_findings(
+    record: &super::cloud_connectors::CloudConnectorRecord,
+    failure: Option<FederationFailure>,
+) -> Vec<ValidationFinding> {
+    let mut findings = Vec::new();
+    let Some(failure) = failure else {
+        return findings;
+    };
+    if let Some(organization_id) = record.organization_id() {
+        findings.push(finding(
+            FINDING_TYPE_ERROR,
+            failure.code(),
+            failure.message(&record.role_arn),
+            FINDING_SCOPE_ORGANIZATION,
+            organization_id,
+        ));
+    }
+    for project_id in record.project_ids() {
+        findings.push(finding(
+            FINDING_TYPE_ERROR,
+            FINDING_CODE_TARGET_INACCESSIBLE,
+            TARGET_INACCESSIBLE_MESSAGE.to_string(),
+            FINDING_SCOPE_PROJECT,
+            project_id,
         ));
     }
     findings

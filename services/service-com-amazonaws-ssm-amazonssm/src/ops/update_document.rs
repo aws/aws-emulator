@@ -394,9 +394,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // value is applied to the new document version" (`DisplayName`), and
         // `UpdateDocument` carries no `Requires` member, so the documents this one
         // requires are the ones the version it is appended to required.
-        let (inherited_display_name, inherited_requires) = record
+        let (inherited_display_name, inherited_requires, inherited_cloud_providers) = record
             .latest()
-            .map(|latest| (latest.display_name.clone(), latest.requires.clone()))
+            .map(|latest| {
+                (
+                    latest.display_name.clone(),
+                    latest.requires.clone(),
+                    latest.cloud_providers.clone(),
+                )
+            })
             .unwrap_or_default();
         // A `VersionName` the request sends EMPTY names no version — every selector here
         // reads it that way — so it is stored as the absent member it is rather than as a
@@ -415,6 +421,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             content: input.content.clone(),
             parsed,
             requires: inherited_requires,
+            // "The cloud providers that the new document version can run against"; "if you
+            // don't specify a value, the new version uses the cloud providers of the latest
+            // version" ([`crate::state::documents::updated_cloud_providers`]).
+            cloud_providers: crate::state::updated_cloud_providers(
+                input.cloud_providers.clone(),
+                inherited_cloud_providers,
+            ),
             attachment_names: crate::state::attachment_names(input.attachments.as_deref()),
             created_date: now,
             // "The status of the SSM document": a version Systems Manager is still

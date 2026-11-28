@@ -62,6 +62,7 @@ pub struct AutomationExecution {
     pub association_id: Option<String>,
     pub change_request_name: Option<String>,
     pub variables: Option<std::collections::HashMap<String, Vec<String>>>,
+    pub targets_summary: Option<TargetsSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#ProgressCounters")]
@@ -72,5 +73,15 @@ pub struct ProgressCounters {
     pub failed_steps: i32,
     pub cancelled_steps: i32,
     pub timed_out_steps: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ssm#TargetsSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct TargetsSummary {
+    pub total_count: i32,
+    pub started_count: i32,
+    pub completed_count: i32,
+    pub successful_count: i32,
+    pub failed_count: i32,
 }
 

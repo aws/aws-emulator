@@ -15,6 +15,35 @@ use super::*;
 mod published_catalogue;
 pub use published_catalogue::*;
 
+/// The `CloudProvider` a document version runs against when the call that minted it named
+/// none: "If you don't specify a value, the default is `AWS`"
+/// (`CreateDocumentRequest$CloudProviders`) — a value of the modelled `CloudProvider` enum
+/// (`crate::ops::types::CLOUD_PROVIDER_VALUES`).
+pub const DEFAULT_CLOUD_PROVIDER: &str = "AWS";
+
+/// The cloud providers a version a create minted runs against: the ones it named, or the
+/// default for a create that named none ([`DEFAULT_CLOUD_PROVIDER`]).
+///
+/// `CloudProviderList` is `@length(min: 1, max: 10)`, so a list that reaches a handler at
+/// all names at least one provider; the empty case is the member being absent.
+#[must_use]
+pub fn created_cloud_providers(stated: Option<Vec<String>>) -> Vec<String> {
+    stated
+        .filter(|providers| !providers.is_empty())
+        .unwrap_or_else(|| vec![DEFAULT_CLOUD_PROVIDER.to_string()])
+}
+
+/// The cloud providers a version an UPDATE minted runs against: the ones it named, or
+/// `inherited` — "if you don't specify a value, the new version uses the cloud providers of
+/// the latest version" (`UpdateDocumentRequest$CloudProviders`).
+#[must_use]
+pub fn updated_cloud_providers(stated: Option<Vec<String>>, inherited: Vec<String>) -> Vec<String> {
+    match stated.filter(|providers| !providers.is_empty()) {
+        Some(stated) => stated,
+        None => created_cloud_providers(Some(inherited).filter(|held| !held.is_empty())),
+    }
+}
+
 /// Pre-flight bounds on untrusted content, applied BEFORE any parser builds a tree
 /// from it: the YAML parser descends recursively, so the nesting the bytes can ask for
 /// has to be bounded while there is still no tree to measure.
@@ -1136,6 +1165,15 @@ pub struct DocumentVersionRecord {
     /// Everything derived from the content (see [`parse_document_content`]).
     pub parsed: ParsedDocumentContent,
     pub requires: Option<Vec<DocumentRequires>>,
+    /// "The cloud providers that the returned version of the document can run against"
+    /// (`DocumentDescription$CloudProviders`), as `CloudProvider` values.
+    ///
+    /// Per VERSION, because that is what the model says varies between them: a create's
+    /// `CloudProviders` is "the cloud providers that the document can run against" and an
+    /// update's is "the cloud providers that the NEW DOCUMENT VERSION can run against".
+    /// Never empty — a version whose call named none runs against
+    /// [`DEFAULT_CLOUD_PROVIDER`].
+    pub cloud_providers: Vec<String>,
     /// The attachment names the call named, which is what `AttachmentsInformation`
     /// reports.
     pub attachment_names: Vec<String>,
@@ -1167,12 +1205,16 @@ impl DocumentVersionRecord {
 /// latest without becoming the default.
 #[derive(Debug, Clone)]
 pub struct DocumentRecord {
-    /// The identifier Systems Manager assigned the document when it was created, which is
-    /// what a read reports as `DocumentId`: minted once, per document, so two reads of one
-    /// document report the same id and no two documents share one
-    /// ([`ComAmazonawsSsmAmazonssmState::mint_document_id`]). Nothing of the request is in
-    /// it, and it is not the key the document is reached by — a document is addressed by
-    /// name.
+    /// The identifier Systems Manager assigned the document when it was created: minted
+    /// once, per document, so two reads of one document resolve the same id and no two
+    /// documents share one ([`ComAmazonawsSsmAmazonssmState::mint_document_id`]). Nothing of
+    /// the request is in it, and it is not the key the document is reached by — a document is
+    /// addressed by name.
+    ///
+    /// Not on the wire: no shape of the model declares a `DocumentId` member, so no read
+    /// reports it. It stays the document's stored identity, which is what keeps a published
+    /// document's id stable across reads
+    /// ([`ComAmazonawsSsmAmazonssmState::published_document_ids`]).
     pub document_id: String,
     /// The name the create supplied, which is what a read reports and part of the
     /// store key.
@@ -1338,9 +1380,6 @@ impl DocumentRecord {
     /// and default version.
     pub fn description_of(&self, version: &DocumentVersionRecord) -> DocumentDescription {
         DocumentDescription {
-            // The id Systems Manager assigned the document, which every read of it
-            // reports.
-            document_id: Some(self.document_id.clone()),
             // "Sha1 hashes have been deprecated", so the system hash is the Sha256 in
             // `Hash` and the deprecated member is left unset.
             sha1: None,
@@ -1398,6 +1437,10 @@ impl DocumentRecord {
             // nothing classifies a document created through this API.
             category: None,
             category_enum: None,
+            // "This field specifies the cloud providers that the returned version of the
+            // document can run against": the version's own, which is what the call that
+            // minted it named or the default it fell back to.
+            cloud_providers: Some(version.cloud_providers.clone()),
         }
     }
 

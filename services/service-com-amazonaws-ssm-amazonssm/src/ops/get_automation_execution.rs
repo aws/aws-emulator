@@ -182,7 +182,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         Ok(GetAutomationExecutionOutput {
-            automation_execution: Some(execution.to_automation_execution()),
+            // The child executions a rate control execution started are records of their
+            // own, so what the report summarises about them is read off the store before
+            // the report is built (`crate::state::automation`).
+            automation_execution: Some(
+                execution.to_automation_execution(store.rate_control_targets_summary(execution)),
+            ),
         })
     }
 }

@@ -42,6 +42,7 @@ pub mod delete_parameters_types;
 pub mod delete_patch_baseline_types;
 pub mod delete_resource_data_sync_types;
 pub mod delete_resource_policy_types;
+pub mod deregister_default_host_management_configuration_types;
 pub mod deregister_managed_instance_types;
 pub mod deregister_patch_baseline_for_patch_group_types;
 pub mod deregister_target_from_maintenance_window_types;
@@ -133,6 +134,7 @@ pub mod put_compliance_items_types;
 pub mod put_inventory_types;
 pub mod put_parameter_types;
 pub mod put_resource_policy_types;
+pub mod register_default_host_management_configuration_types;
 pub mod register_default_patch_baseline_types;
 pub mod register_patch_baseline_for_patch_group_types;
 pub mod register_target_with_maintenance_window_types;
@@ -179,8 +181,6 @@ pub use cancel_command_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_maintenance_window_execution_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
-pub use command_wire::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_activation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_association_batch_types::*;
@@ -226,6 +226,8 @@ pub use delete_patch_baseline_types::*;
 pub use delete_resource_data_sync_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_resource_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use deregister_default_host_management_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use deregister_managed_instance_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -409,6 +411,8 @@ pub use put_parameter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use register_default_host_management_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_default_patch_baseline_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_patch_baseline_for_patch_group_types::*;
@@ -478,6 +482,19 @@ pub use update_resource_data_sync_types::*;
 pub use update_service_setting_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use validate_cloud_connector_types::*;
-#[allow(ambiguous_glob_reexports, unused_imports)]
-pub use validation_exception_wire::*;
+
+// The `Command` every reader of a Run Command request answers with is this crate's own
+// hand-written declaration (`command_wire`), which carries the five members Systems Manager
+// reports that the on-disk model does not declare. It is stated EXPLICITLY, after the glob
+// re-exports above, so it is the `Command` every module reaching these types resolves: an
+// explicit import takes precedence over a glob one, which leaves the model's own narrower
+// declaration in `shared_types` reachable by its own path and exported by neither.
+pub use command_wire::{Command, COMMAND_SCHEMA};
+
+// `ValidationException` is this crate's own hand-written declaration
+// (`validation_exception_wire`) for the same reason: the model spells its text member
+// `Message` and this service answers that refusal with its text keyed `message`, which the
+// derive cannot express. Stated explicitly for the same reason as `Command` above, with the
+// schema static the generated per-operation error enums resolve by name.
+pub use validation_exception_wire::{ValidationException, SCHEMA_VALIDATION_EXCEPTION};
 

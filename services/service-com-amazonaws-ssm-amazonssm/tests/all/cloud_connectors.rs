@@ -736,15 +736,28 @@ fn listed_summaries(case: &str, response: &Value) -> Vec<Value> {
 /// than one page, while another Region holds connectors of its own throughout.
 #[tokio::test]
 async fn a_listing_reports_the_connectors_of_its_own_region() {
-    /// The members a `CloudConnectorSummary` declares beside the id
-    /// (`smithy_query(query="shape", shape="CloudConnectorSummary")`).
-    const SUMMARY_MEMBERS: &[&str] =
-        &["DisplayName", "Description", "RoleArn", "CreatedAt", "UpdatedAt"];
+    /// The members a `CloudConnectorSummary` declares beside the id that the
+    /// single-connector read declares too
+    /// (`smithy_query(query="shape", shape="CloudConnectorSummary")` against
+    /// `GetCloudConnector`'s output).
+    const SUMMARY_MEMBERS: &[&str] = &[
+        "DisplayName",
+        "Description",
+        "RoleArn",
+        "ConfigConnectorArn",
+        "CreatedAt",
+        "UpdatedAt",
+    ];
 
     /// The members the single-connector read declares that a summary does NOT
     /// (`CloudConnectorSummary` against `GetCloudConnector`'s output).
-    const MEMBERS_A_SUMMARY_OMITS: &[&str] =
-        &["CloudConnectorArn", "ConfigConnectorArn", "Configuration"];
+    const MEMBERS_A_SUMMARY_OMITS: &[&str] = &["CloudConnectorArn", "Configuration"];
+
+    /// The `Provider` a summary of one of these connectors reports: "the third-party cloud
+    /// provider that the cloud connector connects to" (`CloudConnectorSummary$Provider`,
+    /// `Provider` = `Azure | GCP`), which is the provider of the configuration the create
+    /// was handed — an `AzureConfiguration` for every row here.
+    const SUMMARY_PROVIDER: &str = "Azure";
 
     // How many connectors the Region holds: none, one, a handful, and more than the page a
     // request asking for no bound is served.
@@ -811,6 +824,13 @@ async fn a_listing_reports_the_connectors_of_its_own_region() {
                     "case {case}: a summary declares no {member}, got {summary}"
                 );
             }
+            // The one member a summary carries that the read does not: the provider of the
+            // configuration the read reports in full.
+            assert_eq!(
+                summary["Provider"].as_str(),
+                Some(SUMMARY_PROVIDER),
+                "case {case}: a summary reports the connector's provider, got {summary}"
+            );
         }
 
         // The other Region's endpoint reports its own two, and nothing of this one's.

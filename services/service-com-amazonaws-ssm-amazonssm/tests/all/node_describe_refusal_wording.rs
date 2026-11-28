@@ -473,7 +473,7 @@ const PUBLISHED_SETS: &[(&str, &str, bool)] = &[
     (
         "SourceTypes",
         "AWS::EC2::Instance, AWS::SSM::ManagedInstance, AWS::IoT::Thing, \
-         Microsoft.Compute/virtualMachines",
+         Microsoft.Compute/virtualMachines, compute.googleapis.com/Instance",
         false,
     ),
 ];

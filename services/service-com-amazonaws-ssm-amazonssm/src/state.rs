@@ -489,6 +489,10 @@ pub mod replacing_update;
 /// `GetServiceSetting` reports and `UpdateServiceSetting`/`ResetServiceSetting` modify.
 pub mod service_settings;
 
+/// The IAM role an account registers for Default Host Management Configuration, and the
+/// service setting that registration lives in.
+pub mod default_host_management;
+
 /// The one tag set each resource this store holds carries, and how a tag request
 /// addresses it.
 pub mod tagging;
@@ -2996,6 +3000,10 @@ impl ComAmazonawsSsmAmazonssmState {
                     hash: hash.to_string(),
                     parsed: parsed.clone(),
                     requires: None,
+                    // A document Amazon publishes runs against Amazon Web Services
+                    // resources ([`documents::DEFAULT_CLOUD_PROVIDER`]): the catalogue
+                    // declares no other provider for one.
+                    cloud_providers: vec![DEFAULT_CLOUD_PROVIDER.to_string()],
                     attachment_names: Vec::new(),
                     created_date: ::std::time::UNIX_EPOCH
                         + ::std::time::Duration::from_millis(release.created_date_millis),
@@ -3438,6 +3446,7 @@ pub fn node_filter_key_value_set(key: &str) -> Option<&'static [&'static str]> {
             "AWS::SSM::ManagedInstance",
             "AWS::IoT::Thing",
             "Microsoft.Compute/virtualMachines",
+            "compute.googleapis.com/Instance",
         ]),
         _ => None,
     }

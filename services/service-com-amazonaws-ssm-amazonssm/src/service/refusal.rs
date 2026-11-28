@@ -104,24 +104,6 @@ use ::smithy_server_runtime::{
     DeserializableStruct, Operation, Refusal, Refused, ServerHttpProtocol,
 };
 
-/// `com.amazonaws.ssm#CloudConnectorFilterKey` as this checkout's model declares it
-/// (`smithy_query(query="shape",shape="CloudConnectorFilterKey")`), which is the set a
-/// violation of a `CloudConnectorFilter$FilterKey` carries.
-const CLOUD_CONNECTOR_FILTER_KEY_DECLARED: &[&str] = &["SubscriptionId", "TenantId"];
-
-/// The `CloudConnectorFilterKey` values the live service accepts: the two the model
-/// declares, then the two it does not (recorded behaviour — corpus `simparity-wire-aws-v1`,
-/// fixture `ssm-cloudconnector-list-empty-filter` step `task#2`, where `ListCloudConnectors`
-/// with an unknown `FilterKey` is refused with `[TenantId, OrganizationId, ProjectId,
-/// SubscriptionId]`). Stated model-first so the listing order of two values that share a
-/// hash bucket follows the declaration they are added to.
-const CLOUD_CONNECTOR_FILTER_KEY_ACCEPTED: &[&str] = &[
-    "SubscriptionId",
-    "TenantId",
-    "OrganizationId",
-    "ProjectId",
-];
-
 /// `com.amazonaws.ssm#CommandFilterKey` as this checkout's model declares it
 /// (`smithy_query(query="shape",shape="CommandFilterKey")`).
 const COMMAND_FILTER_KEY_DECLARED: &[&str] = &[
@@ -286,10 +268,6 @@ const NODE_ATTRIBUTE_NAME_ACCEPTED: &[&str] = &[
 /// member of every operation that targets that type. A type the model declares in full has
 /// no row: its refusal lists exactly what the model declares.
 const ACCEPTED_VALUE_SETS: &StatedEnumValueSets<'static> = &[
-    (
-        CLOUD_CONNECTOR_FILTER_KEY_DECLARED,
-        CLOUD_CONNECTOR_FILTER_KEY_ACCEPTED,
-    ),
     (COMMAND_FILTER_KEY_DECLARED, COMMAND_FILTER_KEY_ACCEPTED),
     (OPS_ITEM_FILTER_KEY_DECLARED, OPS_ITEM_FILTER_KEY_ACCEPTED),
     (NODE_ATTRIBUTE_NAME_DECLARED, NODE_ATTRIBUTE_NAME_ACCEPTED),
@@ -743,8 +721,16 @@ mod tests {
         // (case, the values a violation carries, the set the clause lists)
         let cases: &[(&str, &[&str], &str)] = &[
             (
-                "a filter key the model declares fewer values than the service accepts",
-                CLOUD_CONNECTOR_FILTER_KEY_DECLARED,
+                // `com.amazonaws.ssm#CloudConnectorFilterKey`, which this checkout's model
+                // declares in FULL (`smithy_query(query="shape",
+                // shape="CloudConnectorFilterKey")`: the two Azure keys and the two GCP
+                // ones), so it has no accepted row of its own: rule 1 lists the four values
+                // in the order recorded behaviour pins for them — corpus
+                // `simparity-wire-aws-v1`, fixture `ssm-cloudconnector-list-empty-filter`
+                // step `task#2`, where `ListCloudConnectors` with an unknown `FilterKey` is
+                // refused with `[TenantId, OrganizationId, ProjectId, SubscriptionId]`.
+                "a filter key the model declares in full",
+                crate::ops::types::CLOUD_CONNECTOR_FILTER_KEY_VALUES,
                 "TenantId, OrganizationId, ProjectId, SubscriptionId",
             ),
             (
@@ -862,7 +848,7 @@ mod tests {
                 "ListCloudConnectors",
                 enum_violation(
                     "filters.1.member.filterKey",
-                    CLOUD_CONNECTOR_FILTER_KEY_DECLARED,
+                    crate::ops::types::CLOUD_CONNECTOR_FILTER_KEY_VALUES,
                     "NotARealFilterKey",
                 ),
                 "Value 'NotARealFilterKey' at 'filters.1.member.filterKey'",

@@ -24,6 +24,7 @@ pub struct CreateDocumentInput {
     pub document_format: Option<String>,
     pub target_type: Option<String>,
     pub tags: Option<Vec<Tag>>,
+    pub cloud_providers: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssm#CreateDocumentResult")]

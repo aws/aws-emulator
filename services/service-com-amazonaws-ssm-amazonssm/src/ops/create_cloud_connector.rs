@@ -73,7 +73,7 @@
 //! ## Input
 //!
 //! * `ConfigConnectorArn` (ConfigConnectorArn, len 1..512, pattern
-//!   ^arn:aws(-cn|-us-gov)?:config:([^:]+):\d{12}:connector/.+$) **required** — The ARN of
+//!   ^arn:aws(-cn|-us-gov)?:config:([^:]+):\d{12}:connector/.+$) — The ARN of
 //!   the Amazon Web Services Config connector associated with this cloud connector.
 //! * `Configuration` (CloudConnectorConfiguration) **required** — The configuration details
 //!   for connecting to the third-party cloud environment.
@@ -205,11 +205,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             crate::state::cloud_connector_validation::FederatedConnector {
                 role_arn: &input.role_arn,
-                config_connector_arn: &input.config_connector_arn,
-                tenant_id: crate::state::cloud_connectors::configuration_tenant_id(
-                    &input.configuration,
-                ),
-                application_id: crate::state::cloud_connectors::configuration_application_id(
+                config_connector_arn: input.config_connector_arn.as_deref(),
+                azure_identity: crate::state::cloud_connectors::configuration_azure_identity(
                     &input.configuration,
                 ),
             },

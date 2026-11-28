@@ -27,6 +27,7 @@ use std::time::SystemTime;
 
 use crate::ops::types::{
     CloudConnectorConfiguration, CloudConnectorSummary, ConfigurationTargets,
+    GcpConfigurationTargets,
 };
 
 /// The resource portion a cloud connector's ARN carries before the connector's id, from
@@ -90,6 +91,64 @@ pub const CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID: &str = "SubscriptionId";
 /// that target the specified tenant."
 pub const CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID: &str = "TenantId";
 
+/// The `CloudConnectorFilterKey` that narrows a listing to the connectors targeting one
+/// Google Cloud Platform project (same enum): "The Google Cloud Platform (GCP) project ID to
+/// filter by. Filters the results to connectors that target the specified project."
+pub const CLOUD_CONNECTOR_FILTER_KEY_PROJECT_ID: &str = "ProjectId";
+
+/// The `CloudConnectorFilterKey` that narrows a listing to the connectors of one GCP
+/// organization (same enum): "The GCP organization ID to filter by. Filters the results to
+/// connectors that target the entire specified organization."
+pub const CLOUD_CONNECTOR_FILTER_KEY_ORGANIZATION_ID: &str = "OrganizationId";
+
+/// The filter keys that narrow a listing by a property of an AZURE configuration
+/// ([`CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID`],
+/// [`CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID`]).
+pub const AZURE_CLOUD_CONNECTOR_FILTER_KEYS: &[&str] = &[
+    CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID,
+    CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID,
+];
+
+/// The filter keys that narrow a listing by a property of a GCP configuration
+/// ([`CLOUD_CONNECTOR_FILTER_KEY_PROJECT_ID`],
+/// [`CLOUD_CONNECTOR_FILTER_KEY_ORGANIZATION_ID`]).
+pub const GCP_CLOUD_CONNECTOR_FILTER_KEYS: &[&str] = &[
+    CLOUD_CONNECTOR_FILTER_KEY_PROJECT_ID,
+    CLOUD_CONNECTOR_FILTER_KEY_ORGANIZATION_ID,
+];
+
+/// What a listing that narrows by an Azure filter key and a GCP filter key at once is
+/// refused with: "You can't combine Azure filter keys (`SubscriptionId` and `TenantId`) with
+/// GCP filter keys (`ProjectId` and `OrganizationId`) in the same request"
+/// (`CloudConnectorFilter$FilterValues`). One connector has a configuration of ONE provider,
+/// so the two families name properties no connector has at once.
+///
+/// The whole sentence is FIXED text for this condition: it names the two families and
+/// interpolates nothing from the request.
+pub const CLOUD_CONNECTOR_FILTER_KEYS_NOT_COMBINABLE: &str =
+    "Azure filter keys (SubscriptionId, TenantId) can't be combined with GCP filter keys \
+     (ProjectId, OrganizationId) in the same request";
+
+/// Whether `keys` names a filter key of BOTH families, which is what
+/// [`CLOUD_CONNECTOR_FILTER_KEYS_NOT_COMBINABLE`] refuses.
+pub fn filter_keys_are_not_combinable<'a, I: IntoIterator<Item = &'a str>>(keys: I) -> bool {
+    let (mut azure, mut gcp) = (false, false);
+    for key in keys {
+        azure |= AZURE_CLOUD_CONNECTOR_FILTER_KEYS.contains(&key);
+        gcp |= GCP_CLOUD_CONNECTOR_FILTER_KEYS.contains(&key);
+    }
+    azure && gcp
+}
+
+/// The `Provider` of a connector whose configuration targets Microsoft Azure: a value of the
+/// modelled `Provider` enum (`crate::ops::types::PROVIDER_VALUES`), which is what a listing
+/// reports as the "third-party cloud provider that the cloud connector connects to".
+pub const PROVIDER_AZURE: &str = "Azure";
+
+/// The `Provider` of a connector whose configuration targets Google Cloud Platform. The
+/// other value of the same enum.
+pub const PROVIDER_GCP: &str = "GCP";
+
 /// The `SubscriptionId` filter value that asks for the connectors targeting NO subscription
 /// at all: "To return only tenant-level connectors, specify `NONE`"
 /// (`CloudConnectorFilter$FilterValues`). It is a keyword of the filter rather than a
@@ -150,25 +209,41 @@ pub fn is_cloud_connector_id(token: &str) -> bool {
     super::is_activation_id(token)
 }
 
-/// The tenant a `CloudConnectorConfiguration` targets — `AzureConfiguration$TenantId`,
-/// "The ID of the Azure tenant", which a configuration always carries because the member is
-/// `@required`.
+/// Which third-party cloud a `CloudConnectorConfiguration` connects to, as the modelled
+/// `Provider` enum names it: the provider whose member of the union the configuration carries
+/// ([`PROVIDER_AZURE`], [`PROVIDER_GCP`]).
 ///
 /// Read off the CONFIGURATION rather than off a stored connector, so a create resolves the
-/// tenant of the configuration it was handed before any connector exists to read it from;
-/// [`CloudConnectorRecord::tenant_id`] is this over the one a record holds.
-pub fn configuration_tenant_id(configuration: &CloudConnectorConfiguration) -> &str {
+/// provider of the configuration it was handed before any connector exists to read it from;
+/// [`CloudConnectorRecord::provider`] is this over the one a record holds.
+pub fn configuration_provider(configuration: &CloudConnectorConfiguration) -> &'static str {
     match configuration {
-        CloudConnectorConfiguration::AzureConfiguration(azure) => azure.tenant_id.as_str(),
+        CloudConnectorConfiguration::AzureConfiguration(_) => PROVIDER_AZURE,
+        CloudConnectorConfiguration::GcpConfiguration(_) => PROVIDER_GCP,
     }
 }
 
-/// The application a `CloudConnectorConfiguration` authenticates as in that tenant —
-/// `AzureConfiguration$ApplicationId`, "The ID of the Azure application registration used
-/// for authentication", `@required` too. The sibling of [`configuration_tenant_id`].
-pub fn configuration_application_id(configuration: &CloudConnectorConfiguration) -> &str {
+/// The Azure tenant a `CloudConnectorConfiguration` targets and the application registration
+/// it authenticates as there — `AzureConfiguration$TenantId` ("The ID of the Azure tenant")
+/// and `$ApplicationId` ("The ID of the Azure application registration used for
+/// authentication"), which an Azure configuration always carries because both members are
+/// `@required`.
+///
+/// `None` for a configuration of ANOTHER provider: a GCP configuration names neither, so
+/// there is no Azure pair to put the provider-credential question about
+/// ([`super::provider_credentials`]).
+///
+/// Read off the CONFIGURATION rather than off a stored connector, for the reason
+/// [`configuration_provider`] is; [`CloudConnectorRecord::azure_identity`] is this over the
+/// one a record holds.
+pub fn configuration_azure_identity(
+    configuration: &CloudConnectorConfiguration,
+) -> Option<(&str, &str)> {
     match configuration {
-        CloudConnectorConfiguration::AzureConfiguration(azure) => azure.application_id.as_str(),
+        CloudConnectorConfiguration::AzureConfiguration(azure) => {
+            Some((azure.tenant_id.as_str(), azure.application_id.as_str()))
+        }
+        CloudConnectorConfiguration::GcpConfiguration(_) => None,
     }
 }
 
@@ -190,8 +265,10 @@ pub struct CloudConnectorRecord {
     /// communicate with the third-party cloud environment."
     pub role_arn: String,
     /// "The ARN of the Amazon Web Services Config connector associated with this cloud
-    /// connector."
-    pub config_connector_arn: String,
+    /// connector", or `None` for a connector created without one — the member is optional on
+    /// the create, and a read "returns this value only if the cloud connector was created
+    /// with an Amazon Web Services Config connector".
+    pub config_connector_arn: Option<String>,
     /// "The configuration details for connecting to the third-party cloud environment."
     pub configuration: CloudConnectorConfiguration,
     /// The connector's tags, keyed by tag key, as the create supplied them.
@@ -240,19 +317,45 @@ impl CloudConnectorRecord {
         self.updated_at = now;
     }
 
-    /// The tenant this connector's configuration targets — `AzureConfiguration$TenantId`,
-    /// "The ID of the Azure tenant", which the configuration always carries because the
-    /// member is `@required`.
-    pub fn tenant_id(&self) -> &str {
-        configuration_tenant_id(&self.configuration)
+    /// Which third-party cloud this connector connects to, as the modelled `Provider` enum
+    /// names it ([`configuration_provider`]): the provider of the configuration it holds.
+    pub fn provider(&self) -> &'static str {
+        configuration_provider(&self.configuration)
     }
 
-    /// The application this connector authenticates as in that tenant —
-    /// `AzureConfiguration$ApplicationId`, "The ID of the Azure application registration
-    /// used for authentication", which the configuration always carries because that member
-    /// is `@required` too.
-    pub fn application_id(&self) -> &str {
-        configuration_application_id(&self.configuration)
+    /// The Azure tenant this connector targets and the application it authenticates as
+    /// there, or `None` for a connector of another provider
+    /// ([`configuration_azure_identity`]).
+    pub fn azure_identity(&self) -> Option<(&str, &str)> {
+        configuration_azure_identity(&self.configuration)
+    }
+
+    /// The GCP organization this connector targets in full, in the order its configuration
+    /// names it — `GcpConfiguration$OrganizationId`, "The ID of the GCP organization", which
+    /// is optional, and `None` for a connector of another provider.
+    pub fn organization_id(&self) -> Option<&str> {
+        match &self.configuration {
+            CloudConnectorConfiguration::GcpConfiguration(gcp) => gcp.organization_id.as_deref(),
+            CloudConnectorConfiguration::AzureConfiguration(_) => None,
+        }
+    }
+
+    /// The GCP projects this connector targets, in the order its configuration lists them.
+    ///
+    /// Empty for a connector whose configuration names none — `GcpConfiguration$Targets` is
+    /// optional ("The target GCP projects for the cloud connector") — and for a connector of
+    /// another provider, the way [`Self::subscription_ids`] is empty for this one.
+    pub fn project_ids(&self) -> Vec<&str> {
+        match &self.configuration {
+            CloudConnectorConfiguration::GcpConfiguration(gcp) => match &gcp.targets {
+                Some(GcpConfigurationTargets::Projects(projects)) => projects
+                    .iter()
+                    .map(|project| project.project_id.as_str())
+                    .collect(),
+                None => Vec::new(),
+            },
+            CloudConnectorConfiguration::AzureConfiguration(_) => Vec::new(),
+        }
     }
 
     /// The subscriptions this connector targets, in the order its configuration lists them.
@@ -270,6 +373,7 @@ impl CloudConnectorRecord {
                     .collect(),
                 None => Vec::new(),
             },
+            CloudConnectorConfiguration::GcpConfiguration(_) => Vec::new(),
         }
     }
 
@@ -279,20 +383,31 @@ impl CloudConnectorRecord {
     ///
     /// `TenantId` holds the value against the tenant the connector's configuration targets;
     /// `SubscriptionId` holds it against the subscriptions it targets, with `NONE` asking
-    /// for the connectors that target none of them. A key outside the two the model declares
-    /// names no property of a connector, so nothing meets it — the boundary refuses such a
-    /// key before a listing reaches this.
+    /// for the connectors that target none of them; `OrganizationId` and `ProjectId` hold it
+    /// the same way against a GCP configuration's organization and its targeted projects. A
+    /// key of one provider's family names no property of a connector of ANOTHER provider, so
+    /// no such connector meets it. A key outside the four the model declares names no
+    /// property of a connector at all, so nothing meets it — the boundary refuses such a key
+    /// before a listing reaches this.
     pub fn matches_filter(&self, key: &str, values: &[String]) -> bool {
         values.iter().any(|value| match key {
-            CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID => self.tenant_id() == value.as_str(),
+            CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID => self
+                .azure_identity()
+                .is_some_and(|(tenant_id, _)| tenant_id == value.as_str()),
             CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID => {
                 let targeted = self.subscription_ids();
                 if value == TENANT_LEVEL_SUBSCRIPTION_FILTER_VALUE {
-                    targeted.is_empty()
+                    // "To return only TENANT-level connectors": a connector of another
+                    // provider targets no Azure tenant at all, so it is not one of them.
+                    self.provider() == PROVIDER_AZURE && targeted.is_empty()
                 } else {
                     targeted.contains(&value.as_str())
                 }
             }
+            CLOUD_CONNECTOR_FILTER_KEY_ORGANIZATION_ID => self
+                .organization_id()
+                .is_some_and(|organization_id| organization_id == value.as_str()),
+            CLOUD_CONNECTOR_FILTER_KEY_PROJECT_ID => self.project_ids().contains(&value.as_str()),
             _ => false,
         })
     }
@@ -300,9 +415,10 @@ impl CloudConnectorRecord {
     /// This connector as a listing reports it: the `CloudConnectorSummary` members, each
     /// read out of what the create persisted and the last update replaced.
     ///
-    /// A summary is narrower than the single-connector read: it carries neither the ARN, the
-    /// Config connector ARN nor the configuration, which `CloudConnectorSummary` does not
-    /// declare.
+    /// A summary is narrower than the single-connector read: it carries neither the ARN nor
+    /// the configuration, which `CloudConnectorSummary` does not declare. It does carry the
+    /// `Provider` the read does not, which is the provider of the configuration the read
+    /// reports in full ([`Self::provider`]).
     pub fn to_summary(&self) -> CloudConnectorSummary {
         CloudConnectorSummary {
             cloud_connector_id: Some(self.id.clone()),
@@ -311,6 +427,8 @@ impl CloudConnectorRecord {
             role_arn: Some(self.role_arn.clone()),
             created_at: Some(crate::state::wire_instant(self.created_at)),
             updated_at: Some(crate::state::wire_instant(self.updated_at)),
+            provider: Some(self.provider().to_string()),
+            config_connector_arn: self.config_connector_arn.clone(),
         }
     }
 }

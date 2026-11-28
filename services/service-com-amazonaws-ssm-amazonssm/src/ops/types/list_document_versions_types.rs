@@ -39,5 +39,6 @@ pub struct DocumentVersionInfo {
     pub status: Option<String>,
     pub status_information: Option<String>,
     pub review_status: Option<String>,
+    pub cloud_providers: Option<Vec<String>>,
 }
 

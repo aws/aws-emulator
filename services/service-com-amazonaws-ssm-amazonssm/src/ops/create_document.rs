@@ -360,6 +360,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 content: input.content.clone(),
                 parsed,
                 requires: input.requires.clone(),
+                // "The cloud providers that the document can run against", or the one a
+                // create that named none runs against
+                // ([`crate::state::documents::created_cloud_providers`]).
+                cloud_providers: crate::state::created_cloud_providers(
+                    input.cloud_providers.clone(),
+                ),
                 attachment_names: crate::state::attachment_names(input.attachments.as_deref()),
                 created_date: now,
                 // "The status of the SSM document": a document Systems Manager is still

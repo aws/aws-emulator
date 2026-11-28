@@ -59,5 +59,6 @@ pub struct DocumentIdentifier {
     pub requires: Option<Vec<DocumentRequires>>,
     pub review_status: Option<String>,
     pub author: Option<String>,
+    pub cloud_providers: Option<Vec<String>>,
 }
 
