@@ -95,7 +95,12 @@ const NOT_REGISTERED_SUCCESSFULLY: &str =
 
 /// How this service states that the registration of `application_id` failed: the id the
 /// request carried is the only variable part.
-fn failed_registration(application_id: &str) -> String {
+///
+/// `pub(crate)` so the suite about what the whole CLASS of calls that move an
+/// application's own `Status` answers for a settled-failed registration
+/// (`tests/all/application_status_move_refusal.rs`) reads this ONE spelling of the
+/// sentence rather than a second copy of it.
+pub(crate) fn failed_registration(application_id: &str) -> String {
     format!("The registration of application {application_id} is failed.")
 }
 
@@ -417,7 +422,12 @@ async fn a_start_answers_the_registration_outcome_of_the_application_it_names() 
 }
 
 /// The `OperationId`s of the records of type `op_type` filed against `application_id`.
-async fn records_of_type(
+///
+/// `pub(crate)` so the suite about what the whole CLASS of calls that move an
+/// application's own `Status` answers for a settled-failed registration
+/// (`tests/all/application_status_move_refusal.rs`) reads the work a refused call did NOT
+/// file through THIS one helper, rather than spelling a second variant of it.
+pub(crate) async fn records_of_type(
     emulator: &WithEc2,
     application_id: &str,
     op_type: &str,

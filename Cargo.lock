@@ -8507,6 +8507,7 @@ dependencies = [
 name = "python-guest-substrate"
 version = "0.1.0"
 dependencies = [
+ "malachite-bigint",
  "nix 0.31.4",
  "rustpython-pylib",
  "rustpython-ruff_python_ast",

@@ -46,6 +46,19 @@ rustpython-ruff_python_trivia = "=0.16.5"
 rustpython-ruff_source_file = "=0.16.5"
 rustpython-ruff_text_size = "=0.16.5"
 nix = { version = "0.31", default-features = false, features = ["resource"] }
+# The guest's arbitrary-precision integer arithmetic, PINNED here for the same reason the
+# parser crates above are: `pymath` — the math module `rustpython-vm` builds on — accepts any
+# `malachite-bigint` 0.x and resolves the newest on its own, which declares a `rust-version`
+# ahead of this project's toolchain and puts a SECOND copy of that arithmetic in the build
+# beside the one `rustpython-vm` itself is built against. Pinning the release the 0.6 line uses
+# keeps one implementation of guest integer arithmetic in the tree and the workspace
+# compiling, and states that resolution in a manifest rather than leaving it to the lockfile.
+# Declared by this crate because this is where the substrate is contained, so the services that
+# embed it inherit the pin instead of each repeating it. Re-resolving the graph for this pin
+# also settles `prost-derive` 0.13.5's iterator-adaptor dependency on the `itertools` 0.10.5
+# already in the tree instead of the 0.14.0 also in it; both are inside the range that crate
+# declares (`>=0.10.1, <=0.14`), and nothing new is pulled in by the move.
+malachite-bigint = "=0.12.0"
 
 [lints]
 workspace = true
