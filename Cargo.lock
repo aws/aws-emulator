@@ -855,7 +855,9 @@ dependencies = [
  "service-com-amazonaws-sagemakera2iruntime-amazonsagemakera2iruntime",
  "service-com-amazonaws-sagemakeredge-amazonsagemakeredge",
  "service-com-amazonaws-sagemakerfeaturestoreruntime-amazonsagemakerfeaturestoreruntime",
+ "service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime",
  "service-com-amazonaws-sagemakergeospatial-sagemakergeospatial",
+ "service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime",
  "service-com-amazonaws-sagemakerjobruntime-agenticrftruntimeservice",
  "service-com-amazonaws-sagemakermetrics-sagemakermetricsservice",
  "service-com-amazonaws-sagemakerruntime-amazonsagemakerruntime",
@@ -21375,9 +21377,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime"
+version = "0.1.0"
+dependencies = [
+ "automod",
+ "aws-emulator-build-support",
+ "aws-emulator-emulator-telemetry",
+ "aws-emulator-engine",
+ "aws-emulator-server",
+ "aws-emulator-smithy-macros",
+ "aws-emulator-smithy-schema-server",
+ "aws-emulator-smithy-server-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema 0.2.1",
+ "aws-smithy-types",
+ "bytes",
+ "hex",
+ "http",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "service-com-amazonaws-sagemakergeospatial-sagemakergeospatial"
 version = "0.1.0"
 dependencies = [
+ "aws-emulator-build-support",
+ "aws-emulator-emulator-telemetry",
+ "aws-emulator-engine",
+ "aws-emulator-server",
+ "aws-emulator-smithy-macros",
+ "aws-emulator-smithy-schema-server",
+ "aws-emulator-smithy-server-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema 0.2.1",
+ "aws-smithy-types",
+ "bytes",
+ "hex",
+ "http",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime"
+version = "0.1.0"
+dependencies = [
+ "automod",
  "aws-emulator-build-support",
  "aws-emulator-emulator-telemetry",
  "aws-emulator-engine",

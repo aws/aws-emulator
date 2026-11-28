@@ -167,13 +167,24 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // the signing name and addresses a path of its own — an `rpcv2Cbor` service posts
         // to `/service/<Service>/operation/<Operation>` — to be reached at all: it names
         // itself there, and one request keeps one claimant.
+        //
+        // Beside its own wire surface, this front door also answers a request ADDRESSED TO
+        // THIS ENDPOINT ([`addresses_this_endpoint`]) that names no form of it: the signing
+        // name is the endpoint prefix, so such a request reached the endpoint this API is
+        // published at and the API published there is what answers it — in its own
+        // envelope, as the unresolvable request it is, rather than reaching no service at
+        // all. The one form it never takes is its RPC PEER's
+        // ([`addresses_the_rpc_peer`]), which that peer claims; and a request that names
+        // this endpoint by its credential scope alone, on a path no model here publishes,
+        // is no API's and keeps reaching none.
         match smithy_server_runtime::resolve_route_key(parts) {
             Some(key)
                 if key == self.entry.identity().signing_name()
-                    && service_common::claims_modeled_path(
+                    && !addresses_the_rpc_peer(parts)
+                    && (service_common::claims_modeled_path(
                         parts,
                         &[::emulator_server::ROOT_PATH_SEGMENT],
-                    ) =>
+                    ) || addresses_this_endpoint(parts, &key)) =>
             {
                 true
             }
@@ -274,4 +285,54 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         let _ = error;
         None
     }
+}
+
+/// The `{Service}` label of the ONE other API published on this endpoint's signing name
+/// whose own wire form is `rpcv2Cbor`: the ELB Proxy model's service shape
+/// (`com.amazonaws.elbproxy#ELBProxy`, `smithy_query(query="service_info")` on
+/// `services/service-com-amazonaws-elbproxy-elbproxy`), which claims exactly the
+/// `/service/ELBProxy/operation/<Operation>` requests that name it.
+const RPC_PEER_SERVICE: &str = "ELBProxy";
+
+/// Whether `parts` is addressed in the `rpcv2Cbor` wire form that names this endpoint's RPC
+/// PEER — `POST /service/ELBProxy/operation/<Operation>`, whose first path segment is the
+/// fixed `service` label (`service_common::RPCV2_CBOR_PATH_SEGMENT`) and whose second names
+/// the service ([`RPC_PEER_SERVICE`]).
+///
+/// That one form is the peer's, and the peer claims exactly it, so this front door declines
+/// it and one request keeps one claimant. The label is compared without regard to case, as
+/// a host-borne service name is.
+fn addresses_the_rpc_peer(parts: &http::request::Parts) -> bool {
+    let path = parts.uri.path();
+    ::service_common::nth_path_segment(path, 0) == Some(::service_common::RPCV2_CBOR_PATH_SEGMENT)
+        && ::service_common::nth_path_segment(path, 1)
+            .is_some_and(|service| service.eq_ignore_ascii_case(RPC_PEER_SERVICE))
+}
+
+/// Whether `parts` is addressed to the ENDPOINT this API is published at: its `Host` (or the
+/// HTTP/2 `:authority` the `http` crate parses onto the URI in its place) names the service
+/// `signing_name`, read through the tree's own reading of a host that names a service
+/// (`service_common::data_plane_addressing::service_named_by_host`, which answers `None` for
+/// an address — a loopback name or an IP literal names no service).
+///
+/// A request that reached this endpoint is this endpoint's to answer whatever path it
+/// carries: an endpoint answers for the API published at it, so an unresolvable form sent
+/// there is refused by that API in its own envelope. A request that names this service only
+/// by its credential SCOPE, on a path no model here publishes, is not addressed to this
+/// endpoint and keeps reaching no service at all.
+fn addresses_this_endpoint(parts: &http::request::Parts, signing_name: &str) -> bool {
+    use ::service_common::data_plane_addressing::service_named_by_host;
+
+    parts
+        .headers
+        .get(::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(service_named_by_host)
+        .or_else(|| {
+            parts
+                .uri
+                .authority()
+                .and_then(|authority| service_named_by_host(authority.as_str()))
+        })
+        .is_some_and(|named| named == signing_name)
 }
