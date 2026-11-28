@@ -73,6 +73,9 @@ pub use agent_conversation::*;
 mod data_access_role;
 pub use data_access_role::*;
 
+mod export_run;
+pub use export_run::*;
+
 mod import_run;
 pub use import_run::*;
 
@@ -196,23 +199,6 @@ pub const EXPORT_JOB_NOT_FOUND_MESSAGE: &str = "Could not find specified export 
 /// request back at the caller. Every import-job not-found path in this crate
 /// states it through this one constant.
 pub const IMPORT_JOB_NOT_FOUND_MESSAGE: &str = "Could not find specified import job.";
-
-/// Why a started export job ends in the modelled `FAILED` status: this emulator
-/// cannot transmit the data store's FHIR resources to the destination Amazon S3
-/// bucket the request named, so an export that has anything to transmit reports
-/// the service's own failure rather than a transfer nothing ran.
-///
-/// `resources` is how many FHIR resources the data store held when the job was
-/// started — the service's own state, not caller input, so the sentence states
-/// it and quotes nothing from the request. The wording stays inside the modelled
-/// `Message` alphabet (`^([\p{L}\p{Z}\p{N}_.:/=+\-%@]*)$`, len 1..2048), so the
-/// text a job reports is one the model would admit.
-pub fn export_not_transmitted_message(resources: usize) -> String {
-    format!(
-        "This emulator cannot transmit the data store FHIR resources to the destination Amazon \
-         S3 bucket. Resources held: {resources}."
-    )
-}
 
 /// The sentence this service refuses an operation with when the target data
 /// store exists but its `DatastoreStatus` is a lifecycle TRANSITION state
@@ -389,6 +375,53 @@ pub fn transformation_profile_not_found_message(profile_id: &str) -> String {
 /// would accept it; `tests/all/source_format_enum_refusal.rs` keeps that value among
 /// its refused rows so the emulator's answer for it is pinned, not quietly assumed.
 pub const REPORTED_SOURCE_FORMATS: &[&str] = &["CSV", "HL7V2", "CCDA"];
+
+/// The ONE mapping file a profile whose source data format is comma-separated values
+/// carries: the mapping config the transform reads its table, its primary key and its
+/// field rules out of ([`profile_transform`]).
+///
+/// A C-CDA mapping is a SET of templates, one per section a rule names, so it has no
+/// single file; a CSV mapping is this one document, which is why a publish naming that
+/// format admits exactly this key.
+pub const CSV_PROFILE_MAPPING_FILE: &str = "mapping-config.yaml";
+
+/// The source data format whose mapping is the single [`CSV_PROFILE_MAPPING_FILE`]
+/// document, as the modelled `SourceFormat` enum spells it on the wire.
+pub const CSV_SOURCE_FORMAT: &str = "CSV";
+
+/// Why a publish naming the comma-separated-values source format is refused when the
+/// version it would publish does not hold exactly that one mapping file.
+///
+/// The whole sentence is FIXED text: [`CSV_PROFILE_MAPPING_FILE`] is the key that
+/// format requires, so nothing here is quoted from the request — a mapping of any
+/// other shape takes the same sentence.
+pub fn csv_profile_mapping_message() -> String {
+    format!("CSV profile mapping must contain exactly one key: '{CSV_PROFILE_MAPPING_FILE}'")
+}
+
+/// `Err` with the sentence a publish is refused with when `mapping` is not a mapping
+/// of the source data format `source_format` names.
+///
+/// What a publish validates is the SHAPE of the content it would snapshot against the
+/// format the call names — not that the format equals the one the profile was created
+/// with, which a profile may be published under either way. The comma-separated-values
+/// format is the one with a shape to check: its mapping is the single
+/// [`CSV_PROFILE_MAPPING_FILE`] document. Every other format's mapping is a set of
+/// templates whose names the format does not fix, so there is nothing to refuse.
+pub fn mapping_fits_source_format(
+    source_format: &str,
+    mapping: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if source_format != CSV_SOURCE_FORMAT {
+        return Ok(());
+    }
+    let only_mapping_config = mapping.len() == 1 && mapping.contains_key(CSV_PROFILE_MAPPING_FILE);
+    if only_mapping_config {
+        Ok(())
+    } else {
+        Err(csv_profile_mapping_message())
+    }
+}
 
 /// The status a stored data transformation profile reports.
 ///

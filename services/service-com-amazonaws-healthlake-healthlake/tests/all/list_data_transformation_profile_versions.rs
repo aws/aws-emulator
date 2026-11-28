@@ -110,7 +110,7 @@ fn listing_cases() -> Vec<ListingCase> {
             steps: vec![
                 Step::Publish(Some("released before the rewrite")),
                 Step::UpdateDraft(
-                    &[("patients.csv.map", "Patient.id <- mrn")],
+                    &[("mapping-config.yaml", "tableName: people")],
                     Some("mrn replaces patient_id"),
                 ),
             ],
@@ -173,8 +173,8 @@ async fn build(healthlake: &Profiles, row: &ListingCase) -> Built {
                 "ProfileName": row.profile_name,
                 "SourceFormat": row.source_format,
                 "Source": profile_mapping_source(&mapping(&[(
-                    "patients.csv.map",
-                    "Patient.id <- patient_id",
+                    "mapping-config.yaml",
+                    "tableName: patients",
                 )])),
             }),
         )
@@ -417,7 +417,10 @@ async fn a_next_token_resumes_where_its_page_ended() {
             steps: vec![
                 Step::Publish(Some("v1")),
                 Step::Publish(Some("v2")),
-                Step::UpdateDraft(&[("patients.csv.map", "Patient.id <- mrn")], Some("draft")),
+                Step::UpdateDraft(
+                    &[("mapping-config.yaml", "tableName: people")],
+                    Some("draft"),
+                ),
                 Step::Publish(Some("v3")),
                 Step::Publish(None),
                 Step::Publish(Some("v5")),
@@ -554,7 +557,7 @@ async fn resume_walk(
 #[tokio::test]
 async fn a_write_between_two_pages_repeats_and_skips_nothing() {
     let healthlake = Profiles::new();
-    let rewritten_draft = &[("patients.csv.map", "Patient.id <- mrn")];
+    let rewritten_draft = &[("mapping-config.yaml", "tableName: people")];
 
     for write in [
         MidWalkWrite::Nothing,
@@ -614,8 +617,8 @@ async fn a_write_between_two_pages_repeats_and_skips_nothing() {
                             &json!({
                                 "ProfileId": built.profile_id,
                                 "ProfileMapping": request_mapping(&mapping(&[(
-                                    "patients.csv.map",
-                                    "Patient.identifier <- mrn",
+                                    "mapping-config.yaml",
+                                    "tableName: identified_people",
                                 )])),
                                 "ChangeDescription": "rewritten mid-walk",
                             }),

@@ -60,6 +60,36 @@ impl HealthLake {
         Self { router, engine }
     }
 
+    /// The same harness with the emulator's own Amazon S3 mounted beside this
+    /// service on the ONE shared engine, exactly as the assembled router mounts
+    /// them.
+    ///
+    /// A started FHIR export job WRITES its output into the Amazon S3 location its
+    /// `OutputDataConfig` names, so a suite that drives a start to its terminal
+    /// status mounts the object store the job writes through.
+    pub(crate) fn with_object_store() -> Self {
+        let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+        let mut router = MultiServiceRouter::new();
+        router.register_service(
+            service_com_amazonaws_healthlake_healthlake::EmulatedService::new(Arc::clone(&engine)),
+        );
+        router.register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
+            Arc::clone(&engine),
+        ));
+        Self { router, engine }
+    }
+
+    /// An Amazon S3 client over this emulator's own in-process callback — the seam
+    /// an export job writes its output through, so an object this client reads is
+    /// the object the job wrote.
+    ///
+    /// Built by the ONE shared constructor
+    /// ([`crate::fhir_rest_and_validate_source::s3_client_over`]), so the two
+    /// harnesses of this test target cannot configure two different clients.
+    pub(crate) fn s3(&self) -> aws_sdk_s3::Client {
+        crate::fhir_rest_and_validate_source::s3_client_over(self.router.clone())
+    }
+
     /// Dispatch one awsJson1_0 call, returning the HTTP status and the parsed body.
     pub(crate) async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
         let request = http::Request::builder()

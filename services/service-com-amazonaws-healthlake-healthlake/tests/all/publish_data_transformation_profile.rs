@@ -12,7 +12,10 @@
 //! its own content, and the profile's metadata does not move. A profile or a version
 //! no record holds is refused, and so is a profile that has run out of the modelled
 //! `ProfileVersion` range or of the bytes this emulator retains for one profile —
-//! before anything is written, so a refused publish publishes nothing.
+//! before anything is written, so a refused publish publishes nothing. `SourceFormat`
+//! names the format the published version is read as, and what it is checked against
+//! is the SHAPE of the content the call would snapshot, never the format the profile
+//! was created with.
 //!
 //! The rows differ along what the rule generalises over: the source format, how many
 //! entries the published content has and how large they are, whether the call carries
@@ -29,7 +32,8 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 use service_com_amazonaws_healthlake_healthlake::scaffolded::wire_http_status;
 use service_com_amazonaws_healthlake_healthlake::state::{
-    MAX_PROFILE_RETAINED_BYTES, MAX_PROFILE_VERSION, profile_version_not_found_message,
+    csv_profile_mapping_message, profile_version_not_found_message, CSV_PROFILE_MAPPING_FILE,
+    MAX_PROFILE_RETAINED_BYTES, MAX_PROFILE_VERSION,
 };
 
 use crate::data_transformation_profile::{
@@ -113,7 +117,7 @@ fn publish_cases() -> Vec<PublishCase> {
         PublishCase {
             case: "CSV, one publish of a one-entry DRAFT, with a change description",
             source_format: "CSV",
-            drafts: vec![mapping(&[("patients.csv.map", "Patient.id <- patient_id")])],
+            drafts: vec![mapping(&[("mapping-config.yaml", "tableName: patients")])],
             descriptions: vec![Some("first release of the patient mapping".to_string())],
         },
         PublishCase {
@@ -137,8 +141,8 @@ fn publish_cases() -> Vec<PublishCase> {
             case: "CSV, two publishes of the SAME DRAFT: a version per call, not per content",
             source_format: "CSV",
             drafts: vec![
-                mapping(&[("patients.csv.map", "Patient.id <- patient_id")]),
-                mapping(&[("patients.csv.map", "Patient.id <- patient_id")]),
+                mapping(&[("mapping-config.yaml", "tableName: patients")]),
+                mapping(&[("mapping-config.yaml", "tableName: patients")]),
             ],
             descriptions: vec![None, Some("republished unchanged".to_string())],
         },
@@ -149,14 +153,14 @@ fn publish_cases() -> Vec<PublishCase> {
             descriptions: vec![Some("c".repeat(1000))],
         },
         PublishCase {
-            case: "CSV, a large value and a key at the modelled maximum with an empty value",
-            source_format: "CSV",
+            case: "CCDA, a large value and a key at the modelled maximum with an empty value",
+            source_format: "CCDA",
             drafts: vec![
                 BTreeMap::from([
-                    ("notes.csv.map".to_string(), "v".repeat(100_000)),
+                    ("notes.ccda.map".to_string(), "v".repeat(100_000)),
                     (
-                        "patients.csv.map".to_string(),
-                        "Patient.id <- patient_id".to_string(),
+                        "sections/patients.map".to_string(),
+                        "Patient.id <- patient/id".to_string(),
                     ),
                 ]),
                 BTreeMap::from([(long_key.clone(), String::new())]),
@@ -347,10 +351,10 @@ async fn publish_snapshots_the_draft_into_the_next_version() {
 async fn publishing_from_an_existing_version_rolls_the_content_forward() {
     let healthlake = Profiles::new();
     let case = "a rollback by republishing an earlier version";
-    let first = mapping(&[("patients.csv.map", "Patient.id <- patient_id")]);
+    let first = mapping(&[("sections/patients.map", "Patient.id <- patient/id")]);
     let second = mapping(&[
-        ("patients.csv.map", "Patient.id <- mrn"),
-        ("encounters.csv.map", "Encounter.id <- encounter_id"),
+        ("sections/patients.map", "Patient.id <- patient/mrn"),
+        ("sections/encounters.map", "Encounter.id <- encounter/id"),
     ]);
 
     let created = healthlake
@@ -359,7 +363,7 @@ async fn publishing_from_an_existing_version_rolls_the_content_forward() {
             "CreateDataTransformationProfile",
             &json!({
                 "ProfileName": "publish-rollback",
-                "SourceFormat": "CSV",
+                "SourceFormat": "CCDA",
                 "Source": profile_mapping_source(&first),
             }),
         )
@@ -371,7 +375,7 @@ async fn publishing_from_an_existing_version_rolls_the_content_forward() {
         .ok(
             case,
             "PublishDataTransformationProfile",
-            &publish_request(&profile_id, "CSV", None, Some("v1")),
+            &publish_request(&profile_id, "CCDA", None, Some("v1")),
         )
         .await;
     // Version 2 holds the replaced DRAFT.
@@ -389,7 +393,7 @@ async fn publishing_from_an_existing_version_rolls_the_content_forward() {
         .ok(
             case,
             "PublishDataTransformationProfile",
-            &publish_request(&profile_id, "CSV", None, Some("v2")),
+            &publish_request(&profile_id, "CCDA", None, Some("v2")),
         )
         .await;
 
@@ -398,7 +402,7 @@ async fn publishing_from_an_existing_version_rolls_the_content_forward() {
         .ok(
             case,
             "PublishDataTransformationProfile",
-            &publish_request(&profile_id, "CSV", Some(1), Some("rolled back to v1")),
+            &publish_request(&profile_id, "CCDA", Some(1), Some("rolled back to v1")),
         )
         .await;
     assert_eq!(
@@ -412,7 +416,7 @@ async fn publishing_from_an_existing_version_rolls_the_content_forward() {
         .ok(
             case,
             "PublishDataTransformationProfile",
-            &publish_request(&profile_id, "CSV", Some(0), None),
+            &publish_request(&profile_id, "CCDA", Some(0), None),
         )
         .await;
     assert_eq!(
@@ -509,9 +513,10 @@ fn refusal_cases(profile_id: &str) -> Vec<(&'static str, Value, u16, Option<&'st
             None,
         ),
         (
-            // The stored profile converts from CCDA, so CSV names no profile this
-            // call could publish.
-            "a SourceFormat other than the one the stored profile converts from",
+            // The DRAFT holds a template mapping, which is not a mapping of the
+            // comma-separated-values format: that format's mapping is the ONE
+            // `mapping-config.yaml` document.
+            "a SourceFormat whose mapping shape the DRAFT does not have",
             publish_request(profile_id, "CSV", None, None),
             400,
             Some("ValidationException"),
@@ -649,7 +654,7 @@ async fn refused_publishes_publish_nothing() {
 async fn a_profile_runs_out_of_versions_at_the_modelled_maximum() {
     let healthlake = Profiles::new();
     let case = "every version the modelled range allows";
-    let content = mapping(&[("patients.csv.map", "Patient.id <- patient_id")]);
+    let content = mapping(&[("mapping-config.yaml", "tableName: patients")]);
     let created = healthlake
         .ok(
             case,
@@ -724,7 +729,7 @@ async fn a_profile_runs_out_of_retained_bytes() {
     let bulk: BTreeMap<String, String> = (0..10)
         .map(|index| {
             (
-                format!("mappings/bulk-{index:04}.map"),
+                format!("sections/bulk-{index:04}.map"),
                 "v".repeat(100_000),
             )
         })
@@ -737,7 +742,7 @@ async fn a_profile_runs_out_of_retained_bytes() {
             "CreateDataTransformationProfile",
             &json!({
                 "ProfileName": "publish-byte-ceiling",
-                "SourceFormat": "CSV",
+                "SourceFormat": "CCDA",
                 "Source": profile_mapping_source(&bulk),
             }),
         )
@@ -756,7 +761,7 @@ async fn a_profile_runs_out_of_retained_bytes() {
             .ok(
                 case,
                 "PublishDataTransformationProfile",
-                &publish_request(&profile_id, "CSV", None, None),
+                &publish_request(&profile_id, "CCDA", None, None),
             )
             .await;
         assert_eq!(
@@ -770,7 +775,7 @@ async fn a_profile_runs_out_of_retained_bytes() {
         .refused_body(
             case,
             "PublishDataTransformationProfile",
-            &publish_request(&profile_id, "CSV", None, None),
+            &publish_request(&profile_id, "CCDA", None, None),
         )
         .await;
     assert_eq!(
@@ -796,4 +801,181 @@ async fn a_profile_runs_out_of_retained_bytes() {
         bulk,
         "case {case:?}: the last version published still carries its content"
     );
+}
+
+/// One row of the publish-format table: the mapping a profile's DRAFT holds, the
+/// format it was created with, and whether a publish naming each format is served.
+struct FormatCase {
+    case: &'static str,
+    /// The format the profile is CREATED with, which the publish rule does not read.
+    created_as: &'static str,
+    content: BTreeMap<String, String>,
+    /// Whether a publish naming the comma-separated-values format is served.
+    publishes_as_csv: bool,
+}
+
+/// The publish-format table. The rule is about the SHAPE of the content a publish
+/// would snapshot, so the rows differ along that shape — the one
+/// `mapping-config.yaml` document, that document beside another file, a single file
+/// under another name, a set of templates, and an empty-valued entry — and along the
+/// format the profile was created with, which the rule does not read.
+fn format_cases() -> Vec<FormatCase> {
+    vec![
+        FormatCase {
+            case: "the one CSV mapping document, in a profile created as CSV",
+            created_as: "CSV",
+            content: mapping(&[(CSV_PROFILE_MAPPING_FILE, "tableName: patients")]),
+            publishes_as_csv: true,
+        },
+        FormatCase {
+            case: "the one CSV mapping document, in a profile created as CCDA",
+            created_as: "CCDA",
+            content: mapping(&[(CSV_PROFILE_MAPPING_FILE, "tableName: patients")]),
+            publishes_as_csv: true,
+        },
+        FormatCase {
+            case: "the CSV mapping document with an empty value",
+            created_as: "CSV",
+            content: mapping(&[(CSV_PROFILE_MAPPING_FILE, "")]),
+            publishes_as_csv: true,
+        },
+        FormatCase {
+            case: "the CSV mapping document beside another file",
+            created_as: "CSV",
+            content: mapping(&[
+                (CSV_PROFILE_MAPPING_FILE, "tableName: patients"),
+                ("notes.md", "the table this profile maps"),
+            ]),
+            publishes_as_csv: false,
+        },
+        FormatCase {
+            case: "one mapping file under another name",
+            created_as: "CSV",
+            content: mapping(&[("mapping-config.yml", "tableName: patients")]),
+            publishes_as_csv: false,
+        },
+        FormatCase {
+            case: "a set of C-CDA templates",
+            created_as: "CCDA",
+            content: mapping(&[
+                ("Resources/Patient.vm", "#set($p = $patient)"),
+                ("Resources/Observation.vm", "#set($o = $observation)"),
+            ]),
+            publishes_as_csv: false,
+        },
+        FormatCase {
+            case: "many template files",
+            created_as: "CCDA",
+            content: mapping_of(12),
+            publishes_as_csv: false,
+        },
+    ]
+}
+
+/// RULE: a publish validates the SHAPE of the content it would snapshot against the
+/// `SourceFormat` the CALL names — a mapping of the comma-separated-values format is
+/// the one `mapping-config.yaml` document, and a version holding anything else cannot
+/// be published as that format — and never against the format the profile was created
+/// with, which a publish may name either way. A refused publish creates no version.
+#[tokio::test]
+async fn a_publish_validates_the_mapping_against_the_format_it_names() {
+    let healthlake = Profiles::new();
+
+    for row in format_cases() {
+        let case = row.case;
+        let created = healthlake
+            .ok(
+                case,
+                "CreateDataTransformationProfile",
+                &json!({
+                    "ProfileName": "publish-format-rule",
+                    "SourceFormat": row.created_as,
+                    "Source": profile_mapping_source(&row.content),
+                }),
+            )
+            .await;
+        let profile_id = string_at(&created, "ProfileId");
+
+        if row.publishes_as_csv {
+            let published = healthlake
+                .ok(
+                    case,
+                    "PublishDataTransformationProfile",
+                    &publish_request(&profile_id, "CSV", None, None),
+                )
+                .await;
+            assert_eq!(
+                published["Version"].as_i64(),
+                Some(1),
+                "case {case:?}: a CSV publish of a CSV mapping is the first version, \
+                 got {published}"
+            );
+        } else {
+            let (status, code, payload) = healthlake
+                .refused_body(
+                    case,
+                    "PublishDataTransformationProfile",
+                    &publish_request(&profile_id, "CSV", None, None),
+                )
+                .await;
+            assert_eq!(
+                (status, code.as_str()),
+                (400, "ValidationException"),
+                "case {case:?}: a CSV publish of a mapping that is not one must be refused, \
+                 got {payload}"
+            );
+            assert_eq!(
+                modelled_message(&payload),
+                Some(csv_profile_mapping_message().as_str()),
+                "case {case:?}: the refusal must state the key a CSV mapping requires, \
+                 got {payload}"
+            );
+            // The refused publish created nothing: a read naming no version still
+            // resolves to the DRAFT, and version 1 is a version the profile does not
+            // hold.
+            let unpublished = healthlake
+                .ok(
+                    case,
+                    "GetDataTransformationProfile",
+                    &json!({ "ProfileId": profile_id }),
+                )
+                .await;
+            assert_eq!(
+                unpublished["Version"].as_i64(),
+                Some(0),
+                "case {case:?}: a refused publish leaves the profile unpublished, \
+                 got {unpublished}"
+            );
+            let (_, code, payload) = healthlake
+                .refused_body(
+                    case,
+                    "GetDataTransformationProfile",
+                    &json!({ "ProfileId": profile_id, "ProfileVersion": 1 }),
+                )
+                .await;
+            assert_eq!(
+                code.as_str(),
+                "ResourceNotFoundException",
+                "case {case:?}: the version a refused publish would have created must not \
+                 be held, got {payload}"
+            );
+        }
+
+        // Whatever its mapping's shape, every version of it publishes as the template
+        // format — which fixes no file names — so the formats are not alternatives a
+        // profile is locked into by its create.
+        let as_ccda = healthlake
+            .ok(
+                case,
+                "PublishDataTransformationProfile",
+                &publish_request(&profile_id, "CCDA", None, None),
+            )
+            .await;
+        assert_eq!(
+            as_ccda["Version"].as_i64(),
+            Some(if row.publishes_as_csv { 2 } else { 1 }),
+            "case {case:?}: a CCDA publish snapshots the DRAFT whatever its shape, \
+             got {as_ccda}"
+        );
+    }
 }

@@ -65,7 +65,12 @@ const SEED_REGION: &str = "us-east-1";
 
 /// The source format every profile in this suite converts from, one of the
 /// modelled `SourceFormat` values (CCDA | CSV).
-const SOURCE_FORMAT: &str = "CSV";
+///
+/// The TEMPLATE format, because the contents below are sized to sit on a byte
+/// ceiling rather than shaped to a format: a publish naming the
+/// comma-separated-values format admits one mapping file only, which is a rule
+/// about shape that `tests/all/publish_data_transformation_profile.rs` pins.
+const SOURCE_FORMAT: &str = "CCDA";
 
 /// The only modelled `TargetFormat` value, which a create documents as "Always
 /// FHIR_R4".

@@ -259,8 +259,8 @@ async fn two_deleted_profiles_are_refused_with_their_own_identifiers() {
             source_format: "CSV",
             profile_name: format!("deleted-neighbour-{index}"),
             initial: BTreeMap::from([(
-                "patients.csv.map".to_string(),
-                "Patient.id <- patient_id".to_string(),
+                "mapping-config.yaml".to_string(),
+                "tableName: patients".to_string(),
             )]),
             publishes: 1,
             tags: None,

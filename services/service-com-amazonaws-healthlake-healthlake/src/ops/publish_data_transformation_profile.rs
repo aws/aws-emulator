@@ -23,6 +23,16 @@
 //! retains, is refused with `ServiceQuotaExceededException` BEFORE anything is
 //! written, so a refused publish leaves the profile exactly as it was.
 //!
+//! `SourceFormat` names the source data format the published version is read as, and
+//! what it is checked against is the SHAPE of the content this call would snapshot
+//! ([`crate::state::mapping_fits_source_format`]): a mapping of the
+//! comma-separated-values format is the one
+//! [`crate::state::CSV_PROFILE_MAPPING_FILE`] document, and a version holding
+//! anything else cannot be published as that format. It is not required to equal the
+//! format the profile was CREATED with — a draft whose mapping fits either format
+//! publishes under either — and the format the reply reports is still the profile's
+//! own, which no publish rewrites.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -229,22 +239,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         };
 
-        // `SourceFormat` is "the source data format of the profile", so a call naming
-        // a format other than the one the stored profile converts from does not
-        // describe this profile and publishes nothing.
-        if profile.source_format != input.source_format {
-            return Err(validation(format!(
-                "SourceFormat must be the source data format of the profile, '{}'",
-                profile.source_format
-            )));
-        }
-
+        // What a publish validates about `SourceFormat` is the SHAPE of the content it
+        // would snapshot: the format the call names is the one the published version is
+        // read as, so the mapping has to be a mapping of that format. It is NOT required
+        // to equal the format the profile was created with — a draft whose mapping fits
+        // either format publishes under either.
         let Some(source) = profile.version(from_version) else {
             return Err(not_found(crate::state::profile_version_not_found_message(
                 &input.profile_id,
                 from_version,
             )));
         };
+        if let Err(message) =
+            crate::state::mapping_fits_source_format(&input.source_format, &source.mapping)
+        {
+            return Err(validation(message));
+        }
         let mapping = source.mapping.clone();
 
         // "A new immutable published version": the DRAFT is version 0, so the first

@@ -7,7 +7,9 @@
 //! interaction with an agent" and "supports multi-turn conversations for iteratively
 //! customizing profiles", and its input says how a turn is addressed: a
 //! `ConversationId` (absent on the first turn, so the service mints one and reports
-//! it back), and an `InputMessage` whose `Type` is either `normal` or
+//! it back — and a turn that names one continues the conversation held under that id
+//! for that profile, so an id no record holds resolves nothing), and an
+//! `InputMessage` whose `Type` is either `normal` or
 //! `confirmation_response`. Its `EndOfOutputEvent` says what a turn hands back: a
 //! final response, the `Options` the next turn may answer with, and the conversation
 //! the turn belonged to. Those four members together describe one loop — the agent
@@ -87,9 +89,6 @@ pub struct AgentChatOption {
 /// The change the agent proposed and is waiting for an answer to.
 #[derive(Debug, Clone)]
 pub struct AgentPendingChange {
-    /// The profile the change was proposed against. A confirmation that names a
-    /// different profile answers a question that was never asked about it.
-    pub profile_id: String,
     /// The options offered with the proposal, in the order they were offered.
     pub options: Vec<AgentChatOption>,
 }
@@ -121,6 +120,12 @@ impl AgentPendingChange {
 pub struct AgentConversation {
     /// The `ConversationId` every turn of this conversation reports back.
     pub id: String,
+    /// The profile this conversation is about: the one its FIRST turn named.
+    ///
+    /// A conversation "iteratively customiz[es]" one profile, so it belongs to that
+    /// profile — which is why a turn naming it about another profile resolves no
+    /// conversation at all.
+    pub profile_id: String,
     /// How many turns this conversation has served. Counted rather than kept as a
     /// transcript: the caller's message is `@sensitive` and nothing here needs its
     /// text, so the turn count is what the agent reads back off the conversation.
@@ -134,15 +139,31 @@ pub struct AgentConversation {
 }
 
 impl AgentConversation {
-    /// A conversation with no turns served yet, as of `at`.
-    pub fn new(id: String, at: SystemTime) -> Self {
+    /// A conversation about `profile_id` with no turns served yet, as of `at`.
+    pub fn new(id: String, profile_id: String, at: SystemTime) -> Self {
         Self {
             id,
+            profile_id,
             turns: 0,
             pending: None,
             last_turn_at: at,
         }
     }
+}
+
+/// Why a turn naming a `ConversationId` could not continue that conversation.
+///
+/// Two different answers, because they are two different situations: an id NO record
+/// holds names nothing at all, while an id the service does hold names a conversation
+/// about ANOTHER profile — a conversation that exists and is simply not this turn's
+/// to continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentConversationRefusal {
+    /// No conversation is held under the id the request carried: it was never served,
+    /// or its retention has run out ([`AGENT_CONVERSATION_RETENTION`]).
+    NotFound,
+    /// A conversation IS held under that id, about another profile.
+    OtherProfile,
 }
 
 impl ComAmazonawsHealthlakeHealthlakeState {
@@ -162,32 +183,51 @@ impl ComAmazonawsHealthlakeHealthlakeState {
         });
     }
 
-    /// The conversation `requested` names, minting one when the request named none.
+    /// The conversation this turn belongs to, counted as served, or why the request's
+    /// `ConversationId` is not a conversation of `profile_id`.
     ///
-    /// A `ConversationId` the store does not hold OPENS a conversation under that id:
-    /// the member is a caller-chosen correlation id the model bounds only by length
-    /// (1..36 characters), so a turn that carries one the service has not seen is a
-    /// first turn of that conversation rather than a refusal. Minting past
+    /// A turn that names NO `ConversationId` is the first turn of a new conversation,
+    /// so one is minted for the profile the turn is about ("supports multi-turn
+    /// conversations", with `EndOfOutputEvent$ConversationId` reporting the id back).
+    /// A turn that NAMES one continues the conversation held under that id — and only
+    /// that conversation: an id no record holds (never served, or swept by
+    /// [`Self::sweep_agent_conversations`]) resolves nothing, and an id held for
+    /// another profile is a conversation this turn may not continue, so neither opens
+    /// a conversation behind the id the caller sent. Minting past
     /// [`MAX_AGENT_CONVERSATIONS`] evicts the stalest conversation first.
-    pub fn agent_conversation_for(
+    pub fn agent_conversation_turn(
         &mut self,
         requested: Option<&str>,
+        profile_id: &str,
         at: SystemTime,
-    ) -> &mut AgentConversation {
+    ) -> Result<&mut AgentConversation, AgentConversationRefusal> {
         let id = match requested {
-            Some(id) => id.to_string(),
-            None => self.next_conversation_id(at),
+            Some(requested) => {
+                let Some(held) = self.agent_conversations.get(requested) else {
+                    return Err(AgentConversationRefusal::NotFound);
+                };
+                if held.profile_id != profile_id {
+                    return Err(AgentConversationRefusal::OtherProfile);
+                }
+                requested.to_string()
+            }
+            None => {
+                self.evict_stalest_agent_conversations();
+                let id = self.next_conversation_id(at);
+                self.agent_conversations.insert(
+                    id.clone(),
+                    AgentConversation::new(id.clone(), profile_id.to_string(), at),
+                );
+                id
+            }
         };
-        if !self.agent_conversations.contains_key(&id) {
-            self.evict_stalest_agent_conversations();
-        }
         let conversation = self
             .agent_conversations
-            .entry(id.clone())
-            .or_insert_with(|| AgentConversation::new(id, at));
+            .get_mut(&id)
+            .ok_or(AgentConversationRefusal::NotFound)?;
         conversation.turns = conversation.turns.saturating_add(1);
         conversation.last_turn_at = at;
-        conversation
+        Ok(conversation)
     }
 
     /// Make room for one more conversation by dropping the stalest ones, so the store
@@ -285,12 +325,32 @@ pub fn agent_declined_message(profile: &DataTransformationProfile) -> String {
 }
 
 /// The in-band error a `confirmation_response` gets when the conversation is waiting
-/// for no answer about this profile.
+/// for no answer.
 pub fn agent_nothing_to_confirm_message(profile_id: &str, conversation_id: &str) -> String {
     format!(
         "Conversation '{conversation_id}' is not waiting for a confirmation about profile \
          '{profile_id}'. Send a '{AGENT_MESSAGE_TYPE_NORMAL}' message to ask for a change first."
     )
+}
+
+/// Why a turn naming a `ConversationId` no record holds is refused.
+///
+/// The fixed text is `Conversation not found: `; the only variable part is the
+/// `ConversationId` the request carried, taken verbatim, because that is the handle
+/// the caller has to correct.
+pub fn conversation_not_found_message(conversation_id: &str) -> String {
+    format!("Conversation not found: {conversation_id}")
+}
+
+/// Why a turn naming a conversation of ANOTHER profile is refused.
+///
+/// A conversation "iteratively customiz[es]" one profile, so continuing it against a
+/// different profile is not a conversation that cannot be found — it is a request
+/// whose two identifiers do not go together, which is what the sentence states. The
+/// variable part is the `ProfileId` the request carried: the conversation's own
+/// profile is not named, so nothing about another profile leaks into the answer.
+pub fn conversation_of_other_profile_message(profile_id: &str) -> String {
+    format!("profileId '{profile_id}' does not match the conversation's profile")
 }
 
 /// The in-band error a `confirmation_response` gets when it names none of the options

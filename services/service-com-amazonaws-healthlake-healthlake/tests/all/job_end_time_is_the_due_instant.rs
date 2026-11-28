@@ -47,7 +47,7 @@ use service_com_amazonaws_healthlake_healthlake::state::{
     TransformationJobStatus, EXPORT_JOB_RUN,
 };
 
-use crate::fhir_datastore_lifecycle::{HealthLake, PAST_TRANSITION};
+use crate::fhir_datastore_lifecycle::{HealthLake, SETTLING_DEADLINE};
 use crate::fhir_export_job_start::{output_data_config, start_request};
 
 /// The epoch second a seeded record's `SubmitTime` is measured from. Fixed, so
@@ -312,6 +312,40 @@ async fn describe(service: &HealthLake, datastore_id: &str, row: &Row) -> Value 
     }
 }
 
+/// Look at `DescribeFHIRExportJob` until the export job has ENDED — a job that
+/// reached a terminal status is the one that reports an `EndTime` — and answer that
+/// record; fail once [`SETTLING_DEADLINE`] has passed without it.
+///
+/// A transition this service owes is materialised by whichever call reads the record
+/// next, so waiting for one means LOOKING again until the condition holds, never
+/// sleeping for the span — which would make the outcome depend on how fast the host
+/// runs.
+async fn poll_until_export_ended(
+    service: &HealthLake,
+    datastore_id: &str,
+    job_id: &str,
+) -> Value {
+    let deadline = Instant::now() + SETTLING_DEADLINE;
+    loop {
+        let properties = service
+            .ok(
+                "DescribeFHIRExportJob",
+                &json!({ "DatastoreId": datastore_id, "JobId": job_id }),
+            )
+            .await["ExportJobProperties"]
+            .clone();
+        if properties.get("EndTime").is_some() {
+            return properties;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the export job {job_id} did not end within {SETTLING_DEADLINE:?}, \
+             last read {properties}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn end_time_is_the_instant_the_owed_transition_fell_due_not_the_instant_of_the_read() {
     let service = HealthLake::new();
@@ -373,18 +407,35 @@ async fn end_time_is_the_instant_the_owed_transition_fell_due_not_the_instant_of
 
 #[tokio::test]
 async fn a_started_jobs_end_time_is_its_submit_time_plus_its_run_span() {
-    let service = HealthLake::new();
+    // A started export WRITES its output, so the object store it writes through is
+    // mounted and its destination bucket created: the rule under test is the
+    // instant the job ended, which is reported for a job that did its work.
+    let service = HealthLake::with_object_store();
+    let created_bucket = service
+        .s3()
+        .create_bucket()
+        .bucket("healthlake-export-bucket")
+        .send()
+        .await;
+    assert!(
+        created_bucket.is_ok(),
+        "Amazon S3 must create the destination bucket, got {created_bucket:?}"
+    );
     let (datastore_id, _) = service
         .create(&json!({ "DatastoreTypeVersion": "R4", "DatastoreName": "exporting store" }))
         .await;
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // The data store is exported from once it is usable, so the wait is for THAT
+    // condition rather than for a span: the harness looks again until it holds.
+    service.poll_until_status(&datastore_id, "ACTIVE").await;
 
     // Two jobs started a known gap apart, so the one started first is also the
-    // one that ends first: both are armed for the same span.
+    // one that ends first: both are armed for the same span. The gap is the FIRST
+    // job's own run — the second start waits for that job to end rather than for a
+    // fixed time — so it is at least the run span whatever the host's speed.
     let mut started: Vec<(&str, String)> = Vec::new();
     for case in ["first started", "second started"] {
-        if !started.is_empty() {
-            tokio::time::sleep(Duration::from_millis(1_000)).await;
+        if let Some((_, earlier)) = started.last() {
+            poll_until_export_ended(&service, &datastore_id, earlier).await;
         }
         let response = service
             .ok(
@@ -403,15 +454,16 @@ async fn a_started_jobs_end_time_is_its_submit_time_plus_its_run_span() {
         started.push((case, job_id));
     }
 
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // Both jobs have to have ENDED before their `EndTime`s are read, which is a
+    // condition each record reports for itself.
+    for (_, job_id) in &started {
+        poll_until_export_ended(&service, &datastore_id, job_id).await;
+    }
 
-    // Read in the REVERSE of the order they ended, and the later read later
-    // still: whoever looks first cannot decide what either job's EndTime is.
+    // Read in the REVERSE of the order they ended: whoever looks first cannot
+    // decide what either job's EndTime is.
     let mut reported: Vec<(&str, f64, f64)> = Vec::new();
     for (case, job_id) in started.iter().rev() {
-        if !reported.is_empty() {
-            tokio::time::sleep(Duration::from_millis(700)).await;
-        }
         let properties = service
             .ok(
                 "DescribeFHIRExportJob",
@@ -422,7 +474,7 @@ async fn a_started_jobs_end_time_is_its_submit_time_plus_its_run_span() {
         assert_eq!(
             properties["JobStatus"],
             json!("COMPLETED"),
-            "case {case:?}: a store with nothing to transmit must settle COMPLETED, got {properties}"
+            "case {case:?}: a job whose output was written must settle COMPLETED, got {properties}"
         );
         let submit = timestamp(case, &properties, "SubmitTime");
         let end = timestamp(case, &properties, "EndTime");

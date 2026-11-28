@@ -6,9 +6,13 @@
 //! ("Updates a data transformation profile using chat-based interaction with an
 //! agent. Supports multi-turn conversations for iteratively customizing profiles"):
 //! it resolves the stored data transformation profile, appends the turn to the
-//! conversation the request names — minting a `ConversationId` when it names none —
+//! conversation the request names — minting a `ConversationId` when it names none,
+//! refusing a turn whose `ConversationId` no record holds and one naming a
+//! conversation of another profile —
 //! and answers with the `AgentOutputMessageStream` event stream the model declares,
-//! as a real `vnd.amazon.eventstream` body.
+//! as a real `vnd.amazon.eventstream` body — which OPENS with the frame a client reads
+//! the output shape itself out of ([`service_common::event_stream::INITIAL_RESPONSE_EVENT`]),
+//! before any frame of the union.
 //!
 //! ## The loop the model describes
 //!
@@ -27,7 +31,7 @@
 //! * a `confirmation_response` turn that names the discarding option drops the
 //!   proposal and writes nothing;
 //! * a `confirmation_response` turn the conversation is not waiting for — nothing
-//!   pending for this profile, or a message naming none of the offered options — is
+//!   pending in it, or a message naming none of the offered options — is
 //!   reported IN BAND, as an `ErrorEvent` carrying the modelled
 //!   `AgentErrorType` value `ValidationException`: the request and the profile were
 //!   both fine, so the stream had already begun.
@@ -96,16 +100,19 @@ use aws_smithy_runtime_api::http::{Request, Response};
 use aws_smithy_schema::serde::SerializableStruct;
 use aws_smithy_schema::Schema;
 use service_common::event_stream::{
-    deserialize_request, error_response, event_stream_only_response, frame_event,
+    deserialize_request, error_response, event_stream_only_response,
+    frame_empty_initial_response, frame_event,
 };
 use smithy_server_runtime::{BoxFuture, OperationContext, ServerHttpProtocol, Service};
 
 use crate::state::{
     agent_applied_message, agent_change_description, agent_declined_message,
     agent_nothing_to_confirm_message, agent_proposal_message, agent_review_progress_message,
-    agent_unoffered_option_message, profile_version_not_found_message, AgentChatOption,
-    AgentPendingChange, AGENT_APPLY_OPTION, AGENT_DISCARD_OPTION, AGENT_ERROR_VALIDATION,
-    AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE, AGENT_MESSAGE_TYPE_NORMAL, DRAFT_PROFILE_VERSION,
+    agent_unoffered_option_message, conversation_not_found_message,
+    conversation_of_other_profile_message, profile_version_not_found_message,
+    AgentChatOption, AgentConversationRefusal, AgentPendingChange, AGENT_APPLY_OPTION,
+    AGENT_DISCARD_OPTION, AGENT_ERROR_VALIDATION, AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+    AGENT_MESSAGE_TYPE_NORMAL, DRAFT_PROFILE_VERSION,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -235,27 +242,51 @@ impl<Eng: Send + Sync + 'static> UpdateProfileWithAgent<Eng> {
         // The conversation side of the turn, decided while the conversation record is
         // still borrowed: it needs the pending proposal and nothing of the profile, so
         // the record is read and rewritten in ONE place rather than looked up again.
+        //
+        // A turn that NAMES a conversation continues the one held under that id for
+        // this profile. An id no record holds — never served, swept by its retention,
+        // or held for another profile — is no conversation of this profile, so the turn
+        // is refused rather than a fresh conversation being opened behind the id the
+        // caller sent.
         let (conversation_id, turn_number, turn) = {
-            let conversation = store.agent_conversation_for(input.conversation_id.as_deref(), now);
+            let conversation = match store.agent_conversation_turn(
+                input.conversation_id.as_deref(),
+                &input.profile_id,
+                now,
+            ) {
+                Ok(conversation) => conversation,
+                // An id no record holds names no conversation at all; one held for
+                // another profile names a conversation this turn may not continue.
+                // Two situations, two answers, each naming the id the request
+                // carried.
+                Err(refusal) => {
+                    let named = input.conversation_id.as_deref().unwrap_or_default();
+                    return Err(match refusal {
+                        AgentConversationRefusal::NotFound => {
+                            not_found(conversation_not_found_message(named))
+                        }
+                        AgentConversationRefusal::OtherProfile => {
+                            validation(conversation_of_other_profile_message(&input.profile_id))
+                        }
+                    });
+                }
+            };
             let conversation_id = conversation.id.clone();
             let turn_number = conversation.turns;
             let turn = match input.input_message.r#type.as_str() {
                 AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE => {
-                    // A confirmation answers a question the agent asked about THIS
-                    // profile; anything else is a turn the conversation is not waiting
-                    // for. Read as owned values, so the record can be rewritten below.
-                    let answered = conversation
-                        .pending
-                        .as_ref()
-                        .filter(|change| change.profile_id == input.profile_id)
-                        .map(|change| {
-                            (
-                                change.option_labels(),
-                                change
-                                    .option_answered(&input.input_message.body)
-                                    .map(|option| option.applies),
-                            )
-                        });
+                    // A confirmation answers a question the agent asked in THIS
+                    // conversation; anything else is a turn the conversation is not
+                    // waiting for. Read as owned values, so the record can be rewritten
+                    // below.
+                    let answered = conversation.pending.as_ref().map(|change| {
+                        (
+                            change.option_labels(),
+                            change
+                                .option_answered(&input.input_message.body)
+                                .map(|option| option.applies),
+                        )
+                    });
                     match answered {
                         Some((_, Some(applies))) => {
                             // The question has been answered either way, so the
@@ -293,10 +324,7 @@ impl<Eng: Send + Sync + 'static> UpdateProfileWithAgent<Eng> {
                     ];
                     let labels: Vec<String> =
                         options.iter().map(|option| option.label.clone()).collect();
-                    conversation.pending = Some(AgentPendingChange {
-                        profile_id: input.profile_id.clone(),
-                        options,
-                    });
+                    conversation.pending = Some(AgentPendingChange { options });
                     Turn::Asked { options: labels }
                 }
                 // Unreachable: the modelled `AgentInputMessageType` admits exactly the
@@ -355,7 +383,17 @@ impl<Eng: Send + Sync + 'static> UpdateProfileWithAgent<Eng> {
         };
         drop(store);
 
-        let mut frames = Vec::new();
+        // The body OPENS with the frame a client reads the output shape out of, before
+        // any frame of the union: `UpdateProfileWithAgentResponse`'s only member is the
+        // stream itself, so that frame carries no member and its payload is the empty
+        // document. A client's decoder reads it first and treats a body that begins with
+        // anything else as unparseable, so without it none of the events behind it is
+        // delivered.
+        let mut frames = frame_empty_initial_response(protocol).map_err(|error| {
+            internal_server(&format!(
+                "the initial response event could not be framed: {error}"
+            ))
+        })?;
         self.frame(
             protocol,
             &mut frames,

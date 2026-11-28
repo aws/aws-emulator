@@ -103,22 +103,7 @@ impl HealthLake {
     /// seam an import job reads its input through, so an object staged with this
     /// client is the object an import reads.
     pub(crate) fn s3(&self) -> aws_sdk_s3::Client {
-        let callback = smithy_server_runtime::EmbeddedEmulator::from_router(self.router.clone());
-        let config = aws_sdk_s3::Config::builder()
-            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
-            .region(aws_sdk_s3::config::Region::new("us-east-1"))
-            .endpoint_url("https://s3.us-east-1.amazonaws.com".to_string())
-            .force_path_style(true)
-            .credentials_provider(callback.aws_credentials_provider())
-            .http_client(callback.http_client())
-            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
-            .timeout_config(aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
-            .identity_cache(aws_sdk_s3::config::IdentityCache::no_cache())
-            .stalled_stream_protection(
-                aws_sdk_s3::config::StalledStreamProtectionConfig::disabled(),
-            )
-            .build();
-        aws_sdk_s3::Client::from_conf(config)
+        s3_client_over(self.router.clone())
     }
 
     /// Dispatch one awsJson1_0 control-plane call.
@@ -399,6 +384,30 @@ pub(crate) fn endpoint_path(endpoint: &str) -> String {
         .find('/')
         .map_or("/", |start| &after_scheme[start..]);
     path.to_string()
+}
+
+/// An Amazon S3 client over one emulator's own in-process callback: the seam an
+/// import job reads its input through and an export job writes its output through,
+/// so an object this client holds is the object those jobs see.
+///
+/// The ONE place that configuration lives, so the suites that mount Amazon S3 beside
+/// this service — whichever harness they build their router with — cannot drift into
+/// two different clients.
+pub(crate) fn s3_client_over(router: MultiServiceRouter) -> aws_sdk_s3::Client {
+    let callback = smithy_server_runtime::EmbeddedEmulator::from_router(router);
+    let config = aws_sdk_s3::Config::builder()
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+        .region(aws_sdk_s3::config::Region::new("us-east-1"))
+        .endpoint_url("https://s3.us-east-1.amazonaws.com".to_string())
+        .force_path_style(true)
+        .credentials_provider(callback.aws_credentials_provider())
+        .http_client(callback.http_client())
+        .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+        .timeout_config(aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
+        .identity_cache(aws_sdk_s3::config::IdentityCache::no_cache())
+        .stalled_stream_protection(aws_sdk_s3::config::StalledStreamProtectionConfig::disabled())
+        .build();
+    aws_sdk_s3::Client::from_conf(config)
 }
 
 /// The `issue[0].code` of an `OperationOutcome` body.

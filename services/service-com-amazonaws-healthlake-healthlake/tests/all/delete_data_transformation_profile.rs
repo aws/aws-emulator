@@ -80,7 +80,7 @@ pub(crate) fn deletion_cases() -> Vec<Deletion> {
             case: "CSV, a DRAFT only, no published version and no tags",
             source_format: "CSV",
             profile_name: "delete-draft-only".to_string(),
-            initial: mapping(&[("patients.csv.map", "Patient.id <- patient_id")]),
+            initial: mapping(&[("mapping-config.yaml", "tableName: patients")]),
             publishes: 0,
             tags: None,
         },
@@ -99,8 +99,8 @@ pub(crate) fn deletion_cases() -> Vec<Deletion> {
             ])),
         },
         Deletion {
-            case: "CSV, four published versions, a name at the modelled 1-character minimum",
-            source_format: "CSV",
+            case: "CCDA, four published versions, a name at the modelled 1-character minimum",
+            source_format: "CCDA",
             profile_name: "d".to_string(),
             initial: mapping_of(12),
             publishes: 4,
@@ -115,12 +115,12 @@ pub(crate) fn deletion_cases() -> Vec<Deletion> {
             tags: None,
         },
         Deletion {
-            case: "CSV, a large value and a key at the modelled maximum with an empty value",
-            source_format: "CSV",
+            case: "CCDA, a large value and a key at the modelled maximum with an empty value",
+            source_format: "CCDA",
             profile_name: "delete-large-content".to_string(),
             initial: BTreeMap::from([
                 (long_key, String::new()),
-                ("notes.csv.map".to_string(), "v".repeat(100_000)),
+                ("sections/notes.map".to_string(), "v".repeat(100_000)),
             ]),
             publishes: 1,
             tags: Some(BTreeMap::from([("size".to_string(), "large".to_string())])),
@@ -351,8 +351,8 @@ async fn delete_removes_only_the_profile_it_names() {
 
     for index in 0..3u32 {
         let content = mapping(&[(
-            "patients.csv.map",
-            format!("Patient.id <- patient_id_{index}").as_str(),
+            "mapping-config.yaml",
+            format!("tableName: patients_{index}").as_str(),
         )]);
         let created = healthlake
             .ok(

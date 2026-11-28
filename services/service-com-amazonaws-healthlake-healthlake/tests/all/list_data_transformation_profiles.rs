@@ -108,12 +108,9 @@ fn profile_cases() -> Vec<ProfileCase> {
             source_format: "CSV",
             description: Some("interleaved history"),
             steps: vec![
-                Step::UpdateDraft(&[("patients.csv.map", "Patient.id <- mrn")]),
+                Step::UpdateDraft(&[("mapping-config.yaml", "tableName: people")]),
                 Step::Publish,
-                Step::UpdateDraft(&[
-                    ("patients.csv.map", "Patient.id <- mrn"),
-                    ("vitals.csv.map", "Observation.value[x] <- vital"),
-                ]),
+                Step::UpdateDraft(&[("mapping-config.yaml", "tableName: people_and_vitals")]),
                 Step::Publish,
             ],
         },
@@ -154,8 +151,8 @@ async fn build(healthlake: &Profiles, row: &ProfileCase) -> Built {
         "ProfileName": row.profile_name,
         "SourceFormat": row.source_format,
         "Source": profile_mapping_source(&mapping(&[(
-            "patients.csv.map",
-            "Patient.id <- patient_id",
+            "mapping-config.yaml",
+            "tableName: patients",
         )])),
     });
     if let Some(text) = row.description {

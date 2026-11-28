@@ -774,6 +774,11 @@ pub(crate) fn split_s3_uri(uri: &str) -> Option<(String, String)> {
 /// The Amazon S3 client an import job reads its input with, addressed to
 /// `region`.
 ///
+/// `pub(crate)` because the FHIR EXPORT job writes its output through the SAME
+/// seam ([`super::export_run`]): one client configuration for every Amazon S3
+/// call this service makes, so a read and a write cannot reach two different
+/// object stores.
+///
 /// The transport is the emulator's own in-process callback, so the `endpoint_url`
 /// below is an ADDRESS the in-process router reads rather than a host any
 /// resolver looks up: this client reaches the emulator's own Amazon S3 and
@@ -786,7 +791,7 @@ pub(crate) fn split_s3_uri(uri: &str) -> Option<(String, String)> {
 /// which would need a sleep implementation this client is not given. The same
 /// goes for caching the identity: the credentials the callback hands over are
 /// used directly, and they only sign this operation's in-process calls.
-fn s3_client(
+pub(crate) fn s3_client(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_s3::Client {

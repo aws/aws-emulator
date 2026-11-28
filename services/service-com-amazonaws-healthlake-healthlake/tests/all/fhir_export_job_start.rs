@@ -9,11 +9,12 @@
 //!    every member the request carried, answers the minted `JobId` with the
 //!    `SUBMITTED` status the record holds, and that ONE record is what
 //!    `DescribeFHIRExportJob` and `ListFHIRExportJobs` both report;
-//! 2. the clock then settles the started job to the TERMINAL status the work
-//!    this emulator could actually do warrants: `COMPLETED` for a data store
-//!    with nothing to transmit, and the modelled `FAILED` with the service's own
-//!    `Message` saying why for one that holds FHIR resources — with `EndTime`
-//!    stamped once, when the job ends;
+//! 2. the start WRITES: the job's own folder and the data store's FHIR resources
+//!    go into the Amazon S3 location `OutputDataConfig` names, one
+//!    newline-delimited JSON file per resource type inside that folder, and the
+//!    clock then settles the job `COMPLETED` — with `EndTime` stamped once, when
+//!    the job ends; a destination that cannot be written ends the job in the
+//!    modelled `FAILED` with the `Message` saying so;
 //! 3. only a settled, usable (`ACTIVE`) data store can be exported from: an
 //!    unknown or `DELETED` one is `ResourceNotFoundException`, one in a
 //!    lifecycle transition is `ValidationException`, and a refused start mints
@@ -38,11 +39,11 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_healthlake_healthlake::state::{
-    datastore_in_transition_message, export_not_transmitted_message, DatastoreAction,
-    DatastoreStatus, DATASTORE_NOT_FOUND_MESSAGE, EXPORT_JOB_NOT_FOUND_MESSAGE,
+    datastore_in_transition_message, DatastoreAction, DatastoreStatus,
+    DATASTORE_NOT_FOUND_MESSAGE, EXPORT_JOB_NOT_FOUND_MESSAGE, EXPORT_NOT_WRITTEN_MESSAGE,
 };
 
-use crate::fhir_datastore_lifecycle::{error_code, error_message, PAST_TRANSITION};
+use crate::fhir_datastore_lifecycle::{error_code, error_message, PAST_TRANSITION, SETTLING_DEADLINE};
 use crate::fhir_rest_and_validate_source::{created, HealthLake};
 
 /// The `DataAccessRoleArn` every start below carries, satisfying the modelled
@@ -81,6 +82,34 @@ async fn describe_job(service: &HealthLake, datastore_id: &str, job_id: &str) ->
     )
     .await["ExportJobProperties"]
         .clone()
+}
+
+/// Look at `DescribeFHIRExportJob` until the job has ENDED — a job that reached a
+/// terminal status is the one that reports an `EndTime` — and answer that record;
+/// fail once [`SETTLING_DEADLINE`] has passed without it.
+///
+/// A transition this service owes is materialised by whichever call reads the
+/// record next, so waiting for one means LOOKING again until the condition holds,
+/// never sleeping for the span — which would make the outcome depend on how fast
+/// the host runs.
+async fn poll_until_job_ended(
+    service: &HealthLake,
+    datastore_id: &str,
+    job_id: &str,
+) -> Value {
+    let deadline = std::time::Instant::now() + SETTLING_DEADLINE;
+    loop {
+        let described = describe_job(service, datastore_id, job_id).await;
+        if described.get("EndTime").is_some() {
+            return described;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export job {job_id} did not end within {SETTLING_DEADLINE:?}, \
+             last read {described}"
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Every export job `ListFHIRExportJobs` reports for a data store.
@@ -260,25 +289,152 @@ async fn a_start_mints_one_job_and_describe_reports_every_member_back() {
     }
 }
 
-#[tokio::test]
-async fn the_clock_settles_a_started_job_to_the_status_its_work_warrants() {
-    let service = HealthLake::new();
+/// One settle row: the resources the exported data store holds, where the export
+/// writes, and what the destination must hold afterwards.
+struct SettleRow {
+    case: &'static str,
+    /// `(resourceType, marker)` of each FHIR resource created on the data store
+    /// before the export starts.
+    resources: Vec<(&'static str, &'static str)>,
+    /// The `S3Uri` the export writes under.
+    s3_uri: String,
+    /// The key prefix a client lists the output under, derived from the location
+    /// above as a caller would write it.
+    listed_prefix: &'static str,
+    /// Whether the destination bucket exists at all.
+    bucket_held: bool,
+}
 
-    // The rows differ along how many FHIR resources the exported data store
-    // holds: none (nothing to transmit) against one and several (a transmission
-    // this emulator cannot perform).
-    for resources in [0usize, 1, 3] {
-        let case = format!("{resources} resource(s) held");
-        let (datastore_id, path) =
-            service
-                .active_datastore(&format!("store with {resources} resources"))
-                .await;
-        for index in 0..resources {
+/// The bucket the export rows below write into, created through Amazon S3's own
+/// `CreateBucket`, and one no bucket is ever created for.
+const EXPORT_BUCKET: &str = "healthlake-export-bucket";
+const UNHELD_BUCKET: &str = "healthlake-bucket-that-was-never-created";
+
+/// The settle table. The rule is that a started export WRITES the data store's
+/// FHIR resources into the location it was given and then settles `COMPLETED`,
+/// so the rows differ along how many resources the store holds and of how many
+/// types, along the FORM of the supplied location (bucket root, a prefix, a
+/// nested prefix already ending in `/`) and along whether the destination can be
+/// written at all.
+fn settle_rows() -> Vec<SettleRow> {
+    vec![
+        SettleRow {
+            case: "a data store holding no resource",
+            resources: Vec::new(),
+            s3_uri: format!("s3://{EXPORT_BUCKET}/empty"),
+            listed_prefix: "empty/",
+            bucket_held: true,
+        },
+        SettleRow {
+            case: "one resource, the bucket root as the location",
+            resources: vec![("Patient", "root")],
+            s3_uri: format!("s3://{EXPORT_BUCKET}"),
+            listed_prefix: "",
+            bucket_held: true,
+        },
+        SettleRow {
+            case: "several resources of one type, a prefixed location",
+            resources: vec![
+                ("Patient", "one"),
+                ("Patient", "two"),
+                ("Patient", "three"),
+            ],
+            s3_uri: format!("s3://{EXPORT_BUCKET}/while-active"),
+            listed_prefix: "while-active/",
+            bucket_held: true,
+        },
+        SettleRow {
+            case: "resources of several types, a nested location already ending in a slash",
+            resources: vec![
+                ("Patient", "mixed"),
+                ("Observation", "mixed"),
+                ("Condition", "mixed"),
+                ("Observation", "mixed-again"),
+            ],
+            s3_uri: format!("s3://{EXPORT_BUCKET}/tenant/42/out/"),
+            listed_prefix: "tenant/42/out/",
+            bucket_held: true,
+        },
+        SettleRow {
+            case: "a destination bucket no object store holds",
+            resources: vec![("Patient", "unwritable")],
+            s3_uri: format!("s3://{UNHELD_BUCKET}/out"),
+            listed_prefix: "out/",
+            bucket_held: false,
+        },
+    ]
+}
+
+/// Every object under `prefix` of `bucket`, as `(key, body)`, read through
+/// Amazon S3's own operations — so what is asserted is what the object store
+/// really holds.
+async fn written_objects(
+    service: &HealthLake,
+    bucket: &str,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let listed = service
+        .s3()
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(prefix)
+        .send()
+        .await;
+    let Ok(listed) = listed else {
+        return Vec::new();
+    };
+    let mut objects = Vec::new();
+    for object in listed.contents() {
+        let Some(key) = object.key() else { continue };
+        let got = service
+            .s3()
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("Amazon S3 must answer the object {key}: {error:?}"));
+        let body = got
+            .body
+            .collect()
+            .await
+            .unwrap_or_else(|error| panic!("the object {key} must be readable: {error:?}"))
+            .into_bytes();
+        objects.push((
+            key.to_string(),
+            String::from_utf8_lossy(body.as_ref()).to_string(),
+        ));
+    }
+    objects
+}
+
+#[tokio::test]
+async fn the_clock_settles_a_started_job_once_its_output_is_written() {
+    let service = HealthLake::with_object_store();
+    let created_bucket = service
+        .s3()
+        .create_bucket()
+        .bucket(EXPORT_BUCKET)
+        .send()
+        .await;
+    assert!(
+        created_bucket.is_ok(),
+        "Amazon S3 must create the destination bucket, got {created_bucket:?}"
+    );
+
+    for (index, row) in settle_rows().into_iter().enumerate() {
+        let case = row.case;
+        // The modelled `DatastoreName` pattern admits no comma, so the store is
+        // named for the row's position rather than for its sentence.
+        let (datastore_id, path) = service
+            .active_datastore(&format!("exporting store {index}"))
+            .await;
+        for (resource_type, marker) in &row.resources {
             created(
                 &service,
                 &path,
-                "Patient",
-                &json!({ "resourceType": "Patient", "active": index % 2 == 0 }),
+                resource_type,
+                &json!({ "resourceType": resource_type, "language": marker }),
             )
             .await;
         }
@@ -289,7 +445,7 @@ async fn the_clock_settles_a_started_job_to_the_status_its_work_warrants() {
             &start_request(
                 &datastore_id,
                 Some("settling"),
-                &output_data_config("s3://healthlake-export-bucket/settling", "export-key_1"),
+                &output_data_config(&row.s3_uri, "export-key_1"),
             ),
         )
         .await;
@@ -308,13 +464,14 @@ async fn the_clock_settles_a_started_job_to_the_status_its_work_warrants() {
             "case {case:?}: a running job must report neither EndTime nor Message, got {pending}"
         );
 
-        tokio::time::sleep(PAST_TRANSITION).await;
-
-        let settled = describe_job(&service, &datastore_id, &job_id).await;
-        let (expected_status, expected_message) = if resources == 0 {
+        // The job ENDS when the transition the clock owes it falls due, which is a
+        // condition the record reports for itself: the wait looks again until it
+        // holds rather than sleeping for the span.
+        let settled = poll_until_job_ended(&service, &datastore_id, &job_id).await;
+        let (expected_status, expected_message) = if row.bucket_held {
             ("COMPLETED", None)
         } else {
-            ("FAILED", Some(export_not_transmitted_message(resources)))
+            ("FAILED", Some(EXPORT_NOT_WRITTEN_MESSAGE.to_string()))
         };
         assert_eq!(
             settled["JobStatus"],
@@ -330,6 +487,103 @@ async fn the_clock_settles_a_started_job_to_the_status_its_work_warrants() {
             settled["EndTime"].is_number(),
             "case {case:?}: a job that reached a terminal status must report an EndTime, got {settled}"
         );
+
+        // What the destination HOLDS: one newline-delimited file per resource
+        // type the data store held, in a folder naming this job, each line a
+        // resource of that type — and nothing at all for a store that held
+        // none, or for a destination that could not be written.
+        let bucket = if row.bucket_held {
+            EXPORT_BUCKET
+        } else {
+            UNHELD_BUCKET
+        };
+        let folder = format!(
+            "{}{datastore_id}-FHIR_EXPORT-{job_id}/",
+            row.listed_prefix
+        );
+        // Scoped to THIS job's folder, so one row's objects are not the next row's:
+        // the folder key names the job that wrote it.
+        let objects = written_objects(&service, bucket, &folder).await;
+        // And the rule a client reads the output by: the location the start was
+        // given holds what the job wrote.
+        let under_supplied_prefix =
+            written_objects(&service, bucket, row.listed_prefix).await;
+        assert_eq!(
+            under_supplied_prefix.is_empty(),
+            !row.bucket_held,
+            "case {case:?}: a completed export must leave its objects under the location it \
+             was given, got {:?}",
+            under_supplied_prefix
+                .iter()
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>()
+        );
+        let mut expected_types: Vec<&str> = row
+            .resources
+            .iter()
+            .map(|(resource_type, _)| *resource_type)
+            .collect();
+        expected_types.sort_unstable();
+        expected_types.dedup();
+        if !row.bucket_held {
+            // A destination that could not be written holds nothing at all.
+            assert!(
+                objects.is_empty(),
+                "case {case:?}: a failed export must leave no object, got {:?}",
+                objects.iter().map(|(key, _)| key).collect::<Vec<_>>()
+            );
+            expected_types.clear();
+        } else {
+            assert_eq!(
+                objects.len(),
+                expected_types.len() + 1,
+                "case {case:?}: the export must write its own folder and one object per \
+                 resource type held ({expected_types:?}), got {:?}",
+                objects.iter().map(|(key, _)| key).collect::<Vec<_>>()
+            );
+            // The job's folder comes first in the listing, as the empty-bodied key
+            // ending in the delimiter, so the location holds the folder the job
+            // created even when the data store held nothing to export.
+            assert_eq!(
+                objects[0],
+                (folder.clone(), String::new()),
+                "case {case:?}: the export must write its own folder at {folder:?}, got {:?}",
+                objects[0]
+            );
+        }
+        for (resource_type, (key, body)) in expected_types.iter().zip(objects.iter().skip(1)) {
+            let expected_key = format!("{folder}{resource_type}/{resource_type}-0.ndjson");
+            assert_eq!(
+                key, &expected_key,
+                "case {case:?}: the exported object must be written at {expected_key:?}, got {key:?}"
+            );
+            let held = row
+                .resources
+                .iter()
+                .filter(|(held_type, _)| held_type == resource_type)
+                .count();
+            let lines: Vec<&str> = body.lines().collect();
+            assert_eq!(
+                lines.len(),
+                held,
+                "case {case:?}: {key} must hold one line per {resource_type} held, got {body:?}"
+            );
+            for line in lines {
+                let resource: Value = serde_json::from_str(line).unwrap_or_else(|error| {
+                    panic!("case {case:?}: every exported line must be FHIR JSON ({error}): {line}")
+                });
+                assert_eq!(
+                    resource["resourceType"],
+                    json!(resource_type),
+                    "case {case:?}: an exported line must carry its own resourceType, got {resource}"
+                );
+                assert!(
+                    resource["id"].is_string(),
+                    "case {case:?}: an exported resource carries the id it is stored under, \
+                     got {resource}"
+                );
+            }
+        }
 
         // `EndTime` is stored when the job ends, not re-derived per read, so a
         // second read reports the same instant — and the listing agrees.
@@ -462,9 +716,23 @@ async fn an_export_is_refused_for_a_data_store_that_cannot_serve_it() {
 
 #[tokio::test]
 async fn one_client_token_starts_one_export_job() {
-    let service = HealthLake::new();
+    // A started export WRITES its output, so the object store it writes through is
+    // mounted and its destination bucket created: the rule under test is that one
+    // token starts one job, and the job the repeat is answered with is one that did
+    // its work.
+    let service = HealthLake::with_object_store();
+    let created_bucket = service
+        .s3()
+        .create_bucket()
+        .bucket(EXPORT_BUCKET)
+        .send()
+        .await;
+    assert!(
+        created_bucket.is_ok(),
+        "Amazon S3 must create the destination bucket, got {created_bucket:?}"
+    );
     let (datastore_id, _path) = service.active_datastore("idempotent store").await;
-    let output = output_data_config("s3://healthlake-export-bucket/idempotent", "export-key_1");
+    let output = output_data_config(&format!("s3://{EXPORT_BUCKET}/idempotent"), "export-key_1");
     let mut request = start_request(&datastore_id, Some("hourly"), &output);
     request["ClientToken"] = json!("token-one");
 
@@ -497,7 +765,7 @@ async fn one_client_token_starts_one_export_job() {
         (
             "a different OutputDataConfig",
             "OutputDataConfig",
-            output_data_config("s3://healthlake-export-bucket/elsewhere", "export-key_1"),
+            output_data_config(&format!("s3://{EXPORT_BUCKET}/elsewhere"), "export-key_1"),
         ),
     ] {
         let mut different = request.clone();
@@ -526,8 +794,9 @@ async fn one_client_token_starts_one_export_job() {
 
     // Once the clock has settled the first job, its token still resolves to it —
     // answered out of the STORED record, so the status is the one the job has
-    // reached rather than the one it started in.
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // reached rather than the one it started in. The wait is for the job to have
+    // ENDED, which the record reports for itself.
+    poll_until_job_ended(&service, &datastore_id, &job_id).await;
     let settled_repeat = ok(&service, "StartFHIRExportJob", &request).await;
     assert_eq!(
         settled_repeat["JobId"],

@@ -95,11 +95,15 @@ fn rejected_source_formats() -> Vec<String> {
 }
 
 /// A `ProfileMapping` source carrying one entry, for the creates below.
+///
+/// The one `mapping-config.yaml` document, so the publishes below are of a mapping
+/// EITHER modelled format admits: what a publish checks is the shape of the content
+/// against the format it names, and this suite is about the format VALUE.
 fn one_entry_source() -> CreateDataTransformationProfileSource {
     CreateDataTransformationProfileSource::ProfileMapping(ProfileMappingSource {
         profile_mapping: HashMap::from([(
-            "patients.csv.map".to_string(),
-            "Patient.id <- patient_id".to_string(),
+            "mapping-config.yaml".to_string(),
+            "tableName: patients".to_string(),
         )]),
     })
 }

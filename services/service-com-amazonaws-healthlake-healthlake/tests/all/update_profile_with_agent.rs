@@ -8,7 +8,8 @@
 //! the profile and the DRAFT the turn resolved when no record holds it), records the
 //! turn against the conversation the request names — minting a `ConversationId` when
 //! it names none — and answers HTTP 200 with an `application/vnd.amazon.eventstream`
-//! body: a `ProgressEvent`, then the agent's `TextMessageEvent` (or an in-band
+//! body: the `initial-response` frame a client reads the output shape out of, then a
+//! `ProgressEvent`, then the agent's `TextMessageEvent` (or an in-band
 //! `ErrorEvent` for a confirmation the conversation is not waiting for), then an
 //! `EndOfOutputEvent` carrying the final response, the conversation id, and the
 //! `Options` the next turn may answer with. A `confirmation_response` turn that names
@@ -35,6 +36,7 @@ use serde_json::{json, Map, Value};
 use service_com_amazonaws_healthlake_healthlake::scaffolded::wire_http_status;
 use service_com_amazonaws_healthlake_healthlake::state::{
     agent_change_description, agent_nothing_to_confirm_message, agent_unoffered_option_message,
+    conversation_not_found_message, conversation_of_other_profile_message,
     profile_version_not_found_message, AGENT_APPLY_OPTION, AGENT_DISCARD_OPTION,
     AGENT_ERROR_VALIDATION, AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE, AGENT_MESSAGE_TYPE_NORMAL,
     DRAFT_PROFILE_VERSION,
@@ -50,6 +52,11 @@ const EVENT_STREAM: &str = "application/vnd.amazon.eventstream";
 /// The three frame headers an SDK's event-stream decoder reads.
 const MESSAGE_TYPE: &str = ":message-type";
 const EVENT_TYPE: &str = ":event-type";
+const CONTENT_TYPE: &str = ":content-type";
+
+/// The media type a protocol-serialized frame declares its payload in, under this
+/// service's awsJson1_0 protocol.
+const JSON_PAYLOAD: &str = "application/json";
 
 /// The `AgentOutputMessageStream` members this operation frames, as
 /// `smithy_query(query="shape",shape="AgentOutputMessageStream")` names them.
@@ -57,6 +64,11 @@ const PROGRESS_EVENT: &str = "ProgressEvent";
 const TEXT_MESSAGE_EVENT: &str = "TextMessageEvent";
 const ERROR_EVENT: &str = "ErrorEvent";
 const END_OF_OUTPUT_EVENT: &str = "EndOfOutputEvent";
+
+/// The frame an event-stream response OPENS with, before any frame of the union: a
+/// client reads the output shape itself out of it, and treats a body that begins with
+/// anything else as unparseable.
+const INITIAL_RESPONSE_EVENT: &str = service_common::event_stream::INITIAL_RESPONSE_EVENT;
 
 /// The emulated HealthLake service behind the production router, reached with the raw
 /// response so an event-stream body can be decoded frame by frame.
@@ -177,6 +189,9 @@ impl Agent {
 #[derive(Debug, Clone)]
 struct Frame {
     event_type: String,
+    /// The `:content-type` the frame declares its payload in, which an SDK's decoder
+    /// reads the payload with.
+    content_type: Option<String>,
     payload: Value,
 }
 
@@ -215,6 +230,7 @@ fn decode_frames(case: &str, body: &[u8]) -> Vec<Frame> {
         });
         frames.push(Frame {
             event_type,
+            content_type: read(CONTENT_TYPE),
             payload,
         });
     }
@@ -286,10 +302,6 @@ struct Row {
     /// 1..40960 characters, so a single character and a 40 960-character message are
     /// both at a published edge.
     body: String,
-    /// The `ConversationId` the FIRST turn carries, or `None` to let the service mint
-    /// one. The modelled `ConversationIdString` bound is 1..36 characters, so a
-    /// one-character and a 36-character id are both at a published edge.
-    conversation: Option<String>,
     /// Which option the confirmation answers, and whether it is the applying one.
     answer: &'static str,
     applies: bool,
@@ -305,7 +317,6 @@ fn rows() -> Vec<Row> {
             source_format: "CSV",
             content: mapping(&[("patients.csv.map", "Patient.id <- patient_id")]),
             body: "map the patient name columns".to_string(),
-            conversation: None,
             answer: AGENT_APPLY_OPTION,
             applies: true,
         },
@@ -314,25 +325,22 @@ fn rows() -> Vec<Row> {
             source_format: "CCDA",
             content: mapping_of(12),
             body: "drop the vitals section".to_string(),
-            conversation: None,
             answer: AGENT_DISCARD_OPTION,
             applies: false,
         },
         Row {
-            case: "a caller-chosen ConversationId at the modelled 1-character minimum",
+            case: "a one-file C-CDA profile, the applying option, a one-character message",
             source_format: "CCDA",
             content: mapping(&[("sections/problems.map", "Condition.code <- problem/code")]),
             body: "c".to_string(),
-            conversation: Some("c".to_string()),
             answer: AGENT_APPLY_OPTION,
             applies: true,
         },
         Row {
-            case: "a caller-chosen ConversationId at the modelled 36-character maximum",
+            case: "a message at the modelled 40960-character maximum",
             source_format: "CSV",
             content: mapping_of(3),
             body: "b".repeat(40_960),
-            conversation: Some("c".repeat(36)),
             answer: AGENT_APPLY_OPTION,
             applies: true,
         },
@@ -341,7 +349,6 @@ fn rows() -> Vec<Row> {
             source_format: "CSV",
             content: mapping(&[("encounters.csv.map", "Encounter.id <- encounter_id")]),
             body: "normalise the encounter ids".to_string(),
-            conversation: None,
             answer: "YES, RECORD THIS CHANGE ON THE DRAFT",
             applies: true,
         },
@@ -369,38 +376,33 @@ async fn an_agent_turn_asks_then_the_confirmed_turn_stamps_the_draft() {
             .as_f64()
             .unwrap_or_else(|| panic!("case {case:?}: the DRAFT must report LastUpdatedAt"));
 
-        // Turn one: the agent asks, and offers exactly the two options.
+        // Turn one: the agent asks, and offers exactly the two options. A conversation
+        // is OPENED by the turn that names none, which is every row here.
         let asked = healthlake
             .turn(
                 case,
-                &turn_request(
-                    &profile_id,
-                    AGENT_MESSAGE_TYPE_NORMAL,
-                    &row.body,
-                    row.conversation.as_deref(),
-                ),
+                &turn_request(&profile_id, AGENT_MESSAGE_TYPE_NORMAL, &row.body, None),
             )
             .await;
         assert_eq!(
             event_types(&asked),
-            vec![PROGRESS_EVENT, TEXT_MESSAGE_EVENT, END_OF_OUTPUT_EVENT],
-            "case {case:?}: a served turn frames progress, text and end-of-output"
+            vec![
+                INITIAL_RESPONSE_EVENT,
+                PROGRESS_EVENT,
+                TEXT_MESSAGE_EVENT,
+                END_OF_OUTPUT_EVENT
+            ],
+            "case {case:?}: a served turn opens with the initial response, then frames \
+             progress, text and end-of-output"
         );
         let end = only(case, &asked, END_OF_OUTPUT_EVENT);
         let conversation_id = frame_string(case, &end, "ConversationId");
-        if let Some(chosen) = &row.conversation {
-            assert_eq!(
-                &conversation_id, chosen,
-                "case {case:?}: a turn that names a ConversationId keeps it"
-            );
-        } else {
-            assert_eq!(
-                conversation_id.len(),
-                36,
-                "case {case:?}: a minted ConversationId fills the modelled 36-character \
-                 maximum, got {conversation_id:?}"
-            );
-        }
+        assert_eq!(
+            conversation_id.len(),
+            36,
+            "case {case:?}: a minted ConversationId fills the modelled 36-character \
+             maximum, got {conversation_id:?}"
+        );
         assert_eq!(
             options(&end),
             vec![
@@ -450,7 +452,12 @@ async fn an_agent_turn_asks_then_the_confirmed_turn_stamps_the_draft() {
             .await;
         assert_eq!(
             event_types(&answered),
-            vec![PROGRESS_EVENT, TEXT_MESSAGE_EVENT, END_OF_OUTPUT_EVENT],
+            vec![
+                INITIAL_RESPONSE_EVENT,
+                PROGRESS_EVENT,
+                TEXT_MESSAGE_EVENT,
+                END_OF_OUTPUT_EVENT
+            ],
             "case {case:?}: an answered turn frames progress, text and end-of-output"
         );
         let answered_end = only(case, &answered, END_OF_OUTPUT_EVENT);
@@ -577,24 +584,52 @@ async fn an_unexpected_confirmation_is_reported_in_band() {
     let profile_id = healthlake
         .profile(case, "agent-in-band", "CSV", &content)
         .await;
-    let other_id = healthlake
-        .profile(case, "agent-neighbour", "CSV", &content)
-        .await;
 
-    // A proposal on the neighbour profile, so the conversation IS waiting — but about
-    // a different profile.
-    let neighbour = healthlake
+    // A conversation that has served a turn but was never asked for a change: its
+    // first turn is the confirmation itself, so nothing is pending in it.
+    let unasked = healthlake
         .turn(
             case,
-            &turn_request(&other_id, AGENT_MESSAGE_TYPE_NORMAL, "a change", None),
+            &turn_request(
+                &profile_id,
+                AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+                AGENT_APPLY_OPTION,
+                None,
+            ),
         )
         .await;
-    let neighbour_conversation = frame_string(
+    let unasked_conversation = frame_string(
         case,
-        &only(case, &neighbour, END_OF_OUTPUT_EVENT),
+        &only(case, &unasked, END_OF_OUTPUT_EVENT),
         "ConversationId",
     );
-    // A proposal on the profile under test, in its own conversation.
+    // A proposal on the profile under test, in its own conversation, ANSWERED with the
+    // discarding option — so the conversation goes back to waiting for nothing and the
+    // DRAFT is left alone.
+    let answered = healthlake
+        .turn(
+            case,
+            &turn_request(&profile_id, AGENT_MESSAGE_TYPE_NORMAL, "a change", None),
+        )
+        .await;
+    let answered_conversation = frame_string(
+        case,
+        &only(case, &answered, END_OF_OUTPUT_EVENT),
+        "ConversationId",
+    );
+    healthlake
+        .turn(
+            case,
+            &turn_request(
+                &profile_id,
+                AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+                AGENT_DISCARD_OPTION,
+                Some(&answered_conversation),
+            ),
+        )
+        .await;
+    // A proposal still waiting for its answer, for the row that answers none of the
+    // options it offered.
     let own = healthlake
         .turn(
             case,
@@ -617,20 +652,20 @@ async fn an_unexpected_confirmation_is_reported_in_band() {
                 &profile_id,
                 AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
                 AGENT_APPLY_OPTION,
-                Some("a-conversation-with-no-proposal"),
+                Some(&unasked_conversation),
             ),
-            agent_nothing_to_confirm_message(&profile_id, "a-conversation-with-no-proposal"),
+            agent_nothing_to_confirm_message(&profile_id, &unasked_conversation),
             Vec::new(),
         ),
         (
-            "a confirmation naming a profile the proposal was not about",
+            "a second confirmation of a proposal already answered",
             turn_request(
                 &profile_id,
                 AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
                 AGENT_APPLY_OPTION,
-                Some(&neighbour_conversation),
+                Some(&answered_conversation),
             ),
-            agent_nothing_to_confirm_message(&profile_id, &neighbour_conversation),
+            agent_nothing_to_confirm_message(&profile_id, &answered_conversation),
             Vec::new(),
         ),
         (
@@ -650,7 +685,12 @@ async fn an_unexpected_confirmation_is_reported_in_band() {
         let frames = healthlake.turn(row, &request).await;
         assert_eq!(
             event_types(&frames),
-            vec![PROGRESS_EVENT, ERROR_EVENT, END_OF_OUTPUT_EVENT],
+            vec![
+                INITIAL_RESPONSE_EVENT,
+                PROGRESS_EVENT,
+                ERROR_EVENT,
+                END_OF_OUTPUT_EVENT
+            ],
             "case {row:?}: an in-band failure frames an ErrorEvent instead of the text"
         );
         let error = only(row, &frames, ERROR_EVENT);
@@ -852,7 +892,12 @@ async fn refused_turns_never_begin_a_stream() {
         .await;
     assert_eq!(
         event_types(&frames),
-        vec![PROGRESS_EVENT, TEXT_MESSAGE_EVENT, END_OF_OUTPUT_EVENT],
+        vec![
+            INITIAL_RESPONSE_EVENT,
+            PROGRESS_EVENT,
+            TEXT_MESSAGE_EVENT,
+            END_OF_OUTPUT_EVENT
+        ],
         "case {case:?}: the turn after the refusals is served"
     );
 }
@@ -962,5 +1007,306 @@ async fn the_three_turn_outcomes_answer_three_distinct_state_naming_sentences() 
         reported_mapping(case, &draft),
         content,
         "case {case:?}: no turn of the conversation rewrote the DRAFT's mapping files"
+    );
+}
+
+/// The `AgentOutputMessageStream` members a served turn may frame after the opening
+/// one, as `smithy_query(query="shape",shape="AgentOutputMessageStream")` names them.
+const UNION_EVENTS: &[&str] = &[
+    TEXT_MESSAGE_EVENT,
+    PROGRESS_EVENT,
+    "HeartbeatEvent",
+    ERROR_EVENT,
+    END_OF_OUTPUT_EVENT,
+];
+
+/// RULE: the body of EVERY served turn opens with the frame a client reads the output
+/// shape itself out of — `:event-type: initial-response`, its payload the output's
+/// non-stream members, of which `UpdateProfileWithAgentResponse` has none, so the
+/// payload is the empty JSON document — and only then the frames of the `@streaming`
+/// union. A client's decoder reads that frame FIRST and cannot parse a body that begins
+/// with anything else, so none of the events behind it would be delivered.
+///
+/// The rows span the KINDS of turn this operation serves, which is what the rule
+/// generalises over: a turn that opens a conversation, a further turn in the same one,
+/// the confirmation that writes the DRAFT, the confirmation that discards the proposal,
+/// and a confirmation the conversation is not waiting for — which is reported IN BAND
+/// and so is a 200 stream too.
+#[tokio::test]
+async fn every_served_stream_opens_with_the_initial_response_frame() {
+    let healthlake = Agent::new();
+    let case = "the opening frame of a served stream";
+    let content = mapping(&[("mapping-config.yaml", "tableName: patients")]);
+    let profile_id = healthlake
+        .profile(case, "agent-initial-response", "CSV", &content)
+        .await;
+
+    let mut streams: Vec<(&str, Vec<Frame>)> = Vec::new();
+
+    let opened = healthlake
+        .turn(
+            case,
+            &turn_request(&profile_id, AGENT_MESSAGE_TYPE_NORMAL, "map the names", None),
+        )
+        .await;
+    let conversation_id = frame_string(
+        case,
+        &only(case, &opened, END_OF_OUTPUT_EVENT),
+        "ConversationId",
+    );
+    streams.push(("a turn that opens a conversation", opened));
+
+    for (kind, message_type, body) in [
+        (
+            "a further turn of the same conversation",
+            AGENT_MESSAGE_TYPE_NORMAL,
+            "and the identifiers",
+        ),
+        (
+            "the confirmation that writes the DRAFT",
+            AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+            AGENT_APPLY_OPTION,
+        ),
+        (
+            "a confirmation the conversation is not waiting for",
+            AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+            AGENT_APPLY_OPTION,
+        ),
+        (
+            "the turn that asks again",
+            AGENT_MESSAGE_TYPE_NORMAL,
+            "once more",
+        ),
+        (
+            "the confirmation that discards the proposal",
+            AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+            AGENT_DISCARD_OPTION,
+        ),
+    ] {
+        let frames = healthlake
+            .turn(
+                case,
+                &turn_request(&profile_id, message_type, body, Some(&conversation_id)),
+            )
+            .await;
+        streams.push((kind, frames));
+    }
+
+    for (kind, frames) in streams {
+        let first = frames
+            .first()
+            .unwrap_or_else(|| panic!("case {case:?}: {kind} answered no frame at all"));
+        assert_eq!(
+            first.event_type, INITIAL_RESPONSE_EVENT,
+            "case {case:?}: {kind} must open with {INITIAL_RESPONSE_EVENT}, got {:?}",
+            event_types(&frames)
+        );
+        assert_eq!(
+            first.payload,
+            json!({}),
+            "case {case:?}: {kind} must carry the output's non-stream members, of which \
+             there are none, got {}",
+            first.payload
+        );
+        assert_eq!(
+            first.content_type.as_deref(),
+            Some(JSON_PAYLOAD),
+            "case {case:?}: {kind} must declare its payload as {JSON_PAYLOAD}, got {:?}",
+            first.content_type
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.event_type == INITIAL_RESPONSE_EVENT)
+                .count(),
+            1,
+            "case {case:?}: {kind} must carry exactly one opening frame, got {:?}",
+            event_types(&frames)
+        );
+        for frame in frames.iter().skip(1) {
+            assert!(
+                UNION_EVENTS.contains(&frame.event_type.as_str()),
+                "case {case:?}: {kind} must frame only the union's members after the \
+                 opening one, got {:?}",
+                frame.event_type
+            );
+        }
+        assert_eq!(
+            frames.last().map(|frame| frame.event_type.as_str()),
+            Some(END_OF_OUTPUT_EVENT),
+            "case {case:?}: {kind} must end with {END_OF_OUTPUT_EVENT}, got {:?}",
+            event_types(&frames)
+        );
+    }
+}
+
+/// RULE: a turn that NAMES a `ConversationId` continues the conversation held under
+/// that id for the profile it names. An id no record holds — one never served or one
+/// whose retention has run out — resolves nothing and is refused with
+/// `ResourceNotFoundException` naming it; an id held for ANOTHER profile names a
+/// conversation this turn may not continue and is refused with `ValidationException`
+/// naming it. Neither opens a conversation behind the id the caller sent, and only a
+/// turn that names NO `ConversationId` opens one.
+///
+/// The rows span what the rule generalises over: the FORM of the unknown id (one
+/// character, the modelled 36-character maximum, a service-shaped uuid), a
+/// conversation the service really minted for another profile, and the message `Type`
+/// the turn carries, since a confirmation resolves its conversation exactly as a
+/// normal turn does.
+#[tokio::test]
+async fn a_turn_naming_a_conversation_the_profile_does_not_hold_is_refused() {
+    let healthlake = Agent::new();
+    let case = "a conversation this profile does not hold";
+    let content = mapping(&[("mapping-config.yaml", "tableName: patients")]);
+    let profile_id = healthlake
+        .profile(case, "agent-conversation-scope", "CSV", &content)
+        .await;
+    let other_id = healthlake
+        .profile(case, "agent-conversation-neighbour", "CSV", &content)
+        .await;
+
+    // A conversation the service really minted — for the OTHER profile.
+    let neighbour = healthlake
+        .turn(
+            case,
+            &turn_request(&other_id, AGENT_MESSAGE_TYPE_NORMAL, "a change", None),
+        )
+        .await;
+    let neighbours = frame_string(
+        case,
+        &only(case, &neighbour, END_OF_OUTPUT_EVENT),
+        "ConversationId",
+    );
+    // And one this profile does hold, as the positive control.
+    let own = healthlake
+        .turn(
+            case,
+            &turn_request(&profile_id, AGENT_MESSAGE_TYPE_NORMAL, "a change", None),
+        )
+        .await;
+    let own_conversation =
+        frame_string(case, &only(case, &own, END_OF_OUTPUT_EVENT), "ConversationId");
+
+    // (row, the id the turn names, the status, the code and the sentence it is
+    // refused with)
+    let rows: Vec<(&str, String, u16, &str, String)> = vec![
+        (
+            "one character, the modelled minimum",
+            "c".to_string(),
+            wire_http_status(404),
+            "ResourceNotFoundException",
+            conversation_not_found_message("c"),
+        ),
+        (
+            "the modelled 36-character maximum",
+            "c".repeat(36),
+            wire_http_status(404),
+            "ResourceNotFoundException",
+            conversation_not_found_message(&"c".repeat(36)),
+        ),
+        (
+            "a uuid of the form the service mints",
+            "f46555a9-229e-4f0a-9b2c-3d4e5f607182".to_string(),
+            wire_http_status(404),
+            "ResourceNotFoundException",
+            conversation_not_found_message("f46555a9-229e-4f0a-9b2c-3d4e5f607182"),
+        ),
+        (
+            "a conversation of another profile",
+            neighbours.clone(),
+            400,
+            "ValidationException",
+            conversation_of_other_profile_message(&profile_id),
+        ),
+    ];
+
+    for (row, conversation_id, expected_status, expected_code, expected_message) in rows {
+        for message_type in [
+            AGENT_MESSAGE_TYPE_NORMAL,
+            AGENT_MESSAGE_TYPE_CONFIRMATION_RESPONSE,
+        ] {
+            let row = format!("{row}, a {message_type} turn");
+            let (status, code, payload) = healthlake
+                .refused(
+                    &row,
+                    &turn_request(
+                        &profile_id,
+                        message_type,
+                        AGENT_APPLY_OPTION,
+                        Some(&conversation_id),
+                    ),
+                )
+                .await;
+            assert_eq!(
+                (status, code.as_str(), modelled_message(&payload)),
+                (
+                    expected_status,
+                    expected_code,
+                    Some(expected_message.as_str())
+                ),
+                "case {row:?}: a turn naming a conversation this profile does not hold must \
+                 be refused stating why, got {status}: {payload}"
+            );
+        }
+    }
+
+    // No refusal above opened a conversation: the ids they named still resolve to
+    // nothing, and the conversation this profile does hold still serves its next turn
+    // as the SAME conversation.
+    let (_, _, again) = healthlake
+        .refused(
+            case,
+            &turn_request(
+                &profile_id,
+                AGENT_MESSAGE_TYPE_NORMAL,
+                "a change",
+                Some("c"),
+            ),
+        )
+        .await;
+    assert_eq!(
+        modelled_message(&again),
+        Some(conversation_not_found_message("c").as_str()),
+        "case {case:?}: a refused turn must open no conversation behind the id it named, \
+         got {again}"
+    );
+    let continued = healthlake
+        .turn(
+            case,
+            &turn_request(
+                &profile_id,
+                AGENT_MESSAGE_TYPE_NORMAL,
+                "and one more thing",
+                Some(&own_conversation),
+            ),
+        )
+        .await;
+    let progress = frame_string(case, &only(case, &continued, PROGRESS_EVENT), "Message");
+    assert!(
+        progress.contains("Turn 2"),
+        "case {case:?}: the conversation this profile holds must continue, got {progress:?}"
+    );
+    // And the neighbour's conversation is still the neighbour's, served under the
+    // profile it belongs to.
+    let neighbours_turn = healthlake
+        .turn(
+            case,
+            &turn_request(
+                &other_id,
+                AGENT_MESSAGE_TYPE_NORMAL,
+                "a change",
+                Some(&neighbours),
+            ),
+        )
+        .await;
+    let progress = frame_string(
+        case,
+        &only(case, &neighbours_turn, PROGRESS_EVENT),
+        "Message",
+    );
+    assert!(
+        progress.contains("Turn 2") && progress.contains(&other_id),
+        "case {case:?}: the neighbour's conversation must continue under its own profile, \
+         got {progress:?}"
     );
 }

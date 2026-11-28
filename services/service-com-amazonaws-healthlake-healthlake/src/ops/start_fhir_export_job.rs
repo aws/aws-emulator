@@ -23,14 +23,15 @@
 //! change made to the data store after the first start cannot turn the repeat
 //! into a refusal.
 //!
-//! WRITING THE EXPORTED DATA to the destination bucket is a transmission this
-//! emulator cannot perform (it opens no connection and reaches no bucket), so
-//! the clock owes a started job the TERMINAL status the work it could actually
-//! do warrants: a data store holding no FHIR resource has nothing to transmit
-//! and the job reaches `COMPLETED`, and a data store that does hold resources
-//! ends in the modelled `FAILED` status whose `Message`
-//! ([`crate::state::export_not_transmitted_message`]) says why, rather than
-//! reporting a transfer nothing ran.
+//! WRITING THE EXPORTED DATA is the job's own work, and it is really done: the
+//! data store's FHIR resources are written into the Amazon S3 location
+//! `OutputDataConfig` names, through this emulator's own in-process Amazon S3
+//! ([`crate::state::write_export`]), under a folder of the job's own. The clock
+//! then owes the started job the terminal status that run warrants —
+//! `COMPLETED` for a job whose objects were written (including one with nothing
+//! to write, which leaves the destination as it found it) and the modelled
+//! `FAILED` with the `Message` saying so for one whose destination could not be
+//! written.
 //!
 //! ## Shape of an operation
 //!
@@ -185,145 +186,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
-            return Err(StartFHIRExportJobErrorModeled::InternalServerException(
-                InternalServerException {
-                    message: Some("the HealthLake data store registry is unavailable".to_string()),
-                },
-            )
-            .into());
+            return Err(internal_server(
+                "the HealthLake data store registry is unavailable",
+            ));
         };
+        let fingerprint = request_fingerprint(&input);
+
+        // Everything that can refuse this start is decided under the store lock
+        // BEFORE the job writes a byte of its output: the idempotency replay,
+        // the data store's own state gate and the job-count ceiling. The guard
+        // is SCOPED so the lock is released before this handler awaits the
+        // write — no other caller waits on the store while one export writes.
+        let (id, files) = {
+            let mut store = state.lock();
+            // Both records must have caught up with the clock before either is
+            // read: the data store registry, because a store whose retention
+            // has run out cannot be exported from, and the job records, because
+            // an earlier job whose transition is already due would otherwise be
+            // answered under the status it has left.
+            store.settle_lifecycle();
+            store.settle_export_jobs();
+            if let Some(answered) = replayed(&store, &input, &fingerprint)? {
+                return Ok(answered);
+            }
+            gate_datastore(&store, &input.datastore_id)?;
+            refuse_a_full_store(&store)?;
+            // The job's id is minted HERE, because the objects it writes live in
+            // a folder named for it: two exports under one supplied location
+            // write two distinct sets of objects.
+            let id = store.next_export_job_id(::std::time::SystemTime::now());
+            // What this export writes, read off the data store as it stands.
+            let files = store
+                .datastores
+                .get(&input.datastore_id)
+                .map(crate::state::exported_files)
+                .unwrap_or_default();
+            (id, files)
+        };
+
+        // The job's own work, with no lock held: the data store's FHIR resources
+        // written into the location the request's `OutputDataConfig` names,
+        // inside this emulator's own Amazon S3 through the in-process callback.
+        // What it could not do is the JOB's terminal status and `Message`, never
+        // a refusal of this request.
+        let region = crate::state::request_region(ctx.parts());
+        let run = crate::state::write_export(
+            ctx,
+            &region,
+            &input.output_data_config,
+            &input.datastore_id,
+            &id,
+            files,
+        )
+        .await;
 
         let mut store = state.lock();
-        // Both records must have caught up with the clock before either is
-        // read: the data store registry, because a store whose retention has
-        // run out cannot be exported from, and the job records, because an
-        // earlier job whose transition is already due would otherwise be
-        // answered under the status it has left.
         store.settle_lifecycle();
         store.settle_export_jobs();
-
-        // `ClientToken` is this operation's `@idempotencyToken`: a repeat of the
-        // SAME call carrying a token already seen is answered out of the job
-        // that token started, so one token starts one export job. A token reused
-        // with a different request is a different request, and is refused rather
-        // than answered with the earlier job.
-        //
-        // Resolved BEFORE any gate on the data store this start names, like
-        // every other idempotent mint here: the retry a token exists to make
-        // safe is answered out of the record that token minted, so a change
-        // made to the data store AFTER the first start cannot turn the repeat
-        // into a refusal. A first start — one no held job carries the token of —
-        // finds nothing here and falls through to the same gates it always did.
-        let fingerprint = request_fingerprint(&input);
-        if let Some(started) = input
-            .client_token
-            .as_deref()
-            .and_then(|token| store.export_job_for_client_token(token))
-        {
-            if started.request_fingerprint != fingerprint {
-                return Err(StartFHIRExportJobErrorModeled::ValidationException(
-                    ValidationException {
-                        message: Some(
-                            "ClientToken was already used for a different StartFHIRExportJob \
-                             request"
-                                .to_string(),
-                        ),
-                    },
-                )
-                .into());
-            }
-            // Answered out of the STORED record, so a repeat cannot report a
-            // status the job has already left.
-            return Ok(StartFHIRExportJobOutput {
-                job_id: started.id.clone(),
-                job_status: started.status.as_wire().to_string(),
-                datastore_id: Some(started.datastore_id.clone()),
-            });
+        // The same three decisions again, because the store is only this
+        // handler's for the span of a lock: a repeat under the same token, a
+        // data store deleted, or a store filled, while the output was being
+        // written is answered exactly as it would have been before the write —
+        // no job record has been persisted yet.
+        if let Some(answered) = replayed(&store, &input, &fingerprint)? {
+            return Ok(answered);
         }
-
-        // How many FHIR resources the data store holds is what this export
-        // would have to transmit, so it is read in the same borrow that
-        // resolves the data store's state.
-        let resources_to_export = {
-            // This service's not-found answer is one fixed text that quotes
-            // neither the requested id nor anything else from the request.
-            let Some(datastore) = store.datastores.get(&input.datastore_id) else {
-                return Err(StartFHIRExportJobErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: Some(crate::state::DATASTORE_NOT_FOUND_MESSAGE.to_string()),
-                    },
-                )
-                .into());
-            };
-            // The ONE status partition every data-store action gate in this
-            // crate shares, held in `crate::state`; what this operation decides
-            // for itself is only which modelled error shape carries the answer.
-            if let Err(refusal) = datastore.gate_action(crate::state::DatastoreAction::ExportFrom) {
-                return Err(match refusal {
-                    // A data store in a lifecycle transition cannot serve an
-                    // export. This operation models no `ConflictException`, so
-                    // the refusal is the `ValidationException` it does model,
-                    // carrying the one sentence every operation on this resource
-                    // states a transition state with.
-                    crate::state::DatastoreRefusal::InTransition(message) => {
-                        StartFHIRExportJobErrorModeled::ValidationException(ValidationException {
-                            message: Some(message),
-                        })
-                    }
-                    // A deleted data store is not in transition — it is gone,
-                    // and there is nothing left to export from it.
-                    crate::state::DatastoreRefusal::Gone(message) => {
-                        StartFHIRExportJobErrorModeled::ResourceNotFoundException(
-                            ResourceNotFoundException {
-                                message: Some(message),
-                            },
-                        )
-                    }
-                }
-                .into());
-            }
-            datastore.fhir_resources.len()
-        };
-
-        // The store holds a bounded number of job records. A job is only dropped
-        // with the data store it exported from, so there is nothing to reap
-        // here: a genuinely full store is refused with the quota-shaped error
-        // this operation models.
-        if store.export_jobs.len() >= crate::state::MAX_EXPORT_JOBS {
-            return Err(StartFHIRExportJobErrorModeled::ThrottlingException(
-                ThrottlingException {
-                    message: Some(format!(
-                        "The maximum number of export jobs ({}) already exists",
-                        crate::state::MAX_EXPORT_JOBS
-                    )),
-                },
-            )
-            .into());
-        }
-
-        // The status the clock owes this job, and the message that status comes
-        // with. Writing the exported resources into the destination bucket is a
-        // transmission this emulator cannot perform, so an export that would
-        // have to transmit anything ends in the service's own modelled `FAILED`
-        // status saying so; an export of a data store holding nothing transmits
-        // nothing, so it has nothing left to do and the clock owes it
-        // `COMPLETED`. The message travels WITH the owed status, so the record
-        // cannot report failure text while it is still `SUBMITTED`.
-        let owed = if resources_to_export == 0 {
-            (crate::state::JobStatus::Completed, None)
-        } else {
-            (
-                crate::state::JobStatus::Failed,
-                Some(crate::state::export_not_transmitted_message(
-                    resources_to_export,
-                )),
-            )
-        };
+        gate_datastore(&store, &input.datastore_id)?;
+        refuse_a_full_store(&store)?;
 
         let now = ::std::time::SystemTime::now();
-        let id = store.next_export_job_id(now);
+        // The status the clock owes this job is the one its run warrants, and
+        // the `Message` travels WITH that status, so the record cannot report
+        // failure text while it is still `SUBMITTED`.
+        let owed = run.owed();
         let job = crate::state::ExportJob {
             id: id.clone(),
             datastore_id: input.datastore_id,
@@ -354,6 +290,135 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.export_jobs.insert(id, job);
         Ok(output)
     }
+}
+
+/// The job a repeat of this request under an already-seen `ClientToken` is
+/// answered out of, `None` when this is a first start, and an `Err` when the
+/// token was used for a DIFFERENT request.
+///
+/// `ClientToken` is this operation's `@idempotencyToken`: a repeat of the SAME
+/// call carrying a token already seen is answered out of the job that token
+/// started, so one token starts one export job. A token reused with a different
+/// request is a different request, and is refused rather than answered with the
+/// earlier job.
+///
+/// Resolved BEFORE any gate on the data store this start names, like every other
+/// idempotent mint in this crate: the retry a token exists to make safe is
+/// answered out of the record that token minted, so a change made to the data
+/// store AFTER the first start cannot turn the repeat into a refusal.
+fn replayed(
+    store: &crate::state::ComAmazonawsHealthlakeHealthlakeState,
+    input: &StartFHIRExportJobInput,
+    fingerprint: &str,
+) -> Result<Option<StartFHIRExportJobOutput>, StartFHIRExportJobError> {
+    let Some(started) = input
+        .client_token
+        .as_deref()
+        .and_then(|token| store.export_job_for_client_token(token))
+    else {
+        return Ok(None);
+    };
+    if started.request_fingerprint != fingerprint {
+        return Err(
+            StartFHIRExportJobErrorModeled::ValidationException(ValidationException {
+                message: Some(
+                    "ClientToken was already used for a different StartFHIRExportJob request"
+                        .to_string(),
+                ),
+            })
+            .into(),
+        );
+    }
+    // Answered out of the STORED record, so a repeat cannot report a status the
+    // job has already left.
+    Ok(Some(StartFHIRExportJobOutput {
+        job_id: started.id.clone(),
+        job_status: started.status.as_wire().to_string(),
+        datastore_id: Some(started.datastore_id.clone()),
+    }))
+}
+
+/// `Ok` when the data store `datastore_id` names can be exported from.
+fn gate_datastore(
+    store: &crate::state::ComAmazonawsHealthlakeHealthlakeState,
+    datastore_id: &str,
+) -> Result<(), StartFHIRExportJobError> {
+    // This service's not-found answer is one fixed text that quotes neither the
+    // requested id nor anything else from the request.
+    let Some(datastore) = store.datastores.get(datastore_id) else {
+        return Err(not_found(
+            crate::state::DATASTORE_NOT_FOUND_MESSAGE.to_string(),
+        ));
+    };
+    // The ONE status partition every data-store action gate in this crate
+    // shares, held in `crate::state`; what this operation decides for itself is
+    // only which modelled error shape carries the answer.
+    if let Err(refusal) = datastore.gate_action(crate::state::DatastoreAction::ExportFrom) {
+        return Err(match refusal {
+            // A data store in a lifecycle transition cannot serve an export.
+            // This operation models no `ConflictException`, so the refusal is
+            // the `ValidationException` it does model, carrying the one sentence
+            // every operation on this resource states a transition state with.
+            crate::state::DatastoreRefusal::InTransition(message) => {
+                StartFHIRExportJobErrorModeled::ValidationException(ValidationException {
+                    message: Some(message),
+                })
+            }
+            // A deleted data store is not in transition — it is gone, and there
+            // is nothing left to export from it. (A recorded run shows AWS
+            // answering this case as a store that is not ACTIVE instead; that
+            // classification is shared by every action gate of this resource, so
+            // changing it belongs to an issue that owns the whole partition.)
+            crate::state::DatastoreRefusal::Gone(message) => {
+                StartFHIRExportJobErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(message),
+                    },
+                )
+            }
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// `Ok` while the store can hold another export job record.
+///
+/// A job is only dropped with the data store it exported from, so there is
+/// nothing to reap here: a genuinely full store is refused with the quota-shaped
+/// error this operation models.
+fn refuse_a_full_store(
+    store: &crate::state::ComAmazonawsHealthlakeHealthlakeState,
+) -> Result<(), StartFHIRExportJobError> {
+    if store.export_jobs.len() < crate::state::MAX_EXPORT_JOBS {
+        return Ok(());
+    }
+    Err(
+        StartFHIRExportJobErrorModeled::ThrottlingException(ThrottlingException {
+            message: Some(format!(
+                "The maximum number of export jobs ({}) already exists",
+                crate::state::MAX_EXPORT_JOBS
+            )),
+        })
+        .into(),
+    )
+}
+
+/// This operation's 404, stating which resource the service does not hold — the
+/// wording every not-found path in this crate uses.
+fn not_found(message: String) -> StartFHIRExportJobError {
+    StartFHIRExportJobErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(message),
+    })
+    .into()
+}
+
+/// This operation's 500, for a store the handler could not reach at all.
+fn internal_server(message: &str) -> StartFHIRExportJobError {
+    StartFHIRExportJobErrorModeled::InternalServerException(InternalServerException {
+        message: Some(message.to_string()),
+    })
+    .into()
 }
 
 /// A fingerprint of everything this request asks for, so one `ClientToken`

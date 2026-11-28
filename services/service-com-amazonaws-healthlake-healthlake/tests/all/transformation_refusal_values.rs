@@ -409,7 +409,7 @@ async fn the_version_quota_refusal_states_the_ceiling() {
         ("the publish that republishes version 1", Some(1)),
     ] {
         let healthlake = Profiles::new();
-        let content = mapping(&[("patients.csv.map", "Patient.id <- patient_id")]);
+        let content = mapping(&[("mapping-config.yaml", "tableName: patients")]);
         let created = healthlake
             .ok(
                 case,

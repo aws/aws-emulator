@@ -448,9 +448,9 @@ struct AuthoringCase {
 /// the authoring loop reads back what it just wrote.
 ///
 /// The rows differ along the create's SOURCE FORMAT and along the SHAPE of the
-/// content (one entry, several entries), and each row walks create -> get, then
-/// update -> get, then publish -> get, so the omitted-version read is asserted at
-/// every stage a profile passes through.
+/// content (one template entry, the one CSV mapping document), and each row walks
+/// create -> get, then update -> get, then publish -> get, so the omitted-version
+/// read is asserted at every stage a profile passes through.
 #[tokio::test]
 async fn a_read_naming_no_version_serves_the_latest_version_the_profile_holds() {
     let healthlake = Profiles::new();
@@ -463,13 +463,10 @@ async fn a_read_naming_no_version_serves_the_latest_version_the_profile_holds() 
             replacement: mapping(&[("Resources/Patient.vm", "updated-content")]),
         },
         AuthoringCase {
-            case: "several entries, CSV",
+            case: "the CSV mapping document, CSV",
             source_format: "CSV",
-            initial: mapping(&[
-                ("patients.csv.map", "Patient.id <- patient_id"),
-                ("results.csv.map", "Observation <- result"),
-            ]),
-            replacement: mapping(&[("patients.csv.map", "Patient.id <- id")]),
+            initial: mapping(&[("mapping-config.yaml", "tableName: patients")]),
+            replacement: mapping(&[("mapping-config.yaml", "tableName: people")]),
         },
     ];
 
