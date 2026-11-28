@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DisassociateFaces
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DisassociateFaces`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Takes faces the named collection holds off one of that collection's users, and reports
+//! what it did: the `FaceId` of each face it disassociated, one entry per face it could
+//! not, and the `UserStatus` the user carries after the call. The disassociation is
+//! recorded ON the stored face and in the user's own face list, so the face stays in the
+//! collection with no user — which is what `ListFaces` then reports and filters by, and
+//! what frees `DeleteFaces` to remove it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DisassociateFaces::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Each requested face is decided by itself, which is why one call both disassociates and
+//! refuses: a face the collection does not hold and a face another user of the collection
+//! holds are each reported as an unsuccessful disassociation with the reason the model
+//! names for it, while a face no user holds is already disassociated and so is ignored and
+//! reported nowhere. The inverse direction of the same binding is
+//! [`crate::ops::associate_faces`], and the rules both sides share live in
+//! [`crate::state::face_association`].
+//!
+//! The call is IDEMPOTENT on its `ClientRequestToken`: the parameters the token committed
+//! are remembered beside the ANSWER it was given ([`crate::state::idempotency`],
+//! [`crate::state::face_association::DisassociationAnswers`]), so the same token sent
+//! again with the same request answers with that same response and disassociates nothing a
+//! second time, while the same token sent with a different request is refused with the
+//! modelled `IdempotentParameterMismatchException`.
 //!
 //! ## Shape of an operation
 //!
@@ -106,6 +118,11 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The rules of the binding between a user and the faces of its collection, the entries
+// this operation reports per face it could not take off the user, and the ledger of the
+// answers a `ClientRequestToken` has already committed.
+use crate::state::face_association;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -181,18 +198,133 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DisassociateFaces` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DisassociateFacesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DisassociateFaces"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DisassociateFacesErrorModeled::InternalServerError(
+                crate::state::modeled_error::store_unavailable(),
+            )
+        })?;
+        let mut state = state.lock();
+        let now = ::std::time::SystemTime::now();
+
+        // A user and its faces live IN a collection, so the collection has to exist before
+        // anything about either is read or written; this is the wording the operations on
+        // the contents of a collection refuse an absent one with.
+        if !state.collections.contains_key(&input.collection_id) {
+            return Err(DisassociateFacesErrorModeled::ResourceNotFoundException(
+                crate::state::modeled_error::collection_id_does_not_exist(&input.collection_id),
+            )
+            .into());
+        }
+
+        // What the token committed, if it committed anything: the request's own parameters
+        // beyond the token itself, which is what a reuse is compared against.
+        let requested_faces = input.face_ids.join(",");
+        let parameters = [
+            ("CollectionId", input.collection_id.as_str()),
+            ("UserId", input.user_id.as_str()),
+            ("FaceIds", requested_faces.as_str()),
+        ];
+        let token_use = input.client_request_token.as_deref().map_or(
+            crate::state::idempotency::TokenUse::First,
+            |token| {
+                state
+                    .client_request_tokens
+                    .classify(Self::NAME, token, &parameters)
+            },
+        );
+        if token_use == crate::state::idempotency::TokenUse::Mismatch {
+            return Err(
+                DisassociateFacesErrorModeled::IdempotentParameterMismatchException(
+                    crate::state::modeled_error::idempotent_parameter_mismatch(),
+                )
+                .into(),
+            );
+        }
+        // A request the caller is RETRYING under the token that committed it is answered
+        // with the answer that token was given, and disassociates nothing a second time. A
+        // token whose answer the bounded ledger has since forgotten is carried out as a
+        // fresh request, which finds the faces it named already off the user.
+        if token_use == crate::state::idempotency::TokenUse::Retry {
+            if let Some(recorded) = input
+                .client_request_token
+                .as_deref()
+                .and_then(|token| state.disassociation_answers.recorded(token))
+            {
+                return Ok(recorded.modeled());
+            }
+        }
+
+        let Some(collection) = state.collections.get_mut(&input.collection_id) else {
+            // The collection was there a moment ago, under this same lock, so this cannot
+            // be reached; resolving it again rather than unwrapping keeps the handler free
+            // of any construct a request could panic on.
+            return Err(DisassociateFacesErrorModeled::ResourceNotFoundException(
+                crate::state::modeled_error::collection_id_does_not_exist(&input.collection_id),
+            )
+            .into());
+        };
+        // The faces and the users of the collection are both written in the walk below, so
+        // each is borrowed on its own.
+        let faces = &mut collection.faces;
+        // "If the User is not present already, then a ResourceNotFound exception is
+        // thrown."
+        let Some(user) = collection.users.get_mut(&input.user_id) else {
+            return Err(DisassociateFacesErrorModeled::ResourceNotFoundException(
+                crate::state::modeled_error::user_id_does_not_exist(&input.user_id),
+            )
+            .into());
+        };
+
+        let mut disassociated_face_ids: Vec<String> = Vec::new();
+        let mut unsuccessful: Vec<UnsuccessfulFaceDisassociation> = Vec::new();
+
+        // Each requested face is decided on its own, in the order the request lists them,
+        // and the decision is applied before the next one is taken: a request that names
+        // one face twice therefore sees the second occurrence as a face no user holds any
+        // more, which is the ignored case.
+        for face_id in &input.face_ids {
+            let Some(face) = faces.iter_mut().find(|face| &face.face_id == face_id) else {
+                unsuccessful.push(face_association::disassociation_face_not_found(face_id));
+                continue;
+            };
+            match face.user_id.as_deref() {
+                Some(holder) if holder == input.user_id => {
+                    face.user_id = None;
+                    user.face_ids.retain(|held| held != face_id);
+                    disassociated_face_ids.push(face_id.clone());
+                }
+                Some(holder) => unsuccessful.push(
+                    face_association::disassociation_of_a_different_users_face(face_id, holder),
+                ),
+                // "If a given face is already disassociated from the given UserID, it will
+                // be ignored and not be returned in the response."
+                None => {}
+            }
+        }
+
+        // A call that disassociated something leaves the user UPDATING until the clock owes
+        // the completion of that update; one that disassociated nothing changed nothing
+        // about the user, so it reports the status the user already carried.
+        if !disassociated_face_ids.is_empty() {
+            user.start_update(now);
+        }
+        let recorded = face_association::RecordedDisassociation {
+            disassociated_face_ids,
+            unsuccessful,
+            user_status: user.status_at(now).to_string(),
+        };
+        let answer = recorded.modeled();
+
+        // The token is remembered only now the request has been carried out, so a refused
+        // one leaves the caller free to send the same token again.
+        if let Some(token) = input.client_request_token.as_deref() {
+            state
+                .client_request_tokens
+                .commit(Self::NAME, token, &parameters);
+            state.disassociation_answers.record(token, recorded);
+        }
+
+        Ok(answer)
     }
 }

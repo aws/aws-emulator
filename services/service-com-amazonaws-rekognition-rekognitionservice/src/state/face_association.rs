@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Associating the faces a collection holds with one of its users: the bounds and the
-//! defaults `AssociateFaces` works to, the one entry it reports per face it could not
-//! associate, and the answers it has already given.
+//! Binding the faces a collection holds to one of its users and taking them off it
+//! again: the bounds and the defaults `AssociateFaces` works to, the one entry each of
+//! `AssociateFaces` and `DisassociateFaces` reports per face it could not move, and the
+//! answers each has already given.
+//!
+//! The two operations are the two directions of one binding — the `UserId` a stored face
+//! carries — so the span of the update they leave pending, the reason values they report
+//! and the ledger of answers a `ClientRequestToken` has already committed are written here
+//! once and shared by both.
 //!
 //! `AssociateFaces` "associates one or more faces with an existing UserID … If a given
 //! face is already associated with the given UserID, it will be ignored and will not be
@@ -23,7 +29,10 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
-use crate::ops::types::{AssociateFacesOutput, AssociatedFace, UnsuccessfulFaceAssociation};
+use crate::ops::types::{
+    AssociateFacesOutput, AssociatedFace, DisassociateFacesOutput, DisassociatedFace,
+    UnsuccessfulFaceAssociation, UnsuccessfulFaceDisassociation,
+};
 
 use super::face_detection::FaceAppearance;
 use super::idempotency::MAX_REMEMBERED_TOKENS;
@@ -45,15 +54,19 @@ pub const MAX_FACES_PER_USER: usize = 100;
 
 /// How long after the call that started it an update of a user's faces is complete.
 ///
-/// `AssociateFaces` answers while the update is still being applied — that is what the
-/// `UPDATING` status it answers with means — so the span is never zero: a caller that reads
-/// the user straight after the call sees it updating. This emulator owes the transition at a
-/// span of its own choosing, and it is this one.
+/// `AssociateFaces` and `DisassociateFaces` both answer while the update is still being
+/// applied — that is what the `UPDATING` status they answer with means — so the span is
+/// never zero: a caller that reads the user straight after the call sees it updating. This
+/// emulator owes the transition at a span of its own choosing, and it is this one.
 pub const UPDATE_SPAN: Duration = Duration::from_secs(3);
 
 /// The `UnsuccessfulFaceAssociationReason` values
 /// (`smithy_query(query="shape",shape="UnsuccessfulFaceAssociationReason")`:
-/// FACE_NOT_FOUND | ASSOCIATED_TO_A_DIFFERENT_USER | LOW_MATCH_CONFIDENCE).
+/// FACE_NOT_FOUND | ASSOCIATED_TO_A_DIFFERENT_USER | LOW_MATCH_CONFIDENCE). The first two
+/// are also the whole of `UnsuccessfulFaceDisassociationReason`
+/// (`smithy_query(query="shape",shape="UnsuccessfulFaceDisassociationReason")`:
+/// FACE_NOT_FOUND | ASSOCIATED_TO_A_DIFFERENT_USER), which is why both directions name
+/// them from here.
 pub const REASON_FACE_NOT_FOUND: &str = "FACE_NOT_FOUND";
 pub const REASON_ASSOCIATED_TO_A_DIFFERENT_USER: &str = "ASSOCIATED_TO_A_DIFFERENT_USER";
 pub const REASON_LOW_MATCH_CONFIDENCE: &str = "LOW_MATCH_CONFIDENCE";
@@ -107,6 +120,36 @@ pub fn user_is_full(face_id: &str) -> UnsuccessfulFaceAssociation {
     UnsuccessfulFaceAssociation {
         face_id: Some(face_id.to_string()),
         ..UnsuccessfulFaceAssociation::default()
+    }
+}
+
+/// A `FaceId` the collection does not hold, as `DisassociateFaces` reports it: "if a given
+/// face is … not found in the collection it will be returned as part of
+/// UnsuccessfulDisassociations" (`smithy_query(query="doc",shape="DisassociateFaces")`).
+/// Only the id is reported: no user of the collection holds the face.
+pub fn disassociation_face_not_found(face_id: &str) -> UnsuccessfulFaceDisassociation {
+    UnsuccessfulFaceDisassociation {
+        face_id: Some(face_id.to_string()),
+        reasons: Some(vec![REASON_FACE_NOT_FOUND.to_string()]),
+        ..UnsuccessfulFaceDisassociation::default()
+    }
+}
+
+/// A face another user of the collection holds, which the request named a different user
+/// for: "if a given face is already associated with a different User … it will be returned
+/// as part of UnsuccessfulDisassociations"
+/// (`smithy_query(query="doc",shape="DisassociateFaces")`). Reported with the `UserId` that
+/// really holds it — "a provided ID for the UserID"
+/// (`smithy_query(query="shape",shape="UnsuccessfulFaceDisassociation")`) — which is the
+/// one piece of the outcome the caller does not already know, as on the association side.
+pub fn disassociation_of_a_different_users_face(
+    face_id: &str,
+    user_id: &str,
+) -> UnsuccessfulFaceDisassociation {
+    UnsuccessfulFaceDisassociation {
+        face_id: Some(face_id.to_string()),
+        user_id: Some(user_id.to_string()),
+        reasons: Some(vec![REASON_ASSOCIATED_TO_A_DIFFERENT_USER.to_string()]),
     }
 }
 
@@ -166,31 +209,77 @@ impl RecordedAssociation {
     }
 }
 
-/// The `AssociateFaces` answers this service remembers by the token that committed them.
+/// One completed `DisassociateFaces` answer, kept under the `ClientRequestToken` that
+/// committed it: "if you use the same token with multiple DisassociateFaces requests, the
+/// same response is returned"
+/// (`smithy_query(query="doc",shape="DisassociateFacesRequest",member="ClientRequestToken")`),
+/// the same rule, and the same reason for keeping the answer itself, as on the association
+/// side ([`RecordedAssociation`]).
+#[derive(Debug, Clone, Default)]
+pub struct RecordedDisassociation {
+    /// The `FaceId` of each face the call took off the user.
+    pub disassociated_face_ids: Vec<String>,
+    /// One entry per face the call could not take off the user, as the constructors above
+    /// built it.
+    pub unsuccessful: Vec<UnsuccessfulFaceDisassociation>,
+    /// The `UserStatus` the call answered with.
+    pub user_status: String,
+}
+
+impl RecordedDisassociation {
+    /// This answer as the modelled `DisassociateFacesResponse`. Both lists are reported
+    /// present even when empty: the answer HAS a disassociated and an unsuccessful list,
+    /// and this is their content.
+    pub fn modeled(&self) -> DisassociateFacesOutput {
+        DisassociateFacesOutput {
+            disassociated_faces: Some(
+                self.disassociated_face_ids
+                    .iter()
+                    .map(|face_id| DisassociatedFace {
+                        face_id: Some(face_id.clone()),
+                    })
+                    .collect(),
+            ),
+            unsuccessful_face_disassociations: Some(self.unsuccessful.clone()),
+            user_status: Some(self.user_status.clone()),
+        }
+    }
+}
+
+/// The answers one operation of this service remembers by the token that committed them.
 ///
-/// Keyed by the token alone: this ledger belongs to one operation, and a token sent to a
+/// Keyed by the token alone: a ledger belongs to one operation, and a token sent to a
 /// different operation commits a different request there. Bounded like the parameter
 /// ledger beside it ([`MAX_REMEMBERED_TOKENS`]), so a caller sending a fresh token per
 /// request cannot grow this store without limit; an answer that has been forgotten leaves
 /// the token classified as a fresh one, which is the same answer the parameter ledger
 /// gives for a token it no longer holds.
+///
+/// Generic over the answer, so the two directions of a face binding keep one
+/// implementation of the remembering rather than a copy each.
 #[derive(Debug, Default)]
-pub struct AssociationAnswers {
-    answers: BTreeMap<String, RecordedAssociation>,
+pub struct AnswerLedger<Answer> {
+    answers: BTreeMap<String, Answer>,
     /// The record order of the keys above, so the OLDEST answer is the one forgotten when
     /// the ledger is full.
     order: VecDeque<String>,
 }
 
-impl AssociationAnswers {
+/// The `AssociateFaces` answers this service remembers; see [`AnswerLedger`].
+pub type AssociationAnswers = AnswerLedger<RecordedAssociation>;
+
+/// The `DisassociateFaces` answers this service remembers; see [`AnswerLedger`].
+pub type DisassociationAnswers = AnswerLedger<RecordedDisassociation>;
+
+impl<Answer> AnswerLedger<Answer> {
     /// The answer `token` committed, if this ledger still holds one.
-    pub fn recorded(&self, token: &str) -> Option<&RecordedAssociation> {
+    pub fn recorded(&self, token: &str) -> Option<&Answer> {
         self.answers.get(token)
     }
 
     /// Remember `answer` as what `token` was answered with, evicting the oldest remembered
     /// answer once the ledger is full.
-    pub fn record(&mut self, token: &str, answer: RecordedAssociation) {
+    pub fn record(&mut self, token: &str, answer: Answer) {
         while self.order.len() >= MAX_REMEMBERED_TOKENS {
             match self.order.pop_front() {
                 Some(oldest) => {

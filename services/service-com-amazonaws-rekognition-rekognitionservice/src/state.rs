@@ -655,6 +655,10 @@ pub struct ComAmazonawsRekognitionRekognitionserviceState {
     /// by the token alone and service-wide, like the parameter ledger above. Bounded by
     /// [`idempotency::MAX_REMEMBERED_TOKENS`].
     pub association_answers: face_association::AssociationAnswers,
+    /// What each `DisassociateFaces` call that carried an idempotency token answered, kept
+    /// for the same reason and bounded the same way as the association answers above. A
+    /// ledger per operation, since a token names a request to ONE operation.
+    pub disassociation_answers: face_association::DisassociationAnswers,
 }
 
 impl ComAmazonawsRekognitionRekognitionserviceState {
