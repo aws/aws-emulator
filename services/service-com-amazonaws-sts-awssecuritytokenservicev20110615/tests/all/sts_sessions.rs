@@ -908,6 +908,7 @@ async fn an_expired_session_credential_is_refused_and_a_live_one_is_served() {
                 federating_user_arn: None,
                 mfa_authenticated: false,
                 federated_claims: Vec::new(),
+                trusted_identity_propagation: None,
                 web_identity_federation: None,
                 revoked: false,
             })
@@ -1019,6 +1020,7 @@ async fn the_session_registry_is_bounded_and_prunes_what_the_clock_retired() {
                 federating_user_arn: None,
                 mfa_authenticated: false,
                 federated_claims: Vec::new(),
+                trusted_identity_propagation: None,
                 web_identity_federation: None,
                 revoked: false,
             };
@@ -1051,6 +1053,7 @@ async fn the_session_registry_is_bounded_and_prunes_what_the_clock_retired() {
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            trusted_identity_propagation: None,
             web_identity_federation: None,
             revoked: false,
         });
@@ -1108,6 +1111,7 @@ async fn the_session_registry_is_bounded_and_prunes_what_the_clock_retired() {
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            trusted_identity_propagation: None,
             web_identity_federation: None,
             revoked: false,
         })
@@ -1181,6 +1185,7 @@ async fn get_access_key_info_answers_from_the_session_registry() {
                 federating_user_arn: None,
                 mfa_authenticated: false,
                 federated_claims: Vec::new(),
+                trusted_identity_propagation: None,
                 web_identity_federation: None,
                 revoked: false,
             })
@@ -1289,34 +1294,104 @@ async fn a_minimum_session_token_size_inside_the_modelled_range_is_served() {
     }
 }
 
-/// A trusted context assertion is signed by STS. This emulator issues none, so it
-/// refuses one rather than assuming a context it never granted.
+/// A trusted context assertion is "signed and encrypted by Amazon Web Services STS"
+/// (`ProvidedContexts`). This emulator issues none, so every assertion presented to it
+/// matches no trusted context provider — the condition the model's own
+/// `InvalidContextAssertionException` is answered for
+/// (`smithy_query(query="operation",operation="AssumeRole")` lists it, HTTP 400, awsQuery
+/// code `InvalidContextAssertion`) — and the request is refused rather than served under a
+/// context STS never granted.
+///
+/// The rows differ along what the rule generalises over: how many contexts the request
+/// carries, which context provider they name, and which halves of a `ProvidedContext` are
+/// filled in.
 #[tokio::test]
 async fn assume_role_refuses_a_trusted_context_assertion_it_did_not_issue() {
-    let (router, _engine) = emulator();
-    let (status, body) = call(
-        &router,
-        LONG_TERM_KEY,
-        "AssumeRole",
-        &[
-            ("RoleArn", "arn:aws:iam::000000000000:role/demo".to_string()),
-            ("RoleSessionName", "s1".to_string()),
-            (
-                "ProvidedContexts.member.1.ProviderArn",
-                "arn:aws:iam::aws:contextProvider/IdentityCenter".to_string(),
-            ),
-            (
+    let (router, engine) = emulator();
+    let (role_arn, _role_id) = seed_demo_role(&engine);
+    // (case, the `ProvidedContexts.member.…` parameters the request carries)
+    let cases: [(&str, Vec<(&str, String)>); 4] = [
+        (
+            "one context naming the Identity Center provider",
+            vec![
+                (
+                    "ProvidedContexts.member.1.ProviderArn",
+                    "arn:aws:iam::aws:contextProvider/IdentityCenter".to_string(),
+                ),
+                (
+                    "ProvidedContexts.member.1.ContextAssertion",
+                    "trusted-context-assertion".to_string(),
+                ),
+            ],
+        ),
+        (
+            "one context naming another provider",
+            vec![
+                (
+                    "ProvidedContexts.member.1.ProviderArn",
+                    format!("arn:aws:iam::{}:contextProvider/custom", emulator_account()),
+                ),
+                (
+                    "ProvidedContexts.member.1.ContextAssertion",
+                    "AQoDYXdzEPT//////////wEXAMPLE".to_string(),
+                ),
+            ],
+        ),
+        (
+            "two contexts",
+            vec![
+                (
+                    "ProvidedContexts.member.1.ProviderArn",
+                    "arn:aws:iam::aws:contextProvider/IdentityCenter".to_string(),
+                ),
+                (
+                    "ProvidedContexts.member.1.ContextAssertion",
+                    "first-assertion".to_string(),
+                ),
+                (
+                    "ProvidedContexts.member.2.ProviderArn",
+                    "arn:aws:iam::aws:contextProvider/IdentityCenter".to_string(),
+                ),
+                (
+                    "ProvidedContexts.member.2.ContextAssertion",
+                    "second-assertion".to_string(),
+                ),
+            ],
+        ),
+        (
+            "a context carrying only an assertion",
+            vec![(
                 "ProvidedContexts.member.1.ContextAssertion",
-                "trusted-context-assertion".to_string(),
-            ),
-        ],
-    )
-    .await;
-    assert_eq!(
-        (status, element(&body, "Code").as_deref()),
-        (400, Some("ValidationException")),
-        "case 'a provided context': expected a 400 ValidationException, got {status} {body}"
-    );
+                "assertion-without-a-provider".to_string(),
+            )],
+        ),
+    ];
+
+    for (case, contexts) in cases {
+        let mut params = vec![
+            ("RoleArn", role_arn.clone()),
+            ("RoleSessionName", "s1".to_string()),
+        ];
+        params.extend(contexts);
+        let (status, body) = call(&router, LONG_TERM_KEY, "AssumeRole", &params).await;
+        assert_eq!(
+            (status, element(&body, "Code").as_deref()),
+            (400, Some("InvalidContextAssertion")),
+            "case {case:?}: expected a 400 InvalidContextAssertion, got {status} {body}"
+        );
+        let message =
+            super::malformed_session_policy::decode_xml_text(&member(case, &body, "Message"));
+        assert_eq!(
+            message,
+            "The context assertion that was provided is invalid: it does not match a trusted \
+             context provider.",
+            "case {case:?}: expected the error's own sentence, got {message:?}"
+        );
+        assert!(
+            element(&body, "Credentials").is_none(),
+            "case {case:?}: a refused assume must vend no credential, got {body}"
+        );
+    }
 }
 
 /// The three minting operations echo back only what they were given:

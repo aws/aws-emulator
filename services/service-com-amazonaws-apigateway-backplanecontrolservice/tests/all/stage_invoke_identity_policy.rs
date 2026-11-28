@@ -261,6 +261,7 @@ pub(crate) fn given_scoped_session(
             // An `AssumeRole` session keeps the permissions of the role it is of, so passing
             // no session policy caps nothing.
             none_means_no_permissions: false,
+            ..sts::SessionPolicies::default()
         },
         ..sts::NewSession::new(
             identity,

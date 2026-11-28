@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use emulator_server::CredentialStore;
 use sha2::{Digest, Sha256};
 
-use crate::ops::types::{Credentials, Tag};
+use crate::ops::types::{Credentials, Tag, TrustedIdentityPropagationContext};
 
 /// Which web identity a presented token stands for: the verification
 /// `AssumeRoleWithWebIdentity` makes of it, and the class a token it cannot federate is
@@ -59,6 +59,17 @@ pub use mfa_challenge::*;
 /// this service that reads the account's centralized root access facts.
 mod root_session;
 pub use root_session::*;
+
+/// The TRUSTED IDENTITY PROPAGATION context a federated mint sets in the session it vends,
+/// and the condition keys that session then answers for. One concern, one file — it is the
+/// only thing in this service that reads an identity provider's token as a context about the
+/// END USER rather than about the principal the session speaks for.
+pub mod identity_propagation;
+
+/// What a `GetScopedCredentials` scope-down of the CALLING session is decided by: how many
+/// layers a session may carry, how long a scoped credential may last, and the sentences a
+/// refused scope-down is stated with. One concern, one file.
+pub mod scoped_session;
 
 /// `AssumeRole`'s default session length: "By default, the value is set to `3600`
 /// seconds." (`AssumeRoleRequest$DurationSeconds`, this service's model).
@@ -273,6 +284,12 @@ pub struct Session {
     /// [`Caller::multi_factor_auth_present`], which is what a policy condition over the
     /// request's MFA key is decided against.
     pub mfa_authenticated: bool,
+    /// The trusted identity propagation context this session carries: what the identity
+    /// provider's token established about the END USER the session acts for, and the
+    /// `aws:OriginIdentity/…` keys a request the credential signs answers
+    /// ([`identity_propagation`]). `None` for a session no federated exchange minted, and
+    /// for one whose token established no such key.
+    pub trusted_identity_propagation: Option<TrustedIdentityPropagationContext>,
     /// The condition keys the WEB IDENTITY this session was minted by exchanging publishes,
     /// as `(key, value)` pairs already named after the provider that issued the token; see
     /// [`federated_claim_keys`]. Empty for a session no web-identity exchange minted.
@@ -324,6 +341,18 @@ pub struct NewSession {
     pub mfa_authenticated: bool,
     /// See [`Session::federated_claims`].
     pub federated_claims: Vec<(String, String)>,
+    /// See [`Session::trusted_identity_propagation`].
+    pub trusted_identity_propagation: Option<TrustedIdentityPropagationContext>,
+    /// The instant this session stops being valid, where it is INHERITED from another
+    /// session rather than measured from this call: `None` — every mint of a session of its
+    /// own — expires at `now + duration_seconds`.
+    ///
+    /// It exists for the one mint that continues a session the registry already holds: a
+    /// scope-down that names no duration "will inherit the calling session's expiration
+    /// time" (`GetScopedCredentialsRequest$DurationSeconds`, this service's model), and that
+    /// instant is the calling session's own rather than a whole number of seconds from this
+    /// call — which is what keeps the inherited expiry EQUAL to the one it is inherited from.
+    pub expires_at: Option<SystemTime>,
     /// See [`Session::web_identity_federation`].
     pub web_identity_federation:
         Option<::service_common::management_events::RecordedWebIdentityFederation>,
@@ -348,6 +377,8 @@ impl NewSession {
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            trusted_identity_propagation: None,
+            expires_at: None,
             web_identity_federation: None,
         }
     }
@@ -357,8 +388,9 @@ impl NewSession {
     /// The ONE place a [`Session`] record is built out of what a mint asked for, so every
     /// recorded session carries the same derived facts however it was recorded — the one
     /// [`mint_session`] vends a fresh credential for, and the one a caller that already
-    /// holds the access key id records for it. The expiry is `now + duration_seconds`,
-    /// the instant the credential stops being valid, and the record starts un-revoked.
+    /// holds the access key id records for it. The expiry is `now + duration_seconds` — or
+    /// the instant [`NewSession::expires_at`] names, for a mint that INHERITS another
+    /// session's expiry — and the record starts un-revoked.
     ///
     /// This is a constructor and nothing else: recording the session in the registry, and
     /// in the account's audit view of its sessions, stays with the caller that does it.
@@ -374,7 +406,7 @@ impl NewSession {
         Session {
             access_key_id: access_key_id.into(),
             created_at: now,
-            expires_at: now + lasts,
+            expires_at: self.expires_at.unwrap_or(now + lasts),
             duration_seconds: self.duration_seconds,
             identity: self.identity,
             kind: self.kind,
@@ -389,6 +421,7 @@ impl NewSession {
             federating_user_arn: self.federating_user_arn,
             mfa_authenticated: self.mfa_authenticated,
             federated_claims: self.federated_claims,
+            trusted_identity_propagation: self.trusted_identity_propagation,
             web_identity_federation: self.web_identity_federation,
             revoked: false,
         }
@@ -1203,8 +1236,8 @@ pub struct Caller {
     /// The ARN of the IAM user whose long-term credentials minted a federated-user
     /// credential; see [`Session::federating_user_arn`].
     pub federating_user_arn: Option<String>,
-    /// The condition keys the web identity this credential was minted by exchanging
-    /// publishes; see [`Session::federated_claims`]. Empty for every other credential.
+    /// The condition keys a credential's federated claims publish; see
+    /// [`Session::federated_claims`]. Empty for every other credential.
     pub federated_claims: Vec<(String, String)>,
     /// The session policies the mint of this credential passed, which scope what a
     /// request signed with it may do; see [`SessionPolicies`]. Empty for a long-term
@@ -1804,6 +1837,13 @@ pub fn not_authorized_message(caller_arn: &str, action: &str, resource: &str) ->
 /// A long-term access key (`None`) may call every one of them: `GetSessionToken` and
 /// `GetFederationToken` "must be called by using the long-term ... credentials of an IAM
 /// user" (both operations' documentation, this service's model).
+///
+/// `GetScopedCredentials` is the one operation a `GetSessionToken` session may call BESIDE
+/// the two its own documentation leaves it, because the operation that scopes a session down
+/// names that path itself: "if you want to scope down IAM user credentials, first call
+/// `GetSessionToken` to get temporary security credentials, and then call
+/// `GetScopedCredentials` with those credentials" (`GetScopedCredentials`, this service's
+/// model).
 #[must_use]
 pub fn caller_may_call(kind: Option<SessionKind>, operation: &str) -> bool {
     match kind {
@@ -1812,7 +1852,10 @@ pub fn caller_may_call(kind: Option<SessionKind>, operation: &str) -> bool {
             !matches!(operation, "GetFederationToken" | "GetSessionToken")
         }
         Some(SessionKind::SessionToken) => {
-            matches!(operation, "AssumeRole" | "GetCallerIdentity")
+            matches!(
+                operation,
+                "AssumeRole" | "GetCallerIdentity" | "GetScopedCredentials"
+            )
         }
         Some(SessionKind::FederationToken) => operation == "GetCallerIdentity",
     }
@@ -2413,8 +2456,20 @@ pub const INVALID_ACCESS_KEY_ID_MESSAGE: &str = "Access key ID is not valid.";
 /// what makes the percentage [`packed_policy_size`] reports a measurement of every mint.
 #[must_use]
 pub fn packed_session_token(policy: Option<&str>, policy_arns: &[String], tags: &[Tag]) -> String {
+    packed_scope_token(policy.as_slice(), policy_arns, tags)
+}
+
+/// [`packed_session_token`] for a session scoped by SEVERAL inline documents: the document
+/// its own mint passed and each scope-down document a later call appended
+/// ([`SessionPolicies::scope_downs`]).
+///
+/// Each document is framed as its own policy record, so the measured size is the size of the
+/// session state really packed — a session narrowed twice packs both documents — and the
+/// single-document case is byte for byte the one above.
+#[must_use]
+pub fn packed_scope_token(policies: &[&str], policy_arns: &[String], tags: &[Tag]) -> String {
     let mut records: Vec<u8> = Vec::new();
-    if let Some(policy) = policy {
+    for policy in policies {
         push_packed_record(&mut records, PACKED_POLICY_KIND, policy.as_bytes());
     }
     for arn in policy_arns {
@@ -2429,7 +2484,7 @@ pub fn packed_session_token(policy: Option<&str>, policy_arns: &[String], tags: 
     let mut token: Vec<u8> = Vec::with_capacity(PACKED_TOKEN_HEADER_BYTES + records.len());
     token.push(PACKED_TOKEN_FORMAT_VERSION);
     token.extend_from_slice(&packed_length(records.len()).to_be_bytes());
-    token.extend_from_slice(&packed_length(usize::from(policy.is_some())).to_be_bytes());
+    token.extend_from_slice(&packed_length(policies.len()).to_be_bytes());
     token.extend_from_slice(&packed_length(policy_arns.len()).to_be_bytes());
     token.extend_from_slice(&packed_length(tags.len()).to_be_bytes());
     token.extend_from_slice(&records);
@@ -2512,6 +2567,20 @@ pub fn packed_policy_bytes(policy: Option<&str>, policy_arns: &[String], tags: &
     packed_session_token(policy, policy_arns, tags).len()
 }
 
+/// [`packed_policy_bytes`] for a session scoped by several inline documents
+/// ([`packed_scope_token`]).
+#[must_use]
+pub fn packed_scope_bytes(policies: &[&str], policy_arns: &[String], tags: &[Tag]) -> usize {
+    packed_scope_token(policies, policy_arns, tags).len()
+}
+
+/// [`packed_policy_size`] for a session scoped by several inline documents
+/// ([`packed_scope_token`]).
+#[must_use]
+pub fn packed_scope_size(policies: &[&str], policy_arns: &[String], tags: &[Tag]) -> i32 {
+    percentage_of_token_budget(packed_scope_bytes(policies, policy_arns, tags))
+}
+
 /// The percentage of [`SESSION_TOKEN_SIZE_LIMIT`] a request's session policies and
 /// session tags take up — "a percentage value that indicates the packed size of the
 /// session policies and session tags combined passed in the request" (`PackedPolicySize`,
@@ -2528,7 +2597,12 @@ pub fn packed_policy_bytes(policy: Option<&str>, policy_arns: &[String], tags: &
 /// It passes 100 exactly when the packed size passes the byte limit — the one condition
 /// `PackedPolicyTooLargeException` is answered for.
 pub fn packed_policy_size(policy: Option<&str>, policy_arns: &[String], tags: &[Tag]) -> i32 {
-    let packed = packed_policy_bytes(policy, policy_arns, tags);
+    percentage_of_token_budget(packed_policy_bytes(policy, policy_arns, tags))
+}
+
+/// `packed` as the percentage of [`SESSION_TOKEN_SIZE_LIMIT`] it takes up, rounded up: the
+/// ONE arithmetic behind every percentage this service reports for a packed session state.
+fn percentage_of_token_budget(packed: usize) -> i32 {
     let percent = packed.saturating_mul(100).div_ceil(SESSION_TOKEN_SIZE_LIMIT);
     i32::try_from(percent).unwrap_or(i32::MAX)
 }
@@ -2638,6 +2712,19 @@ pub fn tag_pairs(tags: Option<&[Tag]>) -> Vec<(String, String)> {
     tags.unwrap_or(&[])
         .iter()
         .map(|tag| (tag.key.clone(), tag.value.clone()))
+        .collect()
+}
+
+/// The session tags a SESSION carries, as the modelled shape the packed-token measurement
+/// frames them in ([`packed_scope_token`]) — the reverse of [`tag_pairs`], for a measurement
+/// made over a session this registry already holds rather than over a request.
+#[must_use]
+pub fn session_tags(tags: &[(String, String)]) -> Vec<Tag> {
+    tags.iter()
+        .map(|(key, value)| Tag {
+            key: key.clone(),
+            value: value.clone(),
+        })
         .collect()
 }
 

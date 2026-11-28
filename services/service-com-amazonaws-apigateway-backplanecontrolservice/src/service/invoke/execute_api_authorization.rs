@@ -639,6 +639,7 @@ mod tests {
                 inline: Some(document.to_string()),
                 managed_arns: Vec::new(),
                 none_means_no_permissions: false,
+                ..sts_store::SessionPolicies::default()
             },
         )
     }

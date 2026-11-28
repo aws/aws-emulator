@@ -36,6 +36,7 @@ pub struct AssumeRoleWithWebIdentityOutput {
     pub source_identity: Option<String>,
     pub session_token_utilization: Option<i32>,
     pub session_token_size: Option<i32>,
+    pub trusted_identity_propagation_context: Option<TrustedIdentityPropagationContext>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.sts#IDPCommunicationErrorException")]

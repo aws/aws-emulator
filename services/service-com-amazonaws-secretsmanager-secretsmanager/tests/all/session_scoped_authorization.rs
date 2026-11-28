@@ -187,6 +187,7 @@ fn inline(document: &Value) -> sts::SessionPolicies {
         // An assumed-role session keeps the ROLE's permissions, so an empty scope here
         // would cap nothing; these rows all carry a document anyway.
         none_means_no_permissions: false,
+        ..sts::SessionPolicies::default()
     }
 }
 
@@ -196,6 +197,7 @@ fn managed() -> sts::SessionPolicies {
         inline: None,
         managed_arns: vec![managed_policy_arn()],
         none_means_no_permissions: false,
+        ..sts::SessionPolicies::default()
     }
 }
 

@@ -821,6 +821,7 @@ fn given_federated_session(engine: &Arc<engine::InMemoryEngine>, scope: Option<&
             // Such a session draws its permissions from its session policies alone, which is
             // what the mint records.
             none_means_no_permissions: true,
+            ..sts::SessionPolicies::default()
         },
         ..sts::NewSession::new(
             sts::Identity {

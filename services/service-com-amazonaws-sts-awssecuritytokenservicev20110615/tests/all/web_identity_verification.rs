@@ -265,8 +265,9 @@ fn segments_of(token: &str) -> (String, String, String) {
     )
 }
 
-/// The claim set a token carries, decoded.
-fn claims_of(token: &str) -> Value {
+/// The claim set a token carries, decoded. Shared with every suite of this target that reads
+/// a token this emulator vended or verified.
+pub(crate) fn claims_of(token: &str) -> Value {
     let (_, claims, _) = segments_of(token);
     let mut standard = claims.replace('-', "+").replace('_', "/");
     while !standard.len().is_multiple_of(4) {

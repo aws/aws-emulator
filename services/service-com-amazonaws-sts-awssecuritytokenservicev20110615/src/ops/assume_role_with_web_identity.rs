@@ -550,6 +550,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: assumed_role_arn.clone(),
         };
 
+        // What the presented token established about the END USER this session acts for,
+        // which the session carries and the response reports
+        // (`crate::state::identity_propagation`). It reads the account's provider records,
+        // so it is computed BEFORE the session registry is taken: this handler never holds
+        // the IAM store's guard and the registry's at once.
+        let trusted_identity_propagation =
+            crate::state::identity_propagation::web_identity_context(&*self.engine, &web_identity);
+
         let mut registry = state.lock();
         let minted = crate::state::mint_session(
             &*self.engine,
@@ -578,6 +586,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // very keys this assume was decided under
                 // (`crate::state::federated_claim_keys`).
                 federated_claims: context.clone(),
+                trusted_identity_propagation: trusted_identity_propagation.clone(),
                 // The web identity the exchange federated, as a record of a call made with
                 // the credential names it: the provider that issued the token and the
                 // claims it carried (`crate::state::web_identity::recorded_federation`),
@@ -642,6 +651,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             source_identity: None,
             session_token_utilization: Some(session_token_utilization),
             session_token_size: Some(session_token_size),
+            // The trusted identity propagation context this exchange set in the session,
+            // absent when the token established none of its keys.
+            trusted_identity_propagation_context: trusted_identity_propagation,
         })
     }
 }

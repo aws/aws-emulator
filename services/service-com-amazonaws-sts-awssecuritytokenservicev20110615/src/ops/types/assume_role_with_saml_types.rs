@@ -37,5 +37,6 @@ pub struct AssumeRoleWithSAMLOutput {
     pub source_identity: Option<String>,
     pub session_token_utilization: Option<i32>,
     pub session_token_size: Option<i32>,
+    pub trusted_identity_propagation_context: Option<TrustedIdentityPropagationContext>,
 }
 

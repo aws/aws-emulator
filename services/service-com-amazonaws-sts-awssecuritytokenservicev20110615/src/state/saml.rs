@@ -93,6 +93,17 @@ const SOURCE_IDENTITY_ATTRIBUTE: &str = "https://aws.amazon.com/SAML/Attributes/
 /// was issued and the instant it is presented).
 const REDEMPTION_WINDOW: Duration = Duration::from_secs(5 * 60);
 
+/// The most signatures one authentication response may carry: SAML 2.0 places a signature in
+/// two spots — over the `Response` and over the `Assertion` ("Assertions and Protocols",
+/// §5) — and AWS accepts either or both, so two is every signature a response this service
+/// federates can carry.
+///
+/// Checking one costs a digest over the element it covers, so the count is what multiplies
+/// that cost: a presented document carrying more signatures than those two spots is refused
+/// without any of them being checked ([`verify_signatures`]), which bounds the work one
+/// request can ask for by the number of signatures AWS itself would read.
+const MAX_SIGNATURES: usize = 2;
+
 /// The transforms a reference may name: the enveloped-signature transform (so the signature
 /// does not cover itself) and the canonicalizations, which are the identity on a document
 /// already in canonical form. Anything else — an expression selecting the signed content, a
@@ -391,6 +402,13 @@ pub struct SamlAssertion {
     /// `SessionNotOnOrAfter` of the authentication statement, as seconds since the Unix
     /// epoch: the instant the session this response authorises may not outlast.
     pub session_not_on_or_after: Option<i64>,
+    /// The digest of the KEY that signed the assertion ([`signing_key_digest`]), which is
+    /// what the origin identity of a SAML session names its issuer by: "for
+    /// `AssumeRoleWithSAML`, this is a hash of the key that signed the SAML assertion, not
+    /// the `Issuer` element of the assertion" (`OriginIdentity$Issuer`, this service's
+    /// model) — so it is taken from the key the signature really checked out against
+    /// ([`verify_signatures`]) rather than from anything the document says about itself.
+    pub signing_key_digest: String,
 }
 
 impl SamlAssertion {
@@ -463,7 +481,7 @@ pub fn resolve(
         .ok_or(AssertionDefect::NotSamlResponse)?;
 
     // Nothing below is read out of a document the provider did not sign.
-    verify_signatures(&text, &document, provider)?;
+    let signing_key = verify_signatures(&text, &document, provider, &assertion)?;
 
     let issuer = element_text(&response, ASSERTION_NAMESPACE, "Issuer")
         .or_else(|| element_text(&assertion, ASSERTION_NAMESPACE, "Issuer"))
@@ -626,7 +644,23 @@ pub fn resolve(
         source_identity,
         attributes,
         session_not_on_or_after,
+        signing_key_digest: signing_key_digest(&signing_key),
     })
+}
+
+/// The digest of a signing key, as the origin identity of a SAML session names its issuer
+/// by ([`SamlAssertion::signing_key_digest`]): the SHA-256 of the key as the provider's
+/// metadata publishes it, base64-coded — the same coding the other hash this exchange
+/// reports is carried in ([`name_qualifier`]).
+///
+/// AWS states that the value IS a hash of that key and not what the hash is computed with,
+/// so the digest and its coding are stated here. Both are a function of the key alone: two
+/// exchanges of a response signed by one key report one value, and a provider that rotates
+/// its key reports another.
+#[must_use]
+fn signing_key_digest(key: &[u8]) -> String {
+    let digest = ::ring::digest::digest(&::ring::digest::SHA256, key);
+    ::aws_smithy_types::base64::encode(digest.as_ref())
 }
 
 /// The condition keys a SAML identity provider publishes about one of its responses, for a
@@ -707,43 +741,67 @@ pub fn name_qualifier(issuer: &str, account: &str, provider_name: &str) -> Strin
 }
 
 /// Whether every signature the document carries checks out against a key `provider`
-/// publishes, and that it carries one at all.
+/// publishes, and that it carries one at all — and, when they do, the KEY that signed the
+/// `assertion`, which is what the session's origin identity names its issuer by
+/// ([`SamlAssertion::signing_key_digest`]).
 ///
 /// A response may be signed at the `Response` level, at the `Assertion` level, or both; AWS
 /// accepts either, and every signature present has to check out — a document carrying one
-/// good and one bad signature is not one the provider issued.
+/// good and one bad signature is not one the provider issued. The key reported is the one
+/// that signed the assertion itself where the assertion carries a signature, and otherwise
+/// the one that signed the response the assertion travelled in: either way the key whose
+/// holder vouched for the identity read out below.
 fn verify_signatures(
     text: &str,
     document: &::roxmltree::Document<'_>,
     provider: &SamlProvider,
-) -> Result<(), AssertionDefect> {
+    assertion: &::roxmltree::Node<'_, '_>,
+) -> Result<Vec<u8>, AssertionDefect> {
     let signatures: Vec<::roxmltree::Node<'_, '_>> = document
         .root_element()
         .descendants()
         .filter(|node| is_element(node, SIGNATURE_NAMESPACE, "Signature"))
+        .take(MAX_SIGNATURES.saturating_add(1))
         .collect();
     if signatures.is_empty() {
         return Err(AssertionDefect::NotSigned);
+    }
+    // A response has at most the two signatures SAML 2.0 places in one: one over the
+    // `Response` and one over the `Assertion`. Checking one costs a digest over the element it
+    // covers, so a document carrying more is not read at all — it is refused as a signature
+    // that does not hold, before any of them is checked.
+    if signatures.len() > MAX_SIGNATURES {
+        return Err(AssertionDefect::SignatureInvalid);
     }
     let keys: Vec<Vec<u8>> = provider
         .certificates
         .iter()
         .filter_map(|certificate| decode_base64(certificate))
         .collect();
+    let mut over_the_assertion: Option<Vec<u8>> = None;
+    let mut over_the_response: Option<Vec<u8>> = None;
     for signature in &signatures {
-        verify_signature(text, document, signature, &keys)?;
+        let key = verify_signature(text, document, signature, &keys)?;
+        if signature.ancestors().any(|node| node == *assertion) {
+            over_the_assertion = Some(key);
+        } else {
+            over_the_response = Some(key);
+        }
     }
-    Ok(())
+    over_the_assertion
+        .or(over_the_response)
+        .ok_or(AssertionDefect::NotSigned)
 }
 
 /// Whether ONE signature checks out: its reference digests the element it names, and its
-/// `SignatureValue` is that `SignedInfo` signed by one of `keys`.
+/// `SignatureValue` is that `SignedInfo` signed by one of `keys` — which is the key reported
+/// back.
 fn verify_signature(
     text: &str,
     document: &::roxmltree::Document<'_>,
     signature: &::roxmltree::Node<'_, '_>,
     keys: &[Vec<u8>],
-) -> Result<(), AssertionDefect> {
+) -> Result<Vec<u8>, AssertionDefect> {
     let signed_info = signature
         .children()
         .find(|node| is_element(node, SIGNATURE_NAMESPACE, "SignedInfo"))
@@ -814,7 +872,7 @@ fn verify_signature(
         .and_then(decode_base64)
         .ok_or(AssertionDefect::SignatureInvalid)?;
     let signed_info_bytes = text.get(signed_info.range()).unwrap_or_default();
-    let checks_out = keys.iter().any(|key| {
+    let checks_out = keys.iter().find(|key| {
         signature_checks_out(
             &signature_method,
             key,
@@ -822,10 +880,9 @@ fn verify_signature(
             &signature_value,
         )
     });
-    if checks_out {
-        Ok(())
-    } else {
-        Err(AssertionDefect::SignatureInvalid)
+    match checks_out {
+        Some(key) => Ok(key.clone()),
+        None => Err(AssertionDefect::SignatureInvalid),
     }
 }
 

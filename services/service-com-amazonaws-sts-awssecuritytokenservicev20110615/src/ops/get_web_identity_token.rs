@@ -70,6 +70,26 @@
 //! * `SigningAlgorithm` (jwtAlgorithmType, len 5..5) **required** — The cryptographic
 //!   algorithm to use for signing the JSON Web Token (JWT). Valid values are RS256 (RSA with
 //!   SHA-256) and ES384 (ECDSA using P-384 curve with SHA-384).
+//! * `Scope` (scopeType, len 1..256, pattern
+//!   ^[\x21\x23-\x2B\x2D-\x5B\x5D-\x7E]+( [\x21\x23-\x2B\x2D-\x5B\x5D-\x7E]+)*$) — One or more
+//!   OAuth 2.0 scope values to include in the JSON Web Token (JWT). STS copies the value
+//!   exactly as you send it into the top-level scope claim of the token. If you don't specify
+//!   Scope, the token doesn't include a scope claim. Separate multiple values with a single
+//!   space (RFC 6749 §3.3). You can't repeat a scope value. Scope values are case sensitive.
+//!   You can specify Scope only when SubjectMode is OriginIdentity and you request exactly
+//!   one audience. To specify Scope, the calling principal must have permission for the
+//!   sts:SetWebIdentityTokenScope action in addition to sts:GetWebIdentityToken.
+//! * `SubjectMode` (webIdentityTokenSubjectModeType, one of: AWSIdentity | OriginIdentity) —
+//!   Specifies which identity STS puts in the sub (subject) claim of the JSON Web Token
+//!   (JWT). If you don't specify a value, STS uses AWSIdentity, whose sub claim carries the
+//!   ARN of the calling principal; OriginIdentity's carries the value of the
+//!   aws:OriginIdentity/Subject key in the trusted identity propagation context of the
+//!   calling session, and STS adds a subject_mode claim to the token. To use OriginIdentity
+//!   that context must carry the aws:OriginIdentity/Subject key and either the
+//!   aws:OriginIdentity/Issuer key or the aws:OriginIdentity/FederatedProviderArn key; if it
+//!   doesn't, or the subject is blank, STS rejects the request with a validation error. STS
+//!   denies the request if the subject begins with `arn:` in any case, begins or ends with a
+//!   space, or carries a control, format or separator character other than a space.
 //! * `Tags` (tagListType, len 0..50) — An optional list of tags to include in the JSON Web
 //!   Token (JWT). These tags are added as custom claims to the JWT and can be used by the
 //!   downstream service for authorization decisions.
@@ -238,10 +258,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::session_credentials_message(Self::NAME),
             ));
         }
-        // The instant the CREDENTIAL ends, which a token minted under it may not outlast.
-        let session_ends = registry
-            .session(&access_key_id)
-            .map(|session| session.expires_at);
+        // The instant the CREDENTIAL ends, which a token minted under it may not outlast,
+        // and the trusted identity propagation context the calling session carries — which is
+        // where the subject of a token minted in the origin-identity mode comes from.
+        let session = registry.session(&access_key_id);
+        let session_ends = session.map(|session| session.expires_at);
+        let propagated = session.and_then(|session| session.trusted_identity_propagation.clone());
         drop(registry);
 
         // "The cryptographic algorithm to use for signing the JSON Web Token (JWT). Valid
@@ -305,13 +327,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // WHICH identity the token's `sub` claim carries: the calling principal itself, or
+        // the END USER the calling session acts for (`token::token_subject`). It is a rule
+        // about the request and the calling session, so it is decided before anything is
+        // signed — a mode the calling session cannot answer for is a validation error, and a
+        // subject STS does not state is denied.
+        let subject = token::token_subject(
+            input.subject_mode.as_deref(),
+            &caller.identity.arn,
+            propagated.as_ref(),
+        )
+        .map_err(|refused| match refused {
+            token::SubjectModeRefusal::SubjectNotAllowed => {
+                crate::scaffolded::Scaffolded::access_denied(refused.message())
+            }
+            token::SubjectModeRefusal::NoOriginIdentity => {
+                crate::scaffolded::Scaffolded::validation_error(refused.message())
+            }
+        })?;
+
+        // The OAuth 2.0 scope values the token is to carry: copied exactly as the request
+        // sent them, and only under the three conditions the member states
+        // (`token::requested_scope`). It is read after the subject because two of those
+        // conditions are about the subject mode and the audiences this very request named.
+        let scope = token::requested_scope(input.scope.as_deref(), &subject, &input.audience)
+            .map_err(|refused| {
+                crate::scaffolded::Scaffolded::validation_error(refused.message())
+            })?;
+
         let claims = token::web_identity_token_claims(
             &issuer_identifier,
-            &caller.identity.arn,
+            &subject,
             &input.audience,
             input.tags.as_deref().unwrap_or(&[]),
             crate::state::unix_seconds(now),
             crate::state::unix_seconds(expires_at),
+            scope,
         );
         // The request's own tags are the only part of the claim set a caller sizes, which
         // is why the refusal names them.

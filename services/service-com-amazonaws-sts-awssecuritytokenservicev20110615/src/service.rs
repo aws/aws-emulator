@@ -946,6 +946,7 @@ mod tests {
                     federating_user_arn: None,
                     mfa_authenticated: false,
                     federated_claims: Vec::new(),
+                    trusted_identity_propagation: None,
                     web_identity_federation: None,
                     revoked: false,
                 },

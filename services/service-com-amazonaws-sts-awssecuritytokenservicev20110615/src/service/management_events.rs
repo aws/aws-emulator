@@ -238,6 +238,7 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         get_caller_identity::GetCallerIdentity => reports,
         get_delegated_access_token::GetDelegatedAccessToken => mutates,
         get_federation_token::GetFederationToken => mutates,
+        get_scoped_credentials::GetScopedCredentials => mutates,
         get_session_token::GetSessionToken => mutates,
         get_web_identity_token::GetWebIdentityToken => mutates,
     );

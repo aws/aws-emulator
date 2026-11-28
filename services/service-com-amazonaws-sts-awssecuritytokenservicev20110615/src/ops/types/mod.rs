@@ -23,6 +23,7 @@ pub mod get_access_key_info_types;
 pub mod get_caller_identity_types;
 pub mod get_delegated_access_token_types;
 pub mod get_federation_token_types;
+pub mod get_scoped_credentials_types;
 pub mod get_session_token_types;
 pub mod get_web_identity_token_types;
 pub mod shared_types;
@@ -45,6 +46,8 @@ pub use get_caller_identity_types::*;
 pub use get_delegated_access_token_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_federation_token_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_scoped_credentials_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_session_token_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

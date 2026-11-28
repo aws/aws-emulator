@@ -454,6 +454,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut registry = state.lock();
+        // What the provider's response established about the END USER this session acts for,
+        // which the session carries and the response reports
+        // (`crate::state::identity_propagation`).
+        let trusted_identity_propagation =
+            crate::state::identity_propagation::saml_context(&provider, &assertion);
         let minted = crate::state::mint_session(
             &*self.engine,
             store,
@@ -478,6 +483,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // keys this assume was decided under
                 // (`crate::state::federated_claim_keys`).
                 federated_claims: context.clone(),
+                trusted_identity_propagation: trusted_identity_propagation.clone(),
                 ..NewSession::new(session_identity, SessionKind::AssumedRole, duration_seconds)
             },
         );
@@ -523,6 +529,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             source_identity: assertion.source_identity.clone(),
             session_token_utilization: Some(session_token_utilization),
             session_token_size: Some(session_token_size),
+            // The trusted identity propagation context this exchange set in the session,
+            // absent when the response established none of its keys.
+            trusted_identity_propagation_context: trusted_identity_propagation,
         })
     }
 }

@@ -1112,6 +1112,7 @@ pub(crate) async fn session_scoped_caller(
             inline: Some(document.clone()),
             managed_arns: Vec::new(),
             none_means_no_permissions: false,
+            ..SessionPolicies::default()
         },
         Scoped::Managed(document) => {
             let policy_name = format!("{role_name}-session-scope");
@@ -1132,6 +1133,7 @@ pub(crate) async fn session_scoped_caller(
                 inline: None,
                 managed_arns: vec![element(&policy, "Arn")],
                 none_means_no_permissions: false,
+                ..SessionPolicies::default()
             }
         }
     };

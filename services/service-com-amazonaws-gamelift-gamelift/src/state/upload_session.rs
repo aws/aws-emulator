@@ -135,6 +135,7 @@ pub fn vend<Eng: Send + Sync + 'static>(
                     // empty scope would have to grant nothing rather than withhold nothing
                     // ([`sts_store::SessionPolicies::none_means_no_permissions`]).
                     none_means_no_permissions: true,
+                    ..sts_store::SessionPolicies::default()
                 },
                 // The identity whose own policies the session's permissions are the
                 // intersection with: the account's own published credential, which this

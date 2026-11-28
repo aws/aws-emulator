@@ -17,6 +17,8 @@ pub struct GetWebIdentityTokenInput {
     pub audience: Vec<String>,
     pub duration_seconds: Option<i32>,
     pub signing_algorithm: String,
+    pub scope: Option<String>,
+    pub subject_mode: Option<String>,
     pub tags: Option<Vec<Tag>>,
 }
 

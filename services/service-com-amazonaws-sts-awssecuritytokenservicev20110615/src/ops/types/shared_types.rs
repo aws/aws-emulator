@@ -64,6 +64,28 @@ pub struct RegionDisabledException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.sts#TrustedIdentityPropagationContext")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustedIdentityPropagationContext {
+    pub origin_identity: Option<OriginIdentity>,
+    pub transaction_context: Option<TransactionContext>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.sts#OriginIdentity")]
+#[derive(Debug, Clone, Default)]
+pub struct OriginIdentity {
+    pub subject: Option<String>,
+    pub subject_type: Option<String>,
+    pub issuer: Option<String>,
+    pub federated_provider_arn: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.sts#TransactionContext")]
+#[derive(Debug, Clone, Default)]
+pub struct TransactionContext {
+    pub identity_provider: Option<std::collections::HashMap<String, String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.sts#IDPRejectedClaimException")]
 #[derive(Debug, Clone, Default)]
 pub struct IDPRejectedClaimException {
@@ -75,4 +97,8 @@ pub struct IDPRejectedClaimException {
 pub struct InvalidIdentityTokenException {
     pub message: Option<String>,
 }
+
+/// The values `webIdentityTokenSubjectModeType` accepts on the wire.
+pub const WEB_IDENTITY_TOKEN_SUBJECT_MODE_TYPE_VALUES: &[&str] = &["AWSIdentity", "OriginIdentity"];
+
 

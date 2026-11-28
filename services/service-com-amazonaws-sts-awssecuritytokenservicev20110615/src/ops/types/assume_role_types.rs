@@ -47,3 +47,9 @@ pub struct AssumeRoleOutput {
     pub session_token_size: Option<i32>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.sts#InvalidContextAssertionException")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidContextAssertionException {
+    pub message: Option<String>,
+}
+

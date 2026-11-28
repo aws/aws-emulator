@@ -227,6 +227,7 @@ fn seed_session(
             federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
+            trusted_identity_propagation: None,
             // A record made directly rather than by an exchange, so it names no web-identity
             // federation.
             web_identity_federation: None,

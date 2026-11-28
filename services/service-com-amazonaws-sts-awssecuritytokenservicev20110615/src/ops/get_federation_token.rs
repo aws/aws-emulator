@@ -409,6 +409,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     inline: input.policy.clone(),
                     managed_arns: named_policy_arns,
                     none_means_no_permissions: true,
+                    ..SessionPolicies::default()
                 },
                 // The identity whose policies this session's permissions are the
                 // intersection with; see `Session::federating_user_arn`.

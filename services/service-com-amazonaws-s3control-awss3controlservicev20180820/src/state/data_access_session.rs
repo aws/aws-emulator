@@ -178,6 +178,7 @@ pub fn vend<Eng: Send + Sync + 'static>(
                 // what this flag distinguishes
                 // ([`sts_store::SessionPolicies::none_means_no_permissions`]).
                 none_means_no_permissions: false,
+                ..sts_store::SessionPolicies::default()
             },
             role_arn: Some(plan.role_arn.clone()),
             ..sts_store::NewSession::new(

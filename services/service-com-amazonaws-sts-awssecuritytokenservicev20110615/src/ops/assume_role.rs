@@ -259,6 +259,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-sts-awssecuritytokenser
 #[derive(Debug)]
 pub enum AssumeRoleErrorModeled {
     ExpiredTokenException(ExpiredTokenException),
+    InvalidContextAssertionException(InvalidContextAssertionException),
     MalformedPolicyDocumentException(MalformedPolicyDocumentException),
     PackedPolicyTooLargeException(PackedPolicyTooLargeException),
     RegionDisabledException(RegionDisabledException),
@@ -345,19 +346,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // A trusted context assertion is "signed and encrypted by Amazon Web Services
-        // STS" (ProvidedContexts, this service's model). This emulator issues none, so
-        // every assertion presented to it is one it cannot verify; it refuses the
-        // request rather than assuming a context it never granted.
+        // A trusted context assertion is "signed and encrypted by Amazon Web Services STS"
+        // (`ProvidedContexts`, this service's model). This emulator issues none, so every
+        // assertion presented to it is one that matches no trusted context provider — the
+        // condition `InvalidContextAssertion` is the modelled answer for — and the request is
+        // refused rather than served under a context this service never granted.
         if input
             .provided_contexts
             .as_ref()
             .is_some_and(|given| !given.is_empty())
         {
-            return Err(crate::scaffolded::Scaffolded::validation(
-                "ProvidedContexts carries trusted context assertions signed by STS; this \
-                 emulator issues none, so it cannot verify one",
-            ));
+            return Err(
+                AssumeRoleErrorModeled::InvalidContextAssertionException(
+                    InvalidContextAssertionException {
+                        message: Some(INVALID_CONTEXT_ASSERTION_MESSAGE.to_string()),
+                    },
+                )
+                .into(),
+            );
         }
 
         // An inline session policy is read only AFTER the role's trust policy has decided
@@ -448,13 +454,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => (long_term_identity(None, &access_key_id), None, None),
         };
 
-        let resolved = resolve_request_caller(
-            &mut state.lock(),
-            &access_key_id,
-            now,
-            store,
-            long_term,
-        );
+        let (resolved, propagated) = {
+            let mut registry = state.lock();
+            let resolved =
+                resolve_request_caller(&mut registry, &access_key_id, now, store, long_term);
+            // The trusted identity propagation context the CALLING session carries, read in
+            // the same hold: the end user a federated session acts for is a fact of that
+            // session, and a trust policy may gate a chained assume on it (see the condition
+            // context below).
+            let propagated = registry
+                .session(&access_key_id)
+                .and_then(|session| session.trusted_identity_propagation.clone());
+            (resolved, propagated)
+        };
         // A caller presenting an expired session credential is refused, never served
         // as another identity. The session registry is taken for that RESOLUTION alone and
         // given up again, so the caller's own identity-based documents can be read from the
@@ -591,7 +603,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // — including every role of ANOTHER account — is refused exactly as one whose
         // trust policy withholds the grant.
         let principals = caller.trust_policy_principals();
-        let condition_context = crate::state::assume_role_condition_context(
+        let mut condition_context = crate::state::assume_role_condition_context(
             &caller,
             &input.role_session_name,
             input.external_id.as_deref(),
@@ -600,10 +612,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &transitive_tag_keys,
             mfa_challenge_satisfied,
         );
+        // The END USER the calling session acts for, where a federated exchange minted it:
+        // the trusted identity propagation context such a session carries IS a set of
+        // condition keys of every request its credential signs
+        // (`crate::state::identity_propagation`), so a trust policy that admits a chained
+        // assume only for a named origin identity decides this one.
+        condition_context.extend(crate::state::identity_propagation::condition_context(
+            propagated.as_ref(),
+        ));
         // The condition keys this mint ANSWERS for, which is what makes a clause over a
         // tag key the request does not carry decide rather than stay undecided; see
         // `assume_role_published_condition_keys`.
-        let published = crate::state::assume_role_published_condition_keys(&caller);
+        let mut published = crate::state::assume_role_published_condition_keys(&caller);
+        published.extend(
+            crate::state::identity_propagation::published_condition_keys(propagated.as_ref()),
+        );
         let refused = |action: &str| -> Self::Error {
             crate::scaffolded::Scaffolded::access_denied(not_authorized_message(
                 &caller.identity.arn,
@@ -861,3 +884,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })
     }
 }
+
+/// How AWS states the refusal of a trusted context assertion it will not act on: "the
+/// request was rejected because the context assertion that was provided is invalid. This can
+/// happen if the context assertion supplied in the `ProvidedContexts` parameter is malformed,
+/// has expired, or does not match a trusted context provider"
+/// (`InvalidContextAssertionException`, this service's model). Fixed text: the sentence names
+/// the condition and nothing of the assertion, which is credential material STS signed.
+const INVALID_CONTEXT_ASSERTION_MESSAGE: &str =
+    "The context assertion that was provided is invalid: it does not match a trusted context \
+     provider.";

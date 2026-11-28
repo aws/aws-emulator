@@ -137,6 +137,7 @@ fn given_session(engine: &Arc<engine::InMemoryEngine>, session_policy: Option<&s
             inline: session_policy.map(str::to_string),
             managed_arns: Vec::new(),
             none_means_no_permissions: false,
+            ..sts::SessionPolicies::default()
         },
         ..sts::NewSession::new(
             sts::Identity {
