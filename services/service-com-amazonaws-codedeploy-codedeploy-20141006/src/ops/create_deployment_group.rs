@@ -515,7 +515,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(
                     CreateDeploymentGroupErrorModeled::InvalidDeploymentStyleException(
                         InvalidDeploymentStyleException {
-                            message: Some(message.to_string()),
+                            message: Some(message),
                         },
                     ),
                 );
@@ -535,6 +535,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     CreateDeploymentGroupErrorModeled::InvalidLoadBalancerInfoException(
                         InvalidLoadBalancerInfoException {
                             message: Some(message.to_string()),
+                        },
+                    ),
+                );
+            }
+            // And the SIZE of each list that configuration carries: each member has
+            // a documented maximum, and a list longer than its own is refused
+            // however well formed its entries are
+            // ([`crate::state::load_balancer_gate`]).
+            if let Some(message) =
+                crate::state::load_balancer_gate::load_balancer_list_size_refusal(
+                    input.load_balancer_info.as_ref(),
+                )
+            {
+                return Err(
+                    CreateDeploymentGroupErrorModeled::InvalidLoadBalancerInfoException(
+                        InvalidLoadBalancerInfoException {
+                            message: Some(message),
                         },
                     ),
                 );

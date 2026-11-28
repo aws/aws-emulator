@@ -547,7 +547,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(
                     UpdateDeploymentGroupErrorModeled::InvalidDeploymentStyleException(
                         InvalidDeploymentStyleException {
-                            message: Some(message.to_string()),
+                            message: Some(message),
                         },
                     ),
                 );
@@ -564,6 +564,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     UpdateDeploymentGroupErrorModeled::InvalidLoadBalancerInfoException(
                         InvalidLoadBalancerInfoException {
                             message: Some(message.to_string()),
+                        },
+                    ),
+                );
+            }
+            // And the SIZE of each list this update would store: the same bounds
+            // `CreateDeploymentGroup` applies, read off the configuration the
+            // REQUEST names — the one the stored group keeps was read when it was
+            // set.
+            if let Some(message) =
+                crate::state::load_balancer_gate::load_balancer_list_size_refusal(
+                    input.load_balancer_info.as_ref(),
+                )
+            {
+                return Err(
+                    UpdateDeploymentGroupErrorModeled::InvalidLoadBalancerInfoException(
+                        InvalidLoadBalancerInfoException {
+                            message: Some(message),
                         },
                     ),
                 );

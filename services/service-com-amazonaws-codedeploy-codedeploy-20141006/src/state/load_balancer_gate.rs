@@ -44,6 +44,18 @@
 //! target groups the account creates afterwards — and a value that is no name is
 //! refused with the same `InvalidLoadBalancerInfoException`
 //! ([`target_group_name_refusal`]).
+//!
+//! # The third question this module answers
+//!
+//! Each of the three members has a documented SIZE — up to 10 Classic Load
+//! Balancers in `elbInfoList`, up to 10 target groups in `targetGroupInfoList`, and
+//! "a maximum size of one" for `targetGroupPairInfoList`
+//! (`smithy_query(query="shape",shape="LoadBalancerInfo")`) — so a configuration
+//! that names more of one form than a deployment group may carry is refused with
+//! that member's one error as well ([`load_balancer_list_size_refusal`]). The bounds
+//! are documented; that refusal's WORDING is not recorded anywhere this emulator
+//! could read, so it states the rule in this service's own register and is the one
+//! place to correct if a recording of it appears.
 
 use ::service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10 as elbv2;
 
@@ -136,6 +148,141 @@ fn names_a_load_balancer(load_balancer_info: &LoadBalancerInfo) -> bool {
 /// invalid format", [`crate::state::invalid_role_message`]).
 const TARGET_GROUP_NAME_SUBJECT: &str = "The target group name";
 
+/// The `loadBalancerInfo` member a target group name was carried in: the form an
+/// Application or Network Load Balancer's target groups are named in.
+const TARGET_GROUP_INFO_LIST_MEMBER: &str = "targetGroupInfoList";
+
+/// The `loadBalancerInfo` member a target group name was carried in: the pair an
+/// Amazon ECS deployment moves production traffic between.
+const TARGET_GROUP_PAIR_INFO_LIST_MEMBER: &str = "targetGroupPairInfoList";
+
+/// The `loadBalancerInfo` member Classic Load Balancers are named in.
+const ELB_INFO_LIST_MEMBER: &str = "elbInfoList";
+
+/// How many Classic Load Balancers one `loadBalancerInfo` may name: "You can add up
+/// to 10 load balancers to the array"
+/// (`smithy_query(query="shape",shape="LoadBalancerInfo")`, `elbInfoList`).
+const MAX_ELB_INFO: usize = 10;
+
+/// How many target groups one `loadBalancerInfo` may name: "You can add up to 10
+/// target groups to the array"
+/// (`smithy_query(query="shape",shape="LoadBalancerInfo")`, `targetGroupInfoList`).
+const MAX_TARGET_GROUP_INFO: usize = 10;
+
+/// How many target group PAIRS one `loadBalancerInfo` may name: "an array of
+/// `TargeGroupPairInfo` objects with a maximum size of one"
+/// (`smithy_query(query="shape",shape="LoadBalancerInfo")`,
+/// `targetGroupPairInfoList`).
+const MAX_TARGET_GROUP_PAIR_INFO: usize = 1;
+
+/// The refusal a deployment group earns for naming MORE load balancers of one form
+/// than a `loadBalancerInfo` may carry, or `None` when every list is within its
+/// bound.
+///
+/// Each of the three members has a documented size, and each is a bound on the
+/// configuration rather than on one value in it, so it is read off the lists the
+/// group would be stored with — before their entries are read, since a list too
+/// long is refused however well formed its entries are — and answered with the one
+/// error this member has, `InvalidLoadBalancerInfoException` (HTTP 400). The lists
+/// are read in the order `LoadBalancerInfo` declares them.
+///
+/// The sentence states the form that was over-named, the bound it exceeded and the
+/// member that carries it, in the register this service's other quota refusals use
+/// ("The maximum number of deployment groups was exceeded: 100 are allowed per
+/// application"): its variable parts are the documented BOUND and the member the
+/// request over-named, so the caller is told which list to shorten and to what.
+///
+/// NOTE on fidelity: the BOUNDS are the member's own documentation, but no recording
+/// of this refusal's wording was available, so the sentence states the rule in this
+/// service's register; if a recorded one becomes readable, this is the only place it
+/// has to change.
+///
+/// Call it from every operation that writes a deployment group, BEFORE anything is
+/// stored.
+#[must_use]
+pub fn load_balancer_list_size_refusal(
+    load_balancer_info: Option<&LoadBalancerInfo>,
+) -> Option<String> {
+    let load_balancer_info = load_balancer_info?;
+    let lists = [
+        (
+            "load balancers",
+            ELB_INFO_LIST_MEMBER,
+            load_balancer_info
+                .elb_info_list
+                .as_deref()
+                .map_or(0, <[_]>::len),
+            MAX_ELB_INFO,
+        ),
+        (
+            "target groups",
+            TARGET_GROUP_INFO_LIST_MEMBER,
+            load_balancer_info
+                .target_group_info_list
+                .as_deref()
+                .map_or(0, <[_]>::len),
+            MAX_TARGET_GROUP_INFO,
+        ),
+        (
+            "target group pairs",
+            TARGET_GROUP_PAIR_INFO_LIST_MEMBER,
+            load_balancer_info
+                .target_group_pair_info_list
+                .as_deref()
+                .map_or(0, <[_]>::len),
+            MAX_TARGET_GROUP_PAIR_INFO,
+        ),
+    ];
+    lists
+        .into_iter()
+        .find(|(_, _, carried, bound)| carried > bound)
+        .map(|(subject, member, _, bound)| {
+            // One is the bound of the pair list, so the clause reads for a bound of
+            // one as well as for a bound of ten.
+            let verb = if bound == 1 { "is" } else { "are" };
+            format!(
+                "The maximum number of {subject} was exceeded: {bound} {verb} allowed in {member}."
+            )
+        })
+}
+
+/// THIS service's sentence for a target group name longer than a target group name
+/// can be, which is what a `loadBalancerInfo` carrying one is refused with.
+///
+/// Recorded behaviour: the fixed text states the clause and spells the maximum
+/// inline, and names the `loadBalancerInfo` MEMBER the rejected value came from —
+/// `InvalidLoadBalancerInfoException` also covers a missing or invalid Classic Load
+/// Balancer name, so the sentence is the only thing that tells a caller of a
+/// multi-member configuration which list to fix. The variable parts are the value
+/// the request gave, copied verbatim and unquoted, and the member it was given in.
+///
+/// The maximum is the one the service that owns target groups publishes
+/// (`CreateTargetGroupInput$Name`: "A maximum of 32 alphanumeric characters
+/// including hyphens are allowed"), read through that service's own constant so
+/// this emulator states one bound.
+fn target_group_name_too_long(member: &str, name: &str) -> String {
+    format!(
+        "The target group name {name} specified in {member} exceeds the maximum allowed \
+         length of {} characters.",
+        elbv2::state::TARGET_GROUP_NAME_MAX_LENGTH
+    )
+}
+
+/// The refusal ONE target group name earns, given the `loadBalancerInfo` member it
+/// was carried in, or `None` when the value is a target group name.
+///
+/// The LENGTH clause is this service's own ([`target_group_name_too_long`]); every
+/// other clause of the grammar — the character set, the hyphen rule, an empty value
+/// — is read, and stated, through the service that owns target groups, so the rules
+/// live in one place. The clauses are read in the order AWS reports them: the length
+/// before the character set.
+fn target_group_name_clause(member: &str, name: &str) -> Option<String> {
+    if name.chars().count() > elbv2::state::TARGET_GROUP_NAME_MAX_LENGTH {
+        return Some(target_group_name_too_long(member, name));
+    }
+    elbv2::state::check_target_group_name_as(TARGET_GROUP_NAME_SUBJECT, name).err()
+}
+
 /// The refusal a deployment group earns for a TARGET GROUP NAME its
 /// `loadBalancerInfo` carries that is no target group name at all, or `None` when
 /// every name it carries is one.
@@ -151,23 +298,20 @@ const TARGET_GROUP_NAME_SUBJECT: &str = "The target group name";
 /// The grammar and the CLAUSE a value broke belong to the service that owns target
 /// groups, so both are read through the ONE place this emulator states them
 /// (`elbv2::state::check_target_group_name_as`, which reports the clauses in the
-/// order AWS reports them — the length before the character set); what this service
-/// supplies is the SUBJECT the clause is stated with
-/// ([`TARGET_GROUP_NAME_SUBJECT`]), so the refusal names the value the request gave
-/// and the one rule it broke rather than reciting every rule.
-///
-/// NOTE on fidelity: the recording this refusal is owed to establishes the status
-/// and the modelled error code, and the behavioural check that measured it compares
-/// the message against a constant the replay verdict does not expose, so AWS's exact
-/// wording for THIS case could not be established from the recording or from the
-/// model. The sentence therefore states the documented clause; if the recorded one
-/// becomes readable, this is the only place it has to change.
+/// order AWS reports them — the length before the character set), EXCEPT the length
+/// clause, which this service words itself and whose recorded sentence names the
+/// `loadBalancerInfo` member the rejected value came from
+/// ([`target_group_name_too_long`]). What this service supplies for the remaining
+/// clauses is the SUBJECT they are stated with ([`TARGET_GROUP_NAME_SUBJECT`]), so
+/// the refusal names the value the request gave and the one rule it broke rather
+/// than reciting every rule.
 ///
 /// Both members that carry such a name are read: `targetGroupInfoList`, the form
 /// an Application or Network Load Balancer's target groups are named in, and the
 /// `targetGroups` of each `targetGroupPairInfoList` entry, the pair an Amazon ECS
 /// deployment moves traffic between. The first value that is no name is the one
-/// answered, in the order the request names them.
+/// answered, in the order the request names them, and the sentence names the member
+/// it was carried in.
 ///
 /// Call it from every operation that writes a deployment group, BEFORE anything is
 /// stored: the refusal is judged from the configuration the group would HAVE,
@@ -175,18 +319,23 @@ const TARGET_GROUP_NAME_SUBJECT: &str = "The target group name";
 #[must_use]
 pub fn target_group_name_refusal(load_balancer_info: Option<&LoadBalancerInfo>) -> Option<String> {
     let load_balancer_info = load_balancer_info?;
-    let named_directly = load_balancer_info.target_group_info_list.iter().flatten();
+    let named_directly = load_balancer_info
+        .target_group_info_list
+        .iter()
+        .flatten()
+        .map(|target_group| (TARGET_GROUP_INFO_LIST_MEMBER, target_group));
     let named_in_a_pair = load_balancer_info
         .target_group_pair_info_list
         .iter()
         .flatten()
-        .flat_map(|pair| pair.target_groups.iter().flatten());
+        .flat_map(|pair| pair.target_groups.iter().flatten())
+        .map(|target_group| (TARGET_GROUP_PAIR_INFO_LIST_MEMBER, target_group));
     named_directly
         .chain(named_in_a_pair)
-        .filter_map(|target_group| target_group.name.as_deref())
-        .find_map(|name| {
-            elbv2::state::check_target_group_name_as(TARGET_GROUP_NAME_SUBJECT, name).err()
+        .filter_map(|(member, target_group)| {
+            target_group.name.as_deref().map(|name| (member, name))
         })
+        .find_map(|(member, name)| target_group_name_clause(member, name))
 }
 
 #[cfg(test)]

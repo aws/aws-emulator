@@ -115,17 +115,17 @@ async fn a_group_that_names_no_configuration_runs_by_its_platform_and_style_defa
             "CodeDeployDefault.LambdaAllAtOnce",
         ),
         (
-            "a Lambda group that is blue/green without traffic control",
+            "a Lambda group that is in-place without traffic control",
             "Lambda",
-            json!({"deploymentStyle": style("BLUE_GREEN", "WITHOUT_TRAFFIC_CONTROL")}),
+            json!({"deploymentStyle": style("IN_PLACE", "WITHOUT_TRAFFIC_CONTROL")}),
             "CodeDeployDefault.LambdaAllAtOnce",
         ),
         (
             // Only the type is named, so the service's own default completes the
             // style — and the group it completes to moves no traffic itself.
-            "a Lambda group naming only the blue/green type",
+            "a Lambda group naming only the in-place type",
             "Lambda",
-            json!({"deploymentStyle": {"deploymentType": "BLUE_GREEN"}}),
+            json!({"deploymentStyle": {"deploymentType": "IN_PLACE"}}),
             "CodeDeployDefault.LambdaAllAtOnce",
         ),
         (

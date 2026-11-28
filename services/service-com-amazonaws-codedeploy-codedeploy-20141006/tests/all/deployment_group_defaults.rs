@@ -99,10 +99,14 @@ async fn a_deployment_group_reports_the_style_and_strategy_it_runs_by() {
             (DEFAULT_TYPE, DEFAULT_OPTION, DEFAULT_STRATEGY),
         ),
         (
+            // The type is named on its own, so the server-side default completes
+            // the option. It names the IN_PLACE type: a half-stated BLUE_GREEN
+            // style completes to the one pair CodeDeploy does not support, which
+            // is refused rather than stored (`deployment_style_precondition`).
             "only the deployment type named",
             "Server",
-            json!({"deploymentStyle": {"deploymentType": "BLUE_GREEN"}}),
-            ("BLUE_GREEN", DEFAULT_OPTION, DEFAULT_STRATEGY),
+            json!({"deploymentStyle": {"deploymentType": "IN_PLACE"}}),
+            ("IN_PLACE", DEFAULT_OPTION, DEFAULT_STRATEGY),
         ),
         (
             "only the traffic option named",
@@ -212,9 +216,12 @@ async fn an_update_materialises_the_same_defaults() {
     // and a fully stated style.
     let cases: &[(&str, Value, (&str, &str, &str))] = &[
         (
+            // See the create's row: a half-stated BLUE_GREEN style completes to
+            // the pair CodeDeploy does not support, so the half-stated row here
+            // names the in-place type too.
             "a style naming only the type",
-            json!({"deploymentStyle": {"deploymentType": "BLUE_GREEN"}}),
-            ("BLUE_GREEN", DEFAULT_OPTION, DEFAULT_STRATEGY),
+            json!({"deploymentStyle": {"deploymentType": "IN_PLACE"}}),
+            ("IN_PLACE", DEFAULT_OPTION, DEFAULT_STRATEGY),
         ),
         (
             "a style naming only the option",

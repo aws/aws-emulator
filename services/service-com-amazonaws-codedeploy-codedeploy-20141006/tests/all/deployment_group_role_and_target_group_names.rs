@@ -288,6 +288,16 @@ async fn a_replacement_service_role_is_resolved_the_same_way() {
 /// the value itself is the only thing judged.
 const SERVICE_ROLE: &str = "arn:aws:iam::123456789012:role/CodeDeployRole";
 
+/// The clause an over-long name carried by `targetGroupInfoList` is refused with:
+/// CodeDeploy's own length sentence, which names the member the value came from and
+/// spells the maximum inline (recorded behaviour).
+const TOO_LONG_IN_LIST: &str =
+    "specified in targetGroupInfoList exceeds the maximum allowed length of 32 characters.";
+
+/// The same clause for a name carried by `targetGroupPairInfoList`.
+const TOO_LONG_IN_PAIR_LIST: &str =
+    "specified in targetGroupPairInfoList exceeds the maximum allowed length of 32 characters.";
+
 /// A name of `length` characters drawn from the character set a target group name
 /// admits, for a row that is about the LENGTH alone.
 fn name_of_length(length: usize) -> String {
@@ -341,12 +351,12 @@ async fn a_target_group_name_is_read_before_the_group_is_stored() {
         (
             "a name one character past the published maximum",
             named_directly(&name_of_length(33)),
-            Some("cannot be longer than '32' characters"),
+            Some(TOO_LONG_IN_LIST),
         ),
         (
             "a name far past the published maximum",
             named_directly(&name_of_length(200)),
-            Some("cannot be longer than '32' characters"),
+            Some(TOO_LONG_IN_LIST),
         ),
         (
             "a name holding an underscore",
@@ -384,7 +394,7 @@ async fn a_target_group_name_is_read_before_the_group_is_stored() {
         (
             "an over-long name in the target group pair",
             named_in_a_pair(&name_of_length(33)),
-            Some("cannot be longer than '32' characters"),
+            Some(TOO_LONG_IN_PAIR_LIST),
         ),
         (
             "a well-formed pair of names",

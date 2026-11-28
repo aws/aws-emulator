@@ -285,9 +285,13 @@ async fn an_ecs_group_that_routes_traffic_is_created_only_with_load_balancer_inf
             refused: false,
         },
         Row {
+            // Routing no traffic behind a load balancer is what this row is about;
+            // the type is IN_PLACE because blue/green WITHOUT traffic control is a
+            // combination CodeDeploy does not support at all, which is the sibling
+            // precondition on the style itself.
             case: "a Server group that routes no traffic behind a load balancer",
             platform: "Server",
-            style: Some(style("BLUE_GREEN", "WITHOUT_TRAFFIC_CONTROL")),
+            style: Some(style("IN_PLACE", "WITHOUT_TRAFFIC_CONTROL")),
             load_balancer_info: None,
             refused: false,
         },

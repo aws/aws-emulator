@@ -94,6 +94,11 @@ pub mod load_balancer_gate;
 /// that kind.
 pub mod deployment_style_gate;
 
+/// The blue/green configuration a deployment group carries, and the precondition
+/// it does NOT carry: why no operation of this service refuses a group whose
+/// `blueGreenDeploymentConfiguration` and `deploymentStyle` disagree.
+pub mod blue_green_configuration_gate;
+
 /// The SHA256 digest of a revision that carries its content inline: the one place
 /// that digest is computed, where such a revision is recorded.
 pub mod revision_digest;
