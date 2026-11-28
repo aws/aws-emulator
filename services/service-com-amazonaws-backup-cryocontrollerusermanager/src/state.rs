@@ -107,6 +107,11 @@ pub use plan_events::*;
 mod job_outcome;
 pub use job_outcome::*;
 
+/// Cancelling a started backup job: the states a stop can cancel, what it writes, and the
+/// conditions it refuses. Re-exported for the reason given on `events`.
+mod job_cancellation;
+pub use job_cancellation::*;
+
 /// Whether the protected resource a job was started for exists at all, as the service that
 /// owns it answers. Re-exported for the reason given on `events`.
 mod protected_resource;
@@ -4717,14 +4722,22 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// `StatusMessage` and that class as its `MessageCategory`, having transferred
     /// nothing; every other job settles `COMPLETED`, in the message category a job
     /// that captured its resource is classed in ([`MESSAGE_CATEGORY_SUCCESS`]).
+    ///
+    /// A job whose cancellation is under way is owed the OTHER terminal state: it ends
+    /// `ABORTED` at the instant its stop made due, carrying the reason that stop
+    /// recorded ([`job_cancellation`]).
     pub fn settle_job(&mut self, job_id: &str, now: SystemTime) {
         let Some(job) = self.backup_jobs.get_mut(job_id) else {
             return;
         };
-        if job.state != BACKUP_JOB_STATE_CREATED || now < job.settles_at {
+        if !backup_job_awaits_the_clock(&job.state) || now < job.settles_at {
             return;
         }
         job.completion_date = Some(job.settles_at);
+        if job.state == BACKUP_JOB_STATE_ABORTING {
+            job.state = BACKUP_JOB_STATE_ABORTED.to_string();
+            return;
+        }
         let Some(failure) = job.failure.clone() else {
             job.state = BACKUP_JOB_STATE_COMPLETED.to_string();
             job.percent_done = PERCENT_DONE_COMPLETE.to_string();
@@ -4747,7 +4760,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         let job_ids: Vec<String> = self
             .backup_jobs
             .iter()
-            .filter(|(_, job)| job.state == BACKUP_JOB_STATE_CREATED)
+            .filter(|(_, job)| backup_job_awaits_the_clock(&job.state))
             .map(|(job_id, _)| job_id.clone())
             .collect();
         for job_id in job_ids {

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StopBackupJob
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `StopBackupJob`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`StopBackupJob::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Cancels the backup job the request names: the job stops heading for the backup it
+//! was taking and heads for the terminal `ABORTED` state instead, and the recovery
+//! point that backup was writing is removed from the vault that held it, so
+//! `DescribeBackupJob`, `ListBackupJobs`, `ListRecoveryPointsByBackupVault` and
+//! `DescribeBackupVault` all agree the cancelled backup produced nothing. A job that
+//! has already come to rest, a job of a resource type this operation does not support
+//! and an id this account holds no job under are each refused with the modelled error
+//! for that condition, and nothing is written (`crate::state::job_cancellation`).
 //!
 //! ## Shape of an operation
 //!
@@ -172,18 +172,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `StopBackupJob` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(StopBackupJobErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("StopBackupJob"))
+        // The cancellation holds this store's lock; the publication below does not, so
+        // no lock is held across an await. Each change names the Region its own job
+        // belongs to, so this handler reads none from `ctx`.
+        let output = self.cancelled_job(&input)?;
+        crate::state::publish_job_state_changes(ctx, &*self.engine).await;
+        // The `ABORTED` this cancellation owes falls due on the clock, not on the next
+        // call: the pump publishes it when it does, so a client watching the bus needs
+        // to make no further call (`crate::state::events`).
+        crate::state::drive_job_clock(ctx, &self.engine);
+        Ok(output)
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StopBackupJob<Eng> {
+    /// Cancel the job `input` names, through the one place that applies a cancellation
+    /// (`crate::state::ComAmazonawsBackupCryocontrollerusermanagerState::stop_backup_job`),
+    /// and queue the event the move it wrote owes (`crate::state::events`).
+    ///
+    /// Separate from `handle` so this store's lock lives for exactly this call: the
+    /// publication `handle` makes afterwards awaits, and a guard must not be held across
+    /// an await.
+    fn cancelled_job(
+        &self,
+        input: &StopBackupJobInput,
+    ) -> Result<StopBackupJobOutput, StopBackupJobError> {
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            StopBackupJobErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
+                message: Some("the backup vault store is unavailable".to_string()),
+                ..Default::default()
+            })
+        })?;
+
+        let mut store = state.lock();
+        // WHICH condition refused the call decides the class it is refused with: an id no
+        // stored job answers to is the not-found condition every reader of a job states
+        // the same way, and a job that cannot be cancelled is a fact about this request's
+        // fit to the stored job (`crate::state::JobStopRefusal`).
+        if let Err(refusal) =
+            store.stop_backup_job(&input.backup_job_id, ::std::time::SystemTime::now())
+        {
+            return Err(match refusal {
+                crate::state::JobStopRefusal::Absent(absent) => {
+                    StopBackupJobErrorModeled::ResourceNotFoundException(absent)
+                }
+                crate::state::JobStopRefusal::Refused(refused) => {
+                    StopBackupJobErrorModeled::InvalidRequestException(refused)
+                }
+            }
+            .into());
+        }
+        // The move this call wrote is a move the account's event bus is owed, like every
+        // other transition of a job: this call materialised it, so this call queues it.
+        store.record_job_state_changes();
+        Ok(StopBackupJobOutput)
     }
 }

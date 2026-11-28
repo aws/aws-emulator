@@ -295,7 +295,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         let backups = self
             .backup_jobs
             .values()
-            .filter(|job| job.state == super::BACKUP_JOB_STATE_CREATED)
+            .filter(|job| super::backup_job_awaits_the_clock(&job.state))
             .map(|job| job.settles_at);
         let copies = self
             .copy_jobs
