@@ -3,7 +3,9 @@
 //! @op UpdateWorkspace
 //! Mutates only the members the request carries, bumps `modified`, and leaves the
 //! workspace reporting `UPDATING` until the clock owes it `ACTIVE` again. The change is
-//! persisted in [`crate::state`], so the next `DescribeWorkspace` reports it.
+//! persisted in [`crate::state`], so the next `DescribeWorkspace` reports it. A request
+//! whose members would leave a combination the model's own member documentation rules out
+//! is refused with the modelled `ValidationException` before anything is written.
 //!
 //! ## Shape of an operation
 //!
@@ -132,6 +134,13 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+
+/// `PermissionType$CUSTOMER_MANAGED`, one of the two values
+/// [`super::types::PERMISSION_TYPE_VALUES`] carries: the workspace accesses Amazon
+/// Web Services resources through an IAM role the caller manages. It is the value
+/// `workspaceRoleArn` is required with, and the only one `organizationRoleName`
+/// may be used with.
+const PERMISSION_TYPE_CUSTOMER_MANAGED: &str = "CUSTOMER_MANAGED";
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -302,6 +311,73 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     field_list: Some(vec![ValidationExceptionField {
                         name: "workspaceOrganizationalUnits".to_string(),
                         message: "required when accountAccessType is ORGANIZATION".to_string(),
+                    }]),
+                },
+            )
+            .into());
+        }
+
+        // `permissionType` states the same kind of rule about `workspaceRoleArn`:
+        // "If you SPECIFY this as CUSTOMER_MANAGED, you must also specify a
+        // workspaceRoleArn that the workspace will use for accessing Amazon Web
+        // Services resources" — the condition is on the member this request
+        // carries, so an update that names something else entirely is not judged
+        // against it. The role is judged on the POST-patch record, as
+        // `workspaceRoleArn` words it from its own side ("If this workspace has
+        // permissionType CUSTOMER_MANAGED, then this role is required"), so the
+        // request may carry the role with the permission type or rely on the one an
+        // earlier call stored.
+        let permission_after = input
+            .permission_type
+            .as_deref()
+            .unwrap_or(&workspace.permission_type);
+        let role_after = input
+            .workspace_role_arn
+            .as_deref()
+            .or(workspace.workspace_role_arn.as_deref());
+        if input.permission_type.as_deref() == Some(PERMISSION_TYPE_CUSTOMER_MANAGED)
+            && role_after.is_none()
+        {
+            return Err(UpdateWorkspaceErrorModeled::ValidationException(
+                ValidationException {
+                    message: format!(
+                        "workspaceRoleArn is required when permissionType is \
+                         {PERMISSION_TYPE_CUSTOMER_MANAGED}"
+                    ),
+                    reason: "FIELD_VALIDATION_FAILED".to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        name: "workspaceRoleArn".to_string(),
+                        message: format!(
+                            "required when permissionType is \
+                             {PERMISSION_TYPE_CUSTOMER_MANAGED}"
+                        ),
+                    }]),
+                },
+            )
+            .into());
+        }
+
+        // `organizationRoleName` states the rule from the other direction: it
+        // "can only be used with a workspace that has the permissionType set to
+        // CUSTOMER_MANAGED", so carrying it against a record that is not customer
+        // managed once this request's own members are applied is refused rather
+        // than stored for `DescribeWorkspace` to report.
+        if input.organization_role_name.is_some()
+            && permission_after != PERMISSION_TYPE_CUSTOMER_MANAGED
+        {
+            return Err(UpdateWorkspaceErrorModeled::ValidationException(
+                ValidationException {
+                    message: format!(
+                        "organizationRoleName can only be used with a workspace whose \
+                         permissionType is {PERMISSION_TYPE_CUSTOMER_MANAGED}"
+                    ),
+                    reason: "FIELD_VALIDATION_FAILED".to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        name: "organizationRoleName".to_string(),
+                        message: format!(
+                            "permitted only when permissionType is \
+                             {PERMISSION_TYPE_CUSTOMER_MANAGED}"
+                        ),
                     }]),
                 },
             )
