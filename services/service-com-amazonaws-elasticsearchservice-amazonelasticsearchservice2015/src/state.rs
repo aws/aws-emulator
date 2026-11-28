@@ -679,6 +679,7 @@ pub struct DomainConfigRecord {
     /// Ordered so a response's option map is deterministic across reads.
     pub advanced_options: Option<OptionRecord<BTreeMap<String, String>>>,
     pub log_publishing_options: Option<OptionRecord<BTreeMap<String, LogPublishingOption>>>,
+    pub catalog_options: Option<OptionRecord<CatalogOptions>>,
     pub domain_endpoint_options: Option<OptionRecord<DomainEndpointOptions>>,
     pub advanced_security_options: Option<OptionRecord<AdvancedSecurityOptions>>,
     pub auto_tune_options: Option<OptionRecord<AutoTuneOptions>>,
@@ -706,6 +707,7 @@ impl DomainConfigRecord {
             node_to_node_encryption_options: None,
             advanced_options: None,
             log_publishing_options: None,
+            catalog_options: None,
             domain_endpoint_options: None,
             advanced_security_options: None,
             auto_tune_options: None,
@@ -902,6 +904,7 @@ impl Domain {
                 .log_publishing_options
                 .as_ref()
                 .map(|r| r.value.clone().into_iter().collect()),
+            catalog_options: config.catalog_options.as_ref().map(|r| r.value.clone()),
             // Owned by Start/CancelElasticsearchServiceSoftwareUpdate, which are
             // still scaffolded: no software update has been requested on this domain.
             service_software_options: None,
@@ -1006,6 +1009,10 @@ impl Domain {
                     options: Some(r.value.clone().into_iter().collect()),
                     status: Some(r.status(now)),
                 }
+            }),
+            catalog_options: config.catalog_options.as_ref().map(|r| CatalogOptionsStatus {
+                options: Some(r.value.clone()),
+                status: Some(r.status(now)),
             }),
             domain_endpoint_options: config.domain_endpoint_options.as_ref().map(|r| {
                 DomainEndpointOptionsStatus {

@@ -167,6 +167,12 @@ fn merge_into(
         version,
     );
     changed |= apply_option(
+        &mut config.catalog_options,
+        input.catalog_options,
+        now,
+        version,
+    );
+    changed |= apply_option(
         &mut config.domain_endpoint_options,
         input.domain_endpoint_options,
         now,

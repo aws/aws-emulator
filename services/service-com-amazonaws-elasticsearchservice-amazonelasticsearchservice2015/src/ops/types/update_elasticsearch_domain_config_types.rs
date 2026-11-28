@@ -23,6 +23,7 @@ pub struct UpdateElasticsearchDomainConfigInput {
     pub advanced_options: Option<std::collections::HashMap<String, String>>,
     pub access_policies: Option<String>,
     pub log_publishing_options: Option<std::collections::HashMap<String, LogPublishingOption>>,
+    pub catalog_options: Option<CatalogOptions>,
     pub domain_endpoint_options: Option<DomainEndpointOptions>,
     pub advanced_security_options: Option<AdvancedSecurityOptionsInput>,
     pub node_to_node_encryption_options: Option<NodeToNodeEncryptionOptions>,

@@ -211,6 +211,33 @@ pub struct LogPublishingOption {
     pub enabled: Option<bool>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#CatalogOptions")]
+#[derive(Debug, Clone, Default)]
+pub struct CatalogOptions {
+    pub enabled: bool,
+    pub catalog: Option<CatalogConfiguration>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.elasticsearchservice#CatalogConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum CatalogConfiguration {
+    ServiceManagedS3Tables(ServiceManagedS3TablesCatalog),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#ServiceManagedS3TablesCatalog")]
+#[derive(Debug, Clone, Default)]
+pub struct ServiceManagedS3TablesCatalog {
+    pub encryption_configuration: Option<S3TablesEncryptionConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#S3TablesEncryptionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct S3TablesEncryptionConfiguration {
+    pub enabled: Option<bool>,
+    pub kms_key_arn: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#DomainEndpointOptions")]
 #[derive(Debug, Clone, Default)]
 pub struct DomainEndpointOptions {
@@ -310,6 +337,7 @@ pub struct ElasticsearchDomainStatus {
     pub node_to_node_encryption_options: Option<NodeToNodeEncryptionOptions>,
     pub advanced_options: Option<std::collections::HashMap<String, String>>,
     pub log_publishing_options: Option<std::collections::HashMap<String, LogPublishingOption>>,
+    pub catalog_options: Option<CatalogOptions>,
     pub service_software_options: Option<ServiceSoftwareOptions>,
     pub domain_endpoint_options: Option<DomainEndpointOptions>,
     pub advanced_security_options: Option<AdvancedSecurityOptions>,
@@ -479,6 +507,7 @@ pub struct ElasticsearchDomainConfig {
     pub node_to_node_encryption_options: Option<NodeToNodeEncryptionOptionsStatus>,
     pub advanced_options: Option<AdvancedOptionsStatus>,
     pub log_publishing_options: Option<LogPublishingOptionsStatus>,
+    pub catalog_options: Option<CatalogOptionsStatus>,
     pub domain_endpoint_options: Option<DomainEndpointOptionsStatus>,
     pub advanced_security_options: Option<AdvancedSecurityOptionsStatus>,
     pub auto_tune_options: Option<AutoTuneOptionsStatus>,
@@ -574,6 +603,13 @@ pub struct AdvancedOptionsStatus {
 #[derive(Debug, Clone, Default)]
 pub struct LogPublishingOptionsStatus {
     pub options: Option<std::collections::HashMap<String, LogPublishingOption>>,
+    pub status: Option<OptionStatus>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elasticsearchservice#CatalogOptionsStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct CatalogOptionsStatus {
+    pub options: Option<CatalogOptions>,
     pub status: Option<OptionStatus>,
 }
 

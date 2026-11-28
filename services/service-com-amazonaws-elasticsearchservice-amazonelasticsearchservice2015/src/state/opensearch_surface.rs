@@ -241,6 +241,10 @@ fn reported_status(status: &os::DomainStatus) -> ElasticsearchDomainStatus {
             .log_publishing_options
             .as_ref()
             .map(log_publishing_options),
+        // The 2021-01-01 surface's model declares no catalog integration, so its record
+        // holds nothing to report here: a domain of that surface publishes to no catalog,
+        // rather than to one this projection would have to invent.
+        catalog_options: None,
         service_software_options: status
             .service_software_options
             .as_ref()
@@ -347,6 +351,9 @@ fn reported_config(config: &os::DomainConfig) -> ElasticsearchDomainConfig {
                 options: logs.options.as_ref().map(log_publishing_options),
                 status: logs.status.as_ref().map(option_status),
             }),
+        // No catalog integration on that surface (see [`reported_status`]), so the
+        // configured catalog options of one of its domains are nothing.
+        catalog_options: None,
         domain_endpoint_options: config
             .domain_endpoint_options
             .as_ref()

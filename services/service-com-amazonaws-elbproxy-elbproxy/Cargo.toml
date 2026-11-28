@@ -31,6 +31,11 @@ emulator-core-build-support = { workspace = true }
 automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The Classic Elastic Load Balancing service, which owns the `elasticloadbalancing`
+# routing key this model's identity publishes too: `tests/all/shared_signing_name_routing.rs`
+# mounts it beside this service, because "no OTHER service claims this request" can only be
+# asked with both mounted. TEST-ONLY.
+service-com-amazonaws-elasticloadbalancing-elasticloadbalancing-v7 = { workspace = true }
 
 [lints]
 workspace = true

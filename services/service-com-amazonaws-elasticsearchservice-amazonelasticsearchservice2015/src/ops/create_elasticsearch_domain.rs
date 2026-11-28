@@ -369,6 +369,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             version,
         );
         apply_option(
+            &mut config.catalog_options,
+            input.catalog_options,
+            now,
+            version,
+        );
+        apply_option(
             &mut config.domain_endpoint_options,
             input.domain_endpoint_options,
             now,
