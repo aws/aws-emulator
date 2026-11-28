@@ -1906,14 +1906,23 @@ impl ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State {
     }
 }
 
+/// Nanoseconds in one millisecond, the resolution [`to_date_time`] reports an instant at.
+const NANOS_PER_MILLISECOND: u32 = 1_000_000;
+
 /// A stored instant as the wire timestamp the modelled `Timestamp` members carry.
+///
+/// The instant is truncated towards the epoch to whole milliseconds: a timestamp this
+/// service reports carries millisecond resolution, never the finer resolution of
+/// whatever clock the instant was read from. Every member that reports a stored instant
+/// — on a create, an update and a read alike — goes through here, so they all carry the
+/// same resolution.
 pub fn to_date_time(at: SystemTime) -> ::aws_smithy_types::DateTime {
     let since_epoch = at
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     ::aws_smithy_types::DateTime::from_secs_and_nanos(
         i64::try_from(since_epoch.as_secs()).unwrap_or(i64::MAX),
-        since_epoch.subsec_nanos(),
+        since_epoch.subsec_millis() * NANOS_PER_MILLISECOND,
     )
 }
 

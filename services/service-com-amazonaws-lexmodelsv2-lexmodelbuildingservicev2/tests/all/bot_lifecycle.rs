@@ -87,6 +87,24 @@ pub(crate) async fn call_announcing(
     uri: &str,
     body: Option<Value>,
 ) -> (u16, Option<String>, Value) {
+    let (status, announced, raw) = call_raw(router, method, uri, body).await;
+    let parsed = if raw.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&raw).unwrap_or(Value::Null)
+    };
+    (status, announced, parsed)
+}
+
+/// The same dispatch, with the response document handed back as the TEXT the client
+/// receives rather than as a parsed tree — for an assertion about how a value is
+/// serialized, which parsing into a `Value` throws away.
+pub(crate) async fn call_raw(
+    router: &MultiServiceRouter,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (u16, Option<String>, String) {
     let payload = body.map_or_else(Bytes::new, |body| {
         Bytes::from(serde_json::to_vec(&body).expect("serialize the request body"))
     });
@@ -106,12 +124,8 @@ pub(crate) async fn call_announcing(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let bytes = response.body();
-    let parsed = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(bytes).unwrap_or(Value::Null)
-    };
-    (status, announced, parsed)
+    let raw = String::from_utf8_lossy(bytes).into_owned();
+    (status, announced, raw)
 }
 
 /// The wire error code restJson1 puts in the error envelope's `__type`.
