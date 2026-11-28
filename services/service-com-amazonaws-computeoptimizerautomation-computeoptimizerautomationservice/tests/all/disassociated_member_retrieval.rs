@@ -42,18 +42,23 @@ use super::recommended_action_inventory::{listed_actions, opted_in_emulator};
 /// A second member account id in the model's `AccountId` form (`^[0-9]{12}$`),
 /// distinct from `MEMBER_A` and from the calling account, so a removal can be
 /// judged per account.
-const MEMBER_B: &str = "777788889999";
+///
+/// `pub(crate)` with the three helpers below, because the sibling suite that
+/// takes the same rule over the EVENT store
+/// ([`crate::disassociated_member_event_selection`]) drives the same
+/// organization rather than describing a second one.
+pub(crate) const MEMBER_B: &str = "777788889999";
 
 /// How savings are compared: the figures are `Double`s the service computed from
 /// its price list, so two sums of the same set agree to within rounding.
-const SAVINGS_TOLERANCE: f64 = 1e-6;
+pub(crate) const SAVINGS_TOLERANCE: f64 = 1e-6;
 
 /// The fixed `key` the account-wide recommended-action summary row carries.
 const AGGREGATE_KEY: &str = "ALL_Recommended_Action_Summary";
 
 /// Every item a paginated listing reports for `request`, walked page by page so
 /// the whole result set is seen however it is paged.
-async fn walk(
+pub(crate) async fn walk(
     router: &MultiServiceRouter,
     operation: &str,
     request: &Value,
@@ -101,7 +106,7 @@ fn ids(items: &[Value]) -> BTreeSet<String> {
 
 /// A member of an `EstimatedMonthlySavings` an item carries, read at `pointer`;
 /// an item Compute Optimizer estimated nothing for adds nothing.
-fn savings_at(item: &Value, pointer: &str) -> f64 {
+pub(crate) fn savings_at(item: &Value, pointer: &str) -> f64 {
     item.pointer(pointer).and_then(Value::as_f64).unwrap_or(0.0)
 }
 

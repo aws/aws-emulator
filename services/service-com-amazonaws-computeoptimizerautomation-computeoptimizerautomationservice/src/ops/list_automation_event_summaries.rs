@@ -3,7 +3,8 @@
 //! @op ListAutomationEventSummaries
 //!
 //! IMPLEMENTED. Summarises the automation events the store holds — the same
-//! [`crate::state::EventStore`] `ListAutomationEvents` reports — GROUPED by
+//! [`crate::state::EventStore`] `ListAutomationEvents` reports, over the same
+//! selection of accounts the caller currently reaches — GROUPED by
 //! `eventStatus` (see [`crate::state::group_events_by_event_status`]), narrowed
 //! by `filters` exactly as that operation narrows its list and by the
 //! `[startDateInclusive, endDateExclusive)` window, and paged by `maxResults`
@@ -329,14 +330,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // every event's status — which is the dimension the rows are grouped by.
         guard.events.settle_due(now);
 
-        // The matching events, grouped by `eventStatus`: the matched events are
+        // The matching events, grouped by `eventStatus`: out of the events this
+        // caller may RETRIEVE — its own account's, and each currently reachable
+        // member account's, judged per call
+        // (`crate::state::…::retrievable_events`), the same selection
+        // `ListAutomationEvents` reports. The matched events are
         // what gets grouped, so a status nothing matched is no group, and the
         // groups come back in the order the store first holds an event in each
         // status — the same order `ListAutomationEvents` walks.
         let grouped = crate::state::group_events_by_event_status(
             guard
-                .events
-                .iter_in_order()
+                .retrievable_events(&hierarchy)
                 .filter(|event| {
                     crate::state::within_window(
                         event.created_timestamp,

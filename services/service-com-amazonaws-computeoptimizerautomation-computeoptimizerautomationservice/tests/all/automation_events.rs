@@ -19,6 +19,7 @@ use std::sync::Arc;
 use aws_smithy_types::DateTime;
 use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizerautomation_computeoptimizerautomationservice::state::{
+    caller_account_id, now,
     ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceState as AutomationState,
     StoredEvent, EVENT_RETRIEVAL_WINDOW, INVALID_TIME_RANGE_MESSAGE,
 };
@@ -188,10 +189,21 @@ pub(crate) fn stored_event(
 }
 
 /// Put `events` in the shared store, in the order given.
+///
+/// An event of an account OTHER than the caller's is in that store because the
+/// caller automated a recommended action of that account, which only an
+/// association permits, so the association is recorded with it — the same rule
+/// the recommended-action fixture follows
+/// (`crate::recommended_actions::record`). The retrieval scope is read from the
+/// association rather than from the stored event, so a fixture that recorded
+/// only the event would describe a store no call can produce.
 pub(crate) fn seed(engine: &Arc<engine::InMemoryEngine>, events: &[StoredEvent]) {
     let state = engine.state::<AutomationState>();
     let mut store = state.lock();
     for event in events {
+        if event.account_id != caller_account_id() {
+            store.associate_account(&event.account_id, now());
+        }
         store.events.insert(event.clone());
     }
 }

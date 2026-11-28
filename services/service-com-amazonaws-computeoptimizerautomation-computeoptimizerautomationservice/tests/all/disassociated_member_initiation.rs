@@ -12,8 +12,9 @@
 //!   what the organization retrieves (they come back, unchanged, the moment the
 //!   account is associated again) and a start of one of them is refused for the
 //!   caller's standing rather than answered "no such resource"; the automation
-//!   events the account already ran stay readable throughout, because an event
-//!   is a resource of its own;
+//!   events the account already ran stay readable by their ids throughout,
+//!   because an event is a resource of its own, and the listing reports them
+//!   again the moment the account is associated again;
 //! * a refused start consumes nothing, its `clientToken` included, so the same
 //!   request is served once the association is back and a retry of it answers
 //!   that one automation instead of starting a second.
@@ -67,10 +68,15 @@ async fn a_removed_association_takes_nothing_out_of_the_store() {
 
     disassociate(&router, MEMBER_A, "disassociated").await;
 
+    // The event store is left alone, but the organization's reach over that
+    // account is not: the event SELECTIONS stop covering it (the scope every
+    // selection is narrowed by — `crate::disassociated_member_event_selection`)
+    // while the event itself stays exactly where it was, reachable by its id.
     assert_eq!(
         event_ids_in_account(&router, MEMBER_A, "disassociated").await,
-        vec![event_id.clone()],
-        "case \"disassociated\": the automation the member account ran is still listed"
+        Vec::<String>::new(),
+        "case \"disassociated\": the listing must stop selecting an account the organization no \
+         longer reaches"
     );
     let event = call_ok(
         &router,
@@ -96,6 +102,11 @@ async fn a_removed_association_takes_nothing_out_of_the_store() {
         listed_action_ids(&router, MEMBER_A, "re-associated").await,
         listed_while_associated,
         "case \"re-associated\": the removal kept the inventory the analysis produced"
+    );
+    assert_eq!(
+        event_ids_in_account(&router, MEMBER_A, "re-associated").await,
+        vec![event_id],
+        "case \"re-associated\": the removal kept the automation the member account ran"
     );
 }
 

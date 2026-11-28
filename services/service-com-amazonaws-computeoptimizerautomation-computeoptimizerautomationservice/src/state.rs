@@ -3580,7 +3580,9 @@ pub struct ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationservi
     /// scopes them to the accounts the caller currently reaches.
     pub recommended_actions: RecommendedActionStore,
     /// Every automation event, in creation order. Written by the operations
-    /// that start and roll back an event; read by the event readers.
+    /// that start and roll back an event; read by the event readers. The
+    /// selections read it through [`Self::retrievable_events`], which is what
+    /// scopes them to the accounts the caller currently reaches.
     pub events: EventStore,
     /// `clientToken` -> what the call that first used it did. Bounded by
     /// [`MAX_IDEMPOTENCY_ENTRIES`] and [`IDEMPOTENCY_TTL`].
@@ -3840,6 +3842,37 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
         })
     }
 
+    /// The stored automation events the caller may RETRIEVE right now, in the
+    /// order the store holds them.
+    ///
+    /// The event store is multi-account — an event records the `accountId` the
+    /// automation ran in, and the event filters select on it — and an event in
+    /// ANOTHER account exists because the caller automated a recommended action
+    /// of that account, which is work only an association permits
+    /// ([`Self::may_initiate_in`]). So the scope a caller SELECTS events over is
+    /// the one it selects analysed actions over: its own account, plus each
+    /// account whose effective organization rule mode currently lets the
+    /// organization reach into it — read PER CALL and never inferred from the
+    /// event being stored, because a disassociation leaves the member's events
+    /// exactly where they were ([`Self::disassociate_account`]).
+    ///
+    /// Every SELECTION over the stored events starts here — the event listing
+    /// and the event summary, which reduce the same selection to rows — so
+    /// neither reports an event of an account the caller no longer reaches, and
+    /// neither can drift apart from the operations that initiate work on those
+    /// events. Resolving ONE event by its id still goes to the whole store
+    /// ([`EventStore::retrievable_mut`]), which is what lets
+    /// `RollbackAutomationEvent` refuse with the caller's standing instead of
+    /// claiming the event has gone away.
+    pub fn retrievable_events<'store>(
+        &'store self,
+        hierarchy: &'store OrganizationHierarchy,
+    ) -> impl Iterator<Item = &'store StoredEvent> + 'store {
+        self.events
+            .iter_in_order()
+            .filter(|event| self.may_initiate_in(hierarchy, &event.account_id))
+    }
+
     /// How many of `account_ids` the enrollment store does not hold an entry for
     /// yet — i.e. how much an association of exactly those accounts would GROW
     /// the store. An id already stored costs nothing, whatever its status.
@@ -3947,9 +3980,10 @@ impl ComAmazonawsComputeoptimizerautomationComputeoptimizerautomationserviceStat
     /// enrollment status of the account" and only that account's
     /// `UpdateEnrollmentConfiguration` sets it, so a member account that enabled
     /// the Automation feature keeps it enabled (and keeps the inventory that
-    /// enrollment produced) once the organization stops reaching it — the
-    /// organization's own retrieval scope is what stops covering that inventory
-    /// ([`Self::retrievable_actions`]).
+    /// enrollment produced, and the events that inventory was automated through)
+    /// once the organization stops reaching it — the organization's own
+    /// retrieval scope is what stops covering them
+    /// ([`Self::retrievable_actions`], [`Self::retrievable_events`]).
     ///
     /// Only an account the enrollment store already holds an entry for is
     /// written: an account the store has never seen carries no association to

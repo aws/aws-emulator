@@ -3,7 +3,9 @@
 //! @op ListAutomationEvents
 //!
 //! IMPLEMENTED. Reports the automation events the store holds, in creation order,
-//! narrowed by the half-open `[startTimeInclusive, endTimeExclusive)` window and by
+//! narrowed to the accounts the caller currently reaches
+//! (`crate::state::…::retrievable_events`), by the half-open
+//! `[startTimeInclusive, endTimeExclusive)` window and by
 //! `filters`, and paged by `maxResults` with an opaque `nextToken` that resumes where
 //! the previous page stopped. `@paginated(inputToken: nextToken, outputToken:
 //! nextToken, items: automationEvents)`. A REPORTING operation: it writes nothing.
@@ -272,16 +274,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // every event's status and a status filter selects on the current one.
         guard.events.settle_due(now);
         // The events inside the window that match the filters are what gets
-        // paged, and the page walk is the one every paginated listing of this
-        // service performs, entered the way a cursor enters it:
+        // paged, out of the events this caller may RETRIEVE — its own account's,
+        // and each currently reachable member account's, judged per call:
+        // `crate::state::…::retrievable_events`. The page walk is the one every
+        // paginated listing of this service performs, entered the way a cursor
+        // enters it:
         // `crate::state::resume_page` answers nothing for a cursor naming a
         // position this sequence does not reach, which is a token this listing
         // never minted and so the same refusal as one that does not decode at
         // all.
         let served: Option<(Vec<AutomationEvent>, Option<String>)> = crate::state::resume_page(
             guard
-                .events
-                .iter_in_order()
+                .retrievable_events(&hierarchy)
                 .filter(|event| {
                     crate::state::within_window(
                         event.created_timestamp,

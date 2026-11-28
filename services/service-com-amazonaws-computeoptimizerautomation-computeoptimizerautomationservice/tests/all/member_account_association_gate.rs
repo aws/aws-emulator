@@ -188,13 +188,18 @@ async fn the_gate_covers_every_action_of_a_member_account() {
         let case = format!("disassociated-{action_id}");
         assert_access_denied(start(&router, action_id, None).await, &case);
     }
+    // The refused starts minted nothing: the event listing no longer selects
+    // that account at all while the association is gone
+    // (`crate::disassociated_member_event_selection`), so the events it holds
+    // are counted again once the association is back — and they are exactly the
+    // ones the served starts created.
+    associate(&router, MEMBER_A, "re-associated").await;
     assert_eq!(
-        event_ids_in_account(&router, MEMBER_A, "disassociated")
-            .await
-            .len(),
-        events_while_associated.len(),
-        "case \"disassociated\": a refused start mints no further automation event"
+        event_ids_in_account(&router, MEMBER_A, "re-associated").await,
+        events_while_associated,
+        "case \"re-associated\": the refused starts minted no further automation event"
     );
+    disassociate(&router, MEMBER_A, "disassociated-again").await;
 
     for action_id in action_ids(&state::caller_account_id()) {
         let case = format!("own-{action_id}");
