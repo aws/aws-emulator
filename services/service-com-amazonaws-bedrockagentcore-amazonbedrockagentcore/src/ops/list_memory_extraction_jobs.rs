@@ -218,7 +218,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         )?;
 
-        let store = state.lock();
+        // The extraction the clock has already made due is materialised before the units
+        // are composed: a unit is eligible to be STARTED exactly while no extraction has
+        // picked its messages up, so one the automatic pipeline has already extracted is
+        // no longer work. The strategies come from the CONTROL plane that owns them, read
+        // and released before this service's own store is taken.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_long_term_extraction(&input.memory_id, &strategies, now);
         // The units of extraction work the container holds, oldest first, rendered as the
         // modelled metadata so the filter reads exactly the members a caller sees.
         let mut jobs: Vec<ExtractionJobMetadata> = store

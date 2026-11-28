@@ -204,8 +204,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )?;
 
         let memory_id = crate::state::normalize_memory_id(&input.memory_id);
+        // A record a due extraction derived exists before this delete runs, so a caller can
+        // delete one; the strategies come from the CONTROL plane that owns them, read and
+        // released before this store is taken.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
+        store.settle_long_term_extraction(&memory_id, &strategies, now);
         // A record the clock has already expired is gone before this delete runs, so
         // deleting it is a delete of a record that no longer exists.
         store.expire_memory_records(now);

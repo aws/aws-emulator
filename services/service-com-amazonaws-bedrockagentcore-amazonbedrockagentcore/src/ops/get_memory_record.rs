@@ -206,8 +206,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )?;
 
         let memory_id = crate::state::normalize_memory_id(&input.memory_id);
+        // The extraction the clock has already made due is materialised before any record
+        // is addressed, for the same reason an expired record is: either way the container
+        // holds what it holds whether or not anybody reads it. The strategies come from
+        // the CONTROL plane that owns them, read and released before this store is taken.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
+        store.settle_long_term_extraction(&memory_id, &strategies, now);
         // A record expiry is a time-to-live: a record the clock has already run out on
         // is gone whether or not anybody reads it, so it is not reported back.
         store.expire_memory_records(now);

@@ -20,6 +20,13 @@
 //! `ListMemoryRecords` reports the container's records narrowed by what the request asks
 //! for ([`MemoryRecordSelection`]).
 //!
+//! The container's OTHER records are the ones long-term extraction derived from the
+//! messages it accepted, in the namespaces its strategies resolve to ([`memory_extraction`]):
+//! the extraction a `CreateEvent` or an `IngestData` starts is asynchronous, so each accepted
+//! record carries the instant its extraction comes due and every operation that reaches the
+//! container's records materialises what the clock has already made due. A derived record is
+//! a record of the container like any other once it exists.
+//!
 //! The AgentCore *tools* data plane keeps its own map: a code interpreter holds the
 //! sessions `StartCodeInterpreterSession` started on it, and
 //! `GetCodeInterpreterSession` reports one of them back — its status read off the
@@ -191,6 +198,12 @@ pub use browser_actions::*;
 /// work a memory container holds, derived from the messages its events carry.
 mod extraction_jobs;
 pub use extraction_jobs::*;
+
+/// What that extraction PRODUCES: [`settle_long_term_extraction`], the derived long-term
+/// memory records the messages a container accepted yield once the clock has made the
+/// extraction of them due, in the namespaces the container's strategies resolve to.
+mod memory_extraction;
+pub use memory_extraction::*;
 
 /// The query side of the long-term memory RECORD plane: [`MemoryRecordSelection`], the
 /// namespace, strategy and metadata narrowing a listing of a container's records applies,
@@ -1475,8 +1488,10 @@ pub struct StoredMemoryRecord {
     pub memory_record_id: String,
     pub memory_id: String,
     /// The `requestIdentifier` the creating batch entry carried, which is what the batch
-    /// response tracks each per-record outcome by.
-    pub request_identifier: String,
+    /// response tracks each per-record outcome by. `None` for a record no batch entry
+    /// created: a record LONG-TERM EXTRACTION derived from the messages the container
+    /// accepted was asked for by no request of its own ([`memory_extraction`]).
+    pub request_identifier: Option<String>,
     pub namespaces: Vec<String>,
     pub content: MemoryContent,
     /// The strategy this record is grouped under: the one the creating request named, or
@@ -1516,7 +1531,7 @@ impl StoredMemoryRecord {
         MemoryRecordOutput {
             memory_record_id: self.memory_record_id.clone(),
             status: MEMORY_RECORD_STATUS_SUCCEEDED.to_string(),
-            request_identifier: Some(self.request_identifier.clone()),
+            request_identifier: self.request_identifier.clone(),
             error_code: None,
             error_message: None,
         }
@@ -1610,6 +1625,9 @@ pub struct IngestedContent {
     pub payload: Vec<IngestPayloadType>,
     /// The namespace substitution the request asked extraction to use, kept as sent.
     pub extraction_config: Option<ExtractionConfig>,
+    /// The instant the long-term extraction of this content's messages comes due, read
+    /// exactly as [`StoredEvent::extraction_due_at`] is.
+    pub extraction_due_at: SystemTime,
     pub metadata: Option<HashMap<String, MetadataValue>>,
     /// The value [`ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState::next_seq`]
     /// handed this ingestion: its identity inside the session, and its eviction order.
@@ -1637,6 +1655,15 @@ pub struct StoredEvent {
     /// extraction work ([`EXTRACTION_MODE_SKIP`]); the member absent means the event "is
     /// processed for extraction as usual".
     pub extraction_mode: Option<String>,
+    /// The `extractionConfig` the creating request carried, kept as sent: the values
+    /// long-term extraction substitutes into a strategy's namespace templates
+    /// ([`resolved_namespace`]).
+    pub extraction_config: Option<ExtractionConfig>,
+    /// The instant the long-term extraction of this event's messages comes due
+    /// ([`LONG_TERM_EXTRACTION_SPAN`] after the call that accepted it). Stored, never
+    /// slept on: a read of the container's records materialises the extraction the clock
+    /// has already made due ([`settle_long_term_extraction`]).
+    pub extraction_due_at: SystemTime,
     /// The value [`ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState::next_seq`]
     /// handed this event. It totally orders events created in the same millisecond
     /// and with the same `eventTimestamp`, so a listing is deterministic.

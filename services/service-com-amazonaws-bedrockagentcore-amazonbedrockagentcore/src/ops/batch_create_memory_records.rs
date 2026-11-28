@@ -241,7 +241,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         )?;
 
+        // The extraction the clock has already made due is materialised before this batch
+        // reads or writes anything, so the container a replayed token is answered from
+        // holds what it holds. The strategies come from the CONTROL plane that owns them,
+        // read and released before this store is taken.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
         let mut store = state.lock();
+        store.settle_long_term_extraction(&memory_id, &strategies, now);
         // A record expiry is a time-to-live, so records the clock has already run out on
         // leave before this batch reads or writes anything.
         store.expire_memory_records(now);
@@ -281,7 +287,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             stored.push(crate::state::StoredMemoryRecord {
                 memory_record_id: crate::state::mint_memory_record_id(created_at, seq),
                 memory_id: memory_id.clone(),
-                request_identifier: record.request_identifier.clone(),
+                request_identifier: Some(record.request_identifier.clone()),
                 namespaces: record.namespaces.clone(),
                 content: record.content.clone(),
                 memory_strategy_id: record.memory_strategy_id.clone().unwrap_or_else(|| {

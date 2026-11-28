@@ -250,6 +250,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // supported"), so the union has one member to take the payload from.
         let ContentSource::Inline(inline) = input.source;
 
+        let now = ::std::time::SystemTime::now();
         let seq = store.next_seq();
         // A session the caller did not name is created for it and reported back, so the
         // caller can address that session afterwards.
@@ -258,12 +259,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .clone()
             .unwrap_or_else(|| crate::state::mint_session_id(seq));
         // The content is persisted as submitted: it is what long-term extraction reads,
-        // and the `*MemoryRecord*` operations that report extracted records are still
-        // 501 in this crate. Synthesising records nothing extracted would be worse than
-        // not reporting them, so this operation stores the content and leaves those
-        // records to the issues that implement them. The content IS a unit of extraction
-        // work the container now holds, which `ListMemoryExtractionJobs` reports under
-        // the id minted here.
+        // and the records that extraction derives from it appear in the namespaces this
+        // container's strategies resolve to once the clock has made the extraction due
+        // ([`crate::state::settle_long_term_extraction`]). The content IS a unit of
+        // extraction work the container now holds, which `ListMemoryExtractionJobs`
+        // reports under the id minted here.
         let ingestion = crate::state::IngestedContent {
             content_id: crate::state::mint_event_id(seq),
             memory_id: memory_id.clone(),
@@ -272,6 +272,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             content_timestamp: input.content_timestamp,
             payload: inline.payload,
             extraction_config: input.extraction_config,
+            // Stored, never slept on, exactly as an event's is.
+            extraction_due_at: now + crate::state::LONG_TERM_EXTRACTION_SPAN,
             metadata: input.metadata,
             seq,
         };

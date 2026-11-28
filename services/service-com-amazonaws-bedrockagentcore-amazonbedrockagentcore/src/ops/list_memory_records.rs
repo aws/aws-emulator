@@ -5,7 +5,9 @@
 //! Reports the LONG-TERM memory records a memory container holds, narrowed by what the
 //! request asks for and returned one page at a time.
 //!
-//! A record is written by `BatchCreateMemoryRecords` and lives in the container
+//! A record is written by `BatchCreateMemoryRecords`, or derived by the long-term extraction
+//! of the messages the container accepted ([`crate::state::settle_long_term_extraction`]),
+//! and lives in the container
 //! ([`crate::state::StoredMemoryRecord`]), so this listing computes its answer from what
 //! was stored: the container's records, narrowed by the namespace scope, the strategy
 //! association and the metadata expressions the request carries
@@ -269,8 +271,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         )?;
 
+        // Long-term extraction is work the service owes after a container accepts a
+        // message, so the records it has already made due exist whether or not anybody
+        // lists them: the strategies it runs under are read off the CONTROL plane that
+        // owns them and released before this service's own store is taken, the lock order
+        // every reader of another plane's store keeps.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
+
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
+        store.settle_long_term_extraction(&input.memory_id, &strategies, now);
         // A record expiry is a time-to-live: a record the clock has already run out on is
         // gone whether or not anybody lists it, so it is not reported back.
         store.expire_memory_records(now);

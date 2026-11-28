@@ -187,12 +187,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )?;
 
         let job_id = input.extraction_job.job_id;
+        // The strategies the extraction this start asks for runs under, read off the
+        // CONTROL plane that owns them and released before this service's own store is
+        // taken, which is the lock order every reader of another plane's store keeps.
+        let strategies = crate::state::memory_extraction_strategies(&*self.engine, &input.memory_id);
+        let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         // The pick-up: the messages of this unit the container has accepted and no
-        // earlier attempt covered. An id naming no unit of work and no job an earlier
-        // start picked up addresses no extraction job at all.
+        // earlier attempt covered, extracted into the records those strategies derive from
+        // them. An id naming no unit of work and no job an earlier start picked up
+        // addresses no extraction job at all.
         let started = store
-            .start_extraction_job(&input.memory_id, &job_id)
+            .start_extraction_job(&input.memory_id, &job_id, &strategies, now)
             .ok_or_else(|| {
                 StartMemoryExtractionJobErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {

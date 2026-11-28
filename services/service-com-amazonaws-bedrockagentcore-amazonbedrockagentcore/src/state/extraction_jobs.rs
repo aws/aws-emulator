@@ -21,15 +21,14 @@
 //! and the content `IngestData` submitted into it, in the order the container accepted
 //! them.
 //!
-//! What a job does NOT carry is an outcome. Nothing in this emulator has run extraction
-//! over a stored message, so no job here reports a `status` or a `failureReason`: a unit
-//! is reported with the identity and the messages its session supports, and with nothing
-//! an attempt would have produced. The structured memory records an extraction produces
-//! are a model's reading of a conversation under the memory strategies the CONTROL plane
-//! holds, which this plane can neither read nor run, so a start picks its messages up and
-//! reports no record it did not produce — synthesising records nothing extracted would be
-//! worse than not reporting them, exactly as `IngestData` already states for the content
-//! it stores.
+//! What a job does NOT carry is an outcome. A unit is reported with the identity and the
+//! messages its session supports, and with no `status` and no `failureReason`: those report
+//! an extraction ATTEMPT, and a unit is listed exactly while no attempt has picked its
+//! messages up. What an attempt PRODUCES is the long-term memory records the container's
+//! strategies derive from those messages, which is the other half of this plane
+//! ([`super::memory_extraction`]): both the extraction the clock owes after a message is
+//! accepted and the one a start asks for go through it, and both record their pick-up as the
+//! watermark here.
 //!
 //! The work this walk does is bounded by the store's own ceilings
 //! ([`super::MAX_STORED_EVENTS`] events and [`super::MAX_STORED_INGESTIONS`] ingestions
@@ -281,7 +280,8 @@ impl ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState {
     }
 
     /// Pick up the messages the extraction job `job_id` left unprocessed, recording the
-    /// watermark of what this attempt covered.
+    /// watermark of what this attempt covered and storing the memory records `strategies`
+    /// derive from those messages ([`super::memory_extraction`]).
     ///
     /// `None` when the container holds no unit of work under that id — the caller has
     /// already resolved the CONTAINER itself ([`super::memory_item_container_resolved`]), so
@@ -293,27 +293,51 @@ impl ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState {
         &mut self,
         memory_id: &str,
         job_id: &str,
+        strategies: &[super::ExtractionStrategy],
+        now: ::std::time::SystemTime,
     ) -> Option<StartedExtractionJob> {
-        let Some(unit) = self.extraction_job_unit(memory_id, job_id) else {
-            return self.started_extraction_job(memory_id, job_id).cloned();
-        };
-        // The unit was just resolved out of this container's own records, so the container
-        // is held. The sequence is taken only once that is established, so a lookup that
-        // somehow missed cannot consume one without writing anything.
-        if !self.memories.contains_key(&normalize_memory_id(memory_id)) {
+        // A start is a request for the extraction itself, so it reads the unit's messages
+        // whether or not the clock had made their own extraction due yet, and the records
+        // it derives are stored by the one path that derives them.
+        match self.extract_memory_job(memory_id, job_id, strategies, now) {
+            Some(started) => Some(started),
+            None => self.started_extraction_job(memory_id, job_id).cloned(),
+        }
+    }
+
+    /// Record that the messages of the unit `job_id` up to `through_seq` have been picked
+    /// up, so only the records the container accepts afterwards are still work.
+    ///
+    /// The ONE write of that watermark, whether the extraction was asked for by a start or
+    /// was the one the clock owed, so the two cannot disagree about what has been
+    /// extracted. `None` when this plane holds no index for the container at all.
+    pub(super) fn record_extraction_watermark(
+        &mut self,
+        memory_key: &str,
+        job_id: &str,
+        actor_id: &str,
+        session_id: &str,
+        through_seq: u64,
+    ) -> Option<StartedExtractionJob> {
+        // The caller resolved the unit out of this container's own records, so the
+        // container is held. The sequence is taken only once that is established, so a
+        // lookup that somehow missed cannot consume one without writing anything.
+        if !self.memories.contains_key(memory_key) {
             return None;
         }
         let seq = self.next_seq();
-        let memory = self.memories.get_mut(&normalize_memory_id(memory_id))?;
+        let memory = self.memories.get_mut(memory_key)?;
         let started = StartedExtractionJob {
-            job_id: unit.job_id.clone(),
-            actor_id: unit.actor_id,
-            session_id: unit.session_id,
-            extracted_through_seq: unit.latest_seq,
+            job_id: job_id.to_string(),
+            actor_id: actor_id.to_string(),
+            session_id: session_id.to_string(),
+            extracted_through_seq: through_seq,
             seq,
         };
         memory.last_seq = memory.last_seq.max(seq);
-        memory.extractions.insert(unit.job_id, started.clone());
+        memory
+            .extractions
+            .insert(job_id.to_string(), started.clone());
         while memory.extractions.len() > MAX_STARTED_EXTRACTION_JOBS_PER_MEMORY {
             let Some(oldest) =
                 super::least_recently_written(&memory.extractions, |started| started.seq)

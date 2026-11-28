@@ -269,12 +269,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // `extractionConfig` steers the namespace substitution LONG-TERM extraction uses,
-        // which no implemented operation reports, so this slice stores the event without
-        // it and leaves it to the issue that implements memory records: synthesising an
-        // extraction nothing performed would be worse than not performing it.
-        // `extractionMode` is kept, because it decides whether this event's messages are
-        // read by long-term extraction at all, and the units of extraction work a
-        // container holds are reported by `ListMemoryExtractionJobs`.
+        // so it is stored with the event: the values it carries are what a strategy's
+        // namespace templates resolve through when the extraction of this event's messages
+        // comes due ([`crate::state::settle_long_term_extraction`]). `extractionMode`
+        // decides whether this event's messages are read by that extraction at all.
+        let now = ::std::time::SystemTime::now();
         let seq = store.next_seq();
         // A session the caller did not name is created for it, and reported back on the
         // event so the caller can address that session afterwards.
@@ -294,6 +293,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             branch: input.branch.unwrap_or_else(crate::state::default_branch),
             metadata: input.metadata,
             extraction_mode: input.extraction_mode,
+            extraction_config: input.extraction_config,
+            // Long-term extraction is ASYNCHRONOUS: this call answers with the event
+            // stored short-term, and the records it derives appear once the clock has made
+            // that extraction due. The instant is stored, never slept on.
+            extraction_due_at: now + crate::state::LONG_TERM_EXTRACTION_SPAN,
             seq,
         };
         // Built from what is about to be stored, so the response and the store cannot
