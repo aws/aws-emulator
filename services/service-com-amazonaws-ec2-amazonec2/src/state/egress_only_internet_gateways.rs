@@ -17,7 +17,7 @@
 
 use super::{
     id_not_found, tag_list_bytes, ComAmazonawsEc2Amazonec2State, ATTACHMENT_STATUS_ATTACHED,
-    INVALID_GATEWAY_ID_NOT_FOUND, MAX_STORED_RECORDS_PER_STORE, ROUTE_STATE_BLACKHOLE,
+    INVALID_GATEWAY_ID_NOT_FOUND, MAX_STORED_RECORDS_PER_STORE,
     STORED_RECORD_OVERHEAD_BYTES,
 };
 use crate::ops::types::{EgressOnlyInternetGateway, InternetGatewayAttachment, Tag};
@@ -165,8 +165,8 @@ impl ComAmazonawsEc2Amazonec2State {
     /// charge the store is carrying for this record is the one its current tags define, not
     /// the one its create happened to take. The `ClientToken` entries that name it go with it,
     /// so a replayed token can never resolve to an id the store no longer holds, and a route
-    /// still pointing at the gateway goes to [`ROUTE_STATE_BLACKHOLE`]
-    /// ([`Self::blackhole_routes_to_egress_only_internet_gateway`]): that is what `Route$State`
+    /// still pointing at the gateway READS [`super::ROUTE_STATE_BLACKHOLE`]
+    /// ([`Self::reported_route_table`] derives it): that is what `Route$State`
     /// means by `blackhole` — "the specified gateway isn't attached to the VPC" — and the
     /// gateway this delete took away attaches nothing at all now.
     pub fn remove_egress_only_internet_gateway(
@@ -183,30 +183,7 @@ impl ComAmazonawsEc2Amazonec2State {
                 .unwrap_or_default(),
         ));
         self.forget_egress_only_internet_gateway_client_tokens_of(egress_only_internet_gateway_id);
-        self.blackhole_routes_to_egress_only_internet_gateway(egress_only_internet_gateway_id);
         Some(egress_only_internet_gateway)
-    }
-
-    /// Move every route pointing at the egress-only internet gateway
-    /// `egress_only_internet_gateway_id` to [`ROUTE_STATE_BLACKHOLE`].
-    ///
-    /// A route's state is STORED rather than recomputed on read
-    /// ([`super::RouteSpec::into_route`]), so the writer that makes a target unavailable is
-    /// what moves it — the same contract the internet gateway's detach has. Ids are unique
-    /// across the account, so the gateway a route names is this one wherever the route sits.
-    fn blackhole_routes_to_egress_only_internet_gateway(
-        &mut self,
-        egress_only_internet_gateway_id: &str,
-    ) {
-        for route_table in self.route_tables.values_mut() {
-            for route in route_table.routes.iter_mut().flatten() {
-                if route.egress_only_internet_gateway_id.as_deref()
-                    == Some(egress_only_internet_gateway_id)
-                {
-                    route.state = Some(ROUTE_STATE_BLACKHOLE.to_string());
-                }
-            }
-        }
     }
 
     /// The VPC the egress-only internet gateway `egress_only_internet_gateway_id` is attached

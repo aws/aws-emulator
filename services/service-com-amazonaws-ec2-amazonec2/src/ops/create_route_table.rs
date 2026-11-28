@@ -250,10 +250,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(state::dry_run_operation());
         }
 
-        // The table that token already minted, exactly as it is stored now.
+        // The table that token already minted, exactly as it is reported now.
         if let Some(route_table) = replayed {
             return Ok(CreateRouteTableOutput {
-                route_table: Some(route_table),
+                route_table: Some(store.reported_route_table(&route_table)),
                 client_token: input.client_token,
             });
         }
@@ -281,7 +281,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             store.record_route_table_client_token(token, &route_table_id);
         }
 
-        // The answer is the record as it was stored, so `CreateRouteTable` and
+        // The answer is the record as it was stored, through the one projection of a stored
+        // table ([`state::ComAmazonawsEc2Amazonec2State::reported_route_table`], which reads
+        // each route's state off its target's availability), so `CreateRouteTable` and
         // `DescribeRouteTables` cannot drift apart.
         let Some(route_table) = store.route_tables.get(&route_table_id).cloned() else {
             return Err(state::internal_error(
@@ -289,7 +291,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
         Ok(CreateRouteTableOutput {
-            route_table: Some(route_table),
+            route_table: Some(store.reported_route_table(&route_table)),
             // "Only returned if a client token was provided in the request"
             // (`CreateRouteTableResult$ClientToken`): the token the REQUEST carried, echoed,
             // and nothing at all when it carried none.

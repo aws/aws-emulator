@@ -635,6 +635,50 @@ impl RouteSpec {
     }
 }
 
+/// The target the stored route `route` points at, or `None` for a route whose target is of
+/// no kind a [`RouteTarget`] names.
+///
+/// The INVERSE of the one mapping of a target onto the member its kind belongs in
+/// ([`RouteSpec::into_route`] fills exactly one), so a stored route can be asked the question
+/// its target was resolved from: a route reports its target in one member, and which member
+/// that is says which kind of resource has to be available for the route to carry traffic
+/// ([`ComAmazonawsEc2Amazonec2State::route_target_is_available`]). The members are read in the
+/// order [`route_points_at`] reads them, so both answer off the same one.
+///
+/// `Route$CoreNetworkArn` and `Route$OdbNetworkArn` name resources of other services, which
+/// this store holds no record of and so can say nothing about the availability of: a route
+/// carrying one of those and nothing else has no target HERE.
+pub fn route_target(route: &Route) -> Option<RouteTarget> {
+    if let Some(id) = route.gateway_id.as_deref() {
+        return Some(RouteTarget::Gateway(id.to_string()));
+    }
+    if let Some(id) = route.nat_gateway_id.as_deref() {
+        return Some(RouteTarget::NatGateway(id.to_string()));
+    }
+    if let Some(id) = route.instance_id.as_deref() {
+        return Some(RouteTarget::Instance(id.to_string()));
+    }
+    if let Some(id) = route.network_interface_id.as_deref() {
+        return Some(RouteTarget::NetworkInterface(id.to_string()));
+    }
+    if let Some(id) = route.transit_gateway_id.as_deref() {
+        return Some(RouteTarget::TransitGateway(id.to_string()));
+    }
+    if let Some(id) = route.carrier_gateway_id.as_deref() {
+        return Some(RouteTarget::CarrierGateway(id.to_string()));
+    }
+    if let Some(id) = route.local_gateway_id.as_deref() {
+        return Some(RouteTarget::LocalGateway(id.to_string()));
+    }
+    if let Some(id) = route.vpc_peering_connection_id.as_deref() {
+        return Some(RouteTarget::VpcPeeringConnection(id.to_string()));
+    }
+    if let Some(id) = route.egress_only_internet_gateway_id.as_deref() {
+        return Some(RouteTarget::EgressOnlyInternetGateway(id.to_string()));
+    }
+    None
+}
+
 /// Does the stored route `route` point at `target`?
 ///
 /// Read through the one mapping of a target onto the member its kind belongs in
@@ -710,10 +754,11 @@ impl ComAmazonawsEc2Amazonec2State {
     /// minted — so there is nothing to charge against the byte budget, and the gateway's own
     /// charge stays exactly what [`Self::insert_internet_gateway`] took.
     ///
-    /// A route of that VPC already pointing at the gateway becomes reachable again with it
-    /// ([`Self::restate_routes_to_gateway`]): `Route$State` is `blackhole` exactly while "the
-    /// specified gateway isn't attached to the VPC", so an attachment is what makes such a
-    /// route `active`, and the detach below is what takes it back.
+    /// A route of that VPC already pointing at the gateway becomes reachable again with it:
+    /// `Route$State` is `blackhole` exactly while "the specified gateway isn't attached to the
+    /// VPC", so an attachment is what makes such a route `active` and the detach below is what
+    /// takes it back — read off the attachment wherever the route is reported
+    /// ([`Self::reported_route_table`]) rather than written into the route here.
     ///
     /// `false`, with nothing written, for a gateway the store does not hold.
     pub fn attach_internet_gateway(&mut self, internet_gateway_id: &str, vpc_id: &str) -> bool {
@@ -727,29 +772,7 @@ impl ComAmazonawsEc2Amazonec2State {
                 state: Some(INTERNET_GATEWAY_ATTACHMENT_STATE_AVAILABLE.to_string()),
                 vpc_id: Some(vpc_id.to_string()),
             });
-        self.restate_routes_to_gateway(internet_gateway_id, vpc_id, ROUTE_STATE_ACTIVE);
         true
-    }
-
-    /// Write `state` into every route of the VPC `vpc_id` whose target is the internet
-    /// gateway `internet_gateway_id`.
-    ///
-    /// The ONE place a route's state follows its gateway's attachment, so the attach and the
-    /// detach cannot report one route two ways: a route's state is STORED rather than
-    /// recomputed on read ([`RouteSpec::into_route`]), and the two writers of an attachment
-    /// are what move it — [`ROUTE_STATE_ACTIVE`] while the gateway attaches the VPC the table
-    /// routes for, [`ROUTE_STATE_BLACKHOLE`] while it does not.
-    fn restate_routes_to_gateway(&mut self, internet_gateway_id: &str, vpc_id: &str, state: &str) {
-        for route_table in self.route_tables.values_mut() {
-            if route_table.vpc_id.as_deref() != Some(vpc_id) {
-                continue;
-            }
-            for route in route_table.routes.iter_mut().flatten() {
-                if route.gateway_id.as_deref() == Some(internet_gateway_id) {
-                    route.state = Some(state.to_string());
-                }
-            }
-        }
     }
 
     /// Take the attachment between the internet gateway `internet_gateway_id` and the VPC
@@ -763,11 +786,10 @@ impl ComAmazonawsEc2Amazonec2State {
     /// attachment keeps the present and EMPTY attachment set a gateway attached to nothing is
     /// reported with.
     ///
-    /// A route of that VPC pointing at the gateway goes to [`ROUTE_STATE_BLACKHOLE`] with it
-    /// ([`Self::restate_routes_to_gateway`], which the attach above calls the other way):
-    /// that is what `Route$State` means by `blackhole` — "the specified gateway isn't
-    /// attached to the VPC" — so the detach is what makes the route's target unavailable, and
-    /// no reader has to recompute it.
+    /// A route of that VPC pointing at the gateway reads [`ROUTE_STATE_BLACKHOLE`] once the
+    /// attachment is gone ([`Self::reported_route_table`] derives it): that is what
+    /// `Route$State` means by `blackhole` — "the specified gateway isn't attached to the VPC" —
+    /// so the detach is what makes the route's target unavailable.
     ///
     /// `false`, with nothing written, for a gateway the store does not hold or one this VPC
     /// is not attached to.
@@ -785,7 +807,6 @@ impl ComAmazonawsEc2Amazonec2State {
         if attachments.len() == held {
             return false;
         }
-        self.restate_routes_to_gateway(internet_gateway_id, vpc_id, ROUTE_STATE_BLACKHOLE);
         true
     }
 
@@ -910,7 +931,8 @@ impl ComAmazonawsEc2Amazonec2State {
         {
             return false;
         }
-        let state = self.route_target_state(&spec.target);
+        let vpc_id = self.vpc_of_route_table(route_table_id).map(str::to_string);
+        let state = self.route_target_state(vpc_id.as_deref(), &spec.target);
         let route = spec.into_route(state);
         let Some(route_table) = self.route_tables.get_mut(route_table_id) else {
             return false;
@@ -919,42 +941,178 @@ impl ComAmazonawsEc2Amazonec2State {
         true
     }
 
-    /// The state a route pointing at `target` is reported in AS IT IS WRITTEN: `active` where
-    /// that target is available then, and [`ROUTE_STATE_BLACKHOLE`] where it is not — "the
-    /// `blackhole` state indicates that the route's target isn't available (for example, the
-    /// specified gateway isn't attached to the VPC, or the specified NAT instance has been
-    /// terminated)" (`Route$State`).
+    /// The state a route of the VPC `vpc_id` pointing at `target` is in: `active` while that
+    /// target is available, and [`ROUTE_STATE_BLACKHOLE`] while it is not — "the `blackhole`
+    /// state indicates that the route's target isn't available (for example, the specified
+    /// gateway isn't attached to the VPC, or the specified NAT instance has been terminated)"
+    /// (`Route$State`).
     ///
-    /// The ONE place a stored route's state is decided, so a route a create wrote and one a
-    /// replacement re-pointed cannot be reported differently. Two targets are read: an elastic
-    /// network interface carries traffic only while it is ATTACHED to something, and an
-    /// instance only while it RUNS — the very example that sentence gives. Every other target a
-    /// route can be stored with was resolved against this store as the route was written (a
-    /// gateway target is refused unless it is attached to the table's own VPC), so a route to
-    /// one is active.
+    /// The ONE place a route's state is decided, asked both as a route is WRITTEN
+    /// ([`Self::insert_route`]) and as one is REPORTED
+    /// ([`Self::reported_route_table`]) — a route's state is a fact of its target, so it is
+    /// read off the target whenever the route is answered for rather than frozen at the
+    /// instant the route was stored.
+    pub fn route_target_state(&self, vpc_id: Option<&str>, target: &RouteTarget) -> &'static str {
+        if self.route_target_is_available(vpc_id, target) {
+            ROUTE_STATE_ACTIVE
+        } else {
+            ROUTE_STATE_BLACKHOLE
+        }
+    }
+
+    /// Is `target`, pointed at by a route of the VPC `vpc_id`, AVAILABLE — able to carry that
+    /// VPC's traffic right now?
     ///
-    /// The state a route CARRIES is therefore the one its target's availability made it when
-    /// the route was written, which is what the writers that re-read a route's state on a
-    /// change to its target are for (a detach blackholes the routes through the gateway it
-    /// detached); nothing here re-reads it as a route is reported.
-    pub fn route_target_state(&self, target: &RouteTarget) -> &'static str {
-        let available = match target {
+    /// Each kind is asked the question its own availability is a fact of: a gateway attachment
+    /// is one ([`Self::gateway_target_is_available`]), a NAT gateway on its way out of the
+    /// account carries nothing, a NAT instance carries traffic only while it RUNS and an
+    /// elastic network interface only while it is ATTACHED to something — the very example
+    /// `Route$State` gives — a transit gateway only through an attachment to this VPC, a
+    /// peering connection only while the peering is not finished, and an egress-only internet
+    /// gateway only while it attaches this VPC. A target the account no longer holds at all is
+    /// available to nobody.
+    pub fn route_target_is_available(&self, vpc_id: Option<&str>, target: &RouteTarget) -> bool {
+        match target {
+            RouteTarget::Gateway(gateway_id) => {
+                self.gateway_target_is_available(vpc_id, gateway_id)
+            }
+            // "Deleting a NAT gateway does not delete any NAT gateway routes in your route
+            // tables" (`DeleteNatGateway`): the route stays and its target is gone, which is
+            // exactly what `blackhole` reports. A gateway still being provisioned is on its
+            // way IN rather than out, so the route to it is as live as the gateway.
+            RouteTarget::NatGateway(nat_gateway_id) => {
+                self.nat_gateways
+                    .get(nat_gateway_id)
+                    .is_some_and(|nat_gateway| {
+                        !matches!(
+                            nat_gateway.state.as_deref(),
+                            Some(
+                                super::NAT_GATEWAY_STATE_DELETING
+                                    | super::NAT_GATEWAY_STATE_DELETED
+                            )
+                        )
+                    })
+            }
+            RouteTarget::Instance(instance_id) => self
+                .instances
+                .get(instance_id)
+                .is_some_and(|instance| instance.state == crate::state::InstanceStateName::Running),
             RouteTarget::NetworkInterface(network_interface_id) => self
                 .network_interfaces
                 .get(network_interface_id)
                 .is_some_and(|interface| interface.attachment.is_some()),
-            RouteTarget::Instance(instance_id) => self
-                .instances
-                .get(instance_id)
-                .is_some_and(|instance| {
-                    instance.state == crate::state::InstanceStateName::Running
+            RouteTarget::TransitGateway(transit_gateway_id) => vpc_id.is_some_and(|vpc_id| {
+                self.transit_gateway_is_attached_to_vpc(transit_gateway_id, vpc_id)
+            }),
+            RouteTarget::CarrierGateway(carrier_gateway_id) => {
+                self.carrier_gateways.contains_key(carrier_gateway_id)
+            }
+            RouteTarget::LocalGateway(local_gateway_id) => {
+                self.local_gateways.contains_key(local_gateway_id)
+            }
+            RouteTarget::VpcPeeringConnection(vpc_peering_connection_id) => self
+                .vpc_peering_connections
+                .get(vpc_peering_connection_id)
+                .is_some_and(|record| {
+                    !matches!(
+                        record
+                            .view
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.code.as_deref()),
+                        Some(
+                            super::VPC_PEERING_CONNECTION_STATE_DELETING
+                                | super::VPC_PEERING_CONNECTION_STATE_DELETED
+                                | super::VPC_PEERING_CONNECTION_STATE_REJECTED
+                                | super::VPC_PEERING_CONNECTION_STATE_FAILED
+                                | super::VPC_PEERING_CONNECTION_STATE_EXPIRED
+                        )
+                    )
                 }),
-            _ => true,
+            RouteTarget::EgressOnlyInternetGateway(egress_only_internet_gateway_id) => self
+                .egress_only_internet_gateway_attached_vpc(egress_only_internet_gateway_id)
+                .as_deref()
+                == vpc_id,
+        }
+    }
+
+    /// Is the GATEWAY target `gateway_id` of a route of the VPC `vpc_id` available?
+    ///
+    /// The three resources a route reports in `Route$GatewayId`, each asked the one question
+    /// `CreateRoute` resolved it by ([`crate::ops::create_route::resolve_target`]): an internet
+    /// gateway and a virtual private gateway carry this VPC's traffic only while they ATTACH
+    /// it ("the specified gateway isn't attached to the VPC" — `Route$State`), and a VPC
+    /// endpoint only while the account holds it in this VPC. The local route every table comes
+    /// with names no gateway at all — its target is the VPC itself, which is there as long as
+    /// the table is.
+    fn gateway_target_is_available(&self, vpc_id: Option<&str>, gateway_id: &str) -> bool {
+        if gateway_id == LOCAL_ROUTE_GATEWAY_ID {
+            return true;
+        }
+        let Some(vpc_id) = vpc_id else {
+            return false;
         };
-        if available {
-            ROUTE_STATE_ACTIVE
-        } else {
-            ROUTE_STATE_BLACKHOLE
+        if self.internet_gateways.contains_key(gateway_id) {
+            return self.internet_gateway_attached_vpc(gateway_id).as_deref() == Some(vpc_id);
+        }
+        if let Some(record) = self.vpn_gateways.get(gateway_id) {
+            // An attachment a detach has taken down attaches nothing — `AttachVpnGateway` may
+            // attach the VPC again — so a route through that gateway carries no traffic any
+            // more. `VpcAttachment$State` carries the same `AttachmentStatus` members an
+            // interface's attachment does ([`super::ATTACHMENT_STATUS_DETACHED`]).
+            return record
+                .view
+                .vpc_attachments
+                .iter()
+                .flatten()
+                .any(|attachment| {
+                    attachment.vpc_id.as_deref() == Some(vpc_id)
+                        && attachment.state.as_deref() != Some(super::ATTACHMENT_STATUS_DETACHED)
+                });
+        }
+        self.vpc_endpoints
+            .get(gateway_id)
+            .is_some_and(|endpoint| endpoint.vpc_id.as_deref() == Some(vpc_id))
+    }
+
+    /// The route table `route_table` as it is REPORTED: every route it holds in the state its
+    /// target's availability puts it in right now
+    /// ([`Self::route_target_state`]).
+    ///
+    /// The ONE projection of a stored route table, so every operation that answers with one
+    /// reports the same table. A route's state is the only thing derived here: "the `blackhole`
+    /// state indicates that the route's target isn't available" (`Route$State`) is a fact of
+    /// the TARGET, so a target that stopped being available after the route was written — a NAT
+    /// gateway deleted, a NAT instance terminated, an interface detached, a gateway detached, a
+    /// peering connection finished — moves the route that points at it, and a target that
+    /// became available again moves it back. Nothing is written: the derivation is of the
+    /// answer, not of the record.
+    ///
+    /// A route whose target is of no kind this store holds a record for ([`route_target`]) is
+    /// reported in the state it was stored in, there being nothing here to read its
+    /// availability off.
+    pub fn reported_route_table(&self, route_table: &RouteTable) -> RouteTable {
+        let vpc_id = route_table.vpc_id.clone();
+        let mut view = route_table.clone();
+        for route in view.routes.iter_mut().flatten() {
+            let Some(target) = route_target(route) else {
+                continue;
+            };
+            route.state = Some(self.route_target_state(vpc_id.as_deref(), &target).to_string());
+        }
+        view
+    }
+
+    /// Does the stored route `route` of the VPC `vpc_id` carry traffic — is it `active` rather
+    /// than [`ROUTE_STATE_BLACKHOLE`]?
+    ///
+    /// The same question [`Self::reported_route_table`] answers for a report, asked of one
+    /// route: what any reader that has to know whether a route FORWARDS asks, so the route
+    /// a packet follows and the state a describe reports cannot disagree.
+    pub fn route_carries_traffic(&self, vpc_id: Option<&str>, route: &Route) -> bool {
+        match route_target(route) {
+            Some(target) => self.route_target_is_available(vpc_id, &target),
+            None => route.state.as_deref() != Some(ROUTE_STATE_BLACKHOLE),
         }
     }
 
@@ -1033,7 +1191,8 @@ impl ComAmazonawsEc2Amazonec2State {
     /// `false`, with nothing written, for a table the store does not hold or one that holds no
     /// route for that destination.
     pub fn replace_route(&mut self, route_table_id: &str, spec: RouteSpec) -> bool {
-        let state = self.route_target_state(&spec.target);
+        let vpc_id = self.vpc_of_route_table(route_table_id).map(str::to_string);
+        let state = self.route_target_state(vpc_id.as_deref(), &spec.target);
         let Some(route_table) = self.route_tables.get_mut(route_table_id) else {
             return false;
         };

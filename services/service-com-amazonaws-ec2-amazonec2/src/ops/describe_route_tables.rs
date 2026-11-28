@@ -291,12 +291,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the ids named, and every filter must then hold ("if you specify multiple filters,
         // the filters are joined with an AND" — `Filter`).
         //
+        // Each candidate is the table AS IT IS REPORTED
+        // ([`crate::state::ComAmazonawsEc2Amazonec2State::reported_route_table`]): a route's
+        // state is a fact of its target's availability, so it is read off the target here
+        // rather than taken from what the route was stored with — and the `route.state` filter
+        // below therefore selects on the same value this response carries, which is what lets
+        // a client find the broken routes by asking for `blackhole`.
+        //
         // Every comparison is charged to ONE budget, so the product of stored tables, the
         // routes and associations each holds, filters, values and value length is bounded
         // however the caller combines them — which is also what bounds how long this holds
         // the store's lock.
         let mut budget = MatchBudget::new(MAX_FILTER_MATCH_STEPS);
-        let mut selected: Vec<&RouteTable> = Vec::new();
+        let mut selected: Vec<RouteTable> = Vec::new();
         for route_table in store.route_tables.values() {
             if budget.exhausted() {
                 break;
@@ -311,10 +318,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 continue;
             }
+            let reported = store.reported_route_table(route_table);
             if crate::state::matches_every_filter(&compiled, &mut budget, &|name| {
-                filter_values(route_table, name)
+                filter_values(&reported, name)
             }) {
-                selected.push(route_table);
+                selected.push(reported);
             }
         }
         // A spent budget means the answer is INCOMPLETE, which is not something to report as

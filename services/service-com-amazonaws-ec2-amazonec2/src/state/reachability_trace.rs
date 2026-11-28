@@ -423,7 +423,10 @@ impl ComAmazonawsEc2Amazonec2State {
     ///
     /// "When determining how to route traffic, we use the route with the most specific match"
     /// (`CreateRoute`), so the matching route with the LONGEST prefix wins; a route whose
-    /// target is not available carries nothing ([`ROUTE_STATE_BLACKHOLE`]) and is not one.
+    /// target is not available carries nothing ([`ROUTE_STATE_BLACKHOLE`]) and is not one —
+    /// asked of the target the one way a report of the route asks it
+    /// ([`Self::route_carries_traffic`]), so the route a packet follows and the state a
+    /// describe reports cannot disagree.
     pub fn route_to_address(
         &self,
         subnet_id: &str,
@@ -436,7 +439,7 @@ impl ComAmazonawsEc2Amazonec2State {
             .routes
             .iter()
             .flatten()
-            .filter(|route| route.state.as_deref() == Some(ROUTE_STATE_ACTIVE))
+            .filter(|route| self.route_carries_traffic(route_table.vpc_id.as_deref(), route))
             .filter_map(|route| {
                 let block = route.destination_cidr_block.as_deref()?;
                 if !cidr_block_contains_address(block, address) {

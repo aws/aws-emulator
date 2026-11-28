@@ -673,9 +673,10 @@ impl ComAmazonawsEc2Amazonec2State {
     ///
     /// Two facts follow the refusal, both for the same reason a deletion's do
     /// ([`Self::delete_vpc_peering_connection`]): the connection will never carry traffic, so
-    /// every route whose target is it is `blackhole` — "the `blackhole` state indicates that
-    /// the route's target isn't available" (`Route$State`) — and it expires at no instant,
-    /// "the time that an UNACCEPTED VPC peering connection will expire"
+    /// every route whose target is it READS `blackhole` — "the `blackhole` state indicates that
+    /// the route's target isn't available" (`Route$State`), derived from the connection's state
+    /// wherever the route is reported ([`Self::reported_route_table`]) — and it expires at no
+    /// instant, "the time that an UNACCEPTED VPC peering connection will expire"
     /// (`VpcPeeringConnection$ExpirationTime`) being a fact of a request nobody has answered.
     ///
     /// Whether the connection is in a state that admits a refusal is the CALLER's question,
@@ -706,7 +707,6 @@ impl ComAmazonawsEc2Amazonec2State {
         });
         record.view.expiration_time = None;
         record.pending = None;
-        self.blackhole_routes_to_vpc_peering_connection(vpc_peering_connection_id);
         true
     }
 
@@ -909,8 +909,10 @@ impl ComAmazonawsEc2Amazonec2State {
     /// Two facts follow the deletion, because the connection no longer carries traffic and no
     /// longer waits for anybody:
     ///
-    /// * every route whose target is this connection is `blackhole` — "the `blackhole` state
-    ///   indicates that the route's target isn't available" (`Route$State`);
+    /// * every route whose target is this connection READS `blackhole` — "the `blackhole`
+    ///   state indicates that the route's target isn't available" (`Route$State`), derived from
+    ///   the connection's state wherever the route is reported
+    ///   ([`Self::reported_route_table`]);
     /// * it expires at no instant, having nothing left to accept
     ///   (`VpcPeeringConnection$ExpirationTime` is "the time that an UNACCEPTED VPC peering
     ///   connection will expire").
@@ -936,26 +938,6 @@ impl ComAmazonawsEc2Amazonec2State {
         record.pending = Some(PendingStateMove::starting_now(
             VPC_PEERING_CONNECTION_STATE_DELETED,
         ));
-        self.blackhole_routes_to_vpc_peering_connection(vpc_peering_connection_id);
         true
-    }
-
-    /// Write [`super::ROUTE_STATE_BLACKHOLE`] into every route of this store whose target is
-    /// the peering connection `vpc_peering_connection_id`.
-    ///
-    /// A route's state is STORED rather than recomputed on read, so the writer that takes the
-    /// target away is what moves it — the same contract as
-    /// [`Self::detach_internet_gateway`]'s routes to a gateway that no longer attaches the
-    /// VPC. A route is not removed with its target: "the `blackhole` state indicates that the
-    /// route's target isn't available" (`Route$State`), which is what a route pointing at a
-    /// deleted peering connection reports.
-    fn blackhole_routes_to_vpc_peering_connection(&mut self, vpc_peering_connection_id: &str) {
-        for route_table in self.route_tables.values_mut() {
-            for route in route_table.routes.iter_mut().flatten() {
-                if route.vpc_peering_connection_id.as_deref() == Some(vpc_peering_connection_id) {
-                    route.state = Some(super::ROUTE_STATE_BLACKHOLE.to_string());
-                }
-            }
-        }
     }
 }
