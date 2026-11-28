@@ -941,6 +941,35 @@ fn submitted_serial_number(document: &Map<String, Value>) -> Result<Option<&str>
     submitted_string(document, "serialNumber")
 }
 
+/// The submitted document-level `version` — the BOM's own revision number —
+/// `None` when the document states none, or a refusal when the one it carries
+/// is not an integer.
+///
+/// CycloneDX types the document's `version` an integer, so a value of another
+/// JSON type is not a value that member can hold and the document is refused
+/// for the member it is, exactly as the `serialNumber` beside it already is
+/// ([`submitted_serial_number`]). Left to fall through it would be ECHOED into
+/// a report the response declares to be a CycloneDX 1.5 document, stating a
+/// revision number no consumer of that document can read.
+///
+/// A number WRITTEN as a floating-point literal is refused with the rest: the
+/// report preserves what the caller sent rather than rewriting it, so a value
+/// the report cannot carry as the integer the schema declares is not one this
+/// member can hold either — `1.0` and `1e3` are refused beside `1.5`.
+///
+/// A member present as `null` states no value, which is read as absent exactly
+/// as an absent member is — so the report stamps the schema default over it
+/// rather than carrying a revision number the caller never asked for.
+fn submitted_bom_version(
+    document: &Map<String, Value>,
+) -> Result<Option<&serde_json::Number>, ScanSbomError> {
+    match document.get("version") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) if number.is_i64() || number.is_u64() => Ok(Some(number)),
+        Some(_) => Err(invalid(SbomDefect::InvalidValue("version"))),
+    }
+}
+
 /// Refuse a submitted document that carries one of the members the report is
 /// built from with a JSON type CycloneDX does not allow there.
 ///
@@ -954,6 +983,7 @@ fn validate_report_members(document: &Map<String, Value>) -> Result<(), ScanSbom
     // Each accessor is called for its type check; the values themselves are
     // read again where the report is built.
     let _serial_number = submitted_serial_number(document)?;
+    let _version = submitted_bom_version(document)?;
     let Some(metadata) = submitted_metadata(document)? else {
         return Ok(());
     };
@@ -1755,8 +1785,11 @@ fn cyclonedx_report(
     }
     // `version` is the BOM's own revision number. It is PRESERVED as submitted —
     // the report must not misreport what the caller sent — and only defaulted
-    // when absent, to the `1` the CycloneDX 1.5 schema defaults it to.
-    if !report.contains_key("version") {
+    // when the document states none, to the `1` the CycloneDX 1.5 schema
+    // defaults it to. A member present as `null` states no value, so it is read
+    // as absent and the default is stamped over it
+    // ([`submitted_bom_version`]).
+    if submitted_bom_version(&report)?.is_none() {
         report.insert("version".to_string(), json!(1));
     }
 

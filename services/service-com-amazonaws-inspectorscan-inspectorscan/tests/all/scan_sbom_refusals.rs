@@ -54,7 +54,10 @@ fn cannot_parse() -> String {
 /// `member` is the member's name as the CycloneDX 1.5 specification spells it —
 /// the same member names `src/ops/scan_sbom.rs` validates: `bomFormat`,
 /// `specVersion`, `components`, `type`, `name`, `purl`, `bom-ref`.
-fn invalid_value(member: &str) -> String {
+///
+/// `pub(crate)` so a suite covering another member of that one rule states the
+/// refusal the same way rather than spelling the sentence again.
+pub(crate) fn invalid_value(member: &str) -> String {
     format!("{PREFIX}Invalid value for \"{member}\"")
 }
 
@@ -466,7 +469,11 @@ async fn a_valid_document_is_not_refused() {
 /// The `outputFormat` values a request may carry, plus the absent member: the
 /// modeled set (`smithy_query(query="shape", shape="OutputFormat")`) and the
 /// default.
-const OUTPUT_FORMATS: &[Option<&str>] = &[
+///
+/// `pub(crate)` because the document's validity is a property of the document
+/// rather than of the form the answer is rendered in, so every suite that
+/// asserts a refusal over every form reads this ONE list.
+pub(crate) const OUTPUT_FORMATS: &[Option<&str>] = &[
     None,
     Some("CYCLONE_DX_1_5"),
     Some("INSPECTOR"),
@@ -658,8 +665,9 @@ fn mistyped_cases() -> Vec<MistypedCase> {
     ]
 }
 
-/// How a row's `outputFormat` is named in an assertion message.
-fn named_format(format: Option<&str>) -> &str {
+/// How a row's `outputFormat` is named in an assertion message. Shared with the
+/// suites that read [`OUTPUT_FORMATS`], so one form is named one way everywhere.
+pub(crate) fn named_format(format: Option<&str>) -> &str {
     format.unwrap_or("no outputFormat")
 }
 
