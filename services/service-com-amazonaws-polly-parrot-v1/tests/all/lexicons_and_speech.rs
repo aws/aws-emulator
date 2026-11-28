@@ -47,6 +47,23 @@ impl Polly {
         Self::mounting(true)
     }
 
+    /// One emulator with Polly and Amazon S3 mounted on it, SERVED at `base` — the value a
+    /// router served on a data port learns from the core, which a router that is not served
+    /// is told instead ([`MultiServiceRouter::set_url_base`]).
+    ///
+    /// A suite about an address this service ANNOUNCES needs that base to vary: the address
+    /// this process is served at is what such an announcement carries for a caller that
+    /// states no address of this emulator, and a router that is not served reports one and
+    /// the same unserved base for every row.
+    pub(crate) fn with_s3_served_at(base: &str) -> Self {
+        let mut polly = Self::mounting(true);
+        polly.router.set_url_base(
+            smithy_server_runtime::EndpointUrl::parse(base)
+                .unwrap_or_else(|| panic!("{base:?} must parse as an endpoint base")),
+        );
+        polly
+    }
+
     /// Stand up the router, with Amazon S3 beside Polly when `s3` says so.
     fn mounting(s3: bool) -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());

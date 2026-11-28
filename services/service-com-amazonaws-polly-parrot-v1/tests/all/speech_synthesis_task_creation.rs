@@ -16,13 +16,14 @@
 //! its language, the key prefix, and the Region the call is signed for.
 //!
 //! RULE: the output location a task reports (`SynthesisTask$OutputUri`, the "Pathway for
-//! the output speech file") is an address the CALLER follows, so it is rooted at the
-//! endpoint this emulator answered the start call on — never at a host AWS publishes — with
+//! the output speech file") is an address the CALLER follows, so it is rooted at an address
+//! this emulator is REACHED at — the emulator's own endpoint the answering request arrived
+//! on, else the address this process is served at — and never at a host AWS publishes, with
 //! the object addressed path-style beneath it, `/<bucket>/<key-prefix><task-id>.<suffix>`.
 //! Every serialization of the task envelope reports that one location, and following it
-//! reaches the object the completed task wrote. Its rows differ along the address the
-//! caller reached the emulator at, crossed with the output format, the key prefix and the
-//! Region.
+//! reaches the object the completed task wrote. The rows differ along the address the caller
+//! reached the emulator at, the base this process is served at, the output format, the key
+//! prefix and the Region.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -91,8 +92,8 @@ fn assert_record(case: &str, reported: &serde_json::Value, expected: &Expected) 
     );
     // The location is announced on the endpoint the call reached, which for a request
     // addressed to one of this service's published hosts on an emulator served on no port
-    // is the base `OperationContext::endpoint` reports. The announced-location suite below
-    // is the one that varies that address.
+    // is the base `OperationContext::endpoint` reports. The announced-location suites below
+    // are the ones that vary that address and the base this process is served at.
     let expected_uri = format!(
         "{UNSERVED_URL_BASE}/{OUTPUT_BUCKET}/{}{task_id}.{}",
         expected.key_prefix, expected.suffix
@@ -513,49 +514,79 @@ async fn a_refused_request_records_no_task() {
 const TERMINAL_WAIT: Duration = Duration::from_secs(30);
 const LOOK_INTERVAL: Duration = Duration::from_millis(50);
 
-/// One addressing a caller reaches this emulator at, and the base every location announced
-/// to it is rooted at.
+/// One addressing a caller reaches this emulator at, and the address an announcement made to
+/// it must carry.
 struct Addressed {
     /// What the row is about, named in every assertion.
     case: &'static str,
     /// The `Host` the request carries, or none at all — which leaves the request's own
     /// absolute URI, one of this service's published hosts, as the address it named.
     host: Option<&'static str>,
-    /// The base the location announced to that caller must be rooted at.
-    base: &'static str,
+    /// What a forwarding front end states about the address the client dialled IT at, for a
+    /// row that stands for a request that reached this process through one.
+    forwarded: &'static [(&'static str, &'static str)],
+    /// The EMULATOR'S OWN endpoint this request arrived on, which is the authority an
+    /// announcement made to such a caller carries; `None` for a caller that resolves AWS's
+    /// own hostnames and states no address of this emulator at all, which is announced the
+    /// address this process is SERVED at instead.
+    reached: Option<&'static str>,
 }
 
-/// The addresses the rows reach the emulator at: its own endpoint as a loopback literal, as
-/// a loopback name on another port and as a bracketed IPv6 literal — each the only address
-/// such a client resolves, so each is handed back the very one it is talking to — and the
-/// two callers that resolve AWS's own hostnames, which on an emulator served on no port of
-/// its own are answered the base `OperationContext::endpoint` reports for it.
-fn addressed() -> [Addressed; 5] {
+impl Addressed {
+    /// The base a location announced to this caller is rooted at, for a process serving at
+    /// `published`: the endpoint this request arrived on, else the published base. Every
+    /// address of this emulator is dialled over the scheme its listeners present.
+    fn announced_base(&self, published: &str) -> String {
+        match self.reached {
+            Some(authority) => format!("https://{authority}"),
+            None => published.to_string(),
+        }
+    }
+}
+
+/// The addresses the rows reach the emulator at: the emulator's own endpoint as a loopback
+/// literal, as a loopback name on another port and as a bracketed IPv6 literal — each the
+/// only address such a client resolves, so each is handed back the very one it is talking to
+/// — the two callers that resolve AWS's own hostnames, which are answered the address this
+/// process is served at, and a request a front end re-addressed to this process, which
+/// carries the address the client dialled in what that front end states about it.
+fn addressed() -> [Addressed; 6] {
     [
         Addressed {
             case: "the emulator's own loopback endpoint",
             host: Some("127.0.0.1:39461"),
-            base: "https://127.0.0.1:39461",
+            forwarded: &[],
+            reached: Some("127.0.0.1:39461"),
         },
         Addressed {
-            case: "the same endpoint by its loopback name on another port",
+            case: "a loopback name on another port",
             host: Some("localhost:9297"),
-            base: "https://localhost:9297",
+            forwarded: &[],
+            reached: Some("localhost:9297"),
         },
         Addressed {
-            case: "the same endpoint as a bracketed IPv6 literal",
+            case: "a bracketed IPv6 literal",
             host: Some("[::1]:9297"),
-            base: "https://[::1]:9297",
+            forwarded: &[],
+            reached: Some("[::1]:9297"),
         },
         Addressed {
             case: "a caller that resolves this service's own published host",
             host: None,
-            base: UNSERVED_URL_BASE,
+            forwarded: &[],
+            reached: None,
         },
         Addressed {
             case: "a caller that addressed the object store's own published host",
             host: Some("s3.us-east-1.amazonaws.com"),
-            base: UNSERVED_URL_BASE,
+            forwarded: &[],
+            reached: None,
+        },
+        Addressed {
+            case: "a request a front end re-addressed to this process",
+            host: Some("127.0.0.1:39461"),
+            forwarded: &[("x-forwarded-host", "127.0.0.1:37623")],
+            reached: Some("127.0.0.1:37623"),
         },
     ]
 }
@@ -598,19 +629,22 @@ fn outputs() -> [Output; 2] {
     ]
 }
 
-/// One task call signed for `region` and addressed to `host`, where the row names one.
+/// One task call signed for `region` and addressed as `addressing` has it: the `Host` the
+/// row names, where it names one, and whatever a front end states about the address the
+/// client dialled it at.
 async fn call_from(
     polly: &Polly,
     region: &str,
-    host: Option<&str>,
+    addressing: &Addressed,
     method: &str,
     path: &str,
     body: &str,
 ) -> http::Response<Bytes> {
     let mut headers = vec![("content-type", "application/json")];
-    if let Some(host) = host {
+    if let Some(host) = addressing.host {
         headers.push(("host", host));
     }
+    headers.extend_from_slice(addressing.forwarded);
     polly
         .call_bytes_in_region(region, method, path, &headers, body.as_bytes().to_vec())
         .await
@@ -667,21 +701,29 @@ async fn create_bucket(polly: &Polly, region: &str, bucket: &str) {
         .unwrap_or_else(|error| panic!("the bucket {bucket:?} must be created: {error}"));
 }
 
-/// RULE: the output location a task reports is rooted at the endpoint this emulator answered
-/// the start call on — never at a host AWS publishes — with the object addressed path-style
-/// beneath it; every serialization of the task envelope (the start, the polled read and the
-/// listing) reports that one location, and following it reaches the object the completed
-/// task wrote.
-#[tokio::test]
-async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() {
-    let polly = Polly::with_s3();
+/// RULE: the output location a task reports is rooted at an address this emulator is
+/// REACHED at — the emulator's own endpoint the answering request arrived on (for a request a
+/// front end re-addressed to this process, the address that front end states the client
+/// dialled it at), else the address this process is SERVED at, which is what a caller that
+/// resolves AWS's own hostnames is answered — never at a host AWS publishes, with the object
+/// addressed path-style beneath it; every serialization of the task envelope (the start, the
+/// polled read and the listing) reports that one location, and following it reaches the
+/// object the completed task wrote.
+///
+/// Driven over the whole addressing table crossed with both output locations, for an emulator
+/// SERVED at `served` — the half of the reading a caller stating no address of this emulator
+/// is answered, which only varying that base can show. The three tests below are the three
+/// forms such a base takes.
+async fn the_announced_locations_of_an_emulator_served_at(served: &str) {
+    let polly = Polly::with_s3_served_at(served);
     for output in outputs() {
         create_bucket(&polly, output.region, output.bucket).await;
     }
 
     for addressing in addressed() {
+        let base = addressing.announced_base(served);
         for output in outputs() {
-            let case = format!("{} / {}", addressing.case, output.case);
+            let case = format!("{served} / {} / {}", addressing.case, output.case);
             let mut request = serde_json::json!({
                 "Text": "Hello from the emulator.",
                 "VoiceId": "Joanna",
@@ -694,7 +736,7 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
             let started = call_from(
                 &polly,
                 output.region,
-                addressing.host,
+                &addressing,
                 "POST",
                 "/v1/synthesisTasks",
                 &request.to_string(),
@@ -716,7 +758,7 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
             // key the request's prefix, the minted id and the format's suffix spell.
             let expected = format!(
                 "{}/{}/{}{task_id}.{}",
-                addressing.base,
+                base,
                 output.bucket,
                 output.key_prefix.unwrap_or_default(),
                 output.suffix
@@ -748,7 +790,7 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
                 let read = call_from(
                     &polly,
                     output.region,
-                    addressing.host,
+                    &addressing,
                     "GET",
                     &format!("/v1/synthesisTasks/{task_id}"),
                     "",
@@ -782,7 +824,7 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
             let listed = call_from(
                 &polly,
                 output.region,
-                addressing.host,
+                &addressing,
                 "GET",
                 "/v1/synthesisTasks",
                 "",
@@ -804,17 +846,21 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
                 "case {case:?}: the listing must report the task's own location, got {entry}"
             );
 
-            // Following the announced location reaches the object: the address is dialed as
-            // it was handed out — its base is the endpoint, the bucket and key are its path
-            // — and the object store of THIS emulator answers it with the written output.
+            // Following the announced location reaches the object: the URI is split exactly
+            // as it was handed out — its base is the announced endpoint, the bucket and key
+            // are its path — and the object store of THIS emulator answers for that bucket
+            // and key with the written output. (The fetch rides this emulator's own
+            // in-process transport, the very seam the completion wrote the object through, so
+            // what it establishes is that the bucket and key the location names hold the
+            // output — not that the announced authority is dialable from outside.)
             let path = expected
-                .strip_prefix(addressing.base)
+                .strip_prefix(base.as_str())
                 .and_then(|path| path.strip_prefix('/'))
                 .unwrap_or_else(|| panic!("case {case:?}: {expected:?} is not rooted at the base"));
             let (bucket, key) = path
                 .split_once('/')
                 .unwrap_or_else(|| panic!("case {case:?}: {path:?} addresses no object"));
-            let object = store_at(&polly, addressing.base, output.region)
+            let object = store_at(&polly, &base, output.region)
                 .get_object()
                 .bucket(bucket)
                 .key(key)
@@ -838,6 +884,31 @@ async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() 
             );
         }
     }
+}
+
+/// The whole table for an emulator served on the address the core publishes for a data port
+/// bound to the loopback interface: a host literal with the port it bound.
+#[tokio::test]
+async fn the_output_location_is_announced_on_the_endpoint_the_request_reached() {
+    // An arbitrary loopback port, so nothing here depends on which port a process happens to
+    // have bound.
+    the_announced_locations_of_an_emulator_served_at("https://127.0.0.1:46365").await;
+}
+
+/// The same table for an emulator served under the LOOPBACK ZONE rather than at a literal,
+/// which is the other spelling of that interface a published base carries.
+#[tokio::test]
+async fn the_output_location_of_an_emulator_served_by_its_loopback_name() {
+    the_announced_locations_of_an_emulator_served_at("https://localhost:9297").await;
+}
+
+/// And for an emulator served on NO PORT at all — embedded in another process, or a test —
+/// whose published base is the one `smithy_server_runtime::UNSERVED_URL_BASE` names, a host
+/// RFC 6761 reserves so that nothing resolves it. A caller that states an address of this
+/// emulator is still announced that address; a caller that states none has none to be given.
+#[tokio::test]
+async fn the_output_location_of_an_emulator_served_on_no_port() {
+    the_announced_locations_of_an_emulator_served_at(UNSERVED_URL_BASE).await;
 }
 
 /// The member the task-CREATION response carries beside the modelled ones: the SDK

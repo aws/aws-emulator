@@ -56,3 +56,34 @@ Source corroboration: services/service-com-amazonaws-polly-parrot-v1/src/state/o
 3. Read SynthesisTask.OutputUri from the 200 response and compare its authority with the emulator's served data-plane address: the emulator announces a different authority (e.g. 127.0.0.1:41175 while the data listener accepts on :46365).
 4. Wait for the task to reach `completed` (GetSpeechSynthesisTask) and then GET the announced OutputUri: the request does not reach the output object, whereas on AWS the URI resolves path-style to <bucket>/<OutputS3KeyPrefix><TaskId>.mp3.
 5. Re-replay fixture polly-speech-synthesis-task-lifecycle, step task#2, and confirm $.SynthesisTask.OutputUri is identified as the task's output resource instead of reporting `resource_not_identified`.
+
+## Resolution
+
+Cause 1 is DECLINED as a per-environment value, and the requirement behind it is pinned by tests
+rather than changed in the handler.
+
+The announced location was already rooted at an address this emulator is reached at: the
+emulator's own endpoint the answering request arrived on, else the address this process is served
+at (`src/state/output_location.rs`, which calls the one reading `services/common` owns for that
+question). The replayed client addresses AWS's own hostnames, so the first branch yields nothing
+and the announcement is the SERVED base — checked by replacing the reading with the served base
+unconditionally and re-replaying, which gave a byte-identical verdict. The two ports the report
+compares (the announced one and the `:46365` of the run's health detail) are not from the same
+emulator instance.
+
+The member therefore differs from the recording only in the authority and in the per-run TaskId,
+both of which the report itself states are not requirements, and the recorded authority
+(`s3.<region>.amazonaws.com`) is one this emulator must not announce: a client sent there leaves
+the emulated environment, where the bucket does not exist. The replay key
+`polly|StartSpeechSynthesisTask|2xx->2xx|$.SynthesisTask.OutputUri` stays mismatched for that
+reason, exactly as the earlier triage of the same member recorded
+(`20261118T125815Z-polly-startspeechsynthesistask-omits-the-synthesistask-sdkfeaturetoggles-member-from-6a8d3c.md`:
+"Excluded as per-environment … differs only in host:port and in the generated task id inside the
+key, with the bucket name and the path-style URL form identical").
+
+What the fix adds is the evidence, as tables: `src/state/output_location.rs` now carries a 12-row
+unit table over the addressing itself (including a caller that resolves AWS's own hostnames, which
+is announced the served base, and a request a front end re-addressed to this process), and
+`tests/all/speech_synthesis_task_creation.rs` drives the whole addressing table against three
+bases this emulator may be served at, asserting the start call, the task read and the listing all
+report the one location and that following it reaches the object the completed task wrote.
