@@ -43,6 +43,11 @@ pub struct AdBreakRecord {
     pub stream_id: Option<String>,
     /// When the marker was inserted.
     pub inserted_at: SystemTime,
+    /// When the break is TARGETED to start: "target time at which the ad break starts"
+    /// (`InsertAdBreakRequest$targetStartAt`), as the caller asked. A request that asked
+    /// for no time targets the instant the marker was inserted, because that is when the
+    /// playlist took it.
+    pub target_start_at: SystemTime,
 }
 
 /// The ad configuration the channel `channel_arn` names has associated, as this store
@@ -108,12 +113,19 @@ pub const AD_BREAK_CHANNEL_MEMBER: &str = "channelArn";
 /// `ResourceNotFoundException`, `ValidationException` and `ChannelNotBroadcasting`
 /// answers separate — so this records the marker the live playlist took. A later insert
 /// on the same channel replaces it: the playlist carries the break most recently marked
-/// in it, and each insert mints its own id, so no two breaks are ever reported under one
-/// identifier.
+/// in it.
+///
+/// `requested_id` is the "caller-specified unique identifier for the ad break to insert
+/// into the playlist" (`InsertAdBreakRequest$adBreakId`): the marker carries the id the
+/// caller chose, and only a request that chose none has one minted for it, so the id a
+/// caller holds is always the id this store carries. `requested_start` is the target time
+/// the request asked for, defaulting to the instant the marker was inserted.
 pub fn insert_ad_break(
     state: &mut ComAmazonawsIvsAmazoninteractivevideoserviceState,
     channel_arn: &str,
     duration_seconds: i32,
+    requested_id: Option<String>,
+    requested_start: Option<SystemTime>,
 ) -> AdBreakRecord {
     let ad_configuration_arn = channel_ad_configuration(state, channel_arn)
         .map(|configuration| configuration.arn.clone());
@@ -121,13 +133,18 @@ pub fn insert_ad_break(
     // Hex is a subset of the `[a-zA-Z0-9]` alphabet the modelled id admits and
     // `mint_hex` never repeats a value, so one byte per two characters of the
     // modelled width gives an id that satisfies the shape and is unique per call.
-    let ad_break_id = state.mint_hex("ad-break", AD_BREAK_ID_LEN / 2);
+    let ad_break_id = match requested_id.filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => state.mint_hex("ad-break", AD_BREAK_ID_LEN / 2),
+    };
+    let inserted_at = SystemTime::now();
     let record = AdBreakRecord {
         ad_break_id,
         duration_seconds,
         ad_configuration_arn,
         stream_id,
-        inserted_at: SystemTime::now(),
+        inserted_at,
+        target_start_at: requested_start.unwrap_or(inserted_at),
     };
     state
         .ad_breaks

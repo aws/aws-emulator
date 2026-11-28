@@ -59,6 +59,11 @@
 //! * `arn` (ChannelArn, len 1..128, pattern
 //!   ^arn:aws:ivs:[a-z0-9-]+:[0-9]+:channel/[a-zA-Z0-9-]+$) **required** — ARN of the channel
 //!   to be updated.
+//! * `failoverSlateConfigurationArn` (ChannelFailoverSlateConfigurationArn, len 0..128,
+//!   pattern ^^$|^arn:aws:ivs:[a-z0-9-]+:[0-9]+:failover-slate-configuration/[a-zA-Z0-9-]+$$)
+//!   — Failover-slate-configuration ARN. A valid ARN value here both specifies the ARN and
+//!   enables failover slate. If this is set to an empty string, failover slate configuration
+//!   is disabled.
 //! * `authorized` (Boolean, default false) **required** — Whether the channel is private
 //!   (enabled for playback authorization).
 //! * `containerFormat` (ContainerFormat, one of: FRAGMENTED_MP4 | TS) — Indicates which
@@ -106,6 +111,7 @@
 //! * `PendingVerification` (HTTP 403) — Your account is pending verification.
 //! * `ResourceNotFoundException` (HTTP 404) — Request references a resource which does not
 //!   exist.
+//! * `ThrottlingException` (HTTP 429) — Request was denied due to request throttling.
 //! * `ValidationException` (HTTP 400) — The input fails to satisfy the constraints specified
 //!   by an Amazon Web Services service.
 
@@ -134,6 +140,7 @@ pub enum UpdateChannelErrorModeled {
     InternalServerException(InternalServerException),
     PendingVerification(PendingVerification),
     ResourceNotFoundException(ResourceNotFoundException),
+    ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
 
@@ -213,6 +220,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.playback_restriction_policy_arn,
         );
         replace(&mut channel.ad_configuration_arn, input.ad_configuration_arn);
+        replace(
+            &mut channel.failover_slate_configuration_arn,
+            input.failover_slate_configuration_arn,
+        );
         replace_non_empty(&mut channel.container_format, input.container_format);
         // Present replaces, absent keeps — and either way the structure is
         // materialised, so the member a channel reports never depends on which call

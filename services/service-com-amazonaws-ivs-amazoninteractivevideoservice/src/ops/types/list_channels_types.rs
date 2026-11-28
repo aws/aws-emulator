@@ -18,6 +18,7 @@ pub struct ListChannelsInput {
     pub filter_by_recording_configuration_arn: Option<String>,
     pub filter_by_playback_restriction_policy_arn: Option<String>,
     pub filter_by_ad_configuration_arn: Option<String>,
+    pub filter_by_failover_slate_configuration_arn: Option<String>,
     pub next_token: Option<String>,
     pub max_results: Option<i32>,
 }
@@ -43,5 +44,6 @@ pub struct ChannelSummary {
     pub preset: Option<String>,
     pub playback_restriction_policy_arn: Option<String>,
     pub ad_configuration_arn: Option<String>,
+    pub failover_slate_configuration_arn: Option<String>,
 }
 

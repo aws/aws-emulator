@@ -22,7 +22,8 @@
 //! through `state::start_stream`, the one place a stream is minted and the same entry point
 //! the contribute plane uses, reaching the store through the shared `Ivs` harness's engine
 //! handle. The suites at the end of this file drive that plane itself, with a real
-//! publisher over a real socket.
+//! publisher over a real socket, and the last of them drives the PLAYBACK leg's
+//! authorization: who a private channel's playlist is served to.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -1832,4 +1833,279 @@ async fn the_announced_address_serves_the_whole_live_path_on_both_wires() {
 fn sibling_url(url: &str, name: &str) -> String {
     let cut = url.rfind('/').map_or(url.len(), |end| end + 1);
     format!("{}{}", &url[..cut], name.trim())
+}
+
+/// The algorithm an IVS playback token is signed under, and so the key family a playback
+/// key pair carries: ECDSA on P-384 (`ES384`).
+const PLAYBACK_TOKEN_ALGORITHM: &str = ::service_common::jws_signing::ES384;
+
+/// The claim a playback token names the channel it authorizes in.
+const CHANNEL_ARN_CLAIM: &str = "aws:channel-arn";
+
+/// The query parameter a viewer presents a playback token in, as AWS documents appending
+/// one to a private channel's playback URL.
+const TOKEN_PARAMETER: &str = "token";
+
+/// The `SubjectPublicKeyInfo` header of an `id-ecPublicKey` on `secp384r1`, which is what a
+/// `PUBLIC KEY` PEM block carries in front of the key's own point.
+///
+/// RFC 5480 §2 lays the structure out: `SEQUENCE { SEQUENCE { OID id-ecPublicKey
+/// (1.2.840.10045.2.1), OID secp384r1 (1.3.132.0.34) }, BIT STRING }`, and the key itself is
+/// the uncompressed point of SEC 1 §2.3.3 (`0x04` then the two 48-byte coordinates). The
+/// signer below hands back that point alone, so these are the bytes in front of it. If a
+/// byte of this were wrong the import would refuse the material outright, which is what the
+/// first assertion of the case below checks.
+const P384_PUBLIC_KEY_INFO_HEADER: &[u8] = &[
+    0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05,
+    0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+];
+
+/// The public half of `signer` as the `PUBLIC KEY` PEM block `ImportPlaybackKeyPair` takes.
+fn public_key_pem(signer: &::service_common::jws_signing::SigningKey) -> String {
+    let mut der = P384_PUBLIC_KEY_INFO_HEADER.to_vec();
+    der.extend_from_slice(&signer.public_key_der());
+    pem::encode(&pem::Pem::new("PUBLIC KEY", der))
+}
+
+/// A playback token for `channel_arn`, signed by `signer`, expiring `expires_in` seconds
+/// from now — or carrying no expiry at all when `expires_in` is `None`.
+///
+/// Built the way a broadcaster builds one: the claims AWS documents for a playback token
+/// (the channel it authorizes, and its expiry), signed with the private half of a key pair
+/// whose public half was imported.
+fn playback_token(
+    signer: &::service_common::jws_signing::SigningKey,
+    channel_arn: &str,
+    expires_in: Option<i64>,
+) -> String {
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or_default(),
+    )
+    .unwrap_or(i64::MAX);
+    let mut claims = json!({ CHANNEL_ARN_CLAIM: channel_arn });
+    if let Some(expires_in) = expires_in {
+        claims["exp"] = json!(now + expires_in);
+    }
+    signer
+        .signed_compact_jws(&claims)
+        .expect("the test playback token is signed")
+}
+
+/// RULE, the authorization leg: a channel that is "private (enabled for playback
+/// authorization)" (`Channel$authorized`) serves its playback only to a viewer presenting a
+/// playback token signed with the private half of one of the account's imported playback key
+/// pairs, naming THAT channel and inside its own validity window. A channel that is not
+/// private is public: it is served to a viewer carrying no credential at all, which is what
+/// makes the announced URL fetchable by a player.
+///
+/// The rows span what the rule generalises over: no token, a token that verifies, a token
+/// naming another channel, a token outside its window (expired, and carrying no window at
+/// all), a token signed by a key this account never imported, a value that is no token at
+/// all, and the same question on each of the three paths one channel serves. The last leg
+/// takes the imported key away again, because the set a token is checked against is the set
+/// this account holds NOW.
+#[tokio::test]
+async fn a_private_channels_playback_is_served_only_to_a_verified_token() {
+    let ivs = Ivs::new();
+    let signer = ::service_common::jws_signing::SigningKey::generate(PLAYBACK_TOKEN_ALGORITHM)
+        .expect("the test signing key is generated");
+    // A second key pair of the same family that this account never imports, so a token it
+    // signs is well formed and signed by nobody the account trusts.
+    let foreign = ::service_common::jws_signing::SigningKey::generate(PLAYBACK_TOKEN_ALGORITHM)
+        .expect("the test signing key is generated");
+
+    let imported = ivs
+        .ok(
+            "ImportPlaybackKeyPair",
+            json!({ "name": "viewer-key", "publicKeyMaterial": public_key_pem(&signer) }),
+        )
+        .await;
+    let key_pair_arn = text(&imported["keyPair"], "arn");
+
+    // The private channel, brought live by a real publisher so there IS a playlist behind
+    // the gate, and a public channel beside it.
+    let created = ivs
+        .create(json!({ "name": "private_playback", "authorized": true }))
+        .await;
+    let (ingest, key) = contribute_target(&ivs, &created);
+    let private_arn = text(&created["channel"], "arn");
+    let playback = text(&created["channel"], "playbackUrl");
+    let public = ivs.create(json!({ "name": "public_playback" })).await;
+    let public_arn = text(&public["channel"], "arn");
+    let public_playback = text(&public["channel"], "playbackUrl");
+
+    // A private channel is refused before anything of its media is looked at, so the
+    // refusal stands even while nothing is published to it — where the PUBLIC channel
+    // answers the plane's own "nothing is packaged there".
+    let unauthorized = ivs.fetch(&playback).await;
+    assert_eq!(
+        unauthorized.status, 403,
+        "case \"a private channel with no token, nothing published\": expected HTTP 403, \
+         got {} {:?}",
+        unauthorized.status, unauthorized.body
+    );
+    assert!(
+        unauthorized.body.is_empty(),
+        "case \"a private channel with no token\": a refused viewer is served no media, got {:?}",
+        unauthorized.body
+    );
+    let unauthenticated_public = ivs.fetch(&public_playback).await;
+    assert_eq!(
+        unauthenticated_public.status, 404,
+        "case \"a public channel with no token\": a public channel is served to any viewer, \
+         so the answer is the plane's own, got {} {:?}",
+        unauthenticated_public.status, unauthenticated_public.body
+    );
+
+    let mut publisher = Publisher::publishing(&ingest, &key)
+        .await
+        .unwrap_or_else(|error| panic!("the announced address must accept a publish: {error}"));
+    publisher
+        .send_metadata(640, 360)
+        .await
+        .expect("the metadata is sent");
+    publisher
+        .send_configuration()
+        .await
+        .expect("the decoder configuration is sent");
+    publisher.send_media(0, 4).await.expect("the media is sent");
+
+    let authorized = format!(
+        "{playback}?{TOKEN_PARAMETER}={}",
+        playback_token(&signer, &private_arn, Some(3_600))
+    );
+    poll_until(
+        "a packaged private broadcast",
+        "the announced playbackUrl to serve a playlist to a verified viewer",
+        || {
+            let ivs = &ivs;
+            let authorized = authorized.clone();
+            async move { ivs.fetch(&authorized).await.status == 200 }
+        },
+    )
+    .await;
+    let served = ivs.fetch(&authorized).await;
+    assert!(
+        served.body.starts_with("#EXTM3U"),
+        "case \"a token that verifies\": the viewer is served the playlist, got {:?}",
+        served.body
+    );
+
+    // Every other token form, on a channel that now HAS a playlist: the gate is what
+    // decides, not the absence of media.
+    let rows: Vec<(&str, Option<String>)> = vec![
+        ("no token at all", None),
+        (
+            "a token naming another channel",
+            Some(playback_token(&signer, &public_arn, Some(3_600))),
+        ),
+        (
+            "a token whose expiry has passed",
+            Some(playback_token(&signer, &private_arn, Some(-1))),
+        ),
+        (
+            "a token carrying no expiry at all",
+            Some(playback_token(&signer, &private_arn, None)),
+        ),
+        (
+            "a token signed by a key this account never imported",
+            Some(playback_token(&foreign, &private_arn, Some(3_600))),
+        ),
+        ("a value that is no token at all", Some("not-a-token".to_string())),
+        ("an empty token", Some(String::new())),
+    ];
+    for (case, token) in rows {
+        let url = match &token {
+            Some(token) => format!("{playback}?{TOKEN_PARAMETER}={token}"),
+            None => playback.clone(),
+        };
+        let refused = ivs.fetch(&url).await;
+        assert_eq!(
+            refused.status, 403,
+            "case {case:?}: a private channel's playlist must be refused, got {} {:?}",
+            refused.status, refused.body
+        );
+        assert!(
+            refused.body.is_empty(),
+            "case {case:?}: a refused viewer is served no media, got {:?}",
+            refused.body
+        );
+    }
+
+    // The same rule on the other two paths one channel serves: the variant the
+    // multivariant playlist names, and a segment that variant lists.
+    let variant = served
+        .body
+        .lines()
+        .find(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .unwrap_or_else(|| panic!("the multivariant playlist names a variant, got {:?}", served.body))
+        .to_string();
+    let media_url = sibling_url(&playback, &variant);
+    let media = ivs
+        .fetch(&format!(
+            "{media_url}?{TOKEN_PARAMETER}={}",
+            playback_token(&signer, &private_arn, Some(3_600))
+        ))
+        .await;
+    assert_eq!(
+        media.status, 200,
+        "case \"the media playlist with a token that verifies\": expected HTTP 200, got {} {:?}",
+        media.status, media.body
+    );
+    let segment = media
+        .body
+        .lines()
+        .find(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .unwrap_or_else(|| panic!("the media playlist lists a segment, got {:?}", media.body))
+        .to_string();
+    let segment_url = sibling_url(&playback, &segment);
+    for (case, url) in [
+        ("the media playlist with no token", media_url.clone()),
+        ("a segment with no token", segment_url.clone()),
+    ] {
+        let refused = ivs.fetch(&url).await;
+        assert_eq!(
+            refused.status, 403,
+            "case {case:?}: every path of a private channel is behind the same gate, got {} {:?}",
+            refused.status, refused.body
+        );
+    }
+    let fetched = ivs
+        .fetch(&format!(
+            "{segment_url}?{TOKEN_PARAMETER}={}",
+            playback_token(&signer, &private_arn, Some(3_600))
+        ))
+        .await;
+    assert_eq!(
+        fetched.status, 200,
+        "case \"a segment with a token that verifies\": expected HTTP 200, got {} {:?}",
+        fetched.status, fetched.body
+    );
+
+    // The set a token is checked against is the set this account holds NOW: with the key
+    // pair deleted, the token that verified a moment ago verifies against nothing.
+    let removed = ivs
+        .call("DeletePlaybackKeyPair", &json!({ "arn": key_pair_arn }))
+        .await;
+    assert_eq!(
+        removed.status, 200,
+        "DeletePlaybackKeyPair must be accepted, got {} {}",
+        removed.status, removed.body
+    );
+    let after = ivs
+        .fetch(&format!(
+            "{playback}?{TOKEN_PARAMETER}={}",
+            playback_token(&signer, &private_arn, Some(3_600))
+        ))
+        .await;
+    assert_eq!(
+        after.status, 403,
+        "case \"a token whose key pair has been deleted\": expected HTTP 403, got {} {:?}",
+        after.status, after.body
+    );
+
+    drop(publisher);
 }

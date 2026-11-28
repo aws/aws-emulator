@@ -14,14 +14,23 @@
 //! sentence spells one) then ` is still attached to a channel`. The ARN is the
 //! sentence's only variable part: the channel that holds the reference is not in it,
 //! and neither is how many channels hold one.
+//!
+//! The rows span every delete of this service that answers the refusal — one per resource
+//! kind a channel can reference and whose delete models `ConflictException`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use service_com_amazonaws_ivs_amazoninteractivevideoservice::state::RECORDING_CONFIGURATION_ACTIVATION;
+use service_com_amazonaws_ivs_amazoninteractivevideoservice::state::RECORDING_CONFIGURATION_ACTIVE;
 
 use crate::channel_lifecycle::{text, Ivs, Reply};
+
+/// How long a row that needs a settled resource keeps LOOKING for it, and how long it
+/// waits between looks. Generous by design: it bounds the transition having happened at
+/// all, not how fast this host runs.
+const SETTLED_DEADLINE: Duration = Duration::from_secs(90);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// One operation that answers this refusal, with everything needed to stand its
 /// resource up and have a channel point at it.
@@ -66,6 +75,18 @@ const AD_CONFIGURATION: Subject = Subject {
     body: ad_configuration_body,
 };
 
+/// `DeleteFailoverSlateConfiguration`, whose sentence spells its own resource kind before
+/// the ARN.
+const FAILOVER_SLATE_CONFIGURATION: Subject = Subject {
+    operation: "DeleteFailoverSlateConfiguration",
+    kind_prefix: "failover slate configuration ",
+    create_operation: "CreateFailoverSlateConfiguration",
+    created_member: "failoverSlateConfiguration",
+    read_operation: "GetFailoverSlateConfiguration",
+    channel_member: "failoverSlateConfigurationArn",
+    body: failover_slate_configuration_body,
+};
+
 /// The only destination type `CreateRecordingConfiguration` models, which it requires.
 fn recording_configuration_body(suffix: &str) -> Value {
     json!({ "destinationConfiguration": { "s3": { "bucketName": format!("attach-{suffix}") } } })
@@ -81,6 +102,13 @@ fn ad_configuration_body(suffix: &str) -> Value {
             ),
         }],
     })
+}
+
+/// `CreateFailoverSlateConfiguration` requires nothing at all, so the smallest body is
+/// the name that tells the rows apart — inside the modelled
+/// `FailoverSlateConfigurationName` pattern `^[a-zA-Z0-9-_]*$`.
+fn failover_slate_configuration_body(suffix: &str) -> Value {
+    json!({ "name": format!("slate-{suffix}") })
 }
 
 /// The sentence the rule requires, spelled out here rather than imported, so this
@@ -157,6 +185,18 @@ async fn a_delete_blocked_by_a_channel_states_the_attachment_sentence() {
             vec![true, true, true],
             false,
         ),
+        (
+            "failover slate configuration, one channel referencing from its create",
+            &FAILOVER_SLATE_CONFIGURATION,
+            vec![false],
+            false,
+        ),
+        (
+            "failover slate configuration, two channels, one from each route",
+            &FAILOVER_SLATE_CONFIGURATION,
+            vec![false, true],
+            false,
+        ),
     ];
 
     for (case, subject, routes, wait_for_active) in cases {
@@ -184,8 +224,26 @@ async fn a_delete_blocked_by_a_channel_states_the_attachment_sentence() {
         }
 
         if wait_for_active {
-            tokio::time::sleep(RECORDING_CONFIGURATION_ACTIVATION + Duration::from_millis(250))
-                .await;
+            // The row needs the resource SETTLED, which is a condition to look for rather
+            // than a span of the clock to wait out: look again until the read reports the
+            // settled state or a generous deadline passes.
+            let deadline = Instant::now() + SETTLED_DEADLINE;
+            loop {
+                let read = ivs
+                    .call(subject.read_operation, &json!({ "arn": arn }))
+                    .await;
+                let state = text(&read.body[subject.created_member], "state");
+                if state == RECORDING_CONFIGURATION_ACTIVE {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "case {case:?}: expected {arn} to settle within the deadline, got \
+                     {state:?} ({})",
+                    read.body
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
         }
 
         let expected = expected_message(subject, &arn);
@@ -280,18 +338,22 @@ async fn each_operation_states_its_own_action_and_resource() {
     let ivs = Ivs::new();
     let recording = create(&ivs, &RECORDING_CONFIGURATION, "both-recording").await;
     let ad = create(&ivs, &AD_CONFIGURATION, "both-ad").await;
-    // One channel holding both references at once.
+    let slate = create(&ivs, &FAILOVER_SLATE_CONFIGURATION, "both-slate").await;
+    // One channel holding every reference at once.
     ivs.create_arn(json!({
         "name": "holder",
         "recordingConfigurationArn": recording,
         "adConfigurationArn": ad,
+        "failoverSlateConfigurationArn": slate,
     }))
     .await;
 
-    for (subject, arn) in [
+    let referenced = [
         (&RECORDING_CONFIGURATION, &recording),
         (&AD_CONFIGURATION, &ad),
-    ] {
+        (&FAILOVER_SLATE_CONFIGURATION, &slate),
+    ];
+    for (subject, arn) in referenced {
         let case = subject.operation;
         let refused = delete(&ivs, subject, arn).await;
         assert_eq!(
@@ -308,12 +370,16 @@ async fn each_operation_states_its_own_action_and_resource() {
             "case {case:?}: expected this operation's own attachment sentence, got {}",
             refused.body
         );
-        // The other resource's ARN is not in this operation's sentence.
-        let other = if arn == &recording { &ad } else { &recording };
-        assert!(
-            !message(&refused).contains(other.as_str()),
-            "case {case:?}: the refusal must name only the ARN the request sent, got {:?}",
-            message(&refused)
-        );
+        // No other resource's ARN is in this operation's sentence.
+        for (_, other) in referenced {
+            if other == arn {
+                continue;
+            }
+            assert!(
+                !message(&refused).contains(other.as_str()),
+                "case {case:?}: the refusal must name only the ARN the request sent, got {:?}",
+                message(&refused)
+            );
+        }
     }
 }

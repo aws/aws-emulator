@@ -93,28 +93,40 @@
 //! because `override_operation` answers `None` for a key it does not hold and the
 //! generated table serves it unchanged.
 //!
+//! # The one surface the framework does not authenticate, and how it authenticates it
+//!
+//! Every modelled operation of this service is served through the framework's signed front
+//! door. One surface is not modelled: the PLAYBACK path a viewer follows, which carries no
+//! credential of this emulator because AWS serves a public channel's playback to a player
+//! that holds none — which is why it is answered at `override_routing_error`, the seam a
+//! request naming no modelled operation reaches before authentication.
+//!
+//! That surface checks its own caller instead. A channel that is "private (enabled for
+//! playback authorization)" is served only to a viewer presenting a playback token signed
+//! with the private half of one of the account's imported playback key pairs, naming that
+//! channel and inside its own validity window; anything else is refused `403` before a byte
+//! of the channel's media is read. The verification is `crate::state::playback_authorization`
+//! — the signature over the token's own bytes, then its window, then the channel it names —
+//! and [`playback_route`] applies it on every one of the three paths a channel serves.
+//!
 //! A sixth seam, `override_protocol`, is one this service DOES take: the codec every
 //! modelled response is rendered through. It is the model's own `restJson1` in every
-//! respect but two. Every channel object this service serves carries the
-//! failover-slate configuration ARN the wire response carries and this model revision
-//! declares on neither channel shape — see [`channel_projection`] for that rule. And an
+//! respect but one: an
 //! answer at the no-content status carries no body and states the length it has
 //! (`content-length: 0`), which is what the recorded 204s of this service carry and what
 //! the protocol's serializer cannot do, rendering a members-less output structure as the
 //! empty JSON object `{}` whatever status it is sent at; the rule itself is the tree's
-//! one reading of it (`service_common::no_content_responses`). Both are applied here, at
+//! one reading of it (`service_common::no_content_responses`). It is applied here, at
 //! the one place every response of this service passes through, rather than per
-//! operation, because no handler can reach the rendering of its own output and no
-//! generated shape can carry a member its model does not declare. The HTTP/1.1 writer
-//! this emulator is served on removes `content-length` from a no-content answer again,
-//! which is below anything this crate decides.
+//! operation, because no handler can reach the rendering of its own output. The HTTP/1.1
+//! writer this emulator is served on removes `content-length` from a no-content answer
+//! again, which is below anything this crate decides.
 //!
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
-mod channel_projection;
 mod playback_route;
 mod response_id;
 
@@ -128,7 +140,6 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
-use channel_projection::ChannelProjection;
 use response_id::new_request_id;
 
 /// The wire error code for a request this service refuses as invalid: the shape
@@ -486,17 +497,20 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             batch_start_viewer_session_revocation::BatchStartViewerSessionRevocation,
             create_ad_configuration::CreateAdConfiguration,
             create_channel::CreateChannel,
+            create_failover_slate_configuration::CreateFailoverSlateConfiguration,
             create_playback_restriction_policy::CreatePlaybackRestrictionPolicy,
             create_recording_configuration::CreateRecordingConfiguration,
             create_stream_key::CreateStreamKey,
             delete_ad_configuration::DeleteAdConfiguration,
             delete_channel::DeleteChannel,
+            delete_failover_slate_configuration::DeleteFailoverSlateConfiguration,
             delete_playback_key_pair::DeletePlaybackKeyPair,
             delete_playback_restriction_policy::DeletePlaybackRestrictionPolicy,
             delete_recording_configuration::DeleteRecordingConfiguration,
             delete_stream_key::DeleteStreamKey,
             get_ad_configuration::GetAdConfiguration,
             get_channel::GetChannel,
+            get_failover_slate_configuration::GetFailoverSlateConfiguration,
             get_playback_key_pair::GetPlaybackKeyPair,
             get_playback_restriction_policy::GetPlaybackRestrictionPolicy,
             get_recording_configuration::GetRecordingConfiguration,
@@ -507,6 +521,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             insert_ad_break::InsertAdBreak,
             list_ad_configurations::ListAdConfigurations,
             list_channels::ListChannels,
+            list_failover_slate_configurations::ListFailoverSlateConfigurations,
             list_playback_key_pairs::ListPlaybackKeyPairs,
             list_playback_restriction_policies::ListPlaybackRestrictionPolicies,
             list_recording_configurations::ListRecordingConfigurations,
@@ -521,6 +536,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             untag_resource::UntagResource,
             update_ad_configuration::UpdateAdConfiguration,
             update_channel::UpdateChannel,
+            update_failover_slate_configuration::UpdateFailoverSlateConfiguration,
             update_playback_restriction_policy::UpdatePlaybackRestrictionPolicy,
         );
         Self {
@@ -667,7 +683,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // claimed by the store that announced it, whatever else the request carries: a
         // viewer fetches it with no signature at all, and the model binds no operation to
         // that path, so nothing modelled is diverted here. A path naming a channel this
-        // store does not hold is not claimed. See `crate::state::playback_plane`.
+        // store does not hold is not claimed. CLAIMING it is not serving it: which viewer
+        // is served is decided by the credential check on that route below
+        // (`override_routing_error`), so a private channel's URL is claimed in order to be
+        // REFUSED here rather than answered by the router as an address nobody published.
+        // See `crate::state::playback_plane` and `crate::state::playback_authorization`.
         if playback_route::claims_playback_path(&*self.engine, parts) {
             return true;
         }
@@ -704,7 +724,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
-        // The model's own protocol, with the channel projection below applied to every
+        // The model's own protocol, with the no-content framing below applied to every
         // modelled response. Implemented on the service itself, so the protocol it
         // delegates to is the generated entry's own and there is no second routing table
         // to drift from the model.
@@ -738,9 +758,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // exactly that case by construction — the model binds no operation to a playback
         // path — so this is where that plane is served: the seam is reached BEFORE
         // authentication precisely for a request that names no modelled operation, which
-        // is what lets a viewer fetch a playlist with no credentials at all. Anything else
-        // keeps the framework's default.
-        playback_route::serve_playback_path(&*self.engine, req)
+        // is what lets a viewer fetch a PUBLIC channel's playlist with no credentials at
+        // all, as AWS serves one. It is the only surface of this service the framework does
+        // not authenticate, so it CHECKS ITS OWN CALLER before it reads anything: a channel
+        // "private (enabled for playback authorization)" is served only to a viewer
+        // presenting a playback token that one of the account's imported playback key pairs
+        // verifies for that channel, and is refused `403` otherwise. The verification is
+        // `crate::state::playback_authorization`, applied by the route below before any
+        // media of the channel is read; nothing on this path treats the mere presence of a
+        // token, of a channel id or of a header as proof. Anything else keeps the
+        // framework's default.
+        playback_route::serve_authorized_playback_path(&*self.engine, req)
     }
 
     fn override_framework_error(
@@ -759,7 +787,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 }
 
 /// The protocol this service answers modelled requests in: the model's own, with the one
-/// wire projection [`channel_projection`] states.
+/// framing rule below.
 ///
 /// Implemented on the service itself because the model-derived protocol it delegates to is
 /// owned by the generated entry and reached by reference (`self.entry.protocol()`), and
@@ -783,8 +811,7 @@ impl<Eng: Send + Sync + 'static> ServerProtocol for EmulatedService<Eng> {
         request: &'a RtRequest,
         input_schema: &Schema,
     ) -> Result<Box<dyn aws_smithy_schema::serde::ShapeDeserializer + 'a>, ProtocolError> {
-        // The REQUEST side is the framework's own: the projection is about what a channel
-        // object REPORTS, and no input member of this model carries it.
+        // The REQUEST side is the framework's own.
         self.entry
             .protocol()
             .deserialize_input(request, input_schema)
@@ -797,17 +824,15 @@ impl<Eng: Send + Sync + 'static> ServerProtocol for EmulatedService<Eng> {
         operation_name: &str,
         success_status: u16,
     ) -> Result<RtResponse, ProtocolError> {
-        // The status, the headers and every modelled member stay the framework's: only a
-        // channel object gains the configuration ARN its shape does not declare, from the
-        // record the handler already returned, and only an answer at the no-content
-        // status is REFRAMED — it carries no body and states the length it has, which is
-        // what the recorded `204`s of this service (the deletes, `PutMetadata` and the
-        // two tagging writes) carry. The rule is the tree's one reading of it
-        // (`service_common::no_content_responses`), applied here because the protocol's
-        // serializer renders a members-less output structure as `{}` whatever status it
-        // is sent at.
+        // The status, the headers and every modelled member stay the framework's: only an
+        // answer at the no-content status is REFRAMED — it carries no body and states the
+        // length it has, which is what the recorded `204`s of this service (the deletes,
+        // `PutMetadata` and the two tagging writes) carry. The rule is the tree's one
+        // reading of it (`service_common::no_content_responses`), applied here because the
+        // protocol's serializer renders a members-less output structure as `{}` whatever
+        // status it is sent at.
         let rendered = self.entry.protocol().serialize_output(
-            &ChannelProjection::new(output),
+            output,
             output_schema,
             operation_name,
             success_status,

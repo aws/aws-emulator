@@ -180,7 +180,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
 
         Ok(ListPlaybackKeyPairsOutput {
-            key_pairs: window.into_iter().map(summary).collect(),
+            key_pairs: window
+                .into_iter()
+                .map(|record| summary(&record.pair))
+                .collect(),
             next_token,
         })
     }

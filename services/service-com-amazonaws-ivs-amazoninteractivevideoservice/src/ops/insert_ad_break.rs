@@ -13,8 +13,9 @@
 //! [`crate::state::is_broadcasting`], the one place this service answers that question.
 //!
 //! What it writes is the marker itself — [`crate::state::insert_ad_break`] records the
-//! break against the live broadcast, with the channel's own ad configuration and a
-//! freshly minted `adBreakId`, which is the id this call reports back.
+//! break against the live broadcast, with the channel's own ad configuration, the
+//! `adBreakId` the caller chose (or a freshly minted one when it chose none) and the
+//! target start time it asked for, which is what this call reports back.
 //!
 //! ## Shape of an operation
 //!
@@ -68,11 +69,15 @@
 //!   into which the ad break is inserted.
 //! * `durationSeconds` (AdDurationSeconds, range 1..300) **required** — Duration of the ad
 //!   break, in seconds.
+//! * `adBreakId` (AdBreakId, len 12..12, pattern ^[a-zA-Z0-9]+$) — Caller-specified unique
+//!   identifier for the ad break to insert into the playlist.
+//! * `targetStartAt` (Time) — Target time at which the ad break starts.
 //!
 //! ## Output
 //!
 //! * `adBreakId` (AdBreakId, len 12..12, pattern ^[a-zA-Z0-9]+$) — Unique identifier for the
 //!   ad break that was inserted into the playlist.
+//! * `targetStartAt` (Time) — Target start time for the inserted ad break.
 //!
 //! ## Errors
 //!
@@ -199,10 +204,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        let inserted =
-            crate::state::insert_ad_break(&mut store, &input.channel_arn, input.duration_seconds);
+        let inserted = crate::state::insert_ad_break(
+            &mut store,
+            &input.channel_arn,
+            input.duration_seconds,
+            input.ad_break_id,
+            input
+                .target_start_at
+                .and_then(|requested| ::std::time::SystemTime::try_from(requested).ok()),
+        );
         Ok(InsertAdBreakOutput {
             ad_break_id: Some(inserted.ad_break_id),
+            // "Target start time for the inserted ad break": the time the marker carries,
+            // which is the one the request asked for and otherwise the instant the
+            // playlist took it.
+            target_start_at: Some(::aws_smithy_types::DateTime::from(inserted.target_start_at)),
         })
     }
 }

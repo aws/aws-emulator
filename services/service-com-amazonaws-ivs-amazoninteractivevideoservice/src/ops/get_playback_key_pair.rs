@@ -156,7 +156,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .lock()
             .playback_key_pairs
             .get(&input.arn)
-            .cloned()
+            .map(|record| record.pair.clone())
             .ok_or_else(|| {
                 crate::state::resource_not_found(
                     GetPlaybackKeyPairErrorModeled::ResourceNotFoundException,

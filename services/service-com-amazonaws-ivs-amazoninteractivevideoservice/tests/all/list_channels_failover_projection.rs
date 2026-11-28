@@ -29,9 +29,9 @@
 //! (which keeps one value per key) while a strict client sees a malformed object.
 //!
 //! The key-set cases state the rule as the KEY SET of a summary: a summary is the
-//! projection of the stored channel onto the members its shape declares plus the projected
-//! failover-slate ARN, so it reports each of those members exactly as the single read of
-//! the same channel does — the `failoverSlateConfigurationArn` key included — and reports
+//! projection of the stored channel onto the members its shape declares, the
+//! failover-slate ARN included, so it reports each of those members exactly as the single
+//! read of the same channel does and reports
 //! nothing outside that set. Stated that way the rule catches a DROPPED member whichever
 //! member it is, rather than only the one the recorded responses were compared on.
 
@@ -44,13 +44,13 @@ use super::channel_projection_scope::{
     ad_configuration, objects_carrying, recording_configuration, POLICY_ARN,
 };
 
-/// The member the recorded IVS responses carry on every projected channel and that this
-/// model revision declares on neither channel shape
-/// (`smithy_query(query="shape",shape="Channel,ChannelSummary")`), so it is served by the
-/// channel wire projection rather than by a generated field.
+/// The member every projected channel carries, which this model revision declares on
+/// both channel shapes (`smithy_query(query="shape",shape="Channel,ChannelSummary")`) and
+/// `CreateChannel`/`UpdateChannel` take as an input: the channels of this suite configure
+/// none, so every summary here must report the unconfigured value for it.
 const FAILOVER_SLATE: &str = "failoverSlateConfigurationArn";
 
-/// The two optional configuration ARNs `ChannelSummary` DOES declare, each documented
+/// The two other optional configuration ARNs `ChannelSummary` declares, each documented
 /// `Default: ""` (`smithy_query(query="doc",shape="ChannelSummary",member=...)`): the
 /// failover slate reads the same way they do, so every assertion checks it beside them.
 const DECLARED_CONFIGURATION_ARNS: &[&str] =
@@ -250,9 +250,9 @@ const SUMMARY_MEMBERS: &[&str] = &[
 /// a single read answers with: it reports every member of [`SUMMARY_MEMBERS`], each
 /// holding exactly what the channel reports for it, and no member outside that set.
 ///
-/// The failover-slate ARN is checked on its own as well, because no operation of this
-/// model revision can configure a failover slate, so every channel this store holds
-/// reports it as the unconfigured value.
+/// The failover-slate ARN is checked on its own as well, because the channels of this
+/// suite configure no failover slate, so every one of them reports it as the unconfigured
+/// value.
 async fn assert_the_summary_projects_the_channel(ivs: &Ivs, case: &str, arn: &str) {
     let channel = ivs.ok("GetChannel", json!({ "arn": arn })).await["channel"].clone();
     let listed = ivs.ok("ListChannels", json!({})).await;
@@ -273,8 +273,8 @@ async fn assert_the_summary_projects_the_channel(ivs: &Ivs, case: &str, arn: &st
     for member in reported.keys() {
         assert!(
             SUMMARY_MEMBERS.contains(&member.as_str()),
-            "case {case:?}: a summary reports only the members of its shape and the \
-             projected {FAILOVER_SLATE}, got {member:?} in {summary}"
+            "case {case:?}: a summary reports only the members of its shape, the \
+             {FAILOVER_SLATE} included, got {member:?} in {summary}"
         );
     }
     for member in SUMMARY_MEMBERS {
@@ -300,8 +300,8 @@ async fn assert_the_summary_projects_the_channel(ivs: &Ivs, case: &str, arn: &st
 }
 
 /// A summary reports the channel it names member for member, whatever that channel
-/// carries: the member set of a summary is the member set of the shape plus the projected
-/// failover-slate ARN, never one member short of it.
+/// carries: the member set of a summary is the member set of the shape, the
+/// failover-slate ARN included, never one member short of it.
 #[tokio::test]
 async fn a_summary_projects_its_channel_member_for_member() {
     let ivs = Ivs::new();
@@ -417,8 +417,8 @@ const ROUND_TRIPPED_MEMBERS: &[&str] = &[
 ];
 
 /// The summary members `UpdateChannel` declares NO input member for: the tag map, which
-/// the tagging operations own, and the projected failover-slate ARN, which no operation of
-/// this model revision can configure. A client sending a whole summary back carries them
+/// the tagging operations own, and the failover-slate ARN, which the channels of this
+/// suite leave unconfigured. A client sending a whole summary back carries them
 /// along, so they are the members an update must tolerate rather than refuse.
 const NON_INPUT_SUMMARY_MEMBERS: &[&str] = &["tags", FAILOVER_SLATE];
 

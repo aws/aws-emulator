@@ -16,11 +16,14 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ivs-amazoninteractivevi
 pub struct InsertAdBreakInput {
     pub channel_arn: String,
     pub duration_seconds: i32,
+    pub ad_break_id: Option<String>,
+    pub target_start_at: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ivs#InsertAdBreakResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct InsertAdBreakOutput {
     pub ad_break_id: Option<String>,
+    pub target_start_at: Option<::aws_smithy_types::DateTime>,
 }
 

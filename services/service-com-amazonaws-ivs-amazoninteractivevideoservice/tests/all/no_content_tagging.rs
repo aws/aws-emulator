@@ -19,12 +19,12 @@
 //!    written when the resource was created is readable afterwards whatever kind of
 //!    resource carries it.
 //!
-//! The rows of rule 2 are the five resource types this service's stores hold (a channel,
-//! a stream key, a playback key pair, an ad configuration and a recording
-//! configuration), one created with tags and one without. Rule 1's rows are the two
-//! tagging writes over each of those resources, plus each delete whose modelled `@http`
-//! code is 204 (`smithy_query(query="digest")`); `PutMetadata`, the remaining modelled
-//! 204, is answered through the same one serialization seam.
+//! The rows of rule 2 are the six resource types this service's stores hold (a channel,
+//! a stream key, a playback key pair, an ad configuration, a recording configuration and
+//! a failover slate configuration), one created with tags and one without. Rule 1's rows
+//! are the two tagging writes over each of those resources, plus each delete whose
+//! modelled `@http` code is 204 (`smithy_query(query="digest")`); `PutMetadata`, the
+//! remaining modelled 204, is answered through the same one serialization seam.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -239,6 +239,15 @@ async fn taggable_resources(ivs: &Ivs) -> Vec<Taggable> {
     let recording_configuration_arn =
         text(&recording_configuration["recordingConfiguration"], "arn");
 
+    let failover_slate = ivs
+        .ok(
+            "CreateFailoverSlateConfiguration",
+            json!({ "name": "tagged-slate",
+                    "tags": { "probe": "failover-slate-configuration" } }),
+        )
+        .await;
+    let failover_slate_arn = text(&failover_slate["failoverSlateConfiguration"], "arn");
+
     vec![
         Taggable {
             case: "a channel, tagged at creation",
@@ -264,6 +273,11 @@ async fn taggable_resources(ivs: &Ivs) -> Vec<Taggable> {
             case: "a recording configuration, tagged at creation",
             arn: recording_configuration_arn,
             at_creation: tags(&[("probe", "recording-configuration")]),
+        },
+        Taggable {
+            case: "a failover slate configuration, tagged at creation",
+            arn: failover_slate_arn,
+            at_creation: tags(&[("probe", "failover-slate-configuration")]),
         },
     ]
 }
@@ -366,6 +380,10 @@ async fn every_answer_at_the_no_content_status_is_framed_the_same_way() {
         (
             "DeleteRecordingConfiguration",
             json!({ "arn": arn_of("a recording configuration, tagged at creation") }),
+        ),
+        (
+            "DeleteFailoverSlateConfiguration",
+            json!({ "arn": arn_of("a failover slate configuration, tagged at creation") }),
         ),
         (
             "DeleteChannel",

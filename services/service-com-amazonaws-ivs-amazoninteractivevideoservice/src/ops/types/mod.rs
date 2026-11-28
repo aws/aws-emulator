@@ -19,17 +19,20 @@ pub mod batch_get_stream_key_types;
 pub mod batch_start_viewer_session_revocation_types;
 pub mod create_ad_configuration_types;
 pub mod create_channel_types;
+pub mod create_failover_slate_configuration_types;
 pub mod create_playback_restriction_policy_types;
 pub mod create_recording_configuration_types;
 pub mod create_stream_key_types;
 pub mod delete_ad_configuration_types;
 pub mod delete_channel_types;
+pub mod delete_failover_slate_configuration_types;
 pub mod delete_playback_key_pair_types;
 pub mod delete_playback_restriction_policy_types;
 pub mod delete_recording_configuration_types;
 pub mod delete_stream_key_types;
 pub mod get_ad_configuration_types;
 pub mod get_channel_types;
+pub mod get_failover_slate_configuration_types;
 pub mod get_playback_key_pair_types;
 pub mod get_playback_restriction_policy_types;
 pub mod get_recording_configuration_types;
@@ -40,6 +43,7 @@ pub mod import_playback_key_pair_types;
 pub mod insert_ad_break_types;
 pub mod list_ad_configurations_types;
 pub mod list_channels_types;
+pub mod list_failover_slate_configurations_types;
 pub mod list_playback_key_pairs_types;
 pub mod list_playback_restriction_policies_types;
 pub mod list_recording_configurations_types;
@@ -55,6 +59,7 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_ad_configuration_types;
 pub mod update_channel_types;
+pub mod update_failover_slate_configuration_types;
 pub mod update_playback_restriction_policy_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -68,6 +73,8 @@ pub use create_ad_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_failover_slate_configuration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_playback_restriction_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_recording_configuration_types::*;
@@ -77,6 +84,8 @@ pub use create_stream_key_types::*;
 pub use delete_ad_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_channel_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_failover_slate_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_playback_key_pair_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -89,6 +98,8 @@ pub use delete_stream_key_types::*;
 pub use get_ad_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_channel_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_failover_slate_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_playback_key_pair_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -109,6 +120,8 @@ pub use insert_ad_break_types::*;
 pub use list_ad_configurations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_channels_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_failover_slate_configurations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_playback_key_pairs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -139,6 +152,8 @@ pub use untag_resource_types::*;
 pub use update_ad_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_channel_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_failover_slate_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_playback_restriction_policy_types::*;
 

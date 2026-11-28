@@ -26,6 +26,7 @@ pub struct UpdateChannelInput {
     pub multitrack_input_configuration: Option<MultitrackInputConfiguration>,
     pub container_format: Option<String>,
     pub ad_configuration_arn: Option<String>,
+    pub failover_slate_configuration_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ivs#UpdateChannelResponse")]

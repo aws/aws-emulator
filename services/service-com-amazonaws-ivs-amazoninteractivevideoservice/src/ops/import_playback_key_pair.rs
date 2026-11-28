@@ -188,9 +188,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(existing) = store
             .playback_key_pairs
             .values()
-            .find(|pair| pair.fingerprint.as_deref() == Some(fingerprint.as_str()))
+            .find(|record| record.pair.fingerprint.as_deref() == Some(fingerprint.as_str()))
         {
-            let existing_arn = existing.arn.clone().unwrap_or_default();
+            let existing_arn = existing.pair.arn.clone().unwrap_or_default();
             drop(store);
             audit(ctx, &fingerprint, &existing_arn, "rejected-conflict");
             return Err(crate::state::already_exists(
@@ -221,7 +221,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             fingerprint: Some(fingerprint),
             tags: Some(input.tags.unwrap_or_default()),
         };
-        store.playback_key_pairs.insert(arn, key_pair.clone());
+        store.playback_key_pairs.insert(
+            arn,
+            crate::state::PlaybackKeyPairRecord {
+                pair: key_pair.clone(),
+                // The PUBLIC half of the imported pair, kept so a private channel's
+                // playback token can be checked against it (`crate::state::playback_authorization`)
+                // and reported by nothing: no modelled shape carries it.
+                public_key_der: key_der,
+            },
+        );
         drop(store);
 
         audit(

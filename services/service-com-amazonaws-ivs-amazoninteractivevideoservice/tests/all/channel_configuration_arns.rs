@@ -20,12 +20,10 @@ use super::channel_lifecycle::{text, Ivs, CHANNEL_ARN_PREFIX};
 
 /// Every configuration ARN a channel object carries.
 ///
-/// The first three are the members both channel shapes declare
+/// All four are members both channel shapes declare
 /// (`smithy_query(query="shape",shape="Channel,ChannelSummary")`), each documented
-/// "Default: \"\"" where the model gives one. `failoverSlateConfigurationArn` is the
-/// fourth: the recorded IVS responses carry it on every projected channel, and this model
-/// revision declares it on neither shape, so it is served by the channel wire projection
-/// rather than by a generated field.
+/// "Default: \"\"" — so each reads the same way, and every assertion below checks them
+/// together.
 const CONFIGURATION_ARNS: &[&str] = &[
     "recordingConfigurationArn",
     "playbackRestrictionPolicyArn",
@@ -33,10 +31,11 @@ const CONFIGURATION_ARNS: &[&str] = &[
     "failoverSlateConfigurationArn",
 ];
 
-/// The member no operation of this model revision can configure: the API declares no
-/// input member for a failover slate anywhere
-/// (`smithy_query(query="operation",operation="CreateChannel,UpdateChannel")`), so every
-/// channel this store holds has none and reports the unconfigured value for it.
+/// The member whose own resource and channel-level input this model revision declares
+/// (`smithy_query(query="operation",operation="CreateChannel,UpdateChannel")` carry it,
+/// and `CreateFailoverSlateConfiguration` mints what it names), checked on its own below
+/// over channel shapes that configure nothing: a channel with no failover slate reports
+/// the unconfigured value for it rather than no key at all.
 const FAILOVER_SLATE: &str = "failoverSlateConfigurationArn";
 
 /// The value an unconfigured configuration ARN reads as.
@@ -84,6 +83,14 @@ async fn table(ivs: &Ivs) -> Vec<Case> {
         .await["adConfiguration"],
         "arn",
     );
+    let slate = text(
+        &ivs.ok(
+            "CreateFailoverSlateConfiguration",
+            json!({ "name": "slate" }),
+        )
+        .await["failoverSlateConfiguration"],
+        "arn",
+    );
 
     let unconfigured = |overrides: &[(&'static str, &str)]| {
         CONFIGURATION_ARNS
@@ -107,7 +114,8 @@ async fn table(ivs: &Ivs) -> Vec<Case> {
         Case {
             case: "every configuration ARN sent as the empty string".to_string(),
             request: json!({ "name": "empties", "recordingConfigurationArn": "",
-                             "playbackRestrictionPolicyArn": "", "adConfigurationArn": "" }),
+                             "playbackRestrictionPolicyArn": "", "adConfigurationArn": "",
+                             "failoverSlateConfigurationArn": "" }),
             expected: unconfigured(&[]),
         },
         Case {
@@ -126,14 +134,21 @@ async fn table(ivs: &Ivs) -> Vec<Case> {
             expected: unconfigured(&[("adConfigurationArn", &ad)]),
         },
         Case {
-            case: "all three configurable ARNs attached together".to_string(),
+            case: "a failover slate configuration attached".to_string(),
+            request: json!({ "name": "slated", "failoverSlateConfigurationArn": slate }),
+            expected: unconfigured(&[("failoverSlateConfigurationArn", &slate)]),
+        },
+        Case {
+            case: "all four configurable ARNs attached together".to_string(),
             request: json!({ "name": "everything", "recordingConfigurationArn": recording,
                              "playbackRestrictionPolicyArn": policy,
-                             "adConfigurationArn": ad }),
+                             "adConfigurationArn": ad,
+                             "failoverSlateConfigurationArn": slate }),
             expected: unconfigured(&[
                 ("recordingConfigurationArn", &recording),
                 ("playbackRestrictionPolicyArn", &policy),
                 ("adConfigurationArn", &ad),
+                ("failoverSlateConfigurationArn", &slate),
             ]),
         },
     ]
@@ -227,9 +242,8 @@ async fn every_channel_projection_reports_every_configuration_arn() {
     }
 }
 
-/// The half of the rule the model cannot express: the failover-slate ARN is a present
-/// key on every channel object, whatever else the channel carries, because no operation
-/// of this model revision can configure a failover slate.
+/// The half of the rule a channel that configures nothing states: the failover-slate ARN
+/// is a present key on every channel object, whatever else the channel carries.
 #[tokio::test]
 async fn the_failover_slate_arn_is_present_on_every_channel_object() {
     // Rows differ along the shape of the channel itself — its type and preset, whether

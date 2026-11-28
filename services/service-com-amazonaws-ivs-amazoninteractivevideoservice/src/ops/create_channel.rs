@@ -279,6 +279,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             multitrack_input_configuration: Some(multitrack_input_configuration),
             container_format: Some(container_format),
             ad_configuration_arn: Some(input.ad_configuration_arn.unwrap_or_default()),
+            // "Failover-slate-configuration ARN. A valid ARN value here both specifies
+            // the ARN and enables failover slate. Default: \"\" (empty string, no failover
+            // slate configuration is applied)" — so a caller that named none is reported
+            // the empty string, as the three configuration ARNs beside it are.
+            failover_slate_configuration_arn: Some(
+                input.failover_slate_configuration_arn.unwrap_or_default(),
+            ),
         };
         // The channel's first stream key is minted BEFORE the channel is persisted, so a
         // call that cannot obtain the key's secret persists neither half of what AWS

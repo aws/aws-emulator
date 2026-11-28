@@ -233,6 +233,10 @@ fn matches_filters(channel: &Channel, input: &ListChannelsInput) -> bool {
             input.filter_by_ad_configuration_arn.as_ref(),
             channel.ad_configuration_arn.as_ref(),
         )
+        && matches(
+            input.filter_by_failover_slate_configuration_arn.as_ref(),
+            channel.failover_slate_configuration_arn.as_ref(),
+        )
 }
 
 /// The `ChannelSummary` projection of a persisted channel: every member
@@ -250,5 +254,6 @@ fn summary(channel: &Channel) -> ChannelSummary {
         preset: channel.preset.clone(),
         playback_restriction_policy_arn: channel.playback_restriction_policy_arn.clone(),
         ad_configuration_arn: channel.ad_configuration_arn.clone(),
+        failover_slate_configuration_arn: channel.failover_slate_configuration_arn.clone(),
     }
 }

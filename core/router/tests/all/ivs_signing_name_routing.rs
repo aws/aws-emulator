@@ -136,13 +136,14 @@ async fn call(
 fn exactly_one_service_sharing_the_ivs_signing_name_claims_each_request() {
     let (ivs, realtime) = both_services();
 
-    // A 34-row table: (case, method, host, uri, the service that must claim it)
+    // A 36-row table: (case, method, host, uri, the service that must claim it)
     //
     // The operation paths come from each model's `smithy.api#http` bindings
     // (`smithy_query(query="digest", …)` on the two models); the ARNs are built from the
     // resource segment each model's ARN shapes pin — `channel`, `stream-key`,
-    // `playback-key`, `playback-restriction-policy`, `recording-configuration` and
-    // `ad-configuration` on the `ivs` model, `stage`, `encoder-configuration`,
+    // `playback-key`, `playback-restriction-policy`, `recording-configuration`,
+    // `ad-configuration` and `failover-slate-configuration` on the `ivs` model, `stage`,
+    // `encoder-configuration`,
     // `storage-configuration`, `composition`, `public-key` and `ingest-configuration` on
     // the `ivsrealtime` one.
     let rows: Vec<(String, &str, &str, String, &str)> = vec![
@@ -188,6 +189,13 @@ fn exactly_one_service_sharing_the_ivs_signing_name_claims_each_request() {
             "POST",
             "localhost:9297",
             "/ListPlaybackKeyPairs".to_string(),
+            OWNER_IVS,
+        ),
+        (
+            "ivs CreateFailoverSlateConfiguration".to_string(),
+            "POST",
+            "localhost:9297",
+            "/CreateFailoverSlateConfiguration".to_string(),
             OWNER_IVS,
         ),
         (
@@ -302,6 +310,18 @@ fn exactly_one_service_sharing_the_ivs_signing_name_claims_each_request() {
             format!(
                 "/tags/{}",
                 label("arn:aws:ivs:us-east-1:000000000000:ad-configuration/ad-1")
+            ),
+            OWNER_IVS,
+        ),
+        (
+            "tags: list on a failover slate configuration".to_string(),
+            "GET",
+            "localhost:9297",
+            format!(
+                "/tags/{}",
+                label(
+                    "arn:aws:ivs:us-east-1:000000000000:failover-slate-configuration/slate-1"
+                )
             ),
             OWNER_IVS,
         ),

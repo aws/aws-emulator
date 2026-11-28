@@ -49,19 +49,32 @@ mod playback_plane;
 /// One concern, one file, re-exported here.
 mod stream_sessions;
 
+/// The FAILOVER SLATE configurations this service holds, the clock-owed state move each
+/// one takes, and the documented default of every member a request may omit. One concern,
+/// one file, re-exported here.
+mod failover_slate_configurations;
+
+/// WHO may play a channel back: the token a private channel's playback requires, and the
+/// key material an imported playback key pair keeps so that it can be checked. One
+/// concern, one file, re-exported here.
+mod playback_authorization;
+
 pub use ad_breaks::*;
 pub use channel_endpoints::*;
+pub use failover_slate_configurations::*;
 pub use ingest_plane::*;
+pub use playback_authorization::*;
 pub use playback_plane::*;
 pub use referenced_resources::*;
 pub use stream_sessions::*;
 
 use crate::ops::types::{
     AdConfiguration, AudioConfiguration, Channel, ChannelNotBroadcasting, ConflictException,
-    IngestConfiguration, IngestConfigurations, InternalServerException,
-    MultitrackInputConfiguration, PlaybackKeyPair, RecordingConfiguration, RenditionConfiguration,
-    ResourceNotFoundException, ServiceQuotaExceededException, ServiceUnavailable, Stream, StreamKey,
-    StreamSession, ThumbnailConfiguration, ValidationException, VideoConfiguration,
+    FailoverSlateConfiguration, FailoverSlateConfigurationSummary, IngestConfiguration,
+    IngestConfigurations, InternalServerException, MultitrackInputConfiguration, PlaybackKeyPair,
+    RecordingConfiguration, RenditionConfiguration, ResourceNotFoundException,
+    ServiceQuotaExceededException, ServiceUnavailable, Stream, StreamKey, StreamSession,
+    ThumbnailConfiguration, ValidationException, VideoConfiguration,
 };
 use crate::scaffolded::Scaffolded;
 
@@ -83,8 +96,11 @@ pub struct ComAmazonawsIvsAmazoninteractivevideoserviceState {
     /// Every imported playback key pair, keyed by its ARN. A `BTreeMap` for the
     /// same reason as [`Self::channels`]: one stable order for the list that reads
     /// it. A pair's `fingerprint` is derived from the imported key material, so it
-    /// is also what identifies the key itself inside this map.
-    pub playback_key_pairs: BTreeMap<String, PlaybackKeyPair>,
+    /// is also what identifies the key itself inside this map. Each record keeps the
+    /// public key the import carried beside the modelled resource, because that is what
+    /// a private channel's playback token is checked against — see
+    /// [`playback_authorization`].
+    pub playback_key_pairs: BTreeMap<String, PlaybackKeyPairRecord>,
     /// The stream each channel carries, keyed by the ARN of that channel: a
     /// channel ingests at most one stream at a time, so its ARN identifies the
     /// stream. A channel with no entry here — or one whose entry has left the
@@ -112,6 +128,12 @@ pub struct ComAmazonawsIvsAmazoninteractivevideoserviceState {
     /// same reason as [`Self::channels`]: one stable order for
     /// `ListRecordingConfigurations` to page over.
     pub recording_configurations: BTreeMap<String, RecordingConfigurationRecord>,
+    /// Every persisted failover slate configuration, keyed by its ARN, each with the
+    /// instant its `CREATING`/`UPDATING` → `CREATED` transition falls due. A `BTreeMap`
+    /// for the same reason as [`Self::channels`]: one stable order for
+    /// `ListFailoverSlateConfigurations` to page over. See
+    /// [`failover_slate_configurations`].
+    pub failover_slate_configurations: BTreeMap<String, FailoverSlateConfigurationRecord>,
     /// The ad break each broadcasting channel's playlist currently carries, keyed
     /// by the ARN of that channel: an ad marker belongs to the stream it was
     /// inserted into, so an entry lives exactly as long as that broadcast does and
@@ -196,10 +218,11 @@ impl ComAmazonawsIvsAmazoninteractivevideoserviceState {
     /// Whether any channel still POINTS AT `arn`.
     ///
     /// A channel is the only resource in this service that references another: it
-    /// names a recording configuration, a playback restriction policy and an ad
-    /// configuration, each by ARN. Those three ARN namespaces are disjoint (the
+    /// names a recording configuration, a playback restriction policy, an ad
+    /// configuration and a failover slate configuration, each by ARN. Those ARN
+    /// namespaces are disjoint (the
     /// modelled patterns pin the resource segment of each), so one lookup over all
-    /// three members answers "is this resource still in use?" for every kind of
+    /// of those members answers "is this resource still in use?" for every kind of
     /// resource a channel can reference, without the caller saying which kind it
     /// asked about.
     ///
@@ -214,6 +237,7 @@ impl ComAmazonawsIvsAmazoninteractivevideoserviceState {
                 channel.recording_configuration_arn.as_deref(),
                 channel.playback_restriction_policy_arn.as_deref(),
                 channel.ad_configuration_arn.as_deref(),
+                channel.failover_slate_configuration_arn.as_deref(),
             ];
             references
                 .into_iter()
@@ -904,26 +928,6 @@ const MULTITRACK_POLICY_DEFAULT: &str = "ALLOW";
 /// update named one: the largest member of `MULTITRACK_MAXIMUM_RESOLUTION_VALUES`,
 /// so the default caps nothing the channel type itself admits.
 const MULTITRACK_MAXIMUM_RESOLUTION_DEFAULT: &str = "FULL_HD";
-
-/// The failover-slate configuration ARN a channel projection reports.
-///
-/// A channel's optional configuration ARNs are reported as a PRESENT key holding the
-/// empty string while nothing is configured, never as an absent member — the rule the
-/// model writes out for each one it declares ("Default: \"\" (empty string, recording is
-/// disabled)" on `Channel$recordingConfigurationArn`, the same sentence on
-/// `playbackRestrictionPolicyArn`), and the way every handler here persists them
-/// (`Some(input.recording_configuration_arn.unwrap_or_default())`). A client decides
-/// "is this configured?" by comparing the value with the empty string, so an absent key
-/// is a different answer from "nothing is configured".
-///
-/// The failover slate is one of those ARNs on the wire and the one this model revision
-/// does not declare on `Channel` or `ChannelSummary`
-/// (`smithy_query(query="shape",shape="Channel,ChannelSummary")`), so it has no field on
-/// the stored record and no input member to set it: every channel this store holds has
-/// no failover slate, and this is the value that reports it. It is read by the channel
-/// wire projection in `crate::service`, which is where a member no shape declares can be
-/// written at all.
-pub const CHANNEL_FAILOVER_SLATE_CONFIGURATION_ARN: &str = "";
 
 /// Refuse a channel whose `containerFormat` and multitrack configuration cannot
 /// hold together, returning the message to put on a `ValidationException`.
@@ -1940,6 +1944,8 @@ pub const PLAYBACK_KEY_RESOURCE_TYPE: &str = "playback-key";
 pub const AD_CONFIGURATION_RESOURCE_TYPE: &str = "ad-configuration";
 /// See [`CHANNEL_RESOURCE_TYPE`].
 pub const RECORDING_CONFIGURATION_RESOURCE_TYPE: &str = "recording-configuration";
+// The failover slate configuration's own segment is stated beside the rest of that
+// resource's rules: [`FAILOVER_SLATE_CONFIGURATION_RESOURCE_TYPE`].
 
 /// The resource type an IVS ARN names (`channel`, `stream-key`, `playback-key`, …), or
 /// `None` when the string is not an IVS resource ARN at all.
@@ -1956,8 +1962,9 @@ pub fn arn_resource_type(arn: &str) -> Option<&str> {
 /// EVERY resource type this service can create is reachable, because a tag set written
 /// when the resource was created has to be readable afterwards: a channel
 /// (`CreateChannel`), a stream key (`CreateChannel` / `CreateStreamKey`), a playback key
-/// pair (`ImportPlaybackKeyPair`), an ad configuration (`CreateAdConfiguration`) and a
-/// recording configuration (`CreateRecordingConfiguration`) — the five stores this state
+/// pair (`ImportPlaybackKeyPair`), an ad configuration (`CreateAdConfiguration`), a
+/// recording configuration (`CreateRecordingConfiguration`) and a failover slate
+/// configuration (`CreateFailoverSlateConfiguration`) — the six stores this state
 /// holds tagged resources in. A resource type whose create is still a scaffold stub (a
 /// playback restriction policy) is held by no store, so a well-formed ARN naming one is
 /// answered exactly as an ARN naming a deleted resource is — not found.
@@ -1977,13 +1984,17 @@ pub fn resource_tags(
         PLAYBACK_KEY_RESOURCE_TYPE => state
             .playback_key_pairs
             .get(arn)
-            .map(|pair| pair.tags.clone().unwrap_or_default()),
+            .map(|record| record.pair.tags.clone().unwrap_or_default()),
         AD_CONFIGURATION_RESOURCE_TYPE => state
             .ad_configurations
             .get(arn)
             .map(|configuration| configuration.tags.clone().unwrap_or_default()),
         RECORDING_CONFIGURATION_RESOURCE_TYPE => state
             .recording_configurations
+            .get(arn)
+            .map(|record| record.configuration.tags.clone().unwrap_or_default()),
+        FAILOVER_SLATE_CONFIGURATION_RESOURCE_TYPE => state
+            .failover_slate_configurations
             .get(arn)
             .map(|record| record.configuration.tags.clone().unwrap_or_default()),
         _ => None,
@@ -2007,13 +2018,17 @@ pub fn resource_tags_entry<'a>(
         PLAYBACK_KEY_RESOURCE_TYPE => state
             .playback_key_pairs
             .get_mut(arn)
-            .map(|pair| &mut pair.tags),
+            .map(|record| &mut record.pair.tags),
         AD_CONFIGURATION_RESOURCE_TYPE => state
             .ad_configurations
             .get_mut(arn)
             .map(|configuration| &mut configuration.tags),
         RECORDING_CONFIGURATION_RESOURCE_TYPE => state
             .recording_configurations
+            .get_mut(arn)
+            .map(|record| &mut record.configuration.tags),
+        FAILOVER_SLATE_CONFIGURATION_RESOURCE_TYPE => state
+            .failover_slate_configurations
             .get_mut(arn)
             .map(|record| &mut record.configuration.tags),
         _ => None,

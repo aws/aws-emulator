@@ -53,6 +53,11 @@ pub struct StreamSessionRecord {
     pub channel: Channel,
     /// The recording configuration the channel named at that time, when it named one.
     pub recording_configuration: Option<RecordingConfiguration>,
+    /// The failover slate configuration the channel named at that time, when it named one:
+    /// "the properties of the failover slate configuration at the time of going live"
+    /// (`StreamSession$failoverSlateConfiguration`), so it is snapshotted beside the
+    /// recording configuration and for the same reason.
+    pub failover_slate_configuration: Option<FailoverSlateConfiguration>,
     /// What the broadcaster's encoder said it was sending, or `None` until it said
     /// anything.
     pub ingest_configuration: Option<IngestConfiguration>,
@@ -79,6 +84,10 @@ pub fn start_session(
         .filter(|arn| !arn.is_empty())
         .and_then(|arn| state.recording_configurations.get(arn))
         .map(|record| record.configuration.clone());
+    // The same reading for the failover slate the channel names, through the one resolver
+    // of that association ([`channel_failover_slate_configuration`]).
+    let failover_slate_configuration =
+        channel_failover_slate_configuration(state, channel_arn).cloned();
     let sessions = state
         .stream_sessions
         .entry(channel_arn.to_string())
@@ -95,6 +104,7 @@ pub fn start_session(
         end_time: None,
         channel,
         recording_configuration,
+        failover_slate_configuration,
         ingest_configuration: None,
     });
     while sessions.len() > MAX_SESSIONS_PER_CHANNEL {
@@ -191,6 +201,7 @@ pub fn announced_stream_session(
         ingest_configuration: record.ingest_configuration,
         ingest_configurations,
         recording_configuration: record.recording_configuration,
+        failover_slate_configuration: record.failover_slate_configuration,
         // No stream event is recorded for a broadcast this emulator ingested: the list is
         // "Amazon IVS events that the stream encountered", and a broadcast that ran and
         // ended encountered none, so the member is the empty list rather than an invented

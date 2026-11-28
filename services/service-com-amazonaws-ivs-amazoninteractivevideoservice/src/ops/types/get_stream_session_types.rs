@@ -35,6 +35,7 @@ pub struct StreamSession {
     pub ingest_configurations: Option<IngestConfigurations>,
     pub recording_configuration: Option<RecordingConfiguration>,
     pub truncated_events: Option<Vec<StreamEvent>>,
+    pub failover_slate_configuration: Option<FailoverSlateConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ivs#IngestConfiguration")]

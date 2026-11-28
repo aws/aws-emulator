@@ -30,6 +30,7 @@ pub struct Channel {
     pub multitrack_input_configuration: Option<MultitrackInputConfiguration>,
     pub container_format: Option<String>,
     pub ad_configuration_arn: Option<String>,
+    pub failover_slate_configuration_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ivs#Srt")]
@@ -213,6 +214,18 @@ pub struct ServiceQuotaExceededException {
     pub exception_message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ivs#FailoverSlateConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct FailoverSlateConfiguration {
+    pub arn: String,
+    pub name: Option<String>,
+    pub activation_threshold_seconds: Option<i32>,
+    pub min_slate_display_seconds: Option<i32>,
+    pub max_slate_display_seconds: Option<i32>,
+    pub state: String,
+    pub tags: Option<std::collections::HashMap<String, String>>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ivs#PlaybackRestrictionPolicy")]
 #[derive(Debug, Clone, Default)]
 pub struct PlaybackRestrictionPolicy {
@@ -298,6 +311,10 @@ pub const CHANNEL_TYPE_VALUES: &[&str] = &["ADVANCED_HD", "ADVANCED_SD", "BASIC"
 
 /// The values `ContainerFormat` accepts on the wire.
 pub const CONTAINER_FORMAT_VALUES: &[&str] = &["FRAGMENTED_MP4", "TS"];
+
+
+/// The values `FailoverSlateConfigurationState` accepts on the wire.
+pub const FAILOVER_SLATE_CONFIGURATION_STATE_VALUES: &[&str] = &["CREATED", "CREATE_FAILED", "CREATING", "UPDATING"];
 
 
 /// The values `MultitrackMaximumResolution` accepts on the wire.
