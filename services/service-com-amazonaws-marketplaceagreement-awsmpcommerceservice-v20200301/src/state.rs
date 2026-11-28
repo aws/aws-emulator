@@ -45,7 +45,10 @@
 //! this service's model or state — so there is no per-proposal pricing to read
 //! here. What this emulator holds instead is an offer of its
 //! OWN, as DATA: [`RATE_CARD`] publishes the per-unit price of each product
-//! dimension it carries, at each contract length, [`TERM_PRICE_LIST`] the single
+//! dimension it carries, at each contract length, [`REGIONAL_RATE_CARD`] the
+//! per-Region overrides of some of those prices (`RateCardItem$regionalPrices`
+//! "replaces the default `price`" where the offer defines one),
+//! [`TERM_PRICE_LIST`] the single
 //! price of each kind of term that carries one instead of a rate card,
 //! [`OFFER_RESOURCES`] the products the offer is for (the resources an agreement
 //! accepted from it is involved with, and the ones its entitlements are
@@ -96,7 +99,8 @@ use crate::ops::types::{
     GetBillingAdjustmentRequestOutput, GrantItem, InternalServerException, InvoiceBillingPeriod,
     ItemizedCharge, LegalTerm,
     NetPaymentTerm, PaymentRequestSummary, PaymentScheduleTerm, PricingCurrencyAmount,
-    ProposalSummary, Proposer, RateCardItem, ScheduleItem, Selector, UsageBasedRateCardItem,
+    ProposalSummary, Proposer, RateCardItem, RegionalPrice, ScheduleItem, Selector,
+    UsageBasedRateCardItem,
     CreateAgreementRequestInput, PurchaseOrder, RecurringPaymentTerm, RenewalTerm, RequestedTerm,
     RequestedTermConfiguration, Resource, ResourceNotFoundException,
     SendAgreementCancellationRequestInput, SendAgreementPaymentRequestInput, SupportTerm,
@@ -552,6 +556,56 @@ pub const RATE_CARD: &[PublishedRate] = &[
     },
 ];
 
+/// One published per-Region override of a rate the rate card carries: what one
+/// unit of a product dimension costs in ONE AWS Region, per contract length.
+///
+/// `RateCardItem$regionalPrices` is "the per-Region price overrides for the
+/// product dimension. When a Regional price is present for an AWS Region, it
+/// replaces the default `price`", and `RegionalPrice` is "a per-Region price
+/// override for a product dimension in a rate card": its `region` is "the AWS
+/// Region that the price override applies to" and its `price` "the per unit
+/// price for the product dimension in the specified AWS Region".
+#[derive(Debug, Clone, Copy)]
+pub struct PublishedRegionalRate {
+    /// The product dimension this row overrides a rate of — one [`RATE_CARD`]
+    /// publishes, since an override "replaces the default `price`".
+    pub dimension_key: &'static str,
+    /// The Region the override applies in, as `AWSRegion` spells one
+    /// (`^[a-z]{2,3}(-[a-z]+)+-\d+$`).
+    pub region: &'static str,
+    /// `(selectorValue, the price of one unit in minor units of
+    /// [`CURRENCY_CODE`])`, as [`PublishedRate::per_selector`] carries it.
+    pub per_selector: &'static [(&'static str, u64)],
+}
+
+/// The per-Region price overrides the offer this emulator publishes defines.
+///
+/// SOURCE: this is the emulator's OWN catalog, DATA on exactly the same footing
+/// as [`RATE_CARD`] — a rate card belongs to the seller's offer, which is not
+/// this service's resource — and the Regions are AWS Region labels.
+///
+/// It is deliberately a SLICE of the card: a dimension these rows do not
+/// override, or a Region they do not override it in, is priced at the card's
+/// default `price`, which is the case `regionalPrices` is "absent when the offer
+/// doesn't define regional price overrides" for.
+pub const REGIONAL_RATE_CARD: &[PublishedRegionalRate] = &[
+    PublishedRegionalRate {
+        dimension_key: "Users",
+        region: "eu-central-1",
+        per_selector: &[("P1M", 2_200), ("P12M", 23_760), ("P24M", 44_880), ("P36M", 63_360)],
+    },
+    PublishedRegionalRate {
+        dimension_key: "Users",
+        region: "ap-southeast-2",
+        per_selector: &[("P1M", 2_400), ("P12M", 25_920), ("P24M", 48_960), ("P36M", 69_120)],
+    },
+    PublishedRegionalRate {
+        dimension_key: "Storage",
+        region: "eu-central-1",
+        per_selector: &[("P1M", 12), ("P12M", 130), ("P24M", 245), ("P36M", 346)],
+    },
+];
+
 /// The price of a term that carries ONE price instead of a rate card, in minor
 /// units of [`CURRENCY_CODE`], keyed by the kind of term:
 /// `FixedUpfrontPricingTerm$price` is the "fixed amount to be charged to the
@@ -571,9 +625,24 @@ pub const TERM_PRICE_LIST: &[(&str, u64)] = &[
     ("PaymentScheduleTerm", 360_000),
 ];
 
-/// The published per-unit rate of `dimension_key` at `selector`, or `None` when
-/// [`RATE_CARD`] publishes none — the case no amount is reported for.
-fn published_unit_rate(dimension_key: &str, selector: &str) -> Option<u64> {
+/// The published per-unit rate of `dimension_key` at `selector` that applies in
+/// `region`, or `None` when [`RATE_CARD`] publishes none — the case no amount is
+/// reported for.
+///
+/// A per-Region override of that dimension and length REPLACES the card's
+/// default price where [`REGIONAL_RATE_CARD`] publishes one, as
+/// `RateCardItem$regionalPrices` states ("when a Regional price is present for
+/// an AWS Region, it replaces the default `price`"); everywhere else the default
+/// applies.
+fn published_unit_rate(dimension_key: &str, selector: &str, region: &str) -> Option<u64> {
+    let default = published_default_unit_rate(dimension_key, selector)?;
+    Some(published_regional_unit_rate(dimension_key, selector, region).unwrap_or(default))
+}
+
+/// The default per-unit rate [`RATE_CARD`] publishes for `dimension_key` at
+/// `selector` — the card's own `price`, before any per-Region override — or
+/// `None` when the card publishes none.
+fn published_default_unit_rate(dimension_key: &str, selector: &str) -> Option<u64> {
     RATE_CARD
         .iter()
         .find(|rate| rate.dimension_key == dimension_key)?
@@ -581,6 +650,47 @@ fn published_unit_rate(dimension_key: &str, selector: &str) -> Option<u64> {
         .iter()
         .find(|(published, _)| *published == selector)
         .map(|(_, price)| *price)
+}
+
+/// The per-Region override of `dimension_key` at `selector` in `region`, or
+/// `None` when [`REGIONAL_RATE_CARD`] publishes none there.
+fn published_regional_unit_rate(
+    dimension_key: &str,
+    selector: &str,
+    region: &str,
+) -> Option<u64> {
+    REGIONAL_RATE_CARD
+        .iter()
+        .find(|override_| {
+            override_.dimension_key == dimension_key && override_.region == region
+        })?
+        .per_selector
+        .iter()
+        .find(|(published, _)| *published == selector)
+        .map(|(_, price)| *price)
+}
+
+/// The per-Region overrides of `dimension_key` at `selector`, as
+/// `RateCardItem$regionalPrices` reports them, or `None` when the offer defines
+/// none for that dimension and length — the case the member is absent in.
+///
+/// Every override the offer publishes is on the card the offer publishes, in the
+/// order [`REGIONAL_RATE_CARD`] lists them, so two reads of one rate card report
+/// the same list.
+fn published_regional_prices(dimension_key: &str, selector: &str) -> Option<Vec<RegionalPrice>> {
+    let prices: Vec<RegionalPrice> = REGIONAL_RATE_CARD
+        .iter()
+        .filter(|override_| override_.dimension_key == dimension_key)
+        .filter_map(|override_| {
+            published_regional_unit_rate(dimension_key, selector, override_.region).map(|price| {
+                RegionalPrice {
+                    region: override_.region.to_string(),
+                    price: amount(u128::from(price)),
+                }
+            })
+        })
+        .collect();
+    (!prices.is_empty()).then_some(prices)
 }
 
 /// The published price of a term of `kind` that carries one price rather than a
@@ -645,12 +755,15 @@ struct TermPrice {
     dimensions: Vec<DimensionPrice>,
 }
 
-/// What the term of kind `kind` costs, given the configuration the acceptor
-/// supplied and the quantities the agreement being amended already holds.
+/// What the term of kind `kind` costs in `region`, given the configuration the
+/// acceptor supplied and the quantities the agreement being amended already
+/// holds.
 ///
 /// The kinds priced at all are the ones [`commits_amount`] names: a configured
 /// prepaid term at the published per-unit rate of every dimension it buys
-/// ([`published_unit_rate`]), and a fixed upfront, recurring or payment-schedule
+/// ([`published_unit_rate`]) — the Region's own override of that rate where the
+/// offer defines one, since an override "replaces the default `price`" — and a
+/// fixed upfront, recurring or payment-schedule
 /// term at the one published price of its kind ([`published_term_price`]). Every
 /// other kind is unpriced at quote time whatever is published — a usage-based
 /// charge follows "product usage" and a variable payment is an amount no seller
@@ -667,6 +780,7 @@ fn term_price(
     kind: &str,
     configuration: Option<&ConfigurableUpfrontPricingTermConfiguration>,
     old_quantities: &mut HashMap<String, i32>,
+    region: &str,
 ) -> TermPrice {
     if !commits_amount(kind) {
         return TermPrice::default();
@@ -689,8 +803,8 @@ fn term_price(
             let mut committed: Option<u128> = Some(0);
             let mut charged: Option<u128> = Some(0);
             for (key, new_quantity) in requested {
-                let rate =
-                    published_unit_rate(&key, &configuration.selector_value).map(u128::from);
+                let rate = published_unit_rate(&key, &configuration.selector_value, region)
+                    .map(u128::from);
                 let old_quantity = old_quantities.get(&key).copied().unwrap_or_default();
                 let new_units = quantity(new_quantity);
                 let old_units = quantity(old_quantity);
@@ -1786,13 +1900,20 @@ fn published_grants() -> Vec<GrantItem> {
 /// `RateCardItem` reports them ("the per unit rates for each individual product
 /// dimension"). A dimension the card does not price at that length is not on
 /// it.
+///
+/// A rate card belongs to the OFFER rather than to one caller, so an item
+/// carries the card's default `price` and every per-Region override the offer
+/// defines for that dimension and length ([`published_regional_prices`]),
+/// whatever Region the caller reading it signed for. Which of them a charge is
+/// computed at is decided per purchase ([`published_unit_rate`]).
 fn published_rate_card(length: &str) -> Vec<RateCardItem> {
     RATE_CARD
         .iter()
         .filter_map(|rate| {
-            published_unit_rate(rate.dimension_key, length).map(|price| RateCardItem {
+            published_default_unit_rate(rate.dimension_key, length).map(|price| RateCardItem {
                 dimension_key: Some(rate.dimension_key.to_string()),
                 price: Some(amount(u128::from(price))),
+                regional_prices: published_regional_prices(rate.dimension_key, length),
             })
         })
         .collect()

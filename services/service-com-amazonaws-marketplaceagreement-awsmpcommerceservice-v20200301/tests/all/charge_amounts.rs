@@ -44,7 +44,8 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::agreement_lifecycle::{
-    accept, call, create, emulator, new_request, term, upfront_term, variable_payment_term, Answer,
+    accept, call, call_as, create, emulator, new_request, term, upfront_term,
+    variable_payment_term, Answer,
 };
 use crate::purchase_order_updates::{charges, items};
 
@@ -820,4 +821,375 @@ async fn no_tax_estimate_is_reported_whatever_the_request_asked_for() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-Region price overrides
+// ---------------------------------------------------------------------------
+//
+// The rule these rows add: a rate card item carries the offer's per-Region
+// price overrides for its dimension, and the amount a purchase is charged is
+// the override of the Region it is quoted in where the card lists one —
+// `RateCardItem$regionalPrices` is "the per-Region price overrides for the
+// product dimension. When a Regional price is present for an AWS Region, it
+// replaces the default `price`. This field is absent when the offer doesn't
+// define regional price overrides"
+// (`smithy_query(query="shape", shape="RateCardItem,RegionalPrice")`) — so
+// everywhere else the card's own `price` applies.
+
+/// The Region an amount is priced in when the caller's credential scope carries
+/// no Region label at all — the emulator's documented default, spelled out here
+/// rather than imported.
+const DEFAULT_REGION: &str = "us-east-1";
+
+/// Regions a row signs for when it wants a Region the item under test publishes
+/// no override in: the first of these the item does not override is used, so a
+/// row stays about the default price however the offer's overrides change.
+///
+/// SOURCE: AWS Region labels, as `AWSRegion`
+/// (`smithy_query(query="shape", shape="RegionalPrice", member="region")`)
+/// spells them.
+const CANDIDATE_REGIONS: &[&str] = &["us-east-1", "us-west-2", "sa-east-1", "eu-west-3"];
+
+/// The longest a Region a `RegionalPrice` names may be: `AWSRegion` is
+/// `@length(1, 50)` with `^[a-z]{2,3}(-[a-z]+)+-\d+$`.
+const LONGEST_REGION: usize = 50;
+
+/// Whether `value` satisfies `AWSRegion`'s modelled pattern and length —
+/// spelled out from the model so an override naming text no AWS Region label
+/// admits fails these rows.
+fn is_aws_region(value: &str) -> bool {
+    if value.is_empty() || value.len() > LONGEST_REGION {
+        return false;
+    }
+    let mut parts = value.split('-');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !(2..=3).contains(&first.len()) || !first.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    let rest: Vec<&str> = parts.collect();
+    // At least one `-<letters>` group, then the trailing `-<digits>`.
+    if rest.len() < 2 {
+        return false;
+    }
+    let (digits, letters) = rest.split_last().expect("at least two groups");
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && letters
+            .iter()
+            .all(|group| !group.is_empty() && group.chars().all(|c| c.is_ascii_lowercase()))
+}
+
+/// A credential scope naming this service's signing name — which is what routes
+/// the request — with `region` in its Region field, exactly as a client wrote
+/// it. The Region a purchase is quoted in is the one its caller signed for.
+fn signed_for(region: &str) -> String {
+    format!(
+        "AWS4-HMAC-SHA256 \
+         Credential=AKIDEXAMPLE/20260101/{region}/aws-marketplace/aws4_request, \
+         SignedHeaders=host, Signature=abc"
+    )
+}
+
+/// The quote over one configured prepaid term, created by a caller signing for
+/// `region`.
+async fn quote_in(
+    router: &MultiServiceRouter,
+    case: &str,
+    region: &str,
+    selector: &str,
+    dimensions: &[(&str, i32)],
+) -> Answer {
+    let answer = call_as(
+        router,
+        "CreateAgreementRequest",
+        new_request(
+            "ap-regionalRates",
+            vec![upfront_term("cfg", selector, dimensions)],
+        ),
+        &signed_for(region),
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "case {case:?}: the quote must succeed, got {} with {:?}",
+        answer.status, answer.body
+    );
+    answer
+}
+
+/// The rate cards the quote `request_id` proposes for its configured prepaid
+/// term, as `GetAgreementRequestTerms` reports them — the offer's own card,
+/// read back through the API rather than from the emulator's catalog.
+async fn proposed_rate_cards(
+    router: &MultiServiceRouter,
+    case: &str,
+    request_id: &str,
+    authorization: &str,
+) -> Vec<Value> {
+    let answer = call_as(
+        router,
+        "GetAgreementRequestTerms",
+        json!({"agreementRequestId": request_id}),
+        authorization,
+    )
+    .await;
+    assert_eq!(
+        answer.status, 200,
+        "case {case:?}: reporting the proposed terms must succeed, got {} with {:?}",
+        answer.status, answer.body
+    );
+    answer.body["terms"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|term| term["configurableUpfrontPricingTerm"]["rateCards"].as_array().cloned())
+        .flatten()
+        .collect()
+}
+
+/// A rate card item carries the per-Region overrides the offer defines for its
+/// dimension and nothing else: the member is absent for a dimension the offer
+/// does not override, every override names an AWS Region at a money price, and
+/// the card is the OFFER's — the same list whatever Region the caller reading it
+/// signed for.
+#[tokio::test]
+async fn a_rate_card_item_reports_the_offers_per_region_price_overrides() {
+    let router = emulator();
+    // The rows differ in the Region the reading caller signed for: the default
+    // one, one the offer publishes overrides in, and a scope whose Region field
+    // is no Region label at all.
+    let scopes = [
+        ("read by a caller in the default Region", DEFAULT_REGION),
+        ("read by a caller in an overridden Region", "eu-central-1"),
+        ("read by a caller signing for no Region", "not a region"),
+    ];
+    let mut reported: Vec<Vec<Value>> = Vec::new();
+    for (case, region) in scopes {
+        let quote = quote_in(&router, case, region, "P12M", &[("Users", 1)]).await;
+        let cards = proposed_rate_cards(
+            &router,
+            case,
+            &quote.str_at("/agreementRequestId"),
+            &signed_for(region),
+        )
+        .await;
+        assert!(
+            !cards.is_empty(),
+            "case {case:?}: the prepaid term proposes rate cards, got {:?}",
+            quote.body
+        );
+        let mut overridden = 0usize;
+        let mut plain = 0usize;
+        for card in &cards {
+            let selector = card["selector"]["value"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            for item in card["rateCard"].as_array().cloned().unwrap_or_default() {
+                let dimension = item["dimensionKey"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let row = format!("{case}, {dimension} at {selector}");
+                let default = minor(&row, "price", &item["price"]);
+                if item["regionalPrices"].is_null() {
+                    plain += 1;
+                    continue;
+                }
+                let overrides = item["regionalPrices"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("case {row:?}: regionalPrices is a list, got {item:?}")
+                    });
+                assert!(
+                    !overrides.is_empty() && overrides.len() <= 50,
+                    "case {row:?}: RegionalPriceList is @length(1, 50), got {overrides:?}"
+                );
+                let mut regions: BTreeSet<String> = BTreeSet::new();
+                for price in &overrides {
+                    let region_of = price["region"].as_str().unwrap_or_default();
+                    assert!(
+                        is_aws_region(region_of),
+                        "case {row:?}: an override names an AWS Region, got {price:?}"
+                    );
+                    assert!(
+                        regions.insert(region_of.to_string()),
+                        "case {row:?}: one override per Region, got {overrides:?}"
+                    );
+                    let overridden_price = minor(&row, "regionalPrices[].price", &price["price"]);
+                    assert!(
+                        overridden_price > 0,
+                        "case {row:?}: an override prices one unit, got {price:?} against the \
+                         default {default}"
+                    );
+                }
+                overridden += 1;
+            }
+        }
+        assert!(
+            overridden > 0,
+            "case {case:?}: the offer defines per-Region overrides, got {cards:?}"
+        );
+        assert!(
+            plain > 0,
+            "case {case:?}: a dimension the offer does not override carries no regionalPrices \
+             member at all, got {cards:?}"
+        );
+        reported.push(cards);
+    }
+    for (index, (case, _)) in scopes.iter().enumerate().skip(1) {
+        assert_eq!(
+            reported[index], reported[0],
+            "case {case:?}: a rate card belongs to the offer, so it reports the same overrides \
+             to every caller, got {:?} against {:?}",
+            reported[index], reported[0]
+        );
+    }
+}
+
+/// A dimension is charged at the Region's own override where the card publishes
+/// one for the Region the quote was created in, and at the card's default price
+/// in every other Region — over every contract length the card publishes, every
+/// dimension on it, and the quantities a row buys.
+#[tokio::test]
+async fn a_charge_is_computed_at_the_override_of_the_region_it_is_quoted_in() {
+    let router = emulator();
+    // The table is the card the service itself publishes, read back over the
+    // API: one row per (contract length, dimension, Region) it prices, so no row
+    // can agree with a handler that prices from something else.
+    let published = quote_in(
+        &router,
+        "the published cards",
+        DEFAULT_REGION,
+        "P12M",
+        &[("Users", 1)],
+    )
+    .await;
+    let cards = proposed_rate_cards(
+        &router,
+        "the published cards",
+        &published.str_at("/agreementRequestId"),
+        &signed_for(DEFAULT_REGION),
+    )
+    .await;
+    assert!(
+        !cards.is_empty(),
+        "the prepaid term proposes rate cards, got {:?}",
+        published.body
+    );
+
+    let mut rows = 0usize;
+    let mut overrides_priced = 0usize;
+    for card in &cards {
+        let selector = card["selector"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        for item in card["rateCard"].as_array().cloned().unwrap_or_default() {
+            let dimension = item["dimensionKey"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let default = minor(&dimension, "price", &item["price"]);
+            let overrides = item["regionalPrices"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            // One case per Region the item overrides, each at that override …
+            let mut cases: Vec<(String, u128)> = overrides
+                .iter()
+                .map(|price| {
+                    (
+                        price["region"].as_str().unwrap_or_default().to_string(),
+                        minor(&dimension, "regionalPrices[].price", &price["price"]),
+                    )
+                })
+                .collect();
+            // … and one in a Region it does not, where the default applies.
+            let listed: BTreeSet<&str> = overrides
+                .iter()
+                .filter_map(|price| price["region"].as_str())
+                .collect();
+            let unlisted = CANDIDATE_REGIONS
+                .iter()
+                .copied()
+                .find(|region| !listed.contains(region))
+                .unwrap_or_else(|| {
+                    panic!("{dimension} at {selector}: expected a Region without an override")
+                });
+            cases.push((unlisted.to_string(), default));
+
+            for (index, (region, unit_rate)) in cases.into_iter().enumerate() {
+                // The units a row buys vary with its position, so a row cannot
+                // pass on a handler that reports the unit rate itself.
+                let quantity = 1 + i32::try_from(index).unwrap_or_default() * 3;
+                let row = format!("{dimension} at {selector} in {region} for {quantity} units");
+                let quote = quote_in(
+                    &router,
+                    &row,
+                    &region,
+                    &selector,
+                    &[(dimension.as_str(), quantity)],
+                )
+                .await;
+                let expected = unit_rate * u128::from(quantity.unsigned_abs());
+                let charges = expected_charges(&quote);
+                assert_eq!(
+                    charges.len(),
+                    1,
+                    "case {row:?}: one charged term implies one charge, got {:?}",
+                    quote.body
+                );
+                assert_eq!(
+                    minor(&row, "expectedCharges[0].amount", &charges[0]["amount"]),
+                    expected,
+                    "case {row:?}: expected {} at the rate that Region is priced at, got {:?}",
+                    as_amount(expected),
+                    charges[0]
+                );
+                let itemized = itemized_charges(&quote);
+                assert_eq!(
+                    itemized.len(),
+                    1,
+                    "case {row:?}: one configured dimension implies one itemized charge, got {:?}",
+                    quote.body
+                );
+                assert_eq!(
+                    minor(
+                        &row,
+                        "itemizedCharges[0].incrementalChargeAmount",
+                        &itemized[0]["incrementalChargeAmount"]
+                    ),
+                    expected,
+                    "case {row:?}: the itemized charge is the same amount, got {:?}",
+                    itemized[0]
+                );
+                assert_eq!(
+                    quote.body["chargeSummary"]["newAgreementValue"].as_str(),
+                    Some(as_amount(expected).as_str()),
+                    "case {row:?}: the agreement value totals that charge, got {:?}",
+                    quote.body["chargeSummary"]
+                );
+                if unit_rate != default {
+                    overrides_priced += 1;
+                }
+                rows += 1;
+            }
+        }
+    }
+    assert!(
+        overrides_priced > 0,
+        "the offer publishes overrides that differ from the default price, so some row must \
+         have been charged at one: {cards:?}"
+    );
+    assert!(
+        rows > cards.len(),
+        "expected a row per published length, dimension and Region, got {rows} over {:?}",
+        cards.len()
+    );
 }

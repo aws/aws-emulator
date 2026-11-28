@@ -327,6 +327,14 @@ pub struct UsageBasedRateCardItem {
 pub struct RateCardItem {
     pub dimension_key: Option<String>,
     pub price: Option<String>,
+    pub regional_prices: Option<Vec<RegionalPrice>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#RegionalPrice")]
+#[derive(Debug, Clone, Default)]
+pub struct RegionalPrice {
+    pub region: String,
+    pub price: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplaceagreement#ConfigurableUpfrontPricingTerm")]

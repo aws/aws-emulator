@@ -368,11 +368,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The quote: the terms asked for, priced from the published rates
-        // (`crate::state::RATE_CARD`).
+        // (`crate::state::RATE_CARD`) for the Region this caller signed for —
+        // where that Region has a published override, `RateCardItem`'s
+        // per-Region price "replaces the default price"
+        // (`crate::state::REGIONAL_RATE_CARD`).
+        let region = crate::state::request_region(ctx.parts());
         let charge_summary = store.charge_summary(
             &input.requested_terms,
             &input.intent,
             input.source_agreement_identifier.as_deref(),
+            &region,
         );
         // The proposal this quote is for, built the ONE way the acceptance of it
         // builds the agreement's own (`crate::state::proposal_summary_of`): the

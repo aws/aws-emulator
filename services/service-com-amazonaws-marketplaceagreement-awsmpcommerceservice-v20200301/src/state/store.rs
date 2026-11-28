@@ -616,8 +616,11 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
 
         // The renewal's own quote, which prices the same requested terms afresh
         // for the new window: its charge ids are minted here, so the renewal
-        // reports charges of its own rather than the source's.
-        let charge_summary = self.charge_summary(&requested_terms, INTENT_NEW, None);
+        // reports charges of its own rather than the source's. It is priced in
+        // the Region the source agreement was accepted in, since a renewal is
+        // the same purchase continued rather than one made somewhere else.
+        let charge_summary =
+            self.charge_summary(&requested_terms, INTENT_NEW, None, &source.region);
         let request_id = self.mint_agreement_request_id();
         let id = self.mint_agreement_id();
         let context = AcceptedTermContext::new(&requested_terms, end, Some(&source));
@@ -917,23 +920,24 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
         format!("ch-{:016x}", self.next_sequence())
     }
 
-    /// The charges `requested_terms` imply, as `CreateAgreementRequest` returns
-    /// them.
+    /// The charges `requested_terms` imply for a purchase made in `region`, as
+    /// `CreateAgreementRequest` returns them.
     ///
     /// Every member is computed from the request, the store and the published
     /// rates: one expected charge per requested term that is charged at all
     /// (with the timing its kind implies, and the amount the published rates
-    /// price it at), one itemized charge per dimension KEY the acceptor
-    /// configured (with the total quantity it asked for, the quantity the source
-    /// agreement already holds for an amendment, and the incremental amount
-    /// between them), and an agreement value totalling what the requested terms
-    /// commit. See the module docs for where the prices come from and what is
-    /// left unpriced.
+    /// price it at in `region`), one itemized charge per dimension KEY the
+    /// acceptor configured (with the total quantity it asked for, the quantity
+    /// the source agreement already holds for an amendment, and the incremental
+    /// amount between them), and an agreement value totalling what the requested
+    /// terms commit. See the module docs for where the prices come from and what
+    /// is left unpriced.
     pub fn charge_summary(
         &mut self,
         requested_terms: &[RequestedTerm],
         intent: &str,
         source_agreement_id: Option<&str>,
+        region: &str,
     ) -> ChargeSummary {
         // "This value is 0 for NEW intent"; an amendment or replacement reads
         // the quantities the source agreement already holds.
@@ -976,6 +980,7 @@ impl ComAmazonawsMarketplaceagreementAwsmpcommerceserviceV20200301State {
                 kind,
                 requested_upfront_configuration(requested),
                 &mut remaining_quantities,
+                region,
             );
             if commits_amount(kind) {
                 commits = true;
