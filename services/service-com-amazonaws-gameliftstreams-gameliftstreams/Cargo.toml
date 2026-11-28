@@ -31,11 +31,20 @@ service-common = { path = "../common" }
 # (`state::content`). Only the generated client is needed — the emulator supplies the
 # transport, so the SDK's own HTTPS stack and runtime are left out.
 aws-sdk-s3 = { version = "1", default-features = false }
+# The files of a stream session are exported as ONE compressed archive, written with the
+# zip implementation this workspace already reads and writes archives with.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# The generated name of an exported archive carries the UTC calendar stamp of the export,
+# which this renders.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+# One integration-test target rooted at `tests/all/main.rs`: every `tests/all/<name>.rs`
+# is declared as a suite of it by this macro.
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # The content an application is created from lives in a bucket of this emulator's own

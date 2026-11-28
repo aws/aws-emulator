@@ -15834,6 +15834,7 @@ dependencies = [
 name = "service-com-amazonaws-gameliftstreams-gameliftstreams"
 version = "0.1.0"
 dependencies = [
+ "automod",
  "aws-emulator-build-support",
  "aws-emulator-emulator-telemetry",
  "aws-emulator-engine",
@@ -15846,6 +15847,7 @@ dependencies = [
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
  "bytes",
+ "chrono",
  "hex",
  "http",
  "serde_json",
@@ -15854,6 +15856,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]

@@ -31,8 +31,12 @@
 //! * [`content`] is the one read of the content an application is created from: how
 //!   many bytes the Amazon S3 location named by `ApplicationSourceUri` holds, which
 //!   is what the application's read path reports as `StorageBytes`.
+//! * [`exported_files`] is the one write of a stream session's exported files: where
+//!   the archive `ExportStreamSessionFiles` delivers lands in the caller's Amazon S3
+//!   bucket, what it holds, and the record the export leaves on the session.
 
 pub mod content;
+pub mod exported_files;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -1470,6 +1474,12 @@ pub struct StreamSession {
     /// The administrative terminal sessions this stream session has handed out and
     /// whose window is not up yet, oldest first (see [`AdminShell`]).
     pub admin_shells: Vec<AdminShell>,
+    /// The export of this session's files a caller asked for, and what became of it
+    /// (see [`exported_files`]). `None` until `ExportStreamSessionFiles` is called for
+    /// the session, which is what makes `ExportFilesMetadata` absent on a session whose
+    /// files nobody asked for; one session holds one export, because a later call
+    /// replaces the archive the earlier one delivered.
+    pub export: Option<exported_files::FileExport>,
 }
 
 /// One administrative terminal session handed out for a stream session.
@@ -1547,6 +1557,16 @@ impl StreamSession {
         self.is_placed()
     }
 
+    /// Can the files this session's application generated be exported? "You can only
+    /// call this action on a stream session that is in progress, specifically in one of
+    /// the following statuses ACTIVE, CONNECTED, PENDING_CLIENT_RECONNECTION, and
+    /// RECONNECTING" (`ExportStreamSessionFiles` documentation) — the statuses of a
+    /// stream that is placed, which are the ones whose runtime environment holds the
+    /// files the export collects.
+    pub fn exports_its_files(&self) -> bool {
+        self.is_placed()
+    }
+
     /// Record one administrative terminal session this stream session handed out.
     ///
     /// The oldest grant is released when the record is at
@@ -1598,6 +1618,12 @@ impl StreamSession {
         // operation again to get a new URL": a terminal session whose window is up
         // is gone whether or not anybody asked, so the grant goes with it.
         self.admin_shells.retain(|shell| now < shell.expires_at);
+        // An upload the clock has finished is finished whether or not anybody read the
+        // session, and it outlives the stream it was taken from: an export of a session
+        // that has since stopped still completes.
+        if let Some(export) = &mut self.export {
+            export.advance(now);
+        }
         let Some(due) = self.status_due_at else {
             return;
         };

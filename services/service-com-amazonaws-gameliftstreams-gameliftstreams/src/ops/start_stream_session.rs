@@ -627,6 +627,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     streaming_ended_at: None,
                     status_due_at: Some(now + crate::state::TRANSITION),
                     admin_shells: Vec::new(),
+                    // Nothing has been exported from a session that has just started.
+                    export: None,
                 };
                 let group = state
                     .stream_groups
@@ -667,7 +669,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_updated_at: Some(crate::state::timestamp(session.last_updated_at)),
             created_at: Some(crate::state::timestamp(session.created_at)),
             application_arn: Some(session.application_arn.clone()),
-            export_files_metadata: None,
+            // Absent for a session nobody exported; a replayed `ClientToken` answers
+            // with the session it created, whose export this reports.
+            export_files_metadata: session
+                .export
+                .as_ref()
+                .map(crate::state::exported_files::FileExport::metadata),
             role_arn: session.role_arn.clone(),
             display_configuration: session.display_configuration.clone(),
             application_started_at: crate::state::optional_timestamp(

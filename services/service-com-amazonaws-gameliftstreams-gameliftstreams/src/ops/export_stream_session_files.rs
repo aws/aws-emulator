@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ExportStreamSessionFiles
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ExportStreamSessionFiles`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ExportStreamSessionFiles::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Delivers the files of a stream session that is in progress to the caller's Amazon S3
+//! bucket as ONE compressed archive, and records the export on the session so
+//! `GetStreamSession` reports it as `ExportFilesMetadata`.
 //!
 //! ## Shape of an operation
 //!
@@ -180,18 +174,186 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ExportStreamSessionFiles` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ExportStreamSessionFilesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ExportStreamSessionFiles"))
+        // Both path labels have to resolve to the ARN of the resource they name,
+        // which is checked BEFORE the store is read: a value that resolves to no
+        // such ARN is a bad value for the label, not a resource that is missing.
+        if let Some(refusal) = crate::state::invalid_resource_arn(
+            crate::state::IDENTIFIER_MEMBER,
+            &input.identifier,
+            crate::state::STREAM_GROUP_RESOURCE,
+        ) {
+            return Err(ExportStreamSessionFilesErrorModeled::ValidationException(refusal).into());
+        }
+        if let Some(refusal) = crate::state::invalid_resource_arn(
+            crate::state::STREAM_SESSION_IDENTIFIER_MEMBER,
+            &input.stream_session_identifier,
+            crate::state::STREAM_SESSION_RESOURCE,
+        ) {
+            return Err(ExportStreamSessionFilesErrorModeled::ValidationException(refusal).into());
+        }
+        let region = crate::state::region_of(ctx.parts());
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ExportStreamSessionFilesErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: crate::state::with_internal_id(
+                        "the gameliftstreams emulator holds no state on this engine",
+                    ),
+                },
+            )
+            .into());
+        };
+        let now = ::std::time::SystemTime::now();
+
+        // READ PASS: hold the shared lock only long enough to resolve the stream
+        // session and judge it, then release it so the hop into the object store below
+        // does not run inside the critical section every other request of this service
+        // shares. The WRITE PASS re-asserts both.
+        let (session_id, destination) = {
+            let mut state = state.lock();
+            // Materialise the transitions the clock had already made due at `now` — they
+            // were owed whether or not anybody called — so the status this request is
+            // judged against is the one the session actually holds.
+            state.materialize(now);
+
+            // Session-scoped: the resource this call addresses is the stream session the
+            // two path labels name, so an unresolvable session identifier, an absent
+            // group and an absent session are the SAME miss, reported against the
+            // composite stream session ARN.
+            let session = crate::state::identifier_id(
+                &input.stream_session_identifier,
+                crate::state::STREAM_SESSION_RESOURCE,
+            )
+            .and_then(|session_id| {
+                state
+                    .stream_group(&input.identifier)
+                    .and_then(move |group| group.sessions.get(&session_id))
+            });
+            let Some(session) = session else {
+                return Err(session_not_found(&region, &input));
+            };
+            if !session.exports_its_files() {
+                return Err(not_in_progress(&session.arn));
+            }
+            // Where the archive lands: the object the request named, or the name the
+            // service generates under the folder it named, built from the ids of the
+            // application, the stream group and the stream session it is an export of.
+            let archive_name = crate::state::exported_files::archive_name(
+                now,
+                &crate::state::identifier_id(
+                    &session.application_arn,
+                    crate::state::APPLICATION_RESOURCE,
+                )
+                .unwrap_or_default(),
+                &session.stream_group_id,
+                &session.id,
+            );
+            let Some(destination) =
+                crate::state::exported_files::destination(&input.output_uri, &archive_name)
+            else {
+                return Err(not_an_output_location());
+            };
+            (session.id.clone(), destination)
+        };
+
+        // The archive is handed to the object store that owns the caller's bucket, so
+        // the files this export reports are the bytes of a real object there. A store
+        // that would not take it leaves the export `FAILED` rather than reported over
+        // nothing.
+        let delivery = match crate::state::exported_files::archive_bytes() {
+            Some(archive) => {
+                crate::state::exported_files::deliver(ctx, &region, &destination, archive).await
+            }
+            None => crate::state::exported_files::Delivery::Refused,
+        };
+        let output_uri = destination.uri();
+
+        // WRITE PASS: one critical section that re-asserts what the read pass saw and
+        // then records the export, so a stream session that stopped while the archive
+        // was being written cannot gain an export that was started after it.
+        let mut state = state.lock();
+        let Some(session) = state
+            .stream_group_mut(&input.identifier)
+            .and_then(|group| group.sessions.get_mut(&session_id))
+        else {
+            return Err(session_not_found(&region, &input));
+        };
+        if !session.exports_its_files() {
+            return Err(not_in_progress(&session.arn));
+        }
+        session.export = Some(match delivery {
+            // "PENDING: ... uploading the exported files to the S3 bucket is in
+            // progress", which the clock finishes one transition later: the caller that
+            // polls `GetStreamSession` straight after this call sees the upload running.
+            crate::state::exported_files::Delivery::Stored => {
+                crate::state::exported_files::FileExport::uploading(
+                    output_uri,
+                    now + crate::state::TRANSITION,
+                )
+            }
+            crate::state::exported_files::Delivery::Refused => {
+                let reason = crate::state::exported_files::not_uploaded_reason(&output_uri);
+                crate::state::exported_files::FileExport::failed(output_uri, reason)
+            }
+        });
+        Ok(ExportStreamSessionFilesOutput {})
     }
 }
+
+/// The modelled miss for path labels that name no stream session this service holds,
+/// reported against the composite stream session ARN the two of them resolve to — the
+/// resource the caller addressed, even when it is the enclosing stream group that is
+/// absent.
+fn session_not_found(
+    region: &str,
+    input: &ExportStreamSessionFilesInput,
+) -> ExportStreamSessionFilesError {
+    ExportStreamSessionFilesErrorModeled::ResourceNotFoundException(
+        crate::state::stream_session_not_found(&crate::state::resolved_stream_session_arn(
+            region,
+            &input.identifier,
+            &input.stream_session_identifier,
+        )),
+    )
+    .into()
+}
+
+/// The modelled refusal for a stream session whose files cannot be exported.
+///
+/// "You can only call this action on a stream session that is in progress, specifically
+/// in one of the following statuses ACTIVE, CONNECTED, PENDING_CLIENT_RECONNECTION, and
+/// RECONNECTING." A session in any other status is not running the application whose
+/// files the export collects, and that is a value this operation refuses rather than a
+/// resource that is missing, so it is the modelled `ValidationException` (the model types
+/// it `@httpError(400)`; this service's `ConflictException` is not among the errors the
+/// model declares for this operation). The status judged is the STORED one, and the
+/// refusal is worded the way this service words the same refusal for the other operation
+/// that gates on these four statuses (`CreateStreamSessionAdminShell`): the stored
+/// session's own ARN, the eligible statuses (the model's own `StreamSessionStatus` values)
+/// and what they are required for.
+fn not_in_progress(session_arn: &str) -> ExportStreamSessionFilesError {
+    ExportStreamSessionFilesErrorModeled::ValidationException(ValidationException {
+        message: crate::state::with_internal_id(format!(
+            "Stream session '{session_arn}' is not in {}, {}, {} or {} status for file export",
+            crate::state::SESSION_ACTIVE,
+            crate::state::SESSION_CONNECTED,
+            crate::state::SESSION_PENDING_CLIENT_RECONNECTION,
+            crate::state::SESSION_RECONNECTING,
+        )),
+    })
+    .into()
+}
+
+/// The modelled refusal for an `OutputUri` that names no Amazon S3 location to upload the
+/// archive to. The model's own `OutputUri` pattern (`^s3://.*(/|\.zip|\.ZIP)$`) already
+/// refuses the value before this handler runs, so this is the floor under that pattern
+/// rather than a second rule: a value with the scheme but no bucket names no bucket the
+/// files could land in, and it is worded the way every S3 member of this service words it.
+fn not_an_output_location() -> ExportStreamSessionFilesError {
+    ExportStreamSessionFilesErrorModeled::ValidationException(ValidationException {
+        message: crate::state::not_an_s3_uri(OUTPUT_URI_MEMBER),
+    })
+    .into()
+}
+
+/// The member an `OutputUri` refusal names, as the model spells it.
+const OUTPUT_URI_MEMBER: &str = "OutputUri";

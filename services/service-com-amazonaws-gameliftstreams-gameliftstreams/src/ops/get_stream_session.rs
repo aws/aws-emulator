@@ -339,7 +339,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             last_updated_at: Some(crate::state::timestamp(session.last_updated_at)),
             created_at: Some(crate::state::timestamp(session.created_at)),
             application_arn: Some(session.application_arn.clone()),
-            export_files_metadata: None,
+            // "To verify the status of the exported files, use GetStreamSession": the
+            // export this session holds, and absent for a session nobody exported.
+            export_files_metadata: session
+                .export
+                .as_ref()
+                .map(crate::state::exported_files::FileExport::metadata),
             role_arn: session.role_arn.clone(),
             display_configuration: session.display_configuration.clone(),
             application_started_at: crate::state::optional_timestamp(
