@@ -63,11 +63,15 @@
 //! * an `ip` target passes while some network interface of the account holds that address,
 //!   which is what makes the address one something in this VPC answers on, and fails for an
 //!   address no interface holds;
-//! * anything else observes NOTHING, and a registration nothing was observed about keeps the
-//!   health it has rather than being failed on silence: every target of a group whose VPC the
-//!   account's EC2 inventory does not hold — an inventory that knows nothing about the network
-//!   the target sits in can report nothing about the target either ([`super::network`] reads
-//!   every other fact this service does not own the same way).
+//! * anything else the check CONNECTS to is answered: a registration this emulator holds
+//!   nothing contradicting — one in a network the account's EC2 inventory does not hold, one
+//!   read with no inventory at all, one of a target type whose resources this service does not
+//!   read — keeps its own word that something answers at its address, the way the ports of a
+//!   workload nothing declared are taken on that word too
+//!   ([`listens_on_health_check_port`]). Nothing is failed on silence, and nothing is DECIDED
+//!   by the state machine on silence either: what a check found is the check's own answer and
+//!   never a health a registration is defaulted to
+//!   ([`super::target_health::TargetProbe::is_undetermined`]).
 //!
 //! A `lambda` registration is observed by none of that, because it names no address and no
 //! port: one check of it is an INVOCATION of the function
@@ -75,7 +79,10 @@
 //! whose own cadence has made a check due — an invocation is a run of the function, so a look
 //! taken between two checks makes none. The status that function RETURNED is what such a check
 //! is judged on, so its verdict is worded by the same three conditions as every other group's
-//! ([`super::target_health::CheckFailure`]) rather than collapsing onto one of them.
+//! ([`super::target_health::CheckFailure`]) rather than collapsing onto one of them. An
+//! invocation this emulator could not carry FOUND nothing, so it decides no health: the next
+//! attempt is one interval on and the registration's health is still one no check has
+//! determined.
 //!
 //! A check that reached the registration is then judged by what it was ANSWERED with, where the
 //! group's own check speaks HTTP semantics: such a check requests `HealthCheckPath` and its
@@ -408,8 +415,9 @@ struct HealthCheckRequest {
 const HEALTH_CHECK_METHOD: &str = "GET";
 
 /// What one check observed about REACHING a registration: `Some(true)` for one something in
-/// this emulator stands behind, `Some(false)` for one nothing does, and `None` when nothing was
-/// observed at all.
+/// this emulator stands behind — or that nothing it holds contradicts — `Some(false)` for one
+/// nothing does, and `None` for a registration this reading performs no check of at all, which
+/// is a `lambda` one ([`observe`]).
 ///
 /// What the check then makes of an answer it GOT is [`observation`]'s, which folds this and the
 /// answer's own status into the finding the registration's probe is moved by.
@@ -887,6 +895,13 @@ fn health_check_request(group: &TargetGroupRecord) -> Option<HealthCheckRequest>
 /// here — where no guard of this store is held, as every other observation of this pass is —
 /// and only for a registration whose own cadence has made a check due: an invocation runs the
 /// function, so a look taken between two checks must not make one.
+///
+/// An invocation this emulator could NOT carry FOUND nothing
+/// ([`crate::service::lambda_health_check::observed`] answers nothing for one), so it decides
+/// no health: the attempt paces the next one one interval on
+/// ([`super::TargetGroupRecord::observed_check`]) and the registration's health stays the one
+/// no check has determined ([`super::target_health::TargetProbe::is_undetermined`]), rather
+/// than being reported as a health nothing found.
 async fn observe_all_due<Eng: Send + Sync + 'static>(
     engine: &Eng,
     callback: &EmbeddedEmulator,
@@ -1119,9 +1134,9 @@ fn health_check_answers<Eng: Send + Sync + 'static>(
 ///
 /// A check nothing answered is the condition the family of load balancer performing it words as
 /// its own, and a check answered outside the matcher is the model's own response-code mismatch
-/// ([`super::target_health::CheckFailure`]). A registration nothing could be observed about at
-/// all stays that way: nothing is failed on silence, and an answer this emulator cannot judge
-/// is silence too.
+/// ([`super::target_health::CheckFailure`]). A registration this reading performs no check of —
+/// a `lambda` one, whose check is an invocation — is observed as nothing at all, and an answer
+/// this emulator cannot judge decides nothing either way.
 fn observation(
     target: &Checked,
     held: Option<&Inventory>,
@@ -1294,11 +1309,27 @@ impl Inventory {
 /// What one check of `target` observed, given what the account's EC2 inventory holds — see
 /// the module docs.
 ///
-/// A check reads the inventory of the VPC the target group belongs to, so an inventory
-/// holding no such VPC is one nothing can be observed in: a verdict is never assumed from
-/// silence, which is how this service reads every other fact it does not own
-/// ([`super::network`]).
+/// `None` only for a `lambda` registration, whose check is the INVOCATION
+/// [`observe_all_due`] makes rather than anything this reading performs: no fact of the
+/// account's inventory is a fact about a function.
+///
+/// Every other registration is one a check CONNECTS to, and such a check is answered unless
+/// this emulator holds something that contradicts it — nothing behind the registration
+/// listening on the checked port, groups admitting no such connection, a network the check
+/// cannot be carried over, an address no interface holds, an instance the account does not
+/// report running. Where it holds no such fact at all — no inventory to read, or an inventory
+/// that does not hold the group's own VPC — the registration's own word that something answers
+/// there STANDS, exactly as it does for the ports of a workload nothing declared
+/// ([`listens_on_health_check_port`]): nothing is failed on silence, and nothing is DECIDED on
+/// silence either, so the check that could not be contradicted is the one this emulator reports
+/// rather than a health the state machine defaults to
+/// ([`super::target_health::TargetProbe::is_undetermined`]).
 fn observe(target: &Checked, held: Option<&Inventory>) -> Observation {
+    if target.target_type == super::LAMBDA_TARGET_TYPE {
+        // A `lambda` registration names no address and no port: its check is the invocation
+        // [`observe_all_due`] makes, and this reading performs none of it.
+        return None;
+    }
     if !listens_on_health_check_port(target, held) {
         // The check connects to the group's effective health-check port, and nothing behind
         // this registration is listening on it: nothing answers there, whatever else stands
@@ -1329,18 +1360,22 @@ fn observe(target: &Checked, held: Option<&Inventory>) -> Observation {
         // emulator, and that is what stands behind the registration.
         return Some(true);
     }
-    let held = held?;
-    if !held.vpcs.contains(target.vpc_id.as_deref()?) {
-        return None;
+    // Nothing the inventory holds contradicts the registration: no inventory to read at all,
+    // a registration naming no network, one in a network the account does not hold, or a
+    // target type whose resources this service does not read. The registration's own word
+    // stands, so the check is answered.
+    let (Some(held), Some(vpc_id)) = (held, target.vpc_id.as_deref()) else {
+        return Some(true);
+    };
+    if !held.vpcs.contains(vpc_id) {
+        return Some(true);
     }
     match target.target_type.as_str() {
         IP_TARGET_TYPE => Some(held.addresses.contains(&target.id)),
         INSTANCE_TARGET_TYPE => Some(held.running.contains(&target.id)),
-        // A `lambda` target names no address and no port, so nothing of the account's
-        // inventory is a fact about it: its check is the invocation
-        // [`observe_all_due`] makes. Any other target type is one this service does not
-        // read, and so observes nothing about either.
-        _ => None,
+        // Any other target type is one this service holds no resource of, and so contradicts
+        // the registration with nothing.
+        _ => Some(true),
     }
 }
 
@@ -1882,12 +1917,12 @@ mod tests {
                 Some((1.0, 0.0)),
             ),
             (
-                "a registration nothing was observed about",
+                "a registration whose checks observed nothing at all",
                 1,
                 None,
                 2,
                 false,
-                Some((1.0, 0.0)),
+                None,
             ),
             (
                 "a group holding no registration",
@@ -2161,8 +2196,10 @@ mod tests {
     }
 
     /// RULE: what one check observes is whether the emulator holds something that stands
-    /// behind the registration AND answers on the port the check connects to, and nothing
-    /// at all where there is no inventory to read.
+    /// behind the registration AND answers on the port the check connects to; where it holds
+    /// nothing that contradicts the registration — no inventory to read, or an inventory
+    /// without the group's VPC — the check is answered, and a `lambda` registration, whose
+    /// check is an invocation, is not observed by this reading at all.
     ///
     /// The rows span the target types a check reads, a registration another service's
     /// scheduler owns, whether the workload behind it listens on the health-check port, and
@@ -2268,13 +2305,16 @@ mod tests {
                 observed, expected,
                 "case {case:?}: expected {expected:?}, got {observed:?}"
             );
-            // With no inventory to read, and with an inventory that holds no such VPC,
-            // only a scheduler's own registration is observed — and a check against a port
-            // nothing serves fails whatever the inventory holds.
-            let expected_unknown = if serves == Some(false) {
+            // With no inventory to read, and with an inventory that holds no such VPC, the
+            // registration's own word stands and the check is answered — except a check
+            // against a port nothing serves, which fails whatever the inventory holds, and a
+            // `lambda` registration, which this reading checks not at all.
+            let expected_unknown = if target_type == super::super::LAMBDA_TARGET_TYPE {
+                None
+            } else if serves == Some(false) {
                 Some(false)
             } else {
-                scheduled.then_some(true)
+                Some(true)
             };
             let without = observe(&checked, None);
             assert_eq!(

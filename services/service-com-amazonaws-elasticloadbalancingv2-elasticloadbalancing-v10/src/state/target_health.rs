@@ -50,7 +50,9 @@
 //! health-check port and the ports something behind the registration is listening on — the ones
 //! its scheduler declared ([`ServedPorts`]), and for an instance of this account the ones Amazon
 //! EC2 holds for it. A registration whose checks pass keeps the `healthy` they found it, and one
-//! a check was made of that observed NOTHING keeps it too: nothing is failed on silence.
+//! whose checks found NOTHING — the invocation a `lambda` group's check is, where this emulator
+//! could not carry it — is still one whose health no check has determined: silence neither fails
+//! a registration nor finds it healthy.
 //!
 //! Every span is stored as the instant it comes due, never slept for; a read
 //! materialises what the clock already owes ([`TargetGroupRecord::settle_draining`]) and
@@ -465,35 +467,26 @@ pub struct TargetProbe {
     failures: u32,
     /// Consecutive passing checks since the last failing one.
     passes: u32,
-    /// What the LAST look at this registration found, whether or not it was a check the
-    /// group's cadence had made due ([`TargetProbe::saw`]), and `None` for a registration
-    /// nothing has observed anything about.
-    ///
-    /// What keeps a registration nothing answers for out of `healthy` while its verdict is
-    /// still a number of checks away: the load balancer has not determined its health yet,
-    /// which is the `initial` the model words as the minimum number of checks still being
-    /// sent, and never the health a registration whose checks pass is owed.
-    last_observed: Option<bool>,
     /// What the runs have DECIDED: `Some(true)` once as many consecutive checks passed as
     /// the group's `HealthyThresholdCount`, `Some(false)` once as many failed as its
     /// `UnhealthyThresholdCount`, and `None` while neither threshold has been reached.
     verdict: Option<bool>,
-    /// Whether the load balancer has TAKEN a health check of this registration yet — one of
-    /// the group's own cadence, whatever that check then observed
-    /// ([`TargetGroupRecord::observed_check`]).
+    /// Whether a check has ever FOUND this registration passing, which is the only thing it is
+    /// reported `healthy` on.
     ///
-    /// `healthy` is a finding of the checks, so a registration none of them has been made of
-    /// is one whose health the load balancer has not determined: the `initial` the model words
-    /// as it "still sending the target the minimum number of health checks required to
-    /// determine its health status" ([`Self::is_undetermined`]).
-    checked: bool,
-    /// Whether a check has ever found this registration PASSING, which is what it is reported
-    /// healthy on.
+    /// `healthy` is a finding of the checks, never a state a registration carries before one
+    /// found it: while nothing has found it passing and no verdict is in, the load balancer has
+    /// not determined its health, which is the `initial` the model words as it "still sending
+    /// the target the minimum number of health checks required to determine its health status"
+    /// ([`Self::is_undetermined`]). So a registration no check of has been made, one whose
+    /// checks are failing short of the threshold, and one whose checks could not be made at all
+    /// are reported alike — as the registration whose health is still being determined.
     ///
     /// Kept across a later failing check, because a state the checks reached only moves once
     /// as many consecutive checks disagree with it as the group's own threshold takes
     /// ([`Self::counted`]): a registration the checks have found healthy is not reported as
-    /// one whose health is still being determined on the way to an `unhealthy` verdict.
+    /// one whose health is still being determined on the way to an `unhealthy` verdict, and no
+    /// read after a decided one gives the state back to `initial`.
     passed: bool,
     /// What the last FAILING check of this registration found, and `None` while none has
     /// failed: the condition an `unhealthy` verdict is reported with
@@ -512,10 +505,10 @@ impl TargetProbe {
     ///
     /// A verdict is a number of consecutive CHECKS away, and the checks are the ones the
     /// configured interval makes due ([`TargetProbe::counted`]), so a look taken between two
-    /// of them moves no verdict. It still decides that a registration nothing answers for is
-    /// not reported healthy on its way to one.
+    /// of them moves no verdict and finds no health. What it keeps is the CONDITION a failing
+    /// look found, which is what the verdict those checks reach is then reported with
+    /// ([`Self::failed_with`]).
     pub fn saw(&mut self, observed: Observed) {
-        self.last_observed = Some(observed.passed());
         if let Some(failure) = observed.failure() {
             self.failed_with = Some(failure);
         }
@@ -533,7 +526,6 @@ impl TargetProbe {
         unhealthy_threshold: i32,
     ) {
         self.saw(observed);
-        self.taken();
         let threshold = |configured: i32| configured.max(1).unsigned_abs();
         if observed.passed() {
             self.passed = true;
@@ -556,32 +548,25 @@ impl TargetProbe {
         self.verdict == Some(false)
     }
 
-    /// Record that a health check of this registration was TAKEN, whatever it observed: the
-    /// load balancer has begun checking it, which is what its health is then determined from.
-    pub fn taken(&mut self) {
-        self.checked = true;
-    }
-
     /// Whether the load balancer has NOT determined this registration's health yet, which is
     /// the `initial` the model words as "the load balancer is still sending the target the
     /// minimum number of health checks required to determine its health status"
     /// (`TargetHealth$Reason`).
     ///
-    /// Its health is undetermined while no verdict is in and no check has found it passing,
-    /// and either no check of it has been taken at all — `healthy` is a finding of the checks,
-    /// never the state a registration carries before one was made — or the last look at it
-    /// FAILED, so nothing has found it healthy on the way to an `unhealthy` verdict.
+    /// Its health is undetermined while no verdict is in and NO check has found it passing:
+    /// `healthy` is a finding of the checks, never a state a registration is defaulted to
+    /// before one found it. So a registration no check of has been made, one whose checks have
+    /// only failed short of the group's threshold, and one whose checks could not be made at
+    /// all are reported alike — the load balancer is still sending the checks its health is
+    /// determined from.
     ///
     /// A registration a check has found passing is not this, even where a later check failed:
     /// a state the checks reached moves only once as many consecutive checks disagree with it
     /// as the group's own threshold takes, which is what [`Self::counted`] folds — and a
     /// registration that already HAS a verdict is reported as that verdict for the same
-    /// reason. One a check was taken of that observed NOTHING is not this either: nothing is
-    /// failed on silence.
+    /// reason. So the state machine never gives a decided registration back to `initial`.
     pub fn is_undetermined(&self) -> bool {
-        self.verdict.is_none()
-            && !self.passed
-            && (!self.checked || self.last_observed == Some(false))
+        self.verdict.is_none() && !self.passed
     }
 
     /// What the last FAILING check of this registration found, and `None` while none has
@@ -855,15 +840,13 @@ impl TargetGroupRecord {
     /// one comes due one `HealthCheckIntervalSeconds` later ([`health_check_interval`]), so
     /// `UnhealthyThresholdCount` consecutive failures take that many intervals to be in, and
     /// what the check observed is counted toward the verdict. A look taken between two checks
-    /// counts toward no verdict and only keeps what was seen ([`TargetProbe::saw`]), which is
-    /// what keeps a registration nothing answers for out of `healthy` while its verdict is
-    /// still due.
+    /// counts toward no verdict and only keeps the condition it found ([`TargetProbe::saw`]),
+    /// which is what the verdict those checks reach is then reported with.
     ///
-    /// `observed` is `None` for a check that observed NOTHING — a registration this emulator
-    /// holds no fact about either way ([`super::host_counts`]). The check still RAN, so the
-    /// cadence moves on and the load balancer has begun checking this registration
-    /// ([`TargetProbe::taken`]); the probe keeps the verdict it has, because nothing is failed
-    /// on silence.
+    /// `observed` is `None` for a check that observed NOTHING — a registration this reading
+    /// performs no check of at all ([`super::host_counts`]). The cadence moves on, and the
+    /// probe keeps the verdict it has: nothing is failed on silence, and nothing is found
+    /// healthy on it either.
     ///
     /// A key this group no longer holds is skipped: the look ran with no guard held, so a
     /// deregistration may have taken that registration out in the meantime.
@@ -879,9 +862,6 @@ impl TargetGroupRecord {
         let due = now >= target.checks_due_at;
         if due {
             target.checks_due_at = due_at(now, interval);
-            // The check was MADE, whatever it found: the load balancer has begun checking
-            // this registration, which is what its health is determined from.
-            target.probe.taken();
         }
         let Some(observed) = observed else {
             return;
@@ -1076,14 +1056,17 @@ impl TargetGroupRecord {
             return unhealthy_report(self.family(), target.probe.failed_with());
         }
         if target.probe.is_undetermined() {
-            // The load balancer has not determined this registration's health: either no
-            // check of it has been made yet, or the checks made of it have failed without
-            // reaching the group's threshold. `healthy` is a finding of the checks, so until
-            // one has found it the state is the `initial` `TargetHealth$Reason` words as the
-            // minimum number of checks still being sent, and a registration whose checks are
-            // failing is not reported healthy on the way to its verdict.
+            // The load balancer has not determined this registration's health: no check of it
+            // has found it passing — none has been made yet, the ones made have failed without
+            // reaching the group's threshold, or none could be made at all. `healthy` is a
+            // finding of the checks, so until one has found it the state is the `initial`
+            // `TargetHealth$Reason` words as the minimum number of checks still being sent,
+            // and a registration whose checks are failing is not reported healthy on the way
+            // to its verdict.
             return reported(INITIAL_HEALTH_CHECKING);
         }
+        // What the checks FOUND: a registration one of them found passing, which is the only
+        // thing this state is reported on.
         TargetHealth {
             state: Some(HEALTHY_STATE.to_string()),
             reason: None,
@@ -1500,9 +1483,9 @@ mod tests {
     /// RULE: a registration leaves `initial` only once the CHECKS have determined its health —
     /// `healthy` once one of them has found it passing, `unhealthy` once as many consecutive
     /// checks failed as the group's threshold takes — so a registration no check has been made
-    /// of, and one whose checks have only failed, are reported as the load balancer still
-    /// sending the checks its health is determined from; and a health the checks reached is not
-    /// given back to `initial`.
+    /// of, one whose checks have only failed, and one whose checks observed nothing at all are
+    /// reported as the load balancer still sending the checks its health is determined from;
+    /// and a health the checks reached is not given back to `initial`.
     ///
     /// The rows span what the rule generalises over: how many checks were taken, what each
     /// found (an answer the criterion rejects, nothing at all, an answer it accepts), the order
@@ -1530,7 +1513,7 @@ mod tests {
             &'a [Observed],
             (&'a str, &'a str),
         );
-        let rows: [Row<'_>; 8] = [
+        let rows: [Row<'_>; 11] = [
             ("no check taken at all", &[], &[], initial_checking),
             (
                 "one failing check of the two a verdict takes",
@@ -1548,7 +1531,25 @@ mod tests {
                 "one check that observed nothing at all",
                 &[None],
                 &[],
+                initial_checking,
+            ),
+            (
+                "more checks that observed nothing than either threshold takes",
+                &[None, None, None],
+                &[],
+                initial_checking,
+            ),
+            (
+                "checks that observed nothing and then one that found it passing",
+                &[None, None, Some(passed)],
+                &[],
                 healthy,
+            ),
+            (
+                "checks that observed nothing and then the threshold of failing ones",
+                &[None, Some(failed), Some(failed)],
+                &[],
+                unhealthy,
             ),
             (
                 "one passing check of the two a healthy verdict takes",
