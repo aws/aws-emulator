@@ -47,3 +47,26 @@ Cause 2 then Cause 1 (the write path mints the id the read path reports):
 2. Call DescribeAnomalyDetectors with no filters (or Namespace=<ns>) and read $.AnomalyDetectors[0].AnomalyDetectorId: the same wrongly shaped hex form appears on the read path. (Replays as fixture cwa-range-operator-threshold-metric-id, step task#7, and cwp-delete-anomaly-detector-describe-empty, step task#2.)
 3. Check the two invariants that must survive the fix: the id returned in step 1 is byte-identical to the one reported in step 2 for the same detector, and passing it back as DescribeAnomalyDetectors(AnomalyDetectorIds=[<id>]) returns exactly that detector; it must also satisfy @length 1..128 and pattern ^[A-Za-z0-9_./:%()+-]+$.
 4. Re-replay both fixture steps above to confirm the shape assertion on AnomalyDetectorId passes.
+
+## Resolution (both causes declined — per-run minted identifier)
+
+Both causes were examined and DECLINED as a per-run, server-generated value, and the rule they
+concern is now pinned by `tests/all/anomaly_detector_id_is_minted.rs` in the cloudwatch crate.
+
+The model fixes the identifier's length (1..128) and character set (`^[A-Za-z0-9_./:%()+-]+$`)
+and nothing else, and 128 characters cannot render the identity the model watches — a namespace
+and a metric name of 255 characters each, and up to thirty dimensions whose name runs to 255
+characters and whose value to 1024 — so the identifier is minted for the model rather than
+derived from the request. The emulator's value already satisfies the modelled form and every
+invariant this report names as the requirement: one identifier per created model, the bytes the
+write returned are the bytes every read reports, the identifier resolves that model through the
+`AnomalyDetectorIds` filter and through `DeleteAnomalyDetector`, and no two models share one.
+
+For a later sweep: four structurally distinct forms have been served for this member and each
+was reported as a shape mismatch against the recording's `<shaped-not-asserted>` sentinel — a
+64-character content digest (`20261029T203422Z-monitoring-cloudwatch-anomaly-detectors-are-not-retrievable-deletable-or.md`),
+a bare UUIDv4 (`20261119T135304Z-…`), `<uuid>/<epoch-millis>` (`20261126T024948Z-…`) and the
+32-character token this report is about; a 22-character URL-safe base64 token was replayed while
+working this report and diverges identically. No AWS rule, doc sentence or model trait fixes the
+internal form, so the assertion can only be satisfied by the recorded instance's own bytes, and
+an identifier computed from the request's content would be a defect in its own right.

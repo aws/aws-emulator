@@ -178,6 +178,16 @@ pub fn detector_account_id(named: Option<&str>) -> String {
 /// ([`super::alarm_reads::minted_bytes`]), which is where one identifier's uniqueness comes
 /// from; the RENDERING is this identifier's own, since the creation identity an alarm read
 /// reports is a composite of a uuid and the instant of its write and this identifier is not.
+///
+/// MINTED, NEVER RENDERED FROM THE REQUEST: the identifier cannot carry the identity of the
+/// series the model watches, because 128 characters do not hold it — a namespace and a metric
+/// name of 255 characters each (`SingleMetricAnomalyDetector$Namespace`, `$MetricName`), and up
+/// to thirty dimensions whose name runs to 255 characters and whose value to 1024
+/// (`Dimension$Name`, `$Value`). So the model fixes the identifier's LENGTH and CHARACTER SET
+/// and nothing else, and what a client may rely on is exactly that, plus the identity
+/// properties the suite `tests/all/anomaly_detector_id_is_minted.rs` pins: the value is the
+/// model's for as long as the model stands, it names that model and no other wherever an
+/// operation takes an identifier, and the bytes of any one of them are this run's.
 #[must_use]
 pub fn minted_anomaly_detector_id() -> String {
     ::hex::encode(super::alarm_reads::minted_bytes())

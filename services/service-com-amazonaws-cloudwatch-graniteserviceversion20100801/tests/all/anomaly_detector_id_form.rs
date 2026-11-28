@@ -101,9 +101,21 @@ fn named_instant(id: &str, from_secs: f64, to_secs: f64) -> Option<String> {
     })
 }
 
-/// A single-metric write of `metric`, with the dimensions and statistic given.
+/// A single-metric write of `metric` in this suite's own namespace, with the dimensions and
+/// statistic given.
 pub fn single_metric(metric: &str, dimensions: Option<Value>, stat: &str) -> Value {
-    let mut detector = json!({"Namespace": NAMESPACE, "MetricName": metric, "Stat": stat});
+    single_metric_in(NAMESPACE, metric, dimensions, stat)
+}
+
+/// The same write, of a metric in `namespace` — the seam a suite that varies the metric's own
+/// text uses, so one construction serves both.
+pub fn single_metric_in(
+    namespace: &str,
+    metric: &str,
+    dimensions: Option<Value>,
+    stat: &str,
+) -> Value {
+    let mut detector = json!({"Namespace": namespace, "MetricName": metric, "Stat": stat});
     if let Some(dimensions) = dimensions {
         detector["Dimensions"] = dimensions;
     }
@@ -111,7 +123,7 @@ pub fn single_metric(metric: &str, dimensions: Option<Value>, stat: &str) -> Val
 }
 
 /// A metric-math write over `metric`.
-fn metric_math(metric: &str) -> Value {
+pub fn metric_math(metric: &str) -> Value {
     json!({"MetricMathAnomalyDetector": {"MetricDataQueries": [
         {
             "Id": "m1",
@@ -148,7 +160,7 @@ pub async fn put_detector(
 
 /// Every identifier the store reports, over both modelled model types: "If empty, defaults to
 /// SINGLE_METRIC." (`DescribeAnomalyDetectorsInput$AnomalyDetectorTypes`).
-async fn described_ids(router: &MultiServiceRouter) -> Vec<String> {
+pub async fn described_ids(router: &MultiServiceRouter) -> Vec<String> {
     let body = ok(
         router,
         "DescribeAnomalyDetectors",
@@ -169,13 +181,13 @@ async fn described_ids(router: &MultiServiceRouter) -> Vec<String> {
         .collect()
 }
 
-/// The identifiers a read that names `id` reports, which is how a row asserts the model is
-/// found by the token the write minted for it.
-async fn described_by_id(router: &MultiServiceRouter, id: &str) -> Vec<String> {
+/// The identifiers a read that names `ids` reports, which is how a row asserts the models are
+/// found by the tokens the writes minted for them.
+pub async fn described_by_ids(router: &MultiServiceRouter, ids: &[String]) -> Vec<String> {
     let body = ok(
         router,
         "DescribeAnomalyDetectors",
-        &json!({"AnomalyDetectorIds": [id]}),
+        &json!({"AnomalyDetectorIds": ids}),
     )
     .await;
     body.get("AnomalyDetectors")
@@ -240,7 +252,7 @@ async fn a_write_mints_one_opaque_token_for_the_model_it_creates() {
             vec![id.clone()],
             "case {case:?}: a read reports the identifier the write minted, got {described:?}"
         );
-        let found = described_by_id(&router, &id).await;
+        let found = described_by_ids(&router, std::slice::from_ref(&id)).await;
         assert_eq!(
             found,
             vec![id.clone()],
