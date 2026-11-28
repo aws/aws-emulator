@@ -36,7 +36,7 @@ use service_com_amazonaws_connectcases_amazonconnectcases::state::{
 
 use crate::harness::{
     batch_get_fields, domain, field_of_type, fields_of_every_type, get_case_fields, is_minted_id,
-    listed_fields, read_field, string_at, template, Emulator,
+    listed_fields, read_field, refused_as, string_at, template, Emulator, Refusal,
 };
 
 /// The reserved id whose value every row below leaves unwritten, so a read can
@@ -1114,9 +1114,10 @@ async fn an_update_of_a_fields_properties_is_what_every_later_read_reports() {
 
 #[tokio::test]
 async fn an_update_of_a_field_the_domain_cannot_resolve_is_refused() {
-    // A field has to exist, and be live, before anything is written to it: a
-    // reference the domain cannot resolve is the modelled 404, and a field whose
-    // record is a tombstone is the modelled 400 the service documents for it.
+    // A field has to exist, and be live, before anything is written to it: an
+    // update addressed at a field the domain cannot resolve — one it holds no
+    // record for, and one whose record is a deletion tombstone alike — is the
+    // modelled 404.
     let emulator = Emulator::new();
     let domain_id = domain(&emulator, "field-update-refusals").await;
     let other_domain = domain(&emulator, "field-update-refusals-elsewhere").await;
@@ -1176,8 +1177,8 @@ async fn an_update_of_a_field_the_domain_cannot_resolve_is_refused() {
             "a field that has been deleted",
             format!("/domains/{domain_id}/fields/{deleted_id}"),
             json!({ "name": "a-name-for-a-deleted-field" }),
-            400,
-            "ValidationException",
+            404,
+            "ResourceNotFoundException",
         ),
     ];
 
@@ -1193,23 +1194,24 @@ async fn an_update_of_a_field_the_domain_cannot_resolve_is_refused() {
         );
     }
 
-    // The documented refusal for a deleted field names the id the request
-    // carried: "You cannot update a deleted field by calling UpdateField; it
-    // throws a ValidationException"
-    // (`smithy_query(query="doc",shape="DeleteField")`).
-    let (_, _, message) = emulator
-        .failure_detail(
-            "the deleted field's refusal",
-            "PUT",
-            &format!("/domains/{domain_id}/fields/{deleted_id}"),
-            Some(json!({ "name": "a-name-for-a-deleted-field" })),
-        )
-        .await;
-    assert!(
-        message.contains(&deleted_id),
-        "case \"the deleted field's refusal\": the refusal must denote the deleted field id, \
-         got {message:?}"
-    );
+    // The refusal reports WHICH field could not be resolved through the error's
+    // own required members rather than inside its sentence, which carries no
+    // variable part at all — asserted through the one body assertion this
+    // crate's suites share. `field_update_after_delete.rs` spans that rule over
+    // every field type and every form of update.
+    refused_as(
+        &emulator,
+        "the deleted field's refusal",
+        "PUT",
+        &format!("/domains/{domain_id}/fields/{deleted_id}"),
+        Some(json!({ "name": "a-name-for-a-deleted-field" })),
+        &Refusal {
+            resource_type: "field",
+            resource_id: &deleted_id,
+            sentence: "Requested resource not found.",
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

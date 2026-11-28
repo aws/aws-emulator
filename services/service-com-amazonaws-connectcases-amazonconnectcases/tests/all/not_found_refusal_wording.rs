@@ -22,8 +22,8 @@
 use serde_json::{json, Value};
 
 use crate::harness::{
-    domain, field_of_type, fields_of_every_type, refused_as_not_found, string_at, template,
-    title_value, Emulator,
+    domain, field_of_type, fields_of_every_type, refused_as, string_at, template, title_value,
+    Emulator, Refusal,
 };
 
 /// The service's generic not-found sentence, written out here rather than taken
@@ -53,57 +53,9 @@ type Row = (
     String,
 );
 
-/// What a refusal must report: the service's lowercase token for the kind, the
-/// identifier of the resource that could not be resolved, and the sentence the
-/// refusing operation words it with.
-struct Refusal<'a> {
-    resource_type: &'a str,
-    resource_id: &'a str,
-    sentence: &'a str,
-}
-
-/// Assert one call is the modelled 404 whose body reports `expected`.
-///
-/// The status and `__type` pair every not-found refusal carries is the shared
-/// harness assertion; what THIS suite is about is the body beside it.
-async fn refused_as(
-    emulator: &Emulator,
-    case: &str,
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-    expected: &Refusal<'_>,
-) {
-    let Refusal {
-        resource_type,
-        resource_id,
-        sentence,
-    } = *expected;
-    let response = refused_as_not_found(emulator, case, method, path, body).await;
-    let reported = string_at(&response, "resourceType", case);
-    assert_eq!(
-        reported, resource_type,
-        "case {case:?}: expected resourceType {resource_type:?}, got {reported:?} in {response:?}"
-    );
-    // The invariant behind the token, asserted on whatever the row reports: the
-    // vocabulary is lowercase, so no row can pass by naming a capitalised type.
-    assert_eq!(
-        reported,
-        reported.to_lowercase(),
-        "case {case:?}: resourceType must be the service's lowercase token, got {reported:?}"
-    );
-    assert_eq!(
-        string_at(&response, "resourceId", case),
-        resource_id,
-        "case {case:?}: expected resourceId {resource_id:?}, got {response:?}"
-    );
-    assert_eq!(
-        response.get("message").and_then(Value::as_str),
-        Some(sentence),
-        "case {case:?}: expected the sentence {sentence:?}, got {response:?}"
-    );
-}
-
+/// What a refusal must report is [`crate::harness::Refusal`], and the assertion
+/// over it [`refused_as`]: this suite is the TABLE of refusals, and the body
+/// assertion is shared with every other suite that checks one.
 #[tokio::test]
 async fn every_not_found_refusal_reports_the_lowercase_token_and_its_own_sentence() {
     let emulator = Emulator::new();

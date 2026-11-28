@@ -160,25 +160,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .domain_mut(&input.domain_id)
             .map_err(UpdateFieldErrorModeled::ResourceNotFoundException)?;
 
-        // The field has to EXIST before anything else is judged about the
-        // request: a reference the domain holds no record for at all is the
-        // modelled 404, and only a record it does hold can be refused as
-        // deleted or as a rename onto a taken name.
-        let Some(record) = domain.field_record(&input.field_id) else {
+        // The field the request ADDRESSES has to resolve before anything else is
+        // judged about it, and an update resolves only a LIVE field: a reference
+        // the domain holds no record for at all and one whose record is a
+        // deletion tombstone are alike unresolvable, so both are the modelled
+        // 404 — the generic sentence, with the field reported through the
+        // error's required `resourceId`/`resourceType` members.
+        //
+        // `DeleteField`'s prose calls the deleted-field refusal of an update a
+        // `ValidationException` ("You cannot update a deleted field by calling
+        // UpdateField", `smithy_query(query="doc",shape="DeleteField")`), but
+        // the service's recorded answer to an update addressed at a deleted
+        // field is `ResourceNotFoundException` (404), and the recording outranks
+        // the prose — the same reading `UpdateLayout` applies to a deleted
+        // layout, and `UpdateTemplate` (through `Domain::template`) to a deleted
+        // template. The deleted-field `ValidationException` stays where it is
+        // both documented and recorded: a call that merely REFERENCES a deleted
+        // field in its payload while addressing another resource
+        // (`CreateCase`, `UpdateCase`, `BatchPutFieldOptions`).
+        if domain
+            .field_record(&input.field_id)
+            .is_none_or(|record| record.deleted)
+        {
             return Err(UpdateFieldErrorModeled::ResourceNotFoundException(
                 crate::state::not_found(crate::state::ResourceKind::Field, &input.field_id),
-            )
-            .into());
-        };
-
-        // A field whose record is a tombstone is refused as a bad request rather
-        // than as a missing one: "You cannot update a deleted field by calling
-        // UpdateField; it throws a ValidationException"
-        // (`smithy_query(query="doc",shape="DeleteField")`). The same reading
-        // `BatchPutFieldOptions` applies to its own deleted-field refusal.
-        if record.deleted {
-            return Err(UpdateFieldErrorModeled::ValidationException(
-                crate::state::deleted_fields(&[input.field_id]),
             )
             .into());
         }

@@ -251,6 +251,59 @@ pub async fn refused_as_not_found(
     response
 }
 
+/// What a not-found refusal must report: the service's lowercase token for the
+/// kind, the identifier of the resource that could not be resolved, and the
+/// sentence the refusing operation words it with.
+pub struct Refusal<'a> {
+    pub resource_type: &'a str,
+    pub resource_id: &'a str,
+    pub sentence: &'a str,
+}
+
+/// Assert one call is the modelled 404 whose body reports `expected`.
+///
+/// The status and `__type` pair every not-found refusal carries is
+/// [`refused_as_not_found`]; this adds the body beside it, so every suite that
+/// checks what a refusal SAYS about the resource asserts it the same way — the
+/// lowercase-token invariant included.
+pub async fn refused_as(
+    emulator: &Emulator,
+    case: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    expected: &Refusal<'_>,
+) {
+    let Refusal {
+        resource_type,
+        resource_id,
+        sentence,
+    } = *expected;
+    let response = refused_as_not_found(emulator, case, method, path, body).await;
+    let reported = string_at(&response, "resourceType", case);
+    assert_eq!(
+        reported, resource_type,
+        "case {case:?}: expected resourceType {resource_type:?}, got {reported:?} in {response:?}"
+    );
+    // The invariant behind the token, asserted on whatever the call reports: the
+    // vocabulary is lowercase, so no case can pass by naming a capitalised type.
+    assert_eq!(
+        reported,
+        reported.to_lowercase(),
+        "case {case:?}: resourceType must be the service's lowercase token, got {reported:?}"
+    );
+    assert_eq!(
+        string_at(&response, "resourceId", case),
+        resource_id,
+        "case {case:?}: expected resourceId {resource_id:?}, got {response:?}"
+    );
+    assert_eq!(
+        response.get("message").and_then(Value::as_str),
+        Some(sentence),
+        "case {case:?}: expected the sentence {sentence:?}, got {response:?}"
+    );
+}
+
 /// Percent-encode one request value, so it travels in the non-greedy `{arn}`
 /// label of `/tags/{arn}`, or as a query-string value: every byte outside the
 /// unreserved set is escaped, which both a path segment and a query value

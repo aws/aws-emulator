@@ -35,14 +35,14 @@ use smithy_server_runtime::Service;
 
 /// The local name of this model's service shape, which an `rpcv2Cbor` request names in its
 /// path (`smithy_query(query="service_info")` reports the service as `ELBProxy`).
-const SERVICE_SHAPE: &str = "ELBProxy";
+pub(crate) const SERVICE_SHAPE: &str = "ELBProxy";
 
 /// The signing name this service shares with both Elastic Load Balancing models.
-const SHARED_SIGNING_NAME: &str = "elasticloadbalancing";
+pub(crate) const SHARED_SIGNING_NAME: &str = "elasticloadbalancing";
 
 /// A SigV4 `Authorization` header whose credential scope names `signing_name`. Nothing
 /// verifies the signature here: the claim seam reads the scope's service field only.
-fn authorization(signing_name: &str) -> String {
+pub(crate) fn authorization(signing_name: &str) -> String {
     format!(
         "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261120/us-east-1/{signing_name}/aws4_request, \
          SignedHeaders=host, Signature=0000"
@@ -50,7 +50,7 @@ fn authorization(signing_name: &str) -> String {
 }
 
 /// Whether this service claims the described request.
-fn claims(
+pub(crate) fn claims(
     service: &EmulatedService<engine::InMemoryEngine>,
     uri: &str,
     target: Option<&str>,
