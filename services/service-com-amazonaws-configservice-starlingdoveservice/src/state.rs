@@ -1296,6 +1296,29 @@ impl RecorderStatusEntry {
         }
     }
 
+    /// The recording event this recorder was processing HAS been processed, as of `at`.
+    ///
+    /// `lastStatus` is "the status of the latest recording event processed by the
+    /// recorder" and `lastStatusChangeTime` "the time of the latest change in status of
+    /// an recording event processed by the recorder"
+    /// (`ConfigurationRecorderStatus$lastStatus`,
+    /// `ConfigurationRecorderStatus$lastStatusChangeTime`), so the pass that OBSERVED
+    /// this account's resources is what moves them: the status a read then reports is
+    /// backed by recording the recorder performed, and the instant it carries is the
+    /// instant of that pass rather than a projected one. A status already at
+    /// `RECORDER_STATUS_SUCCESS` did not CHANGE, so it keeps the instant it changed at.
+    ///
+    /// Called by the recording pass (`recording::run_recording_pass`), under the same
+    /// guard that recorded what the pass observed.
+    pub fn note_event_processed(&mut self, at: SystemTime) {
+        if self.last_status.as_deref() != Some(RECORDER_STATUS_SUCCESS) {
+            self.last_status = Some(RECORDER_STATUS_SUCCESS.to_string());
+            self.last_status_change_time = Some(at);
+        }
+        // Nothing is owed for an event that has been processed.
+        self.status_settles_at = None;
+    }
+
     /// Materialise the status change the clock has already made due.
     ///
     /// This is the ONLY write a reporting operation performs: the `Pending` ->

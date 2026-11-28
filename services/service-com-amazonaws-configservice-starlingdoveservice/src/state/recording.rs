@@ -600,6 +600,29 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
         self.owe_recording_pass(now);
     }
 
+    /// Note that the recorders that are RECORDING have processed a recording event as of
+    /// `now`, which is what the status `DescribeConfigurationRecorderStatus` reports is
+    /// about: `lastStatus` is "the status of the latest recording event processed by the
+    /// recorder", so an account whose pass has observed its resources reports that event
+    /// at `RECORDER_STATUS_SUCCESS` — stamped at the instant the pass processed it
+    /// ([`super::RecorderStatusEntry::note_event_processed`]).
+    ///
+    /// The PASS is what processes the event, not the observation a request performs for its
+    /// own answer ([`materialise_recorded_types`]): the pass is the recording the recorder
+    /// does of its own accord, and the event a start made pending is still pending while
+    /// that pass has not run — which is what keeps the transient `Pending` status a caller
+    /// describing the recorder straight after starting it observes.
+    ///
+    /// A recorder that is NOT recording processes no event, so its status stays where it
+    /// was: what Config observed is not an event of a recorder that was off.
+    pub fn note_recording_event_processed(&mut self, now: SystemTime) {
+        for status in self.recorder_status.values_mut() {
+            if status.recording {
+                status.note_event_processed(now);
+            }
+        }
+    }
+
     /// Whether this account is RECORDING `resource_type` at this instant: a recorder of
     /// its own is recording and the recording group that recorder records by covers that
     /// type.
@@ -848,6 +871,9 @@ async fn run_recording_pass<Eng: Send + Sync + 'static>(
         // (`super::custom_lambda_rule`).
         store.owe_change_triggered_invocations(&recorded, now);
         let changes = store.evaluate_rules(account.as_ref(), now);
+        // The recorders that are recording have now PROCESSED this recording event, which
+        // is what their reported status is about.
+        store.note_recording_event_processed(now);
         // The recorded state is now what the account held: the pass this one was owed has
         // been performed, and the next one falls due from here. Noted under the guard that
         // wrote it, so an account whose recording nothing else resumes cannot be left owing
