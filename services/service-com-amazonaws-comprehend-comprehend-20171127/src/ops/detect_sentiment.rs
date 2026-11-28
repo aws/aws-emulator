@@ -2,14 +2,21 @@
 
 //! @op DetectSentiment
 //!
-//! IMPLEMENTED. The inference runs in-process through the VADER sentiment engine
-//! (`vader_sentiment`), so the verdict and its four confidences are computed from the
-//! submitted text rather than matched out of the request. The engine answers with an
-//! INTENSITY, which [`score_sentiment`] calibrates into the four confidences the
-//! modelled `SentimentScore` carries — how sure the document carries sentiment at
-//! all, and how that confidence splits between the two polarities and the both-signed
-//! MIXED class. A `LanguageCode` the engine has no lexicon for is answered with the
-//! modelled `UnsupportedLanguageException`.
+//! IMPLEMENTED. The inference runs in-process, so the verdict and its four
+//! confidences are computed from the submitted text rather than matched out of the
+//! request. English is read by the VADER sentiment engine (`vader_sentiment`); every
+//! other language the modelled `LanguageCode` enum names is read by the per-language
+//! polarity lexicon in [`POLARITY_LEXICONS`], which reports its reading of a document
+//! on the SAME scale VADER reports its own ([`lexicon_reading`]). Either way the
+//! reading is an INTENSITY, which [`score_sentiment`] calibrates into the four
+//! confidences the modelled `SentimentScore` carries — how sure the document carries
+//! sentiment at all, and how that confidence splits between the two polarities and
+//! the both-signed MIXED class.
+//!
+//! No language is refused: Comprehend infers sentiment in every one of the primary
+//! languages its `LanguageCode` enum names, so a value inside the enum is analysed
+//! and only a value outside it is refused, which the request-validation boundary does
+//! from the model.
 //!
 //! ## Shape of an operation
 //!
@@ -93,14 +100,12 @@ use vader_sentiment::SentimentIntensityAnalyzer;
 /// operation declares.
 const MAX_TEXT_BYTES: usize = crate::state::REALTIME_TEXT_QUOTA_BYTES;
 
-/// The `LanguageCode` values the in-process sentiment engine has a lexicon for.
+/// The `LanguageCode` value the VADER engine itself reads.
 ///
 /// VADER's lexicon and its boosters, negations and idioms are English. Every other
-/// value Comprehend's `LanguageCode` enum names is answered with the modelled
-/// `UnsupportedLanguageException` rather than with a neutral verdict that no
-/// analysis produced. Shared with `crate::ops::batch_detect_sentiment`, whose
-/// `LanguageCode` covers every document in the batch.
-pub(crate) const ANALYSABLE_LANGUAGES: &[&str] = &["en"];
+/// value Comprehend's `LanguageCode` enum names is read by that language's own
+/// polarity lexicon ([`POLARITY_LEXICONS`]) instead, on the same scale.
+const VADER_LANGUAGE: &str = "en";
 
 /// The shared sentiment engine. Built once: `new()` parses the lexicon files, which
 /// is far more expensive than scoring one document, and it is immutable afterwards.
@@ -108,6 +113,1293 @@ fn analyzer() -> &'static SentimentIntensityAnalyzer<'static> {
     static ANALYZER: OnceLock<SentimentIntensityAnalyzer<'static>> = OnceLock::new();
     ANALYZER.get_or_init(SentimentIntensityAnalyzer::new)
 }
+
+/// What the engine read in one document: the shares of its weight carrying each
+/// polarity, and its normalised net polarity.
+///
+/// The two shares are of the WHOLE document — its polarity-bearing material weighed
+/// against the neutral material beside it — which is what [`score_sentiment`]
+/// calibrates the four modelled confidences out of. `compound` is that net polarity
+/// on `[-1, 1]`.
+struct Reading {
+    positive: f64,
+    negative: f64,
+    compound: f64,
+}
+
+/// How the engine read `text` written in `language_code`: through VADER for English,
+/// and through that language's own polarity lexicon otherwise.
+///
+/// A language no lexicon covers reads as a document holding no polarity-bearing word
+/// — the NEUTRAL hypothesis and nothing else — which is the same reading either
+/// engine answers for a document of plain fact.
+fn read_polarity(text: &str, language_code: &str) -> Reading {
+    if language_code == VADER_LANGUAGE {
+        let scores = analyzer().polarity_scores(text);
+        return Reading {
+            positive: scores.get("pos").copied().unwrap_or_default(),
+            negative: scores.get("neg").copied().unwrap_or_default(),
+            compound: scores.get("compound").copied().unwrap_or_default(),
+        };
+    }
+    match POLARITY_LEXICONS
+        .iter()
+        .find(|lexicon| lexicon.language_code == language_code)
+    {
+        Some(lexicon) => lexicon_reading(text, lexicon),
+        None => Reading {
+            positive: 0.0,
+            negative: 0.0,
+            compound: 0.0,
+        },
+    }
+}
+
+/// How the net polarity of a document is normalised onto `[-1, 1]`.
+///
+/// VADER's own normalisation constant, applied to the lexicon engine's net valence
+/// too, so a document read by either engine is reported on ONE scale: the same net
+/// valence means the same `compound`, whichever language carried it.
+const COMPOUND_NORMALISATION: f64 = 15.0;
+
+/// How much a negation keeps of the valence it flips.
+///
+/// A negated word is not the exact opposite of itself — "not good" is milder than
+/// "bad" — so the flipped valence is damped rather than mirrored, by the same factor
+/// VADER damps its own negations with.
+const NEGATION_DAMPING: f64 = 0.74;
+
+/// How many words in front of a polarity-bearing word a negation can reach, in a
+/// language whose writing separates words.
+const NEGATION_WINDOW_WORDS: usize = 3;
+
+/// How many characters AFTER a polarity-bearing word a negation can reach, in a
+/// language written without word separators, where the negation is written as a
+/// suffixed form rather than in front of the word.
+const NEGATION_LOOKAHEAD_CHARS: usize = 4;
+
+/// How many of a document's characters make one word's worth of neutral material, in
+/// a language written without word separators.
+///
+/// The share a reading is a share OF counts the document's material in words, and a
+/// language written without separators has no word boundaries to count: its words run
+/// about this many characters, so the characters no lexicon entry covers weigh this
+/// many to the word. It keeps one scale for both kinds of writing — a lexicon hit in
+/// a ten-character Japanese sentence weighs what a hit in a five-word English one
+/// does.
+const CHARS_PER_UNSPACED_WORD: f64 = 2.0;
+
+/// How the writing system of a language delimits its words, which is what decides how
+/// a lexicon is matched over a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Segmentation {
+    /// Words are delimited by spaces or punctuation, so a lexicon entry is matched
+    /// against a whole word.
+    Spaced,
+    /// Written without word separators, so a lexicon entry is matched wherever it
+    /// OCCURS in the document.
+    Unspaced,
+}
+
+/// One language's polarity resources: what the engine knows about how that language
+/// writes sentiment.
+///
+/// Hand-authored, because no maintained crates.io crate ships a sentiment lexicon for
+/// a language other than English (`vader_sentiment` is the English one this module
+/// already uses). Each entry is a form the language writes a polarity-bearing word in,
+/// with its valence on the SAME scale VADER's own entries carry — about ±1 for a mild
+/// word, ±2 for a clear one and ±3 for the strongest — so the two engines' readings
+/// are comparable and a document is scored the same way whichever read it.
+struct PolarityLexicon {
+    /// The modelled `LanguageCode` value this lexicon reads.
+    language_code: &'static str,
+    segmentation: Segmentation,
+    /// Polarity-bearing forms with their valence. A form ending in `*` matches any
+    /// word that STARTS with it, which is how one entry covers an inflected family;
+    /// an exact form outranks a stem that also matches.
+    terms: &'static [(&'static str, f64)],
+    /// Forms that negate the polarity of a term beside them.
+    negators: &'static [&'static str],
+    /// Forms that intensify it, with how much magnitude each one adds.
+    boosters: &'static [(&'static str, f64)],
+}
+
+impl PolarityLexicon {
+    /// The valence this lexicon gives `word`, if it holds it: the longest matching
+    /// entry, with an exact form outranking a stem.
+    fn valence(&self, word: &str) -> Option<f64> {
+        let mut best: Option<(usize, f64)> = None;
+        for (term, valence) in self.terms {
+            let matched = match term.strip_suffix('*') {
+                Some(stem) if word.starts_with(stem) => stem.len(),
+                // An exact form outranks every stem, however long.
+                None if *term == word => term.len() + 1,
+                _ => continue,
+            };
+            if best.is_none_or(|(length, _)| matched > length) {
+                best = Some((matched, *valence));
+            }
+        }
+        best.map(|(_, valence)| valence)
+    }
+
+    /// The magnitude a booster adds, if `word` is one.
+    fn booster(&self, word: &str) -> Option<f64> {
+        self.boosters
+            .iter()
+            .find(|(form, _)| *form == word)
+            .map(|(_, weight)| *weight)
+    }
+
+    fn is_negator(&self, word: &str) -> bool {
+        self.negators.contains(&word)
+    }
+
+    /// The longest entry this lexicon holds that `rest` starts with, for a language
+    /// written without word separators.
+    fn leading_term(&self, rest: &str) -> Option<(&'static str, f64)> {
+        self.terms
+            .iter()
+            .filter(|(term, _)| rest.starts_with(*term))
+            .max_by_key(|(term, _)| term.len())
+            .map(|(term, valence)| (*term, *valence))
+    }
+
+    /// Whether a negation written beside the stretch `start..end` of `text` turns the
+    /// polarity of the term there around: one written immediately in front of it, or
+    /// one written just after it, which is where a language without word separators
+    /// puts its negation.
+    fn negated_around(&self, text: &str, start: usize, end: usize) -> bool {
+        let behind = &text[..start];
+        if self.negators.iter().any(|form| behind.ends_with(form)) {
+            return true;
+        }
+        let ahead: String = text[end..]
+            .chars()
+            .take(NEGATION_LOOKAHEAD_CHARS)
+            .collect();
+        self.negators.iter().any(|form| ahead.contains(form))
+    }
+}
+
+/// How `lexicon` reads `text`, on the scale [`read_polarity`] reports.
+///
+/// The document's weight is counted the way VADER counts its own: a polarity-bearing
+/// word weighs its valence, every other word weighs one, and the shares are of that
+/// total — so a document of plain fact carrying one evaluative word is mostly neutral
+/// material however long it runs, and a short sentence of praise is almost all
+/// polarity.
+fn lexicon_reading(text: &str, lexicon: &PolarityLexicon) -> Reading {
+    let lowered = text.to_lowercase();
+    let (positive, negative, neutral) = match lexicon.segmentation {
+        Segmentation::Spaced => spaced_weights(&lowered, lexicon),
+        Segmentation::Unspaced => unspaced_weights(&lowered, lexicon),
+    };
+    let total = positive + negative + neutral;
+    if total <= 0.0 {
+        return Reading {
+            positive: 0.0,
+            negative: 0.0,
+            compound: 0.0,
+        };
+    }
+    let net = positive - negative;
+    Reading {
+        positive: positive / total,
+        negative: negative / total,
+        compound: net / (net * net + COMPOUND_NORMALISATION).sqrt(),
+    }
+}
+
+/// The punctuation that delimits a word beside whitespace, for the scripts these
+/// lexicons read.
+///
+/// A word is delimited rather than built up: its characters are the script's own —
+/// letters, digits and the combining marks a syllable is written with (a Devanagari
+/// vowel sign or virama, an Arabic diacritic), none of which may split a word — so
+/// what ends one is whitespace or a punctuation mark. ASCII punctuation is tested by
+/// `char::is_ascii_punctuation`; these are the marks these languages write that ASCII
+/// has no character for — the Arabic comma, semicolon, question mark and full stop,
+/// the Devanagari danda and double danda, the Spanish inverted marks, and the
+/// quotation marks and dashes European typography uses.
+const WORD_PUNCTUATION: &[char] = &[
+    '،', '؛', '؟', '۔', '।', '॥', '¿', '¡', '«', '»', '“', '”', '‘', '’', '…', '—', '–', '·',
+];
+
+/// Whether `character` ends a word in a language whose writing separates them.
+fn is_word_separator(character: char) -> bool {
+    character.is_whitespace()
+        || character.is_ascii_punctuation()
+        || WORD_PUNCTUATION.contains(&character)
+}
+
+/// The positive, negative and neutral weight `lexicon` finds in a document whose
+/// language writes its words apart.
+///
+/// An apostrophe delimits a word in every language read this way (French `j'adore`,
+/// Italian `l'ottimo`), so it is a separator like any other punctuation; English,
+/// where it is not, is read by VADER instead.
+fn spaced_weights(lowered: &str, lexicon: &PolarityLexicon) -> (f64, f64, f64) {
+    let words: Vec<&str> = lowered
+        .split(is_word_separator)
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mut positive = 0.0;
+    let mut negative = 0.0;
+    let mut neutral = 0.0;
+    for (index, word) in words.iter().enumerate() {
+        let Some(mut valence) = lexicon.valence(word) else {
+            neutral += 1.0;
+            continue;
+        };
+        // Intensified by a booster written immediately in front of it, which raises
+        // the magnitude without changing the direction.
+        if let Some(weight) = index
+            .checked_sub(1)
+            .and_then(|previous| lexicon.booster(words[previous]))
+        {
+            valence += weight * valence.signum();
+        }
+        if words[index.saturating_sub(NEGATION_WINDOW_WORDS)..index]
+            .iter()
+            .any(|earlier| lexicon.is_negator(earlier))
+        {
+            valence *= -NEGATION_DAMPING;
+        }
+        if valence > 0.0 {
+            positive += valence;
+        } else {
+            negative += -valence;
+        }
+    }
+    (positive, negative, neutral)
+}
+
+/// The positive, negative and neutral weight `lexicon` finds in a document whose
+/// language writes its words without separators: the lexicon is matched where it
+/// occurs, longest entry first, and the characters it does not cover are the
+/// document's neutral material ([`CHARS_PER_UNSPACED_WORD`]).
+fn unspaced_weights(lowered: &str, lexicon: &PolarityLexicon) -> (f64, f64, f64) {
+    let mut positive = 0.0;
+    let mut negative = 0.0;
+    let mut neutral_characters = 0.0;
+    let mut cursor = 0;
+    while cursor < lowered.len() {
+        let rest = &lowered[cursor..];
+        match lexicon.leading_term(rest) {
+            Some((term, valence)) => {
+                let end = cursor + term.len();
+                let valence = if lexicon.negated_around(lowered, cursor, end) {
+                    valence * -NEGATION_DAMPING
+                } else {
+                    valence
+                };
+                if valence > 0.0 {
+                    positive += valence;
+                } else {
+                    negative += -valence;
+                }
+                cursor = end;
+            }
+            None => {
+                let Some(character) = rest.chars().next() else {
+                    break;
+                };
+                if !character.is_whitespace() {
+                    neutral_characters += 1.0;
+                }
+                cursor += character.len_utf8();
+            }
+        }
+    }
+    (
+        positive,
+        negative,
+        neutral_characters / CHARS_PER_UNSPACED_WORD,
+    )
+}
+
+/// Every language's polarity lexicon but English's, which VADER itself carries.
+///
+/// One entry per modelled `LanguageCode` value — the set
+/// `smithy_query(query="shape",shape="LanguageCode")` names — so no value a request
+/// can carry inside the enum is left without an engine to read it.
+const POLARITY_LEXICONS: &[PolarityLexicon] = &[
+    PolarityLexicon {
+        language_code: "es",
+        segmentation: Segmentation::Spaced,
+        terms: SPANISH_TERMS,
+        negators: &[
+            "no", "ni", "nunca", "jamás", "jamas", "nada", "nadie", "ningún", "ningun",
+            "ninguna", "tampoco", "sin",
+        ],
+        boosters: &[
+            ("muy", 0.3),
+            ("mucho", 0.3),
+            ("muchísimo", 0.4),
+            ("bastante", 0.2),
+            ("demasiado", 0.3),
+            ("sumamente", 0.4),
+            ("extremadamente", 0.4),
+            ("totalmente", 0.3),
+            ("realmente", 0.3),
+            ("increíblemente", 0.4),
+            ("súper", 0.3),
+            ("super", 0.3),
+            ("tan", 0.2),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "fr",
+        segmentation: Segmentation::Spaced,
+        terms: FRENCH_TERMS,
+        negators: &[
+            "ne", "pas", "jamais", "rien", "aucun", "aucune", "sans", "ni", "non",
+        ],
+        boosters: &[
+            ("très", 0.3),
+            ("tres", 0.3),
+            ("trop", 0.3),
+            ("vraiment", 0.3),
+            ("extrêmement", 0.4),
+            ("absolument", 0.4),
+            ("tellement", 0.3),
+            ("super", 0.3),
+            ("assez", 0.2),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "de",
+        segmentation: Segmentation::Spaced,
+        terms: GERMAN_TERMS,
+        negators: &[
+            "nicht", "kein", "keine", "keinen", "keiner", "nie", "niemals", "nichts",
+            "ohne", "niemand",
+        ],
+        boosters: &[
+            ("sehr", 0.3),
+            ("wirklich", 0.3),
+            ("extrem", 0.4),
+            ("total", 0.3),
+            ("absolut", 0.4),
+            ("äußerst", 0.4),
+            ("ziemlich", 0.2),
+            ("super", 0.3),
+            ("echt", 0.2),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "it",
+        segmentation: Segmentation::Spaced,
+        terms: ITALIAN_TERMS,
+        negators: &[
+            "non", "mai", "nessun", "nessuno", "nessuna", "niente", "nulla", "senza", "né",
+            "ne",
+        ],
+        boosters: &[
+            ("molto", 0.3),
+            ("troppo", 0.3),
+            ("davvero", 0.3),
+            ("estremamente", 0.4),
+            ("assolutamente", 0.4),
+            ("veramente", 0.3),
+            ("super", 0.3),
+            ("tanto", 0.2),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "pt",
+        segmentation: Segmentation::Spaced,
+        terms: PORTUGUESE_TERMS,
+        negators: &[
+            "não", "nao", "nunca", "jamais", "nada", "ninguém", "ninguem", "nenhum",
+            "nenhuma", "sem", "nem",
+        ],
+        boosters: &[
+            ("muito", 0.3),
+            ("bastante", 0.2),
+            ("demais", 0.3),
+            ("extremamente", 0.4),
+            ("totalmente", 0.3),
+            ("realmente", 0.3),
+            ("super", 0.3),
+            ("tão", 0.2),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "ar",
+        segmentation: Segmentation::Spaced,
+        terms: ARABIC_TERMS,
+        negators: &["لا", "ليس", "لم", "لن", "غير", "بدون", "ولا"],
+        boosters: &[
+            ("جدا", 0.3),
+            ("جداً", 0.3),
+            ("للغاية", 0.4),
+            ("كثيرا", 0.3),
+            ("تماما", 0.3),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "hi",
+        segmentation: Segmentation::Spaced,
+        terms: HINDI_TERMS,
+        negators: &["नहीं", "नही", "ना", "बिना", "कभी"],
+        boosters: &[
+            ("बहुत", 0.3),
+            ("काफी", 0.2),
+            ("बेहद", 0.4),
+            ("अत्यंत", 0.4),
+            ("एकदम", 0.3),
+        ],
+    },
+    PolarityLexicon {
+        language_code: "ja",
+        segmentation: Segmentation::Unspaced,
+        terms: JAPANESE_TERMS,
+        negators: &["ない", "ません", "なかった", "じゃない"],
+        boosters: &[("とても", 0.3), ("非常に", 0.4), ("本当に", 0.3), ("すごく", 0.3)],
+    },
+    PolarityLexicon {
+        language_code: "ko",
+        segmentation: Segmentation::Unspaced,
+        terms: KOREAN_TERMS,
+        negators: &["않", "안 ", "없", "못"],
+        boosters: &[("매우", 0.3), ("정말", 0.3), ("너무", 0.3), ("아주", 0.3)],
+    },
+    PolarityLexicon {
+        language_code: "zh",
+        segmentation: Segmentation::Unspaced,
+        terms: CHINESE_SIMPLIFIED_TERMS,
+        negators: &["不", "没", "别", "无", "未"],
+        boosters: &[("很", 0.2), ("非常", 0.4), ("太", 0.3), ("特别", 0.3), ("超", 0.3)],
+    },
+    PolarityLexicon {
+        language_code: "zh-TW",
+        segmentation: Segmentation::Unspaced,
+        terms: CHINESE_TRADITIONAL_TERMS,
+        negators: &["不", "沒", "別", "無", "未"],
+        boosters: &[("很", 0.2), ("非常", 0.4), ("太", 0.3), ("特別", 0.3), ("超", 0.3)],
+    },
+];
+
+/// The Spanish polarity-bearing forms, positive first.
+const SPANISH_TERMS: &[(&str, f64)] = &[
+    ("encant*", 3.2),
+    ("ador*", 3.0),
+    ("excelent*", 2.9),
+    ("maravillos*", 3.0),
+    ("fantástic*", 2.9),
+    ("fantastic*", 2.9),
+    ("estupend*", 2.6),
+    ("espectacular*", 2.6),
+    ("extraordinari*", 2.5),
+    ("magnífic*", 2.5),
+    ("magnific*", 2.5),
+    ("fabulos*", 2.6),
+    ("fenomenal", 2.5),
+    ("genial", 2.6),
+    ("perfect*", 2.6),
+    ("delicios*", 2.4),
+    ("exquisit*", 2.3),
+    ("encantador*", 2.4),
+    ("brillant*", 2.2),
+    ("hermos*", 2.2),
+    ("precios*", 2.0),
+    ("felic*", 2.4),
+    ("feliz", 2.7),
+    ("alegr*", 2.1),
+    ("impresionant*", 2.1),
+    ("increíbl*", 2.0),
+    ("increibl*", 2.0),
+    ("satisfech*", 2.0),
+    ("éxito", 2.0),
+    ("exito", 2.0),
+    ("buen*", 1.9),
+    ("bonit*", 1.9),
+    ("contento", 1.8),
+    ("contenta", 1.8),
+    ("contentos", 1.8),
+    ("contentas", 1.8),
+    ("agradabl*", 1.8),
+    ("agradec*", 1.9),
+    ("amabl*", 1.8),
+    ("recomiend*", 1.8),
+    ("recomend*", 1.5),
+    ("ideal", 1.8),
+    ("mejor*", 1.7),
+    ("gracias", 1.6),
+    ("positiv*", 1.6),
+    ("eficient*", 1.6),
+    ("sorprendent*", 1.6),
+    ("útil", 1.6),
+    ("util", 1.6),
+    ("útiles", 1.6),
+    ("gusta", 1.5),
+    ("gustó", 1.5),
+    ("gusto", 1.5),
+    ("destacad*", 1.5),
+    ("cómod*", 1.5),
+    ("comod*", 1.5),
+    ("tranquil*", 1.3),
+    ("rápid*", 1.0),
+    ("rapid*", 1.0),
+    ("limpi*", 1.0),
+    ("barat*", 0.9),
+    ("odi*", -3.0),
+    ("horribl*", -2.9),
+    ("asquerós*", -2.8),
+    ("asqueros*", -2.8),
+    ("desastr*", -2.8),
+    ("terribl*", -2.8),
+    ("pésim*", -2.8),
+    ("pesim*", -2.8),
+    ("malísim*", -2.8),
+    ("malisim*", -2.8),
+    ("fatal", -2.6),
+    ("estaf*", -2.6),
+    ("decepcion*", -2.4),
+    ("fracas*", -2.4),
+    ("peor", -2.2),
+    ("enojad*", -2.2),
+    ("enfadad*", -2.2),
+    ("engañ*", -2.2),
+    ("robo", -2.2),
+    ("trist*", -2.1),
+    ("mal", -2.0),
+    ("malo", -2.0),
+    ("mala", -2.0),
+    ("malos", -2.0),
+    ("malas", -2.0),
+    ("grosero", -2.0),
+    ("groser*", -2.0),
+    ("maleducad*", -2.0),
+    ("peligros*", -2.0),
+    ("sufr*", -2.0),
+    ("defectuos*", -2.0),
+    ("insatisfech*", -2.0),
+    ("inútil", -1.9),
+    ("inutil", -1.9),
+    ("roto", -1.8),
+    ("rota", -1.8),
+    ("molest*", -1.8),
+    ("feo", -1.8),
+    ("fea", -1.8),
+    ("miedo", -1.8),
+    ("daño", -1.8),
+    ("aburrid*", -1.7),
+    ("quej*", -1.6),
+    ("fall*", -1.6),
+    ("rompi*", -1.6),
+    ("negativ*", -1.6),
+    ("duele", -1.6),
+    ("incómod*", -1.5),
+    ("incomod*", -1.5),
+    ("sucio", -1.5),
+    ("sucia", -1.5),
+    ("problema", -1.4),
+    ("problemas", -1.4),
+    ("imposible", -1.4),
+    ("retras*", -1.4),
+    ("pobre", -1.4),
+    ("error", -1.3),
+    ("errores", -1.3),
+    ("preocup*", -1.3),
+    ("lento", -1.2),
+    ("lenta", -1.2),
+    ("cancel*", -1.0),
+    ("caro", -1.0),
+];
+
+/// The French polarity-bearing forms, positive first.
+const FRENCH_TERMS: &[(&str, f64)] = &[
+    ("ador*", 3.0),
+    ("aime", 2.4),
+    ("aimé*", 2.4),
+    ("excellent*", 2.9),
+    ("merveilleu*", 3.0),
+    ("fantastique*", 2.8),
+    ("formidable*", 2.5),
+    ("extraordinaire*", 2.5),
+    ("magnifique*", 2.5),
+    ("génial*", 2.6),
+    ("genial*", 2.6),
+    ("parfait*", 2.6),
+    ("superbe*", 2.4),
+    ("délicieu*", 2.4),
+    ("ravi", 2.4),
+    ("ravie", 2.4),
+    ("heureu*", 2.7),
+    ("réussi*", 2.0),
+    ("succès", 2.0),
+    ("plaisir", 2.1),
+    ("impressionnant*", 2.0),
+    ("incroyable*", 2.0),
+    ("satisfait*", 2.0),
+    ("beau", 2.0),
+    ("belle", 2.0),
+    ("bon", 1.9),
+    ("bonne", 1.9),
+    ("bons", 1.9),
+    ("bonnes", 1.9),
+    ("meilleur*", 1.9),
+    ("joli*", 1.8),
+    ("agréable*", 1.8),
+    ("sympa*", 1.8),
+    ("gentil*", 1.8),
+    ("chouette", 1.8),
+    ("content", 1.8),
+    ("contente", 1.8),
+    ("recommande*", 1.8),
+    ("mieux", 1.7),
+    ("bien", 1.6),
+    ("merci", 1.6),
+    ("positif", 1.6),
+    ("positive", 1.6),
+    ("efficace*", 1.6),
+    ("utile*", 1.6),
+    ("confortable*", 1.5),
+    ("rapide*", 1.0),
+    ("propre", 1.0),
+    ("déteste*", -3.0),
+    ("deteste*", -3.0),
+    ("hais", -3.0),
+    ("haine", -3.0),
+    ("horrible*", -2.9),
+    ("dégoûtant*", -2.8),
+    ("degoutant*", -2.8),
+    ("catastroph*", -2.8),
+    ("désastre*", -2.8),
+    ("affreu*", -2.6),
+    ("arnaque*", -2.6),
+    ("terrible*", -2.5),
+    ("mauvais*", -2.4),
+    ("déçu*", -2.4),
+    ("decu*", -2.4),
+    ("déception", -2.4),
+    ("échec", -2.4),
+    ("pire", -2.2),
+    ("vol", -2.2),
+    ("fâché*", -2.2),
+    ("triste*", -2.1),
+    ("énervé*", -2.0),
+    ("nul", -2.0),
+    ("nulle", -2.0),
+    ("impoli*", -2.0),
+    ("dangereu*", -2.0),
+    ("souffr*", -2.0),
+    ("inutile*", -1.9),
+    ("médiocre*", -1.8),
+    ("mediocre*", -1.8),
+    ("cassé*", -1.8),
+    ("casse*", -1.8),
+    ("laid*", -1.8),
+    ("peur", -1.8),
+    ("ennuyeu*", -1.7),
+    ("panne*", -1.6),
+    ("plainte*", -1.6),
+    ("douleur", -1.6),
+    ("négatif", -1.6),
+    ("négative", -1.6),
+    ("inconfortable*", -1.5),
+    ("sale*", -1.5),
+    ("problème*", -1.4),
+    ("probleme*", -1.4),
+    ("impossible", -1.4),
+    ("retard*", -1.4),
+    ("pauvre*", -1.4),
+    ("erreur*", -1.3),
+    ("lent", -1.2),
+    ("lente", -1.2),
+    ("annul*", -1.0),
+];
+
+/// The German polarity-bearing forms, positive first.
+const GERMAN_TERMS: &[(&str, f64)] = &[
+    ("liebe", 3.0),
+    ("liebt", 3.0),
+    ("wunderbar*", 3.0),
+    ("großartig*", 2.8),
+    ("grossartig*", 2.8),
+    ("fantastisch*", 2.8),
+    ("hervorragend*", 2.7),
+    ("ausgezeichnet*", 2.7),
+    ("glücklich*", 2.7),
+    ("glucklich*", 2.7),
+    ("toll*", 2.6),
+    ("perfekt*", 2.6),
+    ("begeistert*", 2.6),
+    ("spitze", 2.2),
+    ("klasse", 2.2),
+    ("lecker*", 2.2),
+    ("schön*", 2.2),
+    ("schoen*", 2.2),
+    ("freude", 2.4),
+    ("zufrieden*", 2.0),
+    ("erfolg*", 2.0),
+    ("gelungen", 2.0),
+    ("empfehlenswert", 2.0),
+    ("gut", 1.9),
+    ("gute", 1.9),
+    ("guter", 1.9),
+    ("gutes", 1.9),
+    ("guten", 1.9),
+    ("super", 1.9),
+    ("hübsch*", 1.8),
+    ("hubsch*", 1.8),
+    ("freundlich*", 1.8),
+    ("angenehm*", 1.8),
+    ("empfehl*", 1.8),
+    ("besser*", 1.7),
+    ("beste*", 2.0),
+    ("danke", 1.6),
+    ("positiv*", 1.6),
+    ("effizient*", 1.6),
+    ("nützlich*", 1.6),
+    ("nutzlich*", 1.6),
+    ("unglaublich*", 1.6),
+    ("bequem*", 1.5),
+    ("schnell*", 1.0),
+    ("sauber*", 1.0),
+    ("hasse", -3.0),
+    ("hass", -3.0),
+    ("schrecklich*", -2.9),
+    ("ekelhaft*", -2.8),
+    ("furchtbar*", -2.8),
+    ("katastroph*", -2.8),
+    ("desaster", -2.8),
+    ("miserabel*", -2.6),
+    ("betrug", -2.6),
+    ("schlimmer", -2.6),
+    ("schlecht*", -2.4),
+    ("schlimm", -2.4),
+    ("enttäusch*", -2.4),
+    ("enttausch*", -2.4),
+    ("mies*", -2.2),
+    ("wütend*", -2.2),
+    ("wutend*", -2.2),
+    ("diebstahl", -2.2),
+    ("traurig*", -2.1),
+    ("verärgert*", -2.0),
+    ("verargert*", -2.0),
+    ("unhöflich*", -2.0),
+    ("gefährlich*", -2.0),
+    ("gefahrlich*", -2.0),
+    ("leiden", -2.0),
+    ("unzufrieden*", -2.0),
+    ("nutzlos*", -1.9),
+    ("kaputt*", -1.8),
+    ("hässlich*", -1.8),
+    ("hasslich*", -1.8),
+    ("angst", -1.8),
+    ("langweilig*", -1.7),
+    ("beschwerde*", -1.6),
+    ("schmerz*", -1.6),
+    ("negativ*", -1.6),
+    ("unbequem*", -1.5),
+    ("schmutzig*", -1.5),
+    ("problem*", -1.4),
+    ("unmöglich*", -1.4),
+    ("unmoglich*", -1.4),
+    ("verspätung*", -1.4),
+    ("verspatung*", -1.4),
+    ("fehler*", -1.3),
+    ("langsam*", -1.2),
+    ("schade", -1.2),
+    ("teuer", -0.8),
+];
+
+/// The Italian polarity-bearing forms, positive first.
+const ITALIAN_TERMS: &[(&str, f64)] = &[
+    ("amo", 3.0),
+    ("adoro", 3.0),
+    ("meraviglios*", 3.0),
+    ("eccellent*", 2.9),
+    ("fantastic*", 2.8),
+    ("ottim*", 2.6),
+    ("perfett*", 2.6),
+    ("magnific*", 2.5),
+    ("straordinari*", 2.5),
+    ("splendid*", 2.4),
+    ("delizios*", 2.4),
+    ("felice", 2.7),
+    ("felici", 2.7),
+    ("gioia", 2.4),
+    ("bell*", 2.0),
+    ("success*", 2.0),
+    ("soddisfatt*", 2.0),
+    ("incredibil*", 2.0),
+    ("buon*", 1.9),
+    ("miglior*", 1.9),
+    ("content*", 1.8),
+    ("piacevol*", 1.8),
+    ("gentil*", 1.8),
+    ("simpatic*", 1.8),
+    ("consigli*", 1.8),
+    ("meglio", 1.7),
+    ("bene", 1.6),
+    ("grazie", 1.6),
+    ("positiv*", 1.6),
+    ("efficient*", 1.6),
+    ("utile", 1.6),
+    ("utili", 1.6),
+    ("comod*", 1.5),
+    ("veloce", 1.0),
+    ("rapid*", 1.0),
+    ("pulit*", 1.0),
+    ("odio", -3.0),
+    ("orribil*", -2.9),
+    ("disgustos*", -2.8),
+    ("pessim*", -2.8),
+    ("disastr*", -2.8),
+    ("truffa", -2.6),
+    ("terribil*", -2.6),
+    ("delus*", -2.4),
+    ("delusione", -2.4),
+    ("fallimento", -2.4),
+    ("cattiv*", -2.2),
+    ("arrabbiat*", -2.2),
+    ("peggio*", -2.2),
+    ("furto", -2.2),
+    ("trist*", -2.1),
+    ("male", -2.0),
+    ("maleducat*", -2.0),
+    ("pericolos*", -2.0),
+    ("soffr*", -2.0),
+    ("insoddisfatt*", -2.0),
+    ("inutil*", -1.9),
+    ("rott*", -1.8),
+    ("brutt*", -1.8),
+    ("paura", -1.8),
+    ("noios*", -1.7),
+    ("guast*", -1.6),
+    ("reclam*", -1.6),
+    ("dolore", -1.6),
+    ("negativ*", -1.6),
+    ("scomod*", -1.5),
+    ("sporc*", -1.5),
+    ("problem*", -1.4),
+    ("impossibil*", -1.4),
+    ("ritard*", -1.4),
+    ("scars*", -1.4),
+    ("errore", -1.3),
+    ("errori", -1.3),
+    ("lent*", -1.2),
+];
+
+/// The Portuguese polarity-bearing forms, positive first.
+const PORTUGUESE_TERMS: &[(&str, f64)] = &[
+    ("amo", 3.0),
+    ("ador*", 3.0),
+    ("maravilhos*", 3.0),
+    ("excelente*", 2.9),
+    ("fantástic*", 2.8),
+    ("fantastic*", 2.8),
+    ("espetacular*", 2.6),
+    ("sensacional", 2.6),
+    ("ótim*", 2.6),
+    ("otim*", 2.6),
+    ("perfeit*", 2.6),
+    ("delicios*", 2.4),
+    ("feliz", 2.7),
+    ("felizes", 2.7),
+    ("alegr*", 2.1),
+    ("lind*", 2.0),
+    ("sucesso", 2.0),
+    ("satisfeit*", 2.0),
+    ("incrível", 2.0),
+    ("incrivel", 2.0),
+    ("bom", 1.9),
+    ("boa", 1.9),
+    ("bons", 1.9),
+    ("boas", 1.9),
+    ("bonit*", 1.9),
+    ("melhor*", 1.9),
+    ("content*", 1.8),
+    ("agradável", 1.8),
+    ("agradavel", 1.8),
+    ("gentil", 1.8),
+    ("simpátic*", 1.8),
+    ("simpatic*", 1.8),
+    ("recomend*", 1.8),
+    ("bem", 1.6),
+    ("obrigad*", 1.6),
+    ("legal", 1.6),
+    ("positiv*", 1.6),
+    ("eficient*", 1.6),
+    ("útil", 1.6),
+    ("util", 1.6),
+    ("confortável", 1.5),
+    ("confortavel", 1.5),
+    ("rápid*", 1.0),
+    ("rapid*", 1.0),
+    ("limp*", 1.0),
+    ("odi*", -3.0),
+    ("horrível", -2.9),
+    ("horrivel", -2.9),
+    ("nojent*", -2.8),
+    ("péssim*", -2.8),
+    ("pessim*", -2.8),
+    ("desastr*", -2.8),
+    ("terrível", -2.6),
+    ("terrivel", -2.6),
+    ("golpe", -2.2),
+    ("decepcion*", -2.4),
+    ("decepção", -2.4),
+    ("decepcao", -2.4),
+    ("fracass*", -2.4),
+    ("ruim", -2.2),
+    ("pior", -2.2),
+    ("irritad*", -2.2),
+    ("roubo", -2.2),
+    ("trist*", -2.1),
+    ("mal", -2.0),
+    ("grosseir*", -2.0),
+    ("perigos*", -2.0),
+    ("sofr*", -2.0),
+    ("insatisfeit*", -2.0),
+    ("inútil", -1.9),
+    ("inutil", -1.9),
+    ("quebrad*", -1.8),
+    ("feio", -1.8),
+    ("feia", -1.8),
+    ("medo", -1.8),
+    ("chato", -1.7),
+    ("chata", -1.7),
+    ("falha*", -1.6),
+    ("dor", -1.6),
+    ("negativ*", -1.6),
+    ("suj*", -1.5),
+    ("problema*", -1.4),
+    ("impossível", -1.4),
+    ("impossivel", -1.4),
+    ("atras*", -1.4),
+    ("pobre", -1.4),
+    ("erro", -1.3),
+    ("erros", -1.3),
+    ("lent*", -1.2),
+];
+
+/// The Arabic polarity-bearing forms, positive first.
+const ARABIC_TERMS: &[(&str, f64)] = &[
+    ("أحب", 3.0),
+    ("حب", 2.5),
+    ("رائع", 3.0),
+    ("ممتاز", 2.7),
+    ("مذهل", 2.6),
+    ("عظيم", 2.6),
+    ("مثالي", 2.6),
+    ("سعيد", 2.7),
+    ("سعادة", 2.5),
+    ("جميل", 2.2),
+    ("لذيذ", 2.2),
+    ("نجاح", 2.0),
+    ("ممتع", 1.9),
+    ("جيد", 1.9),
+    ("أفضل", 1.9),
+    ("رضا", 1.8),
+    ("أنصح", 1.8),
+    ("محترم", 1.8),
+    ("لطيف", 1.8),
+    ("شكرا", 1.6),
+    ("مفيد", 1.6),
+    ("إيجابي", 1.6),
+    ("مريح", 1.5),
+    ("سريع", 1.0),
+    ("نظيف", 1.0),
+    ("أكره", -3.0),
+    ("كراهية", -3.0),
+    ("فظيع", -2.9),
+    ("كارثة", -2.8),
+    ("رهيب", -2.5),
+    ("سيء", -2.4),
+    ("سيئ", -2.4),
+    ("سيئة", -2.4),
+    ("فظيعة", -2.9),
+    ("فاشل", -2.4),
+    ("فشل", -2.4),
+    ("مخيب", -2.4),
+    ("غاضب", -2.2),
+    ("غبي", -2.2),
+    ("حزين", -2.1),
+    ("خطير", -2.0),
+    ("مزعج", -1.8),
+    ("مؤسف", -1.8),
+    ("خوف", -1.8),
+    ("ألم", -1.6),
+    ("سلبي", -1.6),
+    ("قذر", -1.5),
+    ("مكسور", -1.8),
+    ("مشكلة", -1.4),
+    ("مستحيل", -1.4),
+    ("خطأ", -1.3),
+    ("بطيء", -1.2),
+];
+
+/// The Hindi polarity-bearing forms, positive first.
+const HINDI_TERMS: &[(&str, f64)] = &[
+    ("प्यार", 3.0),
+    ("शानदार", 2.8),
+    ("उत्कृष्ट", 2.7),
+    ("खुश", 2.7),
+    ("खुशी", 2.5),
+    ("बेहतरीन", 2.4),
+    ("जबरदस्त", 2.4),
+    ("सुंदर", 2.2),
+    ("स्वादिष्ट", 2.2),
+    ("सफल", 2.0),
+    ("सफलता", 2.0),
+    ("संतुष्ट", 2.0),
+    ("अच्छा", 1.9),
+    ("अच्छी", 1.9),
+    ("अच्छे", 1.9),
+    ("मजेदार", 1.9),
+    ("पसंद", 1.8),
+    ("बेहतर", 1.7),
+    ("धन्यवाद", 1.6),
+    ("उपयोगी", 1.6),
+    ("शुभ", 1.6),
+    ("सही", 1.2),
+    ("तेज़", 1.0),
+    ("साफ", 1.0),
+    ("नफरत", -3.0),
+    ("भयानक", -2.9),
+    ("घटिया", -2.6),
+    ("बुरा", -2.4),
+    ("बुरी", -2.4),
+    ("खराब", -2.4),
+    ("असफल", -2.4),
+    ("निराश", -2.4),
+    ("गुस्सा", -2.2),
+    ("दुखी", -2.1),
+    ("खतरनाक", -2.0),
+    ("बेकार", -1.9),
+    ("टूटा", -1.8),
+    ("डर", -1.8),
+    ("बोरिंग", -1.7),
+    ("दर्द", -1.6),
+    ("नकारात्मक", -1.6),
+    ("गंदा", -1.5),
+    ("समस्या", -1.4),
+    ("असंभव", -1.4),
+    ("गलती", -1.3),
+    ("धीमा", -1.2),
+];
+
+/// The Japanese polarity-bearing forms, positive first.
+const JAPANESE_TERMS: &[(&str, f64)] = &[
+    ("大好き", 3.0),
+    ("素晴らしい", 3.0),
+    ("最高", 2.8),
+    ("幸せ", 2.7),
+    ("嬉しい", 2.7),
+    ("素敵", 2.4),
+    ("楽しい", 2.4),
+    ("美味しい", 2.4),
+    ("おいしい", 2.4),
+    ("好き", 2.4),
+    ("美しい", 2.2),
+    ("優秀", 2.6),
+    ("完璧", 2.6),
+    ("満足", 2.0),
+    ("成功", 2.0),
+    ("良い", 1.9),
+    ("いい", 1.6),
+    ("感謝", 1.8),
+    ("快適", 1.8),
+    ("親切", 1.8),
+    ("おすすめ", 1.8),
+    ("ありがとう", 1.6),
+    ("便利", 1.6),
+    ("安心", 1.6),
+    ("速い", 1.0),
+    ("清潔", 1.0),
+    ("大嫌い", -3.0),
+    ("最悪", -2.9),
+    ("ひどい", -2.6),
+    ("嫌い", -2.6),
+    ("詐欺", -2.6),
+    ("失敗", -2.4),
+    ("がっかり", -2.4),
+    ("悪い", -2.4),
+    ("怒り", -2.2),
+    ("悲しい", -2.1),
+    ("残念", -2.0),
+    ("危険", -2.0),
+    ("不満", -2.0),
+    ("苦しい", -2.0),
+    ("壊れ", -1.8),
+    ("怖い", -1.8),
+    ("退屈", -1.7),
+    ("痛い", -1.6),
+    ("不便", -1.6),
+    ("汚い", -1.5),
+    ("面倒", -1.5),
+    ("問題", -1.4),
+    ("不可能", -1.4),
+    ("遅い", -1.2),
+];
+
+/// The Korean polarity-bearing forms, positive first.
+const KOREAN_TERMS: &[(&str, f64)] = &[
+    ("사랑", 3.0),
+    ("최고", 2.8),
+    ("훌륭", 2.7),
+    ("행복", 2.7),
+    ("완벽", 2.6),
+    ("멋지", 2.4),
+    ("즐겁", 2.4),
+    ("기쁘", 2.4),
+    ("맛있", 2.4),
+    ("아름답", 2.2),
+    ("좋아", 2.2),
+    ("좋은", 2.0),
+    ("좋다", 2.0),
+    ("만족", 2.0),
+    ("성공", 2.0),
+    ("재미있", 2.0),
+    ("감사", 1.8),
+    ("추천", 1.8),
+    ("친절", 1.8),
+    ("고맙", 1.6),
+    ("편리", 1.6),
+    ("빠르", 1.0),
+    ("깨끗", 1.0),
+    ("최악", -2.9),
+    ("끔찍", -2.8),
+    ("사기", -2.6),
+    ("나쁘", -2.4),
+    ("실패", -2.4),
+    ("실망", -2.4),
+    ("싫어", -2.4),
+    ("화나", -2.2),
+    ("슬프", -2.1),
+    ("위험", -2.0),
+    ("불만", -2.0),
+    ("고장", -1.8),
+    ("무섭", -1.8),
+    ("지루", -1.7),
+    ("아프", -1.6),
+    ("불편", -1.6),
+    ("힘들", -1.6),
+    ("더럽", -1.5),
+    ("문제", -1.4),
+    ("불가능", -1.4),
+    ("느리", -1.2),
+];
+
+/// The simplified-Chinese polarity-bearing forms, positive first.
+const CHINESE_SIMPLIFIED_TERMS: &[(&str, f64)] = &[
+    ("爱", 2.8),
+    ("喜欢", 2.4),
+    ("幸福", 2.7),
+    ("优秀", 2.6),
+    ("完美", 2.6),
+    ("太棒了", 2.8),
+    ("棒", 2.4),
+    ("精彩", 2.4),
+    ("高兴", 2.4),
+    ("开心", 2.4),
+    ("好吃", 2.4),
+    ("美丽", 2.2),
+    ("漂亮", 2.0),
+    ("满意", 2.0),
+    ("成功", 2.0),
+    ("优质", 2.0),
+    ("很好", 2.0),
+    ("不错", 1.8),
+    ("感谢", 1.8),
+    ("舒服", 1.8),
+    ("友好", 1.8),
+    ("推荐", 1.8),
+    ("谢谢", 1.6),
+    ("方便", 1.6),
+    ("好", 1.5),
+    ("安全", 1.2),
+    ("快", 1.0),
+    ("干净", 1.0),
+    ("恨", -3.0),
+    ("恶心", -2.8),
+    ("糟糕", -2.8),
+    ("讨厌", -2.6),
+    ("骗", -2.6),
+    ("失败", -2.4),
+    ("失望", -2.4),
+    ("坏", -2.4),
+    ("垃圾", -2.4),
+    ("生气", -2.2),
+    ("难过", -2.1),
+    ("差", -2.0),
+    ("危险", -2.0),
+    ("不满", -2.0),
+    ("痛苦", -2.0),
+    ("坏掉", -1.8),
+    ("害怕", -1.8),
+    ("无聊", -1.7),
+    ("疼", -1.6),
+    ("不方便", -1.6),
+    ("脏", -1.5),
+    ("问题", -1.4),
+    ("不可能", -1.4),
+    ("错误", -1.3),
+    ("慢", -1.2),
+];
+
+/// The traditional-Chinese polarity-bearing forms, positive first.
+const CHINESE_TRADITIONAL_TERMS: &[(&str, f64)] = &[
+    ("愛", 2.8),
+    ("喜歡", 2.4),
+    ("幸福", 2.7),
+    ("優秀", 2.6),
+    ("完美", 2.6),
+    ("太棒了", 2.8),
+    ("棒", 2.4),
+    ("精彩", 2.4),
+    ("高興", 2.4),
+    ("開心", 2.4),
+    ("好吃", 2.4),
+    ("美麗", 2.2),
+    ("漂亮", 2.0),
+    ("滿意", 2.0),
+    ("成功", 2.0),
+    ("優質", 2.0),
+    ("很好", 2.0),
+    ("不錯", 1.8),
+    ("感謝", 1.8),
+    ("舒服", 1.8),
+    ("友好", 1.8),
+    ("推薦", 1.8),
+    ("謝謝", 1.6),
+    ("方便", 1.6),
+    ("好", 1.5),
+    ("安全", 1.2),
+    ("快", 1.0),
+    ("乾淨", 1.0),
+    ("恨", -3.0),
+    ("噁心", -2.8),
+    ("糟糕", -2.8),
+    ("討厭", -2.6),
+    ("騙", -2.6),
+    ("失敗", -2.4),
+    ("失望", -2.4),
+    ("壞", -2.4),
+    ("垃圾", -2.4),
+    ("生氣", -2.2),
+    ("難過", -2.1),
+    ("差", -2.0),
+    ("危險", -2.0),
+    ("不滿", -2.0),
+    ("痛苦", -2.0),
+    ("壞掉", -1.8),
+    ("害怕", -1.8),
+    ("無聊", -1.7),
+    ("疼", -1.6),
+    ("不方便", -1.6),
+    ("髒", -1.5),
+    ("問題", -1.4),
+    ("不可能", -1.4),
+    ("錯誤", -1.3),
+    ("慢", -1.2),
+];
 
 /// The modelled enum values of `SentimentType` paired with their confidences, in
 /// the order a tie between two equal confidences resolves: a signed verdict wins
@@ -285,10 +1577,15 @@ fn open_reading_words(text: &str, share: f64) -> f64 {
 /// document must all be scored on the same scale, so there is one scorer rather
 /// than three. Batching changes how many documents one request carries, never how a
 /// document is scored, so a batch answers the same verdict for the same text.
-pub(crate) fn score_sentiment(text: &str) -> (String, SentimentScore) {
-    let scores = analyzer().polarity_scores(text);
-    let positive_share = scores.get("pos").copied().unwrap_or_default();
-    let negative_share = scores.get("neg").copied().unwrap_or_default();
+///
+/// `language_code` is the modelled `LanguageCode` of the document, which decides
+/// which engine reads it ([`read_polarity`]); the calibration below is the same for
+/// every language, so two documents are reported on one scale whichever engine read
+/// them.
+pub(crate) fn score_sentiment(text: &str, language_code: &str) -> (String, SentimentScore) {
+    let reading = read_polarity(text, language_code);
+    let positive_share = reading.positive;
+    let negative_share = reading.negative;
 
     // Step 1: the confidence that the document carries sentiment at all, from the
     // share of its weight that carries a polarity against the neutral material
@@ -339,7 +1636,7 @@ pub(crate) fn score_sentiment(text: &str) -> (String, SentimentScore) {
     // `NEUTRAL` is open over the words it read as polar, which it could have over-read;
     // `MIXED` is open only where BOTH signed readings are, so it keeps the room the two
     // of them keep multiplied, which is strictly below either.
-    let lean = ((scores.get("compound").copied().unwrap_or_default() + 1.0) / 2.0).clamp(0.0, 1.0);
+    let lean = ((reading.compound + 1.0) / 2.0).clamp(0.0, 1.0);
     let unread = open_reading_words(text, (1.0 - signed).clamp(0.0, 1.0));
     let mut confidences = [positive, negative, neutral, mixed];
     let open_positive = MISSED_READING_WEIGHT * unread * lean;
@@ -482,23 +1779,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Membership of the `LanguageCode` enum is enforced at the boundary; whether
-        // this emulator's sentiment engine can read that language is not.
-        if !ANALYSABLE_LANGUAGES.contains(&input.language_code.as_str()) {
-            return Err(DetectSentimentErrorModeled::UnsupportedLanguageException(
-                UnsupportedLanguageException {
-                    message: Some(format!(
-                        "This emulator's sentiment engine cannot process the language \
-                         '{}'. Supported languages: {}.",
-                        input.language_code,
-                        ANALYSABLE_LANGUAGES.join(", ")
-                    )),
-                },
-            )
-            .into());
-        }
-
-        let (sentiment, sentiment_score) = score_sentiment(&input.text);
+        // Every value the modelled `LanguageCode` enum names is a language
+        // Comprehend infers sentiment in, and each one has an engine here
+        // ([`read_polarity`]), so the language of an accepted request is never a
+        // refusal: membership of the enum is enforced at the boundary, from the
+        // model, and that is the whole of what this operation refuses a language for.
+        let (sentiment, sentiment_score) = score_sentiment(&input.text, &input.language_code);
         Ok(DetectSentimentOutput {
             sentiment: Some(sentiment),
             sentiment_score: Some(sentiment_score),

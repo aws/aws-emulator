@@ -18,7 +18,7 @@ use service_com_amazonaws_comprehend_comprehend_20171127::ops::types::{
     LANGUAGE_CODE_VALUES, SENTIMENT_TYPE_VALUES,
 };
 
-use crate::comprehend_client::{error_code, Comprehend};
+use crate::comprehend_client::Comprehend;
 
 /// Every modelled `LanguageCode` paired with a document written in it.
 ///
@@ -408,8 +408,13 @@ async fn detect_sentiment_is_deterministic() {
     );
 }
 
+/// Every value of the modelled `LanguageCode` enum is a language Comprehend infers
+/// sentiment in, so none of them is refused. The per-language verdicts, and the
+/// refusal of a value outside the enum, are asserted over the whole enum by
+/// `sentiment_languages.rs`; this row keeps the acceptance pinned beside the
+/// English suites above.
 #[tokio::test]
-async fn detect_sentiment_refuses_a_language_the_engine_cannot_read() {
+async fn detect_sentiment_analyses_every_modelled_language() {
     let comprehend = Comprehend::new();
 
     for code in LANGUAGE_CODE_VALUES {
@@ -420,22 +425,15 @@ async fn detect_sentiment_refuses_a_language_the_engine_cannot_read() {
             )
             .await;
 
-        if *code == "en" {
-            assert_eq!(
-                status, 200,
-                "case {code:?}: the engine reads English, expected 200, got {status}: {body}"
-            );
-        } else {
-            assert_eq!(
-                status, 400,
-                "case {code:?}: expected 400, got {status}: {body}"
-            );
-            assert_eq!(
-                error_code(&body),
-                "UnsupportedLanguageException",
-                "case {code:?}: expected UnsupportedLanguageException, got {body}"
-            );
-        }
+        assert_eq!(
+            status, 200,
+            "case {code:?}: a modelled LanguageCode is analysed, expected 200, got \
+             {status}: {body}"
+        );
+        assert!(
+            body["Sentiment"].is_string() && body["SentimentScore"].is_object(),
+            "case {code:?}: expected a Sentiment and a SentimentScore, got {body}"
+        );
     }
 }
 

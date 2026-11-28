@@ -133,9 +133,10 @@ const FAMILY: JobFamily = JobFamily::SentimentDetection;
 ///
 /// Scored by `super::detect_sentiment::score_sentiment`, the ONE sentiment scorer
 /// this service has, so a document analysed by this job gets the same verdict
-/// `DetectSentiment` gives it.
-fn output_entry(document: &Document<'_>) -> ::serde_json::Value {
-    let (sentiment, score) = super::detect_sentiment::score_sentiment(document.text);
+/// `DetectSentiment` gives it — read in the job's own `LanguageCode`, which covers
+/// every document of the run ("All documents must be in the same language").
+fn output_entry(document: &Document<'_>, language_code: &str) -> ::serde_json::Value {
+    let (sentiment, score) = super::detect_sentiment::score_sentiment(document.text, language_code);
     let mut entry = ::serde_json::json!({
         "File": document.file,
         "Sentiment": sentiment,
@@ -355,7 +356,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &job_id,
             &input.input_data_config,
             &input.output_data_config,
-            output_entry,
+            |document| output_entry(document, &input.language_code),
         )
         .await;
         // The outcome is RECORDED, not revealed: the clock owes the terminal status

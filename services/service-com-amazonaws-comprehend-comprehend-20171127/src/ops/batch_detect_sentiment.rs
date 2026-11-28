@@ -95,10 +95,10 @@
 use super::types::*;
 
 // Batching changes how many documents one request carries, never how a document is
-// scored or how large it may be: the per-document inference and the set of languages
-// the engine has a lexicon for live with `DetectSentiment`, and the per-document byte
-// quota lives with the state module, so the two operations cannot drift apart.
-use super::detect_sentiment::{score_sentiment, ANALYSABLE_LANGUAGES};
+// scored or how large it may be: the per-document inference, and the per-language
+// engine behind it, lives with `DetectSentiment`, and the per-document byte quota
+// lives with the state module, so the two operations cannot drift apart.
+use super::detect_sentiment::score_sentiment;
 
 /// The most documents one batch may carry: the ONE ceiling the whole `BatchDetect*`
 /// family shares, [`crate::state::MAX_BATCH_DOCUMENTS`], documented twice in this
@@ -234,25 +234,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Membership of the `LanguageCode` enum is enforced at the boundary; whether
-        // this emulator's sentiment engine can read that language is not. One
-        // `LanguageCode` covers the whole batch ("All documents must be in the same
-        // language"), so a language the engine has no lexicon for refuses the call
-        // rather than failing each document in turn.
-        if !ANALYSABLE_LANGUAGES.contains(&input.language_code.as_str()) {
-            return Err(BatchDetectSentimentErrorModeled::UnsupportedLanguageException(
-                UnsupportedLanguageException {
-                    message: Some(format!(
-                        "This emulator's sentiment engine cannot process the language \
-                         '{}'. Supported languages: {}.",
-                        input.language_code,
-                        ANALYSABLE_LANGUAGES.join(", ")
-                    )),
-                },
-            )
-            .into());
-        }
-
+        // Every value the modelled `LanguageCode` enum names is a language
+        // Comprehend infers sentiment in, and each one has an engine behind
+        // `score_sentiment`, so the language of an accepted request is never a
+        // refusal: membership of the enum is enforced at the boundary, from the
+        // model. One `LanguageCode` covers the whole batch ("All documents must be in
+        // the same language"), so every document is read in that language.
+        //
         // Every precondition holds, so the whole batch is analysed: `ResultList` is
         // built in input order, so it is "sorted in ascending order by the Index
         // field" and every entry's `Index` is its document's own zero-based position
@@ -262,7 +250,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .iter()
             .enumerate()
             .map(|(position, text)| {
-                let (sentiment, sentiment_score) = score_sentiment(text);
+                let (sentiment, sentiment_score) =
+                    score_sentiment(text, &input.language_code);
                 BatchDetectSentimentItemResult {
                     index: i32::try_from(position).ok(),
                     sentiment: Some(sentiment),

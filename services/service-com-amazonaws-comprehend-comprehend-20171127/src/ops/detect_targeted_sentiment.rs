@@ -1436,8 +1436,8 @@ fn descriptive_mention_index(order: &[usize], mentions: &[Mention]) -> Vec<i32> 
 
 /// Analyse `text` into the entities targeted sentiment reports for it: every mention
 /// with its offsets, its type, the confidence of the rules that placed and grouped
-/// it, and the sentiment of the clause it sits in.
-fn analyse(text: &str) -> Vec<TargetedSentimentEntity> {
+/// it, and the sentiment of the clause it sits in, read in `language_code`.
+fn analyse(text: &str, language_code: &str) -> Vec<TargetedSentimentEntity> {
     let (words, sentences) = segment(text);
     let entities = recognised_entities(text);
     let mentions = place_mentions(text, &words, &entities);
@@ -1453,7 +1453,8 @@ fn analyse(text: &str) -> Vec<TargetedSentimentEntity> {
             .map(|index| {
                 let mention = &mentions[*index];
                 let (from, to) = clause_of(text, &words, &sentences, mention.start);
-                let (sentiment, sentiment_score) = score_sentiment(&text[from..to]);
+                let (sentiment, sentiment_score) =
+                    score_sentiment(&text[from..to], language_code);
                 TargetedSentimentMention {
                     score: Some(mention.score),
                     group_score: Some(group_scores[*index]),
@@ -1597,7 +1598,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         Ok(DetectTargetedSentimentOutput {
-            entities: Some(analyse(&input.text)),
+            entities: Some(analyse(&input.text, &input.language_code)),
         })
     }
 }

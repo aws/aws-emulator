@@ -12,9 +12,11 @@
 //! a value inside the set is not refused for its language at all. The modelled
 //! `UnsupportedLanguageException` is a different condition: a language the service
 //! cannot PROCESS, which the operations whose analyser is language-bound
-//! (`DetectSentiment`, `DetectSyntax`, `DetectEntities`, `DetectToxicContent` and the
-//! `BatchDetect*` family) keep answering with and `sync_inference`, `syntax`,
-//! `entity_detection` and `toxic_content` assert.
+//! (`DetectSyntax`, `DetectEntities`, `DetectToxicContent` and their `BatchDetect*`
+//! siblings) keep answering with and `syntax`, `entity_detection` and
+//! `toxic_content` assert. Sentiment is bound to no language — Comprehend infers it
+//! in every value the enum names — so `sentiment_languages` asserts the other side
+//! of that distinction.
 //!
 //! The clause is the validator's own down to its punctuation: no
 //! `<N> validation error(s) detected: ` envelope, and no space between the quoted

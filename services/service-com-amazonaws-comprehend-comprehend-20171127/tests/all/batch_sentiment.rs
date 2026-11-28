@@ -356,8 +356,12 @@ async fn a_batch_whose_documents_all_fit_the_byte_ceiling_is_scored_whole() {
     }
 }
 
+/// Every value of the modelled `LanguageCode` enum is a language Comprehend infers
+/// sentiment in, and one `LanguageCode` covers the whole batch, so no batch is
+/// refused for its language. `sentiment_languages.rs` asserts the per-document
+/// verdicts a batch answers in each of those languages.
 #[tokio::test]
-async fn a_language_the_engine_cannot_read_is_refused_for_the_whole_batch() {
+async fn every_modelled_language_is_analysed_for_the_whole_batch() {
     let comprehend = Comprehend::new();
 
     // The catalog is the model's own `LanguageCode` enum, so every value the issue
@@ -370,22 +374,16 @@ async fn a_language_the_engine_cannot_read_is_refused_for_the_whole_batch() {
             )
             .await;
 
-        if *code == "en" {
-            assert_eq!(
-                status, 200,
-                "case {code:?}: the engine reads English, expected 200, got {status}: {body}"
-            );
-        } else {
-            assert_eq!(
-                status, 400,
-                "case {code:?}: expected 400, got {status}: {body}"
-            );
-            assert_eq!(
-                error_code(&body),
-                "UnsupportedLanguageException",
-                "case {code:?}: expected UnsupportedLanguageException, got {body}"
-            );
-        }
+        assert_eq!(
+            status, 200,
+            "case {code:?}: a modelled LanguageCode is analysed, expected 200, got \
+             {status}: {body}"
+        );
+        assert_eq!(
+            body["ResultList"].as_array().map(Vec::len),
+            Some(2),
+            "case {code:?}: expected one result per document, got {body}"
+        );
     }
 }
 

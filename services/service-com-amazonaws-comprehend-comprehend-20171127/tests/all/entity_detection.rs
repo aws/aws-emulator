@@ -391,105 +391,38 @@ async fn detect_entities_is_deterministic() {
     );
 }
 
-/// A plain-text input document in `Bytes` is "equivelent to using the Text parameter
-/// (the Entities field in the response is identical)", as the modelled `Bytes` member
-/// documents — and such a request also reports the document-extraction members, which
-/// a `Text` request does not.
+/// The analysed text comes from the `Text` member: `Bytes` carries an input document
+/// for a custom entity recognition model reached through an `EndpointArn`, so a
+/// request naming no endpoint and no `Text` carries no text at all, whatever its
+/// `Bytes` holds. Asserted over the whole table of member combinations — including
+/// each kind of `Bytes` document — by `detect_entities_text_source.rs`.
 #[tokio::test]
-async fn a_plain_text_input_document_in_bytes_reads_like_text() {
+async fn a_request_with_no_text_carries_no_document_whatever_its_bytes_hold() {
     let comprehend = Comprehend::new();
-    let text = "Jane Doe of Acme Widgets LLC visited Seattle on 2024-01-15.";
+    let encoded = base64::encode("Jane Doe of Acme Widgets LLC visited Seattle on 2024-01-15.");
 
-    let from_text = comprehend
-        .ok(
-            "DetectEntities",
-            &json!({ "Text": text, "LanguageCode": "en" }),
-        )
-        .await;
-    let encoded = base64::encode(text);
-    let from_bytes = comprehend
-        .ok(
+    let (status, body) = comprehend
+        .call(
             "DetectEntities",
             &json!({ "Bytes": encoded, "LanguageCode": "en" }),
         )
         .await;
 
     assert_eq!(
-        from_bytes["Entities"], from_text["Entities"],
-        "case \"plain-text document in Bytes\": expected the same Entities as the Text \
-         parameter, got {from_bytes} against {from_text}"
+        status, 400,
+        "case \"a plain-text document in Bytes alone\": expected 400, got {status}: {body}"
     );
     assert_eq!(
-        from_bytes["DocumentType"],
-        json!([{ "Page": 1, "Type": "PLAIN_TEXT" }]),
-        "case \"plain-text document in Bytes\": expected one plain-text page, got {from_bytes}"
-    );
-    assert_eq!(
-        from_bytes["DocumentMetadata"]["Pages"],
-        json!(1),
-        "case \"plain-text document in Bytes\": expected a single-page document, got {from_bytes}"
-    );
-    assert_eq!(
-        from_bytes["DocumentMetadata"]["ExtractedCharacters"],
-        json!([{ "Page": 1, "Count": text.chars().count() }]),
-        "case \"plain-text document in Bytes\": expected every character to be extracted, got \
-         {from_bytes}"
+        error_code(&body),
+        "ValidationException",
+        "case \"a plain-text document in Bytes alone\": expected ValidationException, got \
+         {body}"
     );
     assert!(
-        from_text["DocumentMetadata"].is_null() && from_text["DocumentType"].is_null(),
-        "case \"Text parameter\": the extraction members are present only for a Bytes request, \
-         got {from_text}"
+        body["Entities"].is_null(),
+        "case \"a plain-text document in Bytes alone\": a refused request reports no \
+         entities, got {body}"
     );
-    assert!(
-        from_bytes["Blocks"].is_null(),
-        "case \"plain-text document in Bytes\": Blocks is not present for plain-text input, got \
-         {from_bytes}"
-    );
-}
-
-/// A document this emulator cannot extract text from is a document-level error: the
-/// modelled 400, carrying the modelled reason and detail reason.
-#[tokio::test]
-async fn a_document_that_is_not_plain_text_is_refused_as_an_invalid_document() {
-    let comprehend = Comprehend::new();
-
-    for (case, bytes) in [
-        ("a PDF header, which is valid UTF-8", b"%PDF-1.7 1 0 obj".to_vec()),
-        ("a PDF header followed by binary", b"%PDF-1.7\x00\x01\x02\xff\xfe".to_vec()),
-        (
-            "an Office Open XML container, which is a ZIP",
-            b"PK\x03\x04\x14\x00\x06\x00word/".to_vec(),
-        ),
-        ("a PNG header", b"\x89PNG\r\n\x1a\n\xff\xfe\xfd".to_vec()),
-        ("bytes that are not text at all", b"\xff\xfe\xfd\xfc\x00\x01".to_vec()),
-    ] {
-        let encoded = base64::encode(&bytes);
-        let (status, body) = comprehend
-            .call(
-                "DetectEntities",
-                &json!({ "Bytes": encoded, "LanguageCode": "en" }),
-            )
-            .await;
-        assert_eq!(
-            status, 400,
-            "case {case:?}: expected 400, got {status}: {body}"
-        );
-        assert_eq!(
-            error_code(&body),
-            "InvalidRequestException",
-            "case {case:?}: expected InvalidRequestException, got {body}"
-        );
-        assert_eq!(
-            body["Reason"].as_str(),
-            Some("INVALID_DOCUMENT"),
-            "case {case:?}: expected the modelled document reason, got {body}"
-        );
-        assert_eq!(
-            body["Detail"]["Reason"].as_str(),
-            Some("UNSUPPORTED_DOC_TYPE"),
-            "case {case:?}: expected the modelled detail reason, got {body}"
-        );
-    }
 }
 
 #[tokio::test]
@@ -523,23 +456,25 @@ async fn a_language_the_recogniser_has_no_lexicon_for_is_refused() {
     }
 }
 
-/// The document members that must hold together: exactly one of `Text` and `Bytes`
-/// carries the document, and `LanguageCode` names the model to analyse with when no
-/// custom endpoint does.
+/// `LanguageCode` is what names the model to analyse with when no custom endpoint
+/// does, so a request carrying `Text` and no language is refused.
+///
+/// Which member the analysed text comes FROM — `Text` on the pre-trained path, with
+/// `Bytes` reserved for a custom model behind an `EndpointArn` — is the rule
+/// `detect_entities_text_source.rs` asserts over the whole table of member
+/// combinations.
 #[tokio::test]
-async fn a_request_that_names_no_single_document_or_no_language_is_refused() {
+async fn a_request_that_names_no_language_is_refused() {
     let comprehend = Comprehend::new();
-    let encoded = base64::encode("Jane Doe visited Seattle.");
 
     for (case, body) in [
-        ("neither Text nor Bytes", json!({ "LanguageCode": "en" })),
-        (
-            "both Text and Bytes",
-            json!({ "Text": "Jane Doe visited Seattle.", "Bytes": encoded, "LanguageCode": "en" }),
-        ),
         (
             "no LanguageCode",
             json!({ "Text": "Jane Doe visited Seattle." }),
+        ),
+        (
+            "no LanguageCode, with a longer document",
+            json!({ "Text": "Jane Doe of Acme Widgets LLC visited Seattle on 2024-01-15." }),
         ),
     ] {
         let (status, response) = comprehend.call("DetectEntities", &body).await;

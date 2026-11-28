@@ -39,6 +39,15 @@
 //! alone, so repeating the call returns the same entities, and nothing a later caller
 //! reads is changed by calling it.
 //!
+//! What it analyses is the `Text` member: the recogniser here is the PRE-TRAINED one,
+//! and the `Bytes` member is an input document for a custom entity recognition model
+//! reached through an `EndpointArn` ("This field applies only when you use a custom
+//! entity recognition model that was trained with PDF annotations. For other cases,
+//! enter your text input in the Text field"). So a request naming no endpoint and no
+//! `Text` carries no text at all, whatever its `Bytes` holds, and is refused as an
+//! input-validation failure; a request that carries `Text` is analysed whatever else
+//! it carries.
+//!
 //! ## Reaching this service's state
 //!
 //! The engine is held on `self` (constructor-injected), NOT passed per request — so
@@ -1080,38 +1089,6 @@ fn pattern_rules() -> &'static [PatternRule] {
             PatternRule::new(r"\b\d[\d,]*(?:\.\d+)?\b", TYPE_QUANTITY, 2),
         ]
     })
-}
-
-/// The document formats a `Bytes` input document can carry, by their leading magic
-/// bytes, and the name each one goes by.
-///
-/// Source: the file signatures these formats define in their own specifications —
-/// PDF's `%PDF-` header, the ZIP local-file header an Office Open XML document is a
-/// container of, the OLE2 compound-file header of a legacy Word document, and the
-/// signatures of the PNG, JPEG, GIF and TIFF image formats.
-///
-/// A signature is checked even when the bytes happen to be valid UTF-8 — `%PDF-1.7`
-/// is — because such a document still needs text extraction, which this emulator
-/// does not perform, rather than being prose.
-const DOCUMENT_SIGNATURES: &[(&[u8], &str)] = &[
-    (b"%PDF-", "a PDF document"),
-    (b"PK\x03\x04", "an Office Open XML document"),
-    (b"\xD0\xCF\x11\xE0", "a legacy Microsoft Office document"),
-    (b"\x89PNG\r\n\x1A\n", "a PNG image"),
-    (b"\xFF\xD8\xFF", "a JPEG image"),
-    (b"GIF87a", "a GIF image"),
-    (b"GIF89a", "a GIF image"),
-    (b"II*\x00", "a TIFF image"),
-    (b"MM\x00*", "a TIFF image"),
-    (b"{\\rtf", "an RTF document"),
-];
-
-/// The document format `bytes` announces, when it announces one.
-fn document_signature(bytes: &[u8]) -> Option<&'static str> {
-    DOCUMENT_SIGNATURES
-        .iter()
-        .find(|(signature, _)| bytes.starts_with(signature))
-        .map(|(_, name)| *name)
 }
 
 /// A token as the lexicons hold it: lowercase, with the periods an abbreviation
@@ -2467,19 +2444,10 @@ fn invalid_request(message: String) -> DetectEntitiesError {
     .into()
 }
 
-/// Refuse an input DOCUMENT this emulator cannot read, as the operation's
-/// documentation prescribes for a document-level error: the same 400, carrying the
-/// modelled `InvalidRequestReason` and the `InvalidRequestDetailReason` that says the
-/// document's type is not one it can extract text from.
-fn invalid_document(message: String) -> DetectEntitiesError {
-    DetectEntitiesErrorModeled::InvalidRequestException(InvalidRequestException {
-        message: Some(message),
-        reason: Some("INVALID_DOCUMENT".to_string()),
-        detail: Some(InvalidRequestDetail {
-            reason: Some("UNSUPPORTED_DOC_TYPE".to_string()),
-        }),
-    })
-    .into()
+/// Refuse a request that names no text at all: the input-validation refusal the
+/// service answers a call carrying no `Text` with, in its own fixed words.
+fn text_cannot_be_null() -> DetectEntitiesError {
+    DetectEntitiesError::validation("Request text cannot be null")
 }
 
 /// The `DetectEntities` operation.
@@ -2547,46 +2515,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Exactly one of `Text` and `Bytes` carries the document: the modelled
-        // `Text` member documents "If you enter text using this parameter, do not use
-        // the Bytes parameter", and a request carrying neither names no document at
-        // all.
-        let submitted = match (input.text.as_deref(), input.bytes.as_deref()) {
-            (Some(_), Some(_)) => {
-                return Err(invalid_request(
-                    "Specify either Text or Bytes, not both: the Bytes parameter carries the \
-                     input document when Text is not used."
-                        .to_string(),
-                ))
-            }
-            (None, None) => {
-                return Err(invalid_request(
-                    "Either Text or Bytes must be specified: the request carries no input \
-                     document."
-                        .to_string(),
-                ))
-            }
-            (Some(text), None) => DocumentInput::Text(text.to_string()),
-            (None, Some(bytes)) => {
-                // A plain-text input document is "equivelent to using the Text
-                // parameter", as the modelled `Bytes` member documents. A PDF, Word
-                // or image document needs text extraction, which this emulator does
-                // not perform, and the operation's documentation makes a
-                // document-level error an `InvalidRequestException`.
-                let signature = document_signature(bytes);
-                let plain_text = std::str::from_utf8(bytes)
-                    .ok()
-                    .filter(|_| signature.is_none());
-                let Some(decoded) = plain_text else {
-                    return Err(invalid_document(format!(
-                        "The input document is {} and could not be read as plain text: this \
-                         emulator extracts text only from a plain-text input document, not from \
-                         a PDF, Word or image document.",
-                        signature.unwrap_or("not valid UTF-8 text")
-                    )));
-                };
-                DocumentInput::PlainTextDocument(decoded.to_string())
-            }
+        // The text the PRE-TRAINED recogniser analyses is the `Text` member and
+        // nothing else. `Bytes` carries an input DOCUMENT, which only a custom entity
+        // recognition model reads — its own documentation states "This field applies
+        // only when you use a custom entity recognition model that was trained with
+        // PDF annotations. For other cases, enter your text input in the Text field"
+        // — and this request named no endpoint, so no custom model is in play. A
+        // request with no `Text` therefore carries no text at all, whatever it puts
+        // in `Bytes`, and one that does carry `Text` is analysed whatever else it
+        // carries.
+        // `Text` carries the modelled `@length` floor of 1, so an empty value is
+        // refused at the validation boundary with that constraint's own message:
+        // what this handler owns is the member being ABSENT.
+        let Some(text) = input.text.as_deref() else {
+            return Err(text_cannot_be_null());
         };
 
         // `LanguageCode` is what names the model to analyse with; it is optional in
@@ -2610,12 +2552,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // The same ceiling for both input members: a plain-text file in `Bytes` is
-        // "equivelent to using the Text parameter", as that member documents, and
-        // the larger maximum it mentions for the other document types belongs to the
-        // text extraction this emulator refuses as an invalid document above.
-        let document = submitted.document();
-        if let Some(message) = crate::state::text_size_refusal(document, MAX_TEXT_BYTES) {
+        // The ceiling the analysed member documents: "A UTF-8 text string. The
+        // maximum string size is 100 KB."
+        if let Some(message) = crate::state::text_size_refusal(text, MAX_TEXT_BYTES) {
             return Err(
                 DetectEntitiesErrorModeled::TextSizeLimitExceededException(
                     TextSizeLimitExceededException {
@@ -2626,60 +2565,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let entities = recognize_entities(document.to_string())
+        let entities = recognize_entities(text.to_string())
             .await
             .map_err(|message| {
                 DetectEntitiesErrorModeled::InternalServerException(InternalServerException {
                     message: Some(message),
                 })
             })?;
-        Ok(match submitted {
-            // `DocumentMetadata` and `DocumentType` are "present in the response only
-            // if your request used the Byte parameter", and `Blocks` "is not present
-            // in the response for plain-text inputs" — which a plain-text input
-            // document is.
-            DocumentInput::Text(_) => DetectEntitiesOutput {
-                entities: Some(entities),
-                ..DetectEntitiesOutput::default()
-            },
-            DocumentInput::PlainTextDocument(ref document) => DetectEntitiesOutput {
-                entities: Some(entities),
-                document_metadata: Some(DocumentMetadata {
-                    // A plain-text document is a single page, and every character of
-                    // it was extracted.
-                    pages: Some(1),
-                    extracted_characters: Some(vec![ExtractedCharactersListItem {
-                        page: Some(1),
-                        count: Some(i32::try_from(document.chars().count()).unwrap_or(i32::MAX)),
-                    }]),
-                }),
-                document_type: Some(vec![DocumentTypeListItem {
-                    page: Some(1),
-                    r#type: Some("PLAIN_TEXT".to_string()),
-                }]),
-                // No page-level error: the one page was read in full. The modelled
-                // member documents the field as empty when the system encountered no
-                // errors.
-                errors: Some(Vec::new()),
-                blocks: None,
-            },
+        // `DocumentMetadata` and `DocumentType` are "present in the response only if
+        // your request used the Byte parameter", and `Blocks` carries "information
+        // about each block of text in the input document" — all three report an input
+        // document the service extracted text from, which this request has none of:
+        // its text came from the `Text` member.
+        Ok(DetectEntitiesOutput {
+            entities: Some(entities),
+            ..DetectEntitiesOutput::default()
         })
     }
 }
 
-/// Which input member carried the document, which is what decides whether the
-/// response reports the document-extraction members.
-enum DocumentInput {
-    /// The `Text` member: a UTF-8 string, no document extraction.
-    Text(String),
-    /// The `Bytes` member holding a plain-text input document.
-    PlainTextDocument(String),
-}
-
-impl DocumentInput {
-    fn document(&self) -> &str {
-        match self {
-            Self::Text(text) | Self::PlainTextDocument(text) => text,
-        }
-    }
-}
