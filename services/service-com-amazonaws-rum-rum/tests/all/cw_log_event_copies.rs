@@ -124,25 +124,38 @@ impl Delivery {
     /// The copy this batch owes the log group for `event`: the RUM event document the data
     /// plane enriched that event into, under the field names RUM publishes for a RUM event.
     ///
-    /// `location` is where the service reported the caller to be, read off the document the
-    /// monitor's own buffer holds for the same event: the members are the requirement, the
-    /// place itself is the environment's, and what this asserts is that the COPY carries
+    /// `service_set` is what the service set on the metadata at ingestion — the domain the
+    /// telemetry is attributed to and where it was reported to come from — read off the
+    /// document the monitor's own buffer holds for an event whose client serialized none of
+    /// them: those members and their position after the client's own are the requirement,
+    /// the place itself is the environment's, and what this asserts is that the COPY carries
     /// the same bytes.
     fn expected_copy(
         &self,
         event: &Event,
         monitor: &str,
         monitor_id: &str,
-        location: &Map<String, Value>,
+        service_set: &Map<String, Value>,
     ) -> Value {
-        let mut metadata = event.metadata.map(parsed).unwrap_or_else(|| json!({}));
-        if let Some(members) = metadata.as_object_mut() {
-            for (member, value) in location {
-                members
-                    .entry(member.clone())
-                    .or_insert_with(|| value.clone());
+        let carried = event.metadata.map(parsed).unwrap_or_else(|| json!({}));
+        let metadata = match carried {
+            Value::Object(client) => {
+                // The client's members in the order it serialized them, then every member
+                // the service set \u2014 each with the client's value where it serialized one,
+                // since what RUM sets for such a member is its place.
+                let mut reported: Map<String, Value> = client
+                    .iter()
+                    .filter(|(member, _)| !service_set.contains_key(*member))
+                    .map(|(member, value)| (member.clone(), value.clone()))
+                    .collect();
+                for (member, observed) in service_set {
+                    let value = client.get(member).unwrap_or(observed).clone();
+                    reported.insert(member.clone(), value);
+                }
+                Value::Object(reported)
             }
-        }
+            other => other,
+        };
         let (keys, values) = projections(&metadata);
         let mut copy = json!({
             "account_id": engine::emulator_account_id(),
@@ -214,32 +227,39 @@ fn projections(metadata: &Value) -> (Vec<Value>, Vec<Value>) {
         .unwrap_or_default()
 }
 
-/// The members RUM adds to an event's `metadata` for where the caller is.
+/// The members RUM sets on an event's `metadata` at ingestion, in the order it reports
+/// them: the domain the telemetry is attributed to, and then where the caller is.
 ///
-/// Source: the recorded enriched document; the model names the first of them as an
-/// extended-metric dimension (`"metadata.countryCode": "CountryCode"`,
-/// `smithy_query(query="doc", shape="MetricDefinitionRequest", member="DimensionKeys")`).
-/// Their values are the environment's, so none is stated here.
-const CALLER_LOCATION_MEMBERS: [&str; 3] = ["countryCode", "subdivisionCode", "localityName"];
+/// Source: the recorded enriched document, which carries them after the members the client
+/// serialized; the model names one of them as an extended-metric dimension
+/// (`"metadata.countryCode": "CountryCode"`, `smithy_query(query="doc",
+/// shape="MetricDefinitionRequest", member="DimensionKeys")`). Their values are the
+/// environment's, so none is stated here.
+const SERVICE_SET_MEMBERS: [&str; 4] = [
+    "domain",
+    "countryCode",
+    "subdivisionCode",
+    "localityName",
+];
 
-/// Where `document`'s metadata says the caller is, asserting the service added all three
-/// members as texts.
-fn caller_location(case: &str, document: &Value) -> Map<String, Value> {
+/// What `document`'s metadata says the service set on it, asserting all four members are
+/// there as texts.
+fn service_set_members(case: &str, document: &Value) -> Map<String, Value> {
     let metadata = document["metadata"].as_object().unwrap_or_else(|| {
         panic!("case {case:?}: expected the document's metadata to be an object, got {document}")
     });
-    CALLER_LOCATION_MEMBERS
+    SERVICE_SET_MEMBERS
         .into_iter()
         .map(|member| {
             let value = metadata.get(member).unwrap_or_else(|| {
                 panic!(
-                    "case {case:?}: expected RUM to add {member:?} to the event's metadata, \
+                    "case {case:?}: expected RUM to set {member:?} on the event's metadata, \
                      got {document}"
                 )
             });
             assert!(
                 value.as_str().is_some_and(|text| !text.is_empty()),
-                "case {case:?}: expected {member:?} to name somewhere, got {value}"
+                "case {case:?}: expected {member:?} to name something, got {value}"
             );
             (member.to_string(), value.clone())
         })
@@ -539,14 +559,14 @@ async fn every_delivered_event_is_copied_into_the_vended_log_group() {
     }
     let after = now_ms();
 
-    // Where the service reported the caller to be, read off the copy of an event whose
-    // client sent NO metadata of its own, so the three members are the service's own
-    // reading: they are the requirement, the place itself is the environment's, and every
-    // document below is then owed that location wherever its client named none.
-    let probe = "the service's own reading of the caller's location";
-    let mut location = Map::new();
+    // What the service set on the metadata at ingestion, read off the copy of an event whose
+    // client sent NO metadata of its own, so all four members are the service's own: they
+    // are the requirement, the values are the environment's, and every document below is
+    // then owed them wherever its client named none.
+    let probe = "the members the service sets on an event's metadata";
+    let mut service_set = Map::new();
     for delivery in deliveries() {
-        if location.is_empty() {
+        if service_set.is_empty() {
             let stream = delivery.stream(&monitor_id).to_string();
             let copies = messages(
                 probe,
@@ -560,16 +580,16 @@ async fn every_delivered_event_is_copied_into_the_vended_log_group() {
                     .iter()
                     .find(|copy| copy["event_id"].as_str() == Some(event.id))
                 {
-                    location = caller_location(probe, copy);
+                    service_set = service_set_members(probe, copy);
                     break;
                 }
             }
         }
     }
     assert!(
-        !location.is_empty(),
+        !service_set.is_empty(),
         "case {probe:?}: the batches must deliver one event whose client sent no metadata, \
-         so the location the service reads for the caller is observable"
+         so the members the service sets are observable"
     );
 
     let mut expected: std::collections::BTreeMap<String, Vec<Value>> =
@@ -580,7 +600,7 @@ async fn every_delivered_event_is_copied_into_the_vended_log_group() {
             expected
                 .entry(stream.clone())
                 .or_default()
-                .push(delivery.expected_copy(event, monitor, &monitor_id, &location));
+                .push(delivery.expected_copy(event, monitor, &monitor_id, &service_set));
         }
     }
 

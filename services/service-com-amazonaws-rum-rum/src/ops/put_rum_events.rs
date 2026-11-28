@@ -18,10 +18,10 @@
 //!
 //! Both destinations hold the SERVICE's document, not the client's structure: every
 //! accepted event is enriched once, here, with the batch's context — the attributes the
-//! batch declares for every one of its events included — and with what only the
-//! service knows — the app monitor the batch was delivered to, the account that owns it
-//! and where the caller is — under the field names RUM publishes for a
-//! RUM event ([`crate::state::rum_event::event_document`]).
+//! batch declares for every one of its events included — and with what only the service
+//! knows — the app monitor the batch was delivered to (its id, its name and the domain it
+//! has authority over), the account that owns it and where the caller is — under the field
+//! names RUM publishes for a RUM event ([`crate::state::rum_event::event_document`]).
 //!
 //! ## Shape of an operation
 //!
@@ -197,7 +197,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // decision, which reads the IAM and STS stores and needs no lock of this
         // service's.
         let region = crate::state::request_region(ctx.parts());
-        let (resource_arn, resource_policy, app_monitor_name, app_monitor_id) = {
+        let (
+            resource_arn,
+            resource_policy,
+            app_monitor_name,
+            app_monitor_id,
+            app_monitor_domain,
+        ) = {
             let store = state.lock();
             let Some(record) = store.app_monitor_by_id(&region, &input.id) else {
                 return Err(PutRumEventsErrorModeled::AccessDeniedException(
@@ -210,6 +216,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 record.resource_policy_document(),
                 record.name.clone(),
                 record.id.clone(),
+                record.domain_authority().map(str::to_string),
             )
         };
 
@@ -273,11 +280,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let log_stream =
             crate::state::cw_log_delivery::delivery_stream_name(session_id.as_deref(), &input.id);
         // What the service enriches every event of this batch with: the monitor the `Id`
-        // resolved to, the batch's own context, and the session it was collected from.
+        // resolved to (including the domain it has authority over, which is the domain the
+        // telemetry is attributed to when the sending client reported none), the batch's
+        // own context, and the session it was collected from.
         let delivery = crate::state::rum_event::Delivery {
             app_monitor_id: &app_monitor_id,
             app_monitor_name: &app_monitor_name,
             app_monitor_version: input.app_monitor_details.version.as_deref(),
+            app_monitor_domain: app_monitor_domain.as_deref(),
             batch_id: &batch_id,
             user_id: user_id.as_deref(),
             session_id: session_id.as_deref(),

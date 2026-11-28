@@ -17,9 +17,11 @@
 //!
 //! Recorded behaviour pins WHICH members RUM adds: the country, the subdivision of that
 //! country and the locality, under [`COUNTRY_CODE_MEMBER`], [`SUBDIVISION_CODE_MEMBER`] and
-//! [`LOCALITY_NAME_MEMBER`], each a text beside the members the client serialized. They are
-//! ADDED, never written over what the client sent: `metadata` is the client's own document,
-//! so a member of one of those names the client did report is reported as it arrived.
+//! [`LOCALITY_NAME_MEMBER`], each a text after the members the client serialized
+//! ([`super::rum_event::event_document`] places every member RUM sets at ingestion
+//! there). Their VALUES are never written over what the client sent: `metadata` is the
+//! client's own document, so a member of one of those names the client did report is
+//! reported with the value it arrived with.
 //!
 //! # Where the values come from
 //!

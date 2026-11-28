@@ -24,7 +24,9 @@
 //!
 //! * `log_stream` carries the event's INSTANT as `{"seconds": …, "nanos": …}`, not the name
 //!   of the CloudWatch Logs stream a batch's copies accumulate in;
-//! * `metadata` is the client's document ENRICHED with where the caller is —
+//! * `metadata` is the client's document ENRICHED with the members RUM itself SETS at
+//!   ingestion, which are reported AFTER every member the client serialized, in RUM's own
+//!   order: the `domain` the telemetry is attributed to, and then where the caller is —
 //!   `countryCode`, `subdivisionCode` and `localityName`, the members no client serializes
 //!   and the first of which the model names as the extended-metric dimension
 //!   `"metadata.countryCode": "CountryCode"` (`smithy_query(query="doc",
@@ -70,6 +72,19 @@ const NANOS_PER_MILLI: i64 = 1_000_000;
 /// environment's, so no value is stated here: what is asserted is that the service adds
 /// them and what KIND of text each is.
 const CALLER_LOCATION_MEMBERS: [&str; 3] = ["countryCode", "subdivisionCode", "localityName"];
+
+/// The metadata member carrying the internet domain the telemetry is attributed to: the
+/// other member RUM sets at ingestion, reported with the location members after everything
+/// the client serialized.
+///
+/// Source: the recorded enriched document, whose `metadata` carries it after the members the
+/// client serialized and ahead of the location members, even for a batch whose client
+/// serialized a member of that name itself.
+const DOMAIN_MEMBER: &str = "domain";
+
+/// The domain authority every monitor this suite creates is given: the value the service
+/// then reports as the `domain` of telemetry whose client reported none itself.
+const MONITOR_DOMAIN: &str = "documents.example.com";
 
 /// One delivered event, and the document the read then owes for it.
 struct Row {
@@ -142,28 +157,29 @@ impl Row {
     }
 
     /// `metadata` as the document reports it: the document the client serialized with the
-    /// caller's location added to it ([`with_location`], the one copy of that rule in this
-    /// suite), the empty document plus that location for an event that carried none, and
-    /// metadata the client did not serialize as an object exactly as it arrived, since such a
-    /// document has no members to add any to.
-    fn reported_metadata(&self, location: &Map<String, Value>) -> Value {
+    /// members RUM sets at ingestion (`service_set`) reported after every member of it
+    /// ([`with_service_set_members`], the one copy of that rule in this suite), the
+    /// service-set members alone for an event that carried no metadata, and metadata the
+    /// client did not serialize as an object exactly as it arrived, since such a document
+    /// has no members to report any beside.
+    fn reported_metadata(&self, service_set: &Map<String, Value>) -> Value {
         let carried = match self.metadata {
             Some(metadata) => as_json(metadata),
             None => json!({}),
         };
-        with_location(&carried, location)
+        with_service_set_members(&carried, service_set)
     }
 
     /// The whole document the read owes for this row's event, for the monitor
-    /// `monitor`/`monitor_id` it was delivered to and the caller location `location` the
-    /// service reported for it.
+    /// `monitor`/`monitor_id` it was delivered to and the members `service_set` the service
+    /// set on its metadata at ingestion.
     fn expected_document(
         &self,
         monitor: &str,
         monitor_id: &str,
-        location: &Map<String, Value>,
+        service_set: &Map<String, Value>,
     ) -> Value {
-        let metadata = self.reported_metadata(location);
+        let metadata = self.reported_metadata(service_set);
         let (keys, values) = projections(&metadata);
         let mut document = json!({
             "application_id": monitor_id,
@@ -270,6 +286,30 @@ fn caller_location(case: &str, document: &Value) -> Map<String, Value> {
         "case {case:?}: expected countryCode to be an ISO 3166-1 alpha-2 code, got {country:?}"
     );
     location
+}
+
+/// The members the service SET on `document`'s metadata at ingestion, in the order a RUM
+/// event document reports them: the `domain` the telemetry is attributed to, and then where
+/// the caller is ([`caller_location`]).
+///
+/// `domain` is asserted to be `domain` — the one the monitor the batch was delivered to has
+/// authority over, for a batch whose client serialized none itself — while the location's
+/// values are the environment's, so for those only the members and the kind of text each is
+/// are asserted.
+fn service_set_members(case: &str, document: &Value, domain: Option<&str>) -> Map<String, Value> {
+    let mut members = Map::new();
+    if let Some(domain) = domain {
+        assert_eq!(
+            document["metadata"][DOMAIN_MEMBER].as_str(),
+            Some(domain),
+            "case {case:?}: expected the domain the telemetry is attributed to, got {document}"
+        );
+        members.insert(DOMAIN_MEMBER.to_string(), json!(domain));
+    }
+    for (member, value) in caller_location(case, document) {
+        members.insert(member, value);
+    }
+    members
 }
 
 /// The rows every case below delivers.
@@ -533,7 +573,7 @@ async fn every_accepted_event_is_reported_as_the_rum_event_document() {
         let monitor_id = create(
             &router,
             row.case,
-            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+            json!({"Name": &monitor, "Domain": MONITOR_DOMAIN}),
         )
         .await;
         deliver(
@@ -554,17 +594,17 @@ async fn every_accepted_event_is_reported_as_the_rum_event_document() {
              accepted event, got {documents:?}",
             row.case
         );
-        // Where the caller is, as the service reported it: the three members and the kind
-        // of text each is are the requirement, while the place itself is the
-        // environment's.
-        let location = if row.metadata == Some("not a document") {
+        // The members the service set at ingestion: the domain the batch is attributed to,
+        // and where the caller is — those members and the kind of text each is are the
+        // requirement, while the place itself is the environment's.
+        let service_set = if row.metadata == Some("not a document") {
             // Metadata the client did not serialize as an object has no members for the
-            // service to add any to, so this row's document carries no location.
+            // service to report any beside, so this row's document carries none of them.
             Map::new()
         } else {
-            caller_location(row.case, &documents[0])
+            service_set_members(row.case, &documents[0], Some(MONITOR_DOMAIN))
         };
-        let expected = row.expected_document(&monitor, &monitor_id, &location);
+        let expected = row.expected_document(&monitor, &monitor_id, &service_set);
         assert_eq!(
             fields(&documents[0]),
             fields(&expected),
@@ -641,7 +681,7 @@ async fn log_stream_carries_the_events_own_instant() {
         let monitor_id = create(
             &router,
             case,
-            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+            json!({"Name": &monitor, "Domain": MONITOR_DOMAIN}),
         )
         .await;
         deliver(
@@ -722,7 +762,7 @@ async fn every_metadata_member_is_projected_as_a_key_and_a_key_equals_value_text
         let monitor_id = create(
             &router,
             case,
-            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+            json!({"Name": &monitor, "Domain": MONITOR_DOMAIN}),
         )
         .await;
         let instant = 1_704_067_200_i64;
@@ -830,7 +870,7 @@ async fn the_caller_location_is_added_to_every_event_and_can_be_filtered_on() {
     let monitor_id = create(
         &router,
         case,
-        json!({"Name": monitor, "Domain": "documents.example.com"}),
+        json!({"Name": monitor, "Domain": MONITOR_DOMAIN}),
     )
     .await;
     let instants: [i64; 2] = [1_704_067_200, 1_704_067_260];
@@ -934,7 +974,7 @@ async fn a_location_member_the_client_reported_is_reported_as_it_arrived() {
     let monitor_id = create(
         &router,
         case,
-        json!({"Name": monitor, "Domain": "documents.example.com"}),
+        json!({"Name": monitor, "Domain": MONITOR_DOMAIN}),
     )
     .await;
     let claimed_country = "ZW";
@@ -1027,7 +1067,7 @@ async fn one_document_is_reported_for_every_event_of_a_batch() {
     let monitor_id = create(
         &router,
         "a batch of three",
-        json!({"Name": monitor, "Domain": "documents.example.com"}),
+        json!({"Name": monitor, "Domain": MONITOR_DOMAIN}),
     )
     .await;
     let session = "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb";
@@ -1263,24 +1303,29 @@ fn shared_attribute_batches() -> Vec<SharedBatch> {
     ]
 }
 
-/// `expected` with the caller-location members the merged document does not already carry
-/// added to it, which is the document RUM reports: the location is the service's own, added
-/// to the metadata of every event whose metadata has members at all.
+/// `expected` with the members RUM sets at ingestion reported AFTER everything the client
+/// serialized, which is the document RUM reports: `service_set` holds them in RUM's own
+/// order (the domain the telemetry is attributed to, then where the caller is).
 ///
 /// The ONE copy of that rule in this suite — both tables build their expected `metadata`
-/// through it — and it FILLS IN rather than overwrites, which is the precedence the service
-/// applies: a member the delivery reported itself is reported as it arrived, whatever its
-/// name.
-fn with_location(expected: &Value, location: &Map<String, Value>) -> Value {
-    let mut carried = expected.clone();
-    if let Some(members) = carried.as_object_mut() {
-        for (member, value) in location {
-            members
-                .entry(member.clone())
-                .or_insert_with(|| value.clone());
-        }
+/// through it. A member the delivery reported itself keeps the VALUE it arrived with,
+/// whatever its name, which is the precedence the service applies; what RUM sets for such a
+/// member is its PLACE. A document with no members at all — one the client did not
+/// serialize as a JSON object — has none to report any beside.
+fn with_service_set_members(expected: &Value, service_set: &Map<String, Value>) -> Value {
+    let Some(client) = expected.as_object() else {
+        return expected.clone();
+    };
+    let mut reported: Map<String, Value> = client
+        .iter()
+        .filter(|(member, _)| !service_set.contains_key(*member))
+        .map(|(member, value)| (member.clone(), value.clone()))
+        .collect();
+    for (member, observed) in service_set {
+        let value = client.get(member).unwrap_or(observed).clone();
+        reported.insert(member.clone(), value);
     }
-    carried
+    Value::Object(reported)
 }
 
 #[tokio::test]
@@ -1291,7 +1336,7 @@ async fn declared_batch_attributes_merge_into_every_events_metadata() {
         let monitor_id = create(
             &router,
             batch.case,
-            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+            json!({"Name": &monitor, "Domain": MONITOR_DOMAIN}),
         )
         .await;
 
@@ -1347,14 +1392,14 @@ async fn declared_batch_attributes_merge_into_every_events_metadata() {
                 Some(shared_event_id(position).as_str()),
                 "case {case:?}: expected the events in delivery order, got {document}"
             );
-            // Where the caller is, as the service reported it for THIS event: a document
-            // with no members at all has none to add it to.
-            let location = if as_json(event.merged).is_object() {
-                caller_location(&case, document)
+            // The members the service set on THIS event's metadata: a document with no
+            // members at all has none to report any beside.
+            let service_set = if as_json(event.merged).is_object() {
+                service_set_members(&case, document, Some(MONITOR_DOMAIN))
             } else {
                 Map::new()
             };
-            let expected = with_location(&as_json(event.merged), &location);
+            let expected = with_service_set_members(&as_json(event.merged), &service_set);
             assert_eq!(
                 document["metadata"], expected,
                 "case {case:?}: expected the metadata {expected}, got {document}"
@@ -1407,7 +1452,7 @@ async fn an_event_is_selected_by_the_attributes_its_batch_declared() {
     let monitor_id = create(
         &router,
         case,
-        json!({"Name": monitor, "Domain": "documents.example.com"}),
+        json!({"Name": monitor, "Domain": MONITOR_DOMAIN}),
     )
     .await;
     let shared = shared_event_id(0);
@@ -1517,7 +1562,7 @@ async fn the_attributes_one_batch_may_declare_are_bounded() {
         let monitor_id = create(
             &router,
             case,
-            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+            json!({"Name": &monitor, "Domain": MONITOR_DOMAIN}),
         )
         .await;
         // One attribute padded to the size the row asks for, so the declared TEXT is
@@ -1600,6 +1645,308 @@ async fn the_attributes_one_batch_may_declare_are_bounded() {
                 merged, None,
                 "case {case:?}: expected a call past the budget to merge nothing, got {:?}",
                 merged.map(str::len)
+            );
+        }
+    }
+}
+
+/// One delivered batch and the metadata members its document then owes, in order.
+struct Placement {
+    case: &'static str,
+    /// The members the monitor is created with beside its `Name`: the form its domain
+    /// authority is held in, or the platform of an application that has none.
+    created_with: fn() -> Value,
+    /// `RumEvent$metadata` as the client serialized it, for the batches that carry one.
+    metadata: Option<&'static str>,
+    /// The first-level members the reported `metadata` must carry, IN ORDER — which is the
+    /// order `metadata_keys` and `metadata_values` are then aligned on.
+    members: &'static [&'static str],
+    /// The value `domain` must be reported with, or `None` for a batch neither side has a
+    /// domain for.
+    domain: Option<&'static str>,
+    /// The members whose value the client reported and the service therefore keeps.
+    kept: &'static [(&'static str, &'static str)],
+}
+
+/// Every member RUM sets on an event's metadata at ingestion is reported AFTER the members
+/// the client serialized, in RUM's own order — the `domain` the telemetry is attributed to,
+/// then the caller's location — whatever position the sending client put a member of one of
+/// those names at, and whether it sent one at all.
+///
+/// The rows differ along what the rule generalises over: where in its document the client
+/// serialized `domain` (first, in the middle, last, nowhere), whether it serialized a
+/// location member too, whether it serialized any metadata at all, and the form the
+/// monitor's domain authority is held in (`Domain`, `DomainList`, or no authority at all —
+/// a platform whose application is served from no internet domain).
+#[tokio::test]
+async fn the_members_rum_sets_at_ingestion_are_reported_after_the_clients_own() {
+    // The three members RUM sets for where the caller is always close the document, so
+    // every row's expected member list ends with them.
+    let rows: [Placement; 10] = [
+        Placement {
+            case: "a client that serialized its domain before its other members",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some(
+                "{\"domain\":\"shop.example.com\",\"version\":\"1.0.0\",\"pageId\":\"/checkout\",\
+                  \"title\":\"Checkout\"}",
+            ),
+            members: &[
+                "version",
+                "pageId",
+                "title",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("shop.example.com"),
+            kept: &[("version", "1.0.0"), ("pageId", "/checkout")],
+        },
+        Placement {
+            case: "a client that serialized its domain among its other members",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some(
+                "{\"version\":\"1.0.0\",\"domain\":\"shop.example.com\",\"pageId\":\"/checkout\",\
+                  \"title\":\"Checkout\"}",
+            ),
+            members: &[
+                "version",
+                "pageId",
+                "title",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("shop.example.com"),
+            kept: &[("title", "Checkout")],
+        },
+        Placement {
+            case: "a client that serialized its domain last",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some(
+                "{\"version\":\"1.0.0\",\"pageId\":\"/checkout\",\"domain\":\"shop.example.com\"}",
+            ),
+            members: &[
+                "version",
+                "pageId",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("shop.example.com"),
+            kept: &[("pageId", "/checkout")],
+        },
+        Placement {
+            case: "a client that serialized no domain, for a monitor holding one",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some("{\"version\":\"1.0.0\",\"pageId\":\"/checkout\"}"),
+            members: &[
+                "version",
+                "pageId",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            // Neither the client nor anything else reported a domain, so the one the
+            // monitor has authority over is what the telemetry is attributed to.
+            domain: Some(MONITOR_DOMAIN),
+            kept: &[("version", "1.0.0")],
+        },
+        Placement {
+            case: "a client that serialized no domain, for a monitor holding a domain list",
+            created_with: || {
+                json!({"DomainList": ["first.example.com", "second.example.com"]})
+            },
+            metadata: Some("{\"pageId\":\"/cart\"}"),
+            members: &[
+                "pageId",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("first.example.com"),
+            kept: &[("pageId", "/cart")],
+        },
+        Placement {
+            case: "a client that serialized a location member of its own beside its domain",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some(
+                "{\"countryCode\":\"ZW\",\"domain\":\"shop.example.com\",\"pageId\":\"/home\"}",
+            ),
+            members: &[
+                "pageId",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("shop.example.com"),
+            // `metadata` is the client's own document, so a member it reported keeps the
+            // value it arrived with even where the service has a reading of its own.
+            kept: &[("countryCode", "ZW"), ("pageId", "/home")],
+        },
+        Placement {
+            case: "a batch carrying no metadata at all",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: None,
+            members: &[
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some(MONITOR_DOMAIN),
+            kept: &[],
+        },
+        Placement {
+            case: "a client that serialized an empty metadata document",
+            created_with: || json!({"Domain": MONITOR_DOMAIN}),
+            metadata: Some("{}"),
+            members: &[
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some(MONITOR_DOMAIN),
+            kept: &[],
+        },
+        Placement {
+            case: "a monitor whose application has no internet domain",
+            // `Platform` admits Web, Android and iOS, and only a web application has a
+            // "top-level internet domain name for which your application has administrative
+            // authority" — so a monitor of this platform holds no domain authority at all.
+            created_with: || json!({"Platform": "iOS"}),
+            metadata: Some("{\"pageId\":\"/home\"}"),
+            // Neither side has a domain to report, so the member is absent rather than
+            // empty.
+            members: &["pageId", "countryCode", "subdivisionCode", "localityName"],
+            domain: None,
+            kept: &[("pageId", "/home")],
+        },
+        Placement {
+            case: "a client that serialized a domain for a monitor holding none",
+            created_with: || json!({"Platform": "Android"}),
+            metadata: Some("{\"domain\":\"app.example.com\",\"pageId\":\"/home\"}"),
+            members: &[
+                "pageId",
+                "domain",
+                "countryCode",
+                "subdivisionCode",
+                "localityName",
+            ],
+            domain: Some("app.example.com"),
+            kept: &[("pageId", "/home")],
+        },
+    ];
+
+    for (index, row) in rows.iter().enumerate() {
+        let (router, _engine) = emulator();
+        let monitor = format!("placed-{index}");
+        let mut created = (row.created_with)();
+        created["Name"] = json!(&monitor);
+        let monitor_id = create(&router, row.case, created).await;
+        let instant = 1_704_067_200_i64 + index as i64;
+        let mut event = json!({
+            "id": format!("cccc111{index}-1234-4234-8234-123456789012"),
+            "timestamp": instant,
+            "type": "com.amazon.rum.page_view_event",
+            "details": "{}",
+        });
+        if let Some(metadata) = row.metadata {
+            event["metadata"] = json!(metadata);
+        }
+        deliver(
+            &router,
+            row.case,
+            &monitor_id,
+            json!({
+                "BatchId": "11111111-2222-4333-8444-5555555555dd",
+                "AppMonitorDetails": {"name": &monitor, "id": &monitor_id},
+                "UserDetails": {},
+                "RumEvents": [event],
+            }),
+        )
+        .await;
+
+        let millis = instant * MILLIS_PER_SECOND;
+        let documents = reported(&router, row.case, &monitor, millis, millis).await;
+        assert_eq!(
+            documents.len(),
+            1,
+            "case {:?}: expected the one delivered event, got {documents:?}",
+            row.case
+        );
+        let document = &documents[0];
+        let reported_members = document["metadata"].as_object().unwrap_or_else(|| {
+            panic!(
+                "case {:?}: expected the document's metadata to be an object, got {document}",
+                row.case
+            )
+        });
+
+        // The ORDER is the requirement: the client's members as it serialized them, then
+        // the members RUM sets at ingestion, in RUM's order.
+        let order: Vec<&str> = reported_members.keys().map(String::as_str).collect();
+        assert_eq!(
+            order, row.members,
+            "case {:?}: expected the client's members first and the ones RUM sets at \
+             ingestion after them, got {document}",
+            row.case
+        );
+        // And the two flat projections are that same order, pairing each key with its own
+        // value at the same position.
+        let keys: Vec<&str> = document["metadata_keys"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {:?}: metadata_keys must be a list, got {document}",
+                    row.case
+                )
+            })
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            keys, row.members,
+            "case {:?}: expected metadata_keys to carry the members in that same order, got \
+             {document}",
+            row.case
+        );
+        let values = document["metadata_values"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for (position, (key, value)) in reported_members.iter().enumerate() {
+            let pair = format!("{key}={}", value_text(value));
+            assert_eq!(
+                values.get(position).and_then(Value::as_str),
+                Some(pair.as_str()),
+                "case {:?}: expected the member at position {position} to be projected as \
+                 {pair:?}, got {document}",
+                row.case
+            );
+        }
+
+        // The VALUE of the domain: the one the client reported for the page, or the
+        // monitor's own authority for a batch whose client reported none.
+        assert_eq!(
+            reported_members.get(DOMAIN_MEMBER).and_then(Value::as_str),
+            row.domain,
+            "case {:?}: expected the domain the telemetry is attributed to, got {document}",
+            row.case
+        );
+        for (member, value) in row.kept {
+            assert_eq!(
+                reported_members.get(*member).and_then(Value::as_str),
+                Some(*value),
+                "case {:?}: expected the member {member:?} the client reported to keep its \
+                 value, got {document}",
+                row.case
             );
         }
     }

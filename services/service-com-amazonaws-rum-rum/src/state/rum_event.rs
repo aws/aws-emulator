@@ -35,12 +35,15 @@
 //!   the CloudWatch Logs stream a batch's copies accumulate in
 //!   ([`super::cw_log_delivery::delivery_stream_name`]) is no part of the document;
 //! * `metadata` is the document the client serialized it as, MERGED with the attributes the
-//!   batch declared for every one of its events ([`shared_attributes`]) and
-//!   ENRICHED with where the
-//!   caller is ([`super::caller_location`]), with the `metadata_keys` / `metadata_values`
-//!   projections of it beside it: the keys are its first-level member names, and each value
-//!   entry is that member as the `<key>=<value>` text [`metadata_projections`] writes, so a
-//!   consumer reading the two lists positionally recovers the pairs;
+//!   batch declared for every one of its events ([`shared_attributes`]) and ENRICHED with
+//!   the members the service itself sets at ingestion — the `domain` the telemetry is
+//!   attributed to and where the caller is ([`super::caller_location`]) — which are written
+//!   AFTER every member the client serialized, whether the client serialized a member of
+//!   that name or not ([`reported_metadata`]), with the `metadata_keys` /
+//!   `metadata_values` projections of it beside it: the keys are its first-level member
+//!   names, and each value entry is that member as the `<key>=<value>` text
+//!   [`metadata_projections`] writes, so a consumer reading the two lists positionally
+//!   recovers the pairs;
 //! * `event_interaction` is the IDENTIFIER of the interaction the event belongs to
 //!   ([`event_interaction`]), not the interaction counter a client's payload carries beside
 //!   it;
@@ -68,6 +71,11 @@ pub const METADATA_KEYS_FIELD: &str = "metadata_keys";
 /// The field carrying the first-level VALUES of [`METADATA_FIELD`], positionally aligned
 /// with [`METADATA_KEYS_FIELD`].
 pub const METADATA_VALUES_FIELD: &str = "metadata_values";
+
+/// The metadata member carrying the internet domain the telemetry is attributed to: a
+/// member RUM SETS at ingestion rather than one it leaves where the client serialized it
+/// ([`reported_metadata`]).
+pub const DOMAIN_MEMBER: &str = "domain";
 
 /// The field carrying the instant of the event, as the `{seconds, nanos}` structure
 /// [`instant_document`] writes.
@@ -183,6 +191,11 @@ pub struct Delivery<'a> {
     /// `AppMonitorDetails$version`, when the client reported one: the document's
     /// `application_version`.
     pub app_monitor_version: Option<&'a str>,
+    /// The domain authority of that same monitor
+    /// ([`super::AppMonitorRecord::domain_authority`]), or `None` for a monitor that names
+    /// none: what the metadata's service-set [`DOMAIN_MEMBER`] reports for a batch whose
+    /// client serialized no domain of its own ([`reported_metadata`]).
+    pub app_monitor_domain: Option<&'a str>,
     /// `PutRumEventsRequest$BatchId` of the call that delivered the event.
     pub batch_id: &'a str,
     /// `UserDetails$userId` of the session the batch was collected from.
@@ -257,7 +270,7 @@ pub fn shared_attributes(declared: Option<&str>, events: usize) -> Option<Map<St
 /// than nested as escaped text; a value that is not valid JSON is kept verbatim as a
 /// string, since the model constrains neither.
 pub fn event_document(delivery: &Delivery<'_>, event: &RumEvent) -> String {
-    let metadata = reported_metadata(event.metadata.as_deref(), delivery.shared_attributes);
+    let metadata = reported_metadata(event.metadata.as_deref(), delivery);
     let details = json_member(&event.details);
 
     // The fields go in in the order RUM reports them in, which is the order a recorded
@@ -347,39 +360,103 @@ fn instant_document(instant: &::aws_smithy_types::DateTime) -> Value {
 
 /// The event's `metadata` as the SERVICE reports it: the document the client serialized for
 /// THIS event, merged with the attributes the batch declared for every one of its events
-/// (`PutRumEventsRequest$SessionMetadata`) and with where the caller is
-/// ([`super::caller_location`]).
+/// (`PutRumEventsRequest$SessionMetadata`, [`shared_attributes`]), and then the members RUM
+/// itself sets at ingestion — the [`DOMAIN_MEMBER`] the telemetry is attributed to and where
+/// the caller is ([`super::caller_location`]).
 ///
-/// One rule settles all three sources, member by member: an attribute the event's own
-/// document carries is reported exactly as it arrived, and every other source only FILLS IN
-/// a member the event did not report. So a batch's attributes reach every event of that
-/// batch — they are sent once for the batch instead of once per event — while an attribute
-/// spelled in both places is the event's, and the geolocation (RUM's own addition, which no
-/// client serializes) is added to the metadata of EVERY event, including one whose batch and
-/// event carried no metadata at all, whose document is then the location alone. `metadata`
-/// stays the document the client sent ("a JSON serialization of the identity of the user for
-/// this session"): the service fills in what the event did not report rather than re-writing
-/// what it did. A document that is not a JSON OBJECT declares no attributes — so metadata
-/// the client did not serialize as one has no members to add any to and is reported exactly
-/// as it arrived, and a batch whose declared document is not one ([`shared_attributes`])
-/// has no attributes to merge into anything.
-fn reported_metadata(serialized: Option<&str>, shared: Option<&Map<String, Value>>) -> Value {
-    let mut carried = serialized
+/// The three sources are settled member by member, and in that order. A member the event's
+/// own document carries is reported with the value it arrived with, because `metadata` stays
+/// the document the client sent ("a JSON serialization of the identity of the user for this
+/// session"); the batch's attributes only FILL IN a member the event did not report, so they
+/// reach every event of that batch — they are sent once for the batch instead of once per
+/// event — while an attribute spelled in both places is the event's.
+///
+/// The members RUM SETS are RUM's own, so they are reported on the metadata of EVERY event —
+/// including one whose batch and event carried no metadata at all, whose document is then
+/// the service-set members alone — and they sit AFTER every member the client serialized,
+/// in the order [`service_set_members`] lists them. The domain is therefore reported at the
+/// position the SERVICE gives it and not at the one a client that serialized a member of
+/// that name put it at, which matters because `metadata_keys` and `metadata_values` are
+/// flat parallel lists whose positions are what pairs a key with its value.
+///
+/// Which VALUE each of those members carries depends on which side knows it. A member the
+/// client serialized — for the event or for the batch — keeps the value it arrived with,
+/// since only the client knows which of the up-to-five domains a monitor has authority over
+/// the page was served from; a member it serialized nowhere carries the service's own: the
+/// domain authority of the monitor the batch was delivered to
+/// ([`super::AppMonitorRecord::domain_authority`]) and the location the batch arrived from
+/// ([`super::caller_location`]), which no client can report. A batch whose client serialized
+/// no domain and whose monitor names none has no domain for either side to report, so that
+/// one member is then absent.
+///
+/// A document that is not a JSON OBJECT declares no attributes — so metadata the client did
+/// not serialize as one has no members to report any beside and is reported exactly as it
+/// arrived, and a batch whose declared document is not one ([`shared_attributes`]) has no
+/// attributes to merge into anything.
+fn reported_metadata(serialized: Option<&str>, delivery: &Delivery<'_>) -> Value {
+    let carried = serialized
         .map(json_member)
         .unwrap_or_else(|| Value::Object(Map::new()));
-    if let Some(members) = carried.as_object_mut() {
-        if let Some(declared) = shared {
-            for (member, value) in declared {
-                members.entry(member.clone()).or_insert_with(|| value.clone());
-            }
-        }
-        for (member, value) in super::caller_location::OBSERVED_CALLER_LOCATION.members() {
-            members
-                .entry(member.to_string())
-                .or_insert_with(|| Value::String(value.to_string()));
+    let Value::Object(mut client) = carried else {
+        return carried;
+    };
+    if let Some(declared) = delivery.shared_attributes {
+        for (member, value) in declared {
+            client
+                .entry(member.clone())
+                .or_insert_with(|| value.clone());
         }
     }
-    carried
+    // Rebuilt rather than edited in place, because a member RUM sets is reported at the
+    // position RUM gives it: everything the client serialized keeps its own order, and
+    // every service-set member follows it, whether the client serialized one of that name
+    // or not.
+    let service_set = service_set_members(&client, delivery);
+    let mut reported: Map<String, Value> = client
+        .into_iter()
+        .filter(|(member, _)| !service_set.iter().any(|(set, _)| set == member))
+        .collect();
+    reported.extend(service_set);
+    Value::Object(reported)
+}
+
+/// The members RUM sets on an event's metadata at ingestion, each with the value it is
+/// reported with for a client that serialized `client` (the event's own document merged with
+/// its batch's attributes) — in the order they are written: the domain the telemetry is
+/// attributed to first, then where the caller is, widest first.
+///
+/// A member neither side has a value for is not listed, so it is neither reported nor
+/// positioned: a batch whose client serialized no domain and whose monitor names no domain
+/// authority has no domain to report.
+fn service_set_members(
+    client: &Map<String, Value>,
+    delivery: &Delivery<'_>,
+) -> Vec<(String, Value)> {
+    let domain = client
+        .get(DOMAIN_MEMBER)
+        .cloned()
+        .or_else(|| delivery.app_monitor_domain.map(text_value));
+    let location = super::caller_location::OBSERVED_CALLER_LOCATION
+        .members()
+        .into_iter()
+        .map(|(member, observed)| {
+            let reported = client
+                .get(member)
+                .cloned()
+                .unwrap_or_else(|| text_value(observed));
+            (member.to_string(), reported)
+        });
+    domain
+        .map(|domain| (DOMAIN_MEMBER.to_string(), domain))
+        .into_iter()
+        .chain(location)
+        .collect()
+}
+
+/// One service-set member's value as the document carries it: a text, like every member a
+/// client serializes for the session's identity.
+fn text_value(value: &str) -> Value {
+    Value::String(value.to_string())
 }
 
 /// The `event_interaction` of one event: the identifier of the interaction it belongs to,

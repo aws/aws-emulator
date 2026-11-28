@@ -964,6 +964,26 @@ impl AppMonitorRecord {
             .then(|| self.vended_log_group.clone())
     }
 
+    /// The internet domain this monitor's application has authority over, or `None` for a
+    /// monitor that names none (a platform whose application is served from no internet
+    /// domain — see [`platform_requires_domain`]).
+    ///
+    /// A monitor's domain authority is held in exactly ONE of the two modelled forms
+    /// ("either the domain or the domain list", see [`domain_choice_refusal`]), so this is
+    /// the one reading of that choice: `Domain` when the monitor was given one, and
+    /// otherwise the first entry of `DomainList` — the first of the up-to-five domains
+    /// `AppMonitorDomainList` admits, which is the one the stored record names first. It is
+    /// what the data plane reports as the `domain` of the telemetry a batch delivered to
+    /// this monitor whose client reported none itself (see [`rum_event`]).
+    pub fn domain_authority(&self) -> Option<&str> {
+        self.domain.as_deref().or_else(|| {
+            self.domain_list
+                .as_ref()
+                .and_then(|domains| domains.first())
+                .map(String::as_str)
+        })
+    }
+
     /// The resource policy document this monitor carries, for the authorization
     /// evaluation to consult.
     pub fn resource_policy_document(&self) -> Option<String> {

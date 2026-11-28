@@ -19,7 +19,12 @@ aws-smithy-types = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
-serde_json = { workspace = true }
+# `preserve_order`: the RUM event document a read reports is held in the MEMBER ORDER RUM
+# publishes it in — the document's fields in the order the service writes them, and inside
+# `metadata` the members the client serialized followed by the ones RUM sets at ingestion,
+# which the flat `metadata_keys` / `metadata_values` projections pair positionally. Without
+# the feature a `serde_json::Map` re-sorts its members by key and that order is lost.
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing = { workspace = true }
 # Digests the id seed and counter into the modelled 36-character `AppMonitorId`.
 sha2 = { workspace = true }

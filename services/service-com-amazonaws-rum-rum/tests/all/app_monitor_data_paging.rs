@@ -34,6 +34,10 @@ use crate::support::{call, create, emulator, message, REGION};
 /// The monitor every case queries.
 const MONITOR: &str = "paging-monitor";
 
+/// The domain authority that monitor is created with — the one the data plane attributes
+/// its telemetry to, so a seeded document carries the same `metadata` as a delivered one.
+const MONITOR_DOMAIN: &str = "paging.example.com";
+
 /// `2024-01-01T00:00:00Z` in seconds since the epoch: the instant the first seeded event of
 /// a clock-free case carries, with the rest one second apart after it.
 const BASE: i64 = 1_704_067_200;
@@ -102,6 +106,7 @@ fn stored_event(monitor_id: &str, index: usize, instant: i64) -> StoredRumEvent 
                 app_monitor_id: monitor_id,
                 app_monitor_name: MONITOR,
                 app_monitor_version: Some("1.0.0"),
+                app_monitor_domain: Some(MONITOR_DOMAIN),
                 batch_id: BATCH_ID,
                 user_id: None,
                 session_id: None,
@@ -156,7 +161,7 @@ async fn seeded(case: &str, events: Vec<Value>) -> (MultiServiceRouter, Arc<engi
     let monitor_id = create(
         &router,
         case,
-        json!({"Name": MONITOR, "Domain": "paging.example.com"}),
+        json!({"Name": MONITOR, "Domain": MONITOR_DOMAIN}),
     )
     .await;
     if !events.is_empty() {
