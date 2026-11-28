@@ -8,12 +8,13 @@
 //! [`super::domain_lifecycle`]; this suite adds no second copy of it.
 //!
 //! The rule under test: a refusal of a value outside an enumerated type names the values
-//! that type ADMITS, and for an instance type that list is the catalog the SERVICE
-//! publishes — the record of which instance types exist, which every operation resolving
-//! one against it refuses a value outside, and which `ListInstanceTypeDetails` serves. The
-//! `OpenSearchPartitionInstanceType` value set and that catalog are ONE set, so the clause
-//! states every type the service publishes and no type it does not. The message is the
-//! only place the accepted list is stated.
+//! that type ADMITS, and for an instance type that list is the SERVICE's catalog narrowed
+//! to the modelled snapshot the request boundary enforces — the record of which instance
+//! types a request may name, which every operation resolving one against it refuses a value
+//! outside. The catalog `ListInstanceTypeDetails` serves is WIDER (it carries the families
+//! the service has published since that snapshot), so the clause states the narrowing: a
+//! clause naming a type the boundary then refuses would offer a caller a value this service
+//! cannot accept. The message is the only place the accepted list is stated.
 //!
 //! The set belongs to the TYPE rather than to a member, so the rows span the members that
 //! target it — a URI label and two members nested in a structure, on two operations — and
@@ -25,7 +26,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES;
-use service_com_amazonaws_opensearch_amazonopensearchservice::state::published_instance_types;
+use service_com_amazonaws_opensearch_amazonopensearchservice::state::nameable_instance_types;
 use service_common::validation_message::hashed_enum_order;
 
 use super::constraint_refusal_messages::{clause, message, report, value_set};
@@ -42,7 +43,7 @@ const OFFERED_VERSION: &str = "OpenSearch_2.19";
 /// a pair (an EBS-backed family beside its NVMe-backed one).
 ///
 /// Source: the instance types the service's own catalog publishes
-/// (`crate::state::published_instance_types`, which `ListInstanceTypeDetails` serves and
+/// (`crate::state::nameable_instance_types`, which `ListInstanceTypeDetails` serves and
 /// [`super::current_generation_instance_types`] tables), sampled one size per family —
 /// including families the report that asked for this listing did not cite.
 const CURRENT_GENERATIONS: [&str; 10] = [
@@ -77,10 +78,11 @@ async fn create_domain(emulator: &Emulator, name: &str, cluster: Value) -> Answe
         .await
 }
 
-/// The bracketed value set a clause states for the instance-type type: the catalog the
-/// service publishes, in the order this front door states a value set.
+/// The bracketed value set a clause states for the instance-type type: the instance types
+/// a request may NAME — the service's catalog narrowed to the modelled snapshot the request
+/// boundary enforces — in the order this front door states a value set.
 fn published_value_set() -> String {
-    let published = published_instance_types();
+    let published = nameable_instance_types();
     value_set(&hashed_enum_order(&published))
 }
 
@@ -207,12 +209,13 @@ async fn the_stated_set_is_the_catalog_the_listing_serves() {
         );
     }
 
-    // The stated set IS the published catalog: the same values, neither more nor fewer, so
-    // a caller choosing from the message is choosing from what the listing serves.
-    let published: BTreeSet<&str> = published_instance_types().into_iter().collect();
+    // The stated set IS what the boundary accepts: the published catalog narrowed to the
+    // modelled snapshot, neither more nor fewer, so a caller choosing from the message is
+    // choosing a value the service then accepts.
+    let published: BTreeSet<&str> = nameable_instance_types().into_iter().collect();
     assert_eq!(
         listed, published,
-        "the stated set must be the published catalog, got {} values against the catalog's {}",
+        "the stated set must be the accepted catalog, got {} values against the catalog's {}",
         listed.len(),
         published.len()
     );

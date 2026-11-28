@@ -1003,23 +1003,26 @@ pub(super) fn aws_validation_refusal(refusal: &Refusal) -> Option<Refused> {
     )
 }
 
-/// The instance types the service publishes, resolved ONCE per process: the catalog is
+/// The instance types a REQUEST may name, resolved ONCE per process: the catalog is
 /// reference data rather than anything a request carries, so the walk over it and its
 /// ordering are not work a refusal pays per violation.
-static PUBLISHED_INSTANCE_TYPES: LazyLock<Vec<&'static str>> =
-    LazyLock::new(crate::state::published_instance_types);
+static NAMEABLE_INSTANCE_TYPES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(crate::state::nameable_instance_types);
 
-/// `violation` with the INSTANCE-TYPE value set it reports replaced by the set the service
-/// publishes, and every other violation returned unchanged.
+/// `violation` with the INSTANCE-TYPE value set it reports restated in the order the
+/// service's own catalog publishes it, and every other violation returned unchanged.
 ///
 /// A refusal of a value outside an enumerated type names the values that type ADMITS, and
-/// for the instance types that list is the service's own published catalog
-/// ([`PUBLISHED_INSTANCE_TYPES`], over `crate::state::published_instance_types`) — the record
-/// of which instance types exist, which the operations resolving one against it refuse a
-/// value outside. The `OpenSearchPartitionInstanceType` value set this model carries holds
-/// the same instance types, so this states the clause off the CATALOG rather than off the
-/// schema the walk happened to report: the catalog is where a type is published, and a
-/// clause that named anything else could offer a caller a type the service then refuses.
+/// for an instance type those are the ones the request boundary accepts
+/// ([`NAMEABLE_INSTANCE_TYPES`], over `crate::state::nameable_instance_types`): the
+/// service's published catalog narrowed to the `OpenSearchPartitionInstanceType` snapshot
+/// this model carries, which is the set the boundary enforces. The catalog itself is
+/// WIDER — it carries the families the service has published since that snapshot, which
+/// `ListInstanceTypeDetails` and the offering catalog report — so the clause is stated off
+/// the narrowed set rather than off the whole catalog: a clause naming a type the boundary
+/// then refuses would offer a caller something this service cannot accept. What the
+/// catalog decides here is the ORDER and the MEMBERSHIP of that narrowing, so the accepted
+/// list is read off the catalog rather than off the schema the walk happened to report.
 ///
 /// Recognised by the value SET rather than by the member path — the same reading
 /// [`::service_common::validation_message::stated_enum_value_set`] applies — so every member
@@ -1034,7 +1037,7 @@ static PUBLISHED_INSTANCE_TYPES: LazyLock<Vec<&'static str>> =
 fn in_published_instance_types(violation: &Violation) -> Violation {
     let rows = [(
         crate::ops::types::OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES,
-        PUBLISHED_INSTANCE_TYPES.as_slice(),
+        NAMEABLE_INSTANCE_TYPES.as_slice(),
     )];
     ::service_common::validation_message::in_stated_enum_order(violation, &rows)
 }

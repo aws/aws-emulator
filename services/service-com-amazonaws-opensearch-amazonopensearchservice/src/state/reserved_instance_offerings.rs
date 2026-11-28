@@ -245,46 +245,6 @@ pub(super) fn reserved_instance_offering(
     })
 }
 
-/// Where one offering sits in the catalog the service PUBLISHES: the instance type it
-/// reserves, in the order the published instance-type catalog lists them
-/// ([`published_instance_types`]), then the term shortest first, then the payment
-/// option in the order `ReservedInstancePaymentOption` declares them.
-///
-/// A price list is published per instance type, so that is the key a page of it is read
-/// along: a caller walking the catalog sees one instance type's terms and payment options
-/// together, and the same order on every call. The id an entry is STORED under is a digest
-/// of what the entry is, which orders the catalog by nothing a caller can read.
-pub(super) fn offering_catalog_rank(offering: &ReservedInstanceOffering) -> (usize, i32, usize) {
-    let position = |values: &[&str], value: Option<&str>| {
-        values
-            .iter()
-            .position(|candidate| Some(*candidate) == value)
-            .unwrap_or(values.len())
-    };
-    (
-        position(
-            published_instance_type_order(),
-            offering.instance_type.as_deref(),
-        ),
-        offering.duration,
-        position(
-            RESERVED_INSTANCE_PAYMENT_OPTION_VALUES,
-            offering.payment_option.as_deref(),
-        ),
-    )
-}
-
-/// The published instance-type order ([`published_instance_types`]), derived ONCE.
-///
-/// The order is a function of the catalog table alone, so it is the same on every call:
-/// ranking an offering is a lookup in it rather than a fresh walk of the catalog, which
-/// is what keeps ordering a page of a catalog spanning every instance type, term and
-/// payment option proportional to the page rather than to the catalog per entry.
-fn published_instance_type_order() -> &'static [&'static str] {
-    static ORDER: ::std::sync::OnceLock<Vec<&'static str>> = ::std::sync::OnceLock::new();
-    ORDER.get_or_init(published_instance_types)
-}
-
 /// The whole offering catalog, keyed by `ReservedInstanceOfferingId`.
 ///
 /// Reserved Instance offerings are published BY the service for a Region, not created

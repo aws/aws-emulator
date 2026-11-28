@@ -1324,22 +1324,21 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
         Some(association.to_details(domain_name, package))
     }
 
-    /// The published offering catalog, in the ORDER the service publishes it
-    /// ([`offering_catalog_rank`]).
+    /// The published offering catalog, in the order the service publishes it: the order of
+    /// the `ReservedInstanceOfferingId` each entry carries, which is the key the catalog is
+    /// held under.
     ///
-    /// The store is keyed by offering id so a purchase and the id filter can resolve one
-    /// entry, and that key orders the catalog by a digest rather than by anything a
-    /// caller reads — so the listing is published along the catalog's own order instead.
-    /// The order is a function of the records alone, so two reads report the same
-    /// offerings in the same order and a page resumes where the previous one stopped.
+    /// A published order has to be a function of the records alone, so two reads report the
+    /// same offerings in the same order and a page resumes where the previous one stopped.
+    /// The key every entry publishes is its own offering id, and ordering the catalog by it
+    /// interleaves instance type, term and payment option — which is what the recorded
+    /// listing carries, and what keeps a page of the catalog from being one instance type's
+    /// corner of it: the listing is `@paginated` with `MaxResults` capped at 100 over a
+    /// catalog of every instance type the service publishes times each term times each
+    /// payment option, so nesting type over term over payment option would leave a client
+    /// reading page 1 a single instance family and a single term.
     pub fn published_reserved_instance_offerings(&self) -> Vec<&ReservedInstanceOffering> {
-        let mut catalog: Vec<&ReservedInstanceOffering> =
-            self.reserved_instance_offerings.values().collect();
-        // Keyed ONCE per offering rather than once per comparison: the catalog spans
-        // every instance type the service publishes times every term times every
-        // payment option, so its order is computed from one pass over it.
-        catalog.sort_by_cached_key(|offering| offering_catalog_rank(offering));
-        catalog
+        self.reserved_instance_offerings.values().collect()
     }
 
     /// The published offering whose `ReservedInstanceOfferingId` is `offering_id`.

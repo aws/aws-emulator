@@ -20,10 +20,10 @@
 //!   logging, fine-grained access control) is reported off the release that introduced
 //!   it, so it is reported off wherever the engine does not have it and stays reported
 //!   once it is;
-//! * a capability that needs BOTH (encryption at rest together with node-to-node
-//!   encryption: hardware that provides them and an engine release that has them) is
-//!   reported off the pairing, so a family that offers it is still reported unsupported
-//!   on a release older than the features.
+//! * a capability that needs BOTH (the two encryption features: hardware that provides
+//!   them and an engine release that offers encryption at all) is reported off the
+//!   pairing, so a family that offers it is still reported unsupported on a release older
+//!   than the one the service offers encryption from.
 //!
 //! The rows differ along what the rule generalises over: the instance family (burstable,
 //! general purpose, compute-, memory- and storage-optimized, OpenSearch-optimized, the
@@ -35,9 +35,9 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::domain_lifecycle::Emulator;
-// `ENCRYPTION_RELEASE` is the release BOTH features `EncryptionEnabled` reports are
-// available from — AWS documents encryption at rest from 5.1 and node-to-node encryption
-// from 6.0 — stated once in the suite that owns the listing's rules.
+// `ENCRYPTION_RELEASE` is the release the features `EncryptionEnabled` reports are
+// offered from — encryption at rest's, which AWS documents as Elasticsearch 5.1 or later
+// — stated once in the suite that owns the listing's rules.
 use super::instance_type_catalog::{list_type, whole_listing, ENCRYPTION_RELEASE};
 
 /// The engine releases every table below spans: the oldest Elasticsearch release, each
@@ -204,7 +204,8 @@ async fn a_capability_the_engine_provides_is_reported_off_the_release() {
             }
 
             // The two encryption features need hardware that provides them AND an engine
-            // release that has them, so the pairing is what the member reports.
+            // release that offers encryption at all, so the pairing is what the member
+            // reports.
             let expected = encryption && has_engine_feature(release, ENCRYPTION_RELEASE);
             let reported = flag(entry, "EncryptionEnabled", &case);
             assert_eq!(
@@ -239,7 +240,7 @@ async fn an_entry_reports_the_instances_capabilities_on_a_release_without_the_en
     // alone states: on a release OLDER than fine-grained access control, an entry still
     // reports the warm-tier support its instance type provides, reports fine-grained
     // access control off, and reports the two encryption features exactly where the
-    // release has them — off on a release before node-to-node encryption, on from it.
+    // release offers encryption — off on a release before it, on from it.
     // One row per family group that offers both capabilities, read through the
     // `instanceType` filter so the case names one entry.
     for release in ["Elasticsearch_5.1", "Elasticsearch_6.0"] {

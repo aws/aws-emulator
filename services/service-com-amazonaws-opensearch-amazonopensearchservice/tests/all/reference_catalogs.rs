@@ -28,10 +28,11 @@
 //!   publishes neither the provisioned-IOPS sub-type (its attachment provisions nothing)
 //!   nor the magnetic one, which is a previous-generation family's. The published ceiling
 //!   is also the one `CreateDomain` enforces;
-//! * the offering catalog is published in the catalog's own order — by instance type,
-//!   then term, then payment option — and a page of it is a page of that order.
+//! * the offering catalog is published in the order of the offering id each entry
+//!   carries, which interleaves instance type, term and payment option, and a page of it
+//!   is a page of that order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::RESERVED_INSTANCE_PAYMENT_OPTION_VALUES;
@@ -448,51 +449,71 @@ async fn storage_limits_are_the_requested_instance_types_own() {
 async fn the_offering_catalog_is_published_in_catalog_order() {
     let emulator = Emulator::new();
     let catalog = whole_catalog(&emulator, "catalog order").await;
-
-    /// Where one offering sits in the published order: its instance type in the published
-    /// instance-type order, then its term shortest first, then its payment option in the
-    /// order the modelled enum declares them.
-    fn key(offering: &Value) -> (usize, i64, usize) {
-        let position = |values: &[&str], value: Option<&str>| {
-            values
-                .iter()
-                .position(|candidate| Some(*candidate) == value)
-                .unwrap_or(values.len())
-        };
-        (
-            position(
-                &published_instance_types(),
-                offering["InstanceType"].as_str(),
-            ),
-            offering["Duration"].as_i64().unwrap_or_default(),
-            position(
-                RESERVED_INSTANCE_PAYMENT_OPTION_VALUES,
-                offering["PaymentOption"].as_str(),
-            ),
-        )
-    }
-
-    // The order the whole catalog is published in, as the suite's own statement of it.
-    let mut terms: Vec<i64> = RESERVED_INSTANCE_TERMS
-        .iter()
-        .map(|term| i64::from(*term))
-        .collect();
-    terms.sort_unstable();
-    let mut expected: Vec<(usize, i64, usize)> = Vec::new();
-    for instance_type in 0..published_instance_types().len() {
-        for duration in &terms {
-            for payment_option in 0..RESERVED_INSTANCE_PAYMENT_OPTION_VALUES.len() {
-                expected.push((instance_type, *duration, payment_option));
-            }
-        }
-    }
-
-    let published: Vec<(usize, i64, usize)> = catalog.iter().map(key).collect();
     assert_eq!(
-        published, expected,
-        "case the published catalog: expected it published by instance type, then term, \
-         then payment option, got {} offerings",
-        published.len()
+        catalog.len(),
+        published_instance_types().len()
+            * RESERVED_INSTANCE_TERMS.len()
+            * RESERVED_INSTANCE_PAYMENT_OPTION_VALUES.len(),
+        "case the published catalog: expected one offering per instance type, term and \
+         payment option, got {} offerings",
+        catalog.len()
+    );
+
+    // The order is the order of the id each offering publishes: every entry carries one,
+    // they are distinct, and the catalog ascends by it — so the listing is a function of
+    // the published records alone and element N of it is the same offering on every call.
+    let ids: Vec<String> = catalog
+        .iter()
+        .map(|offering| string_member(offering, "ReservedInstanceOfferingId", "catalog order"))
+        .collect();
+    for pair in ids.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "case {} then {}: expected the catalog published in offering-id order",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    // That order INTERLEAVES the three things an offering is of, so a page of the catalog
+    // is not one instance type's corner of it: the first page a client can ask for spans
+    // several instance families and both published terms.
+    let page_size = 100_usize;
+    let answer = describe(&emulator, &format!("maxResults={page_size}")).await;
+    let page = answer.body["ReservedInstanceOfferings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("case page size {page_size}: expected a page of offerings"));
+    assert_eq!(
+        page.len(),
+        page_size.min(catalog.len()),
+        "case page size {page_size}: expected a full page, got {} offerings",
+        page.len()
+    );
+    let families: BTreeSet<String> = page
+        .iter()
+        .map(|offering| {
+            string_member(offering, "InstanceType", "page 1")
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        families.len() > 1,
+        "case page size {page_size}: expected the first page to span several instance \
+         families, got {families:?}"
+    );
+    let terms: BTreeSet<i64> = page
+        .iter()
+        .map(|offering| offering["Duration"].as_i64().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        terms.len(),
+        RESERVED_INSTANCE_TERMS.len(),
+        "case page size {page_size}: expected the first page to span both published \
+         terms, got {terms:?}"
     );
 
     // A PAGE of it is a page of that order: over a table of page sizes, the first page is

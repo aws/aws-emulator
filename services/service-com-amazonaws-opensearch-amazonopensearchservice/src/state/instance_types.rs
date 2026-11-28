@@ -150,6 +150,20 @@ pub(super) const SEVENTH_GENERATION_INTEL_SINCE_OPENSEARCH: (u32, u32) = (2, 13)
 /// it is the emulator's own statement.
 pub(super) const GRAVITON4_SINCE_OPENSEARCH: (u32, u32) = (2, 15);
 
+/// The Elasticsearch release the FIFTH generation of the hot-tier line is offered from —
+/// the general-purpose, compute-optimized and memory-optimized families of that
+/// generation (`m5`, `c5`, `r5`) and the burstable family that succeeded `t2` (`t3`), so
+/// one gate states the generation rather than one per class.
+///
+/// A family is offered from the release the service introduced it on, and the oldest
+/// Elasticsearch releases the service still publishes predate this generation entirely:
+/// their recorded listing carries the previous generations and the storage-optimized
+/// family alone, and none of these four. Like every other generation gate here the
+/// release itself is the emulator's own statement of published content; what it fixes is
+/// that a release predating the generation offers none of it, so the listing is a
+/// function of the release the request names rather than one global generation.
+pub(super) const FIFTH_GENERATION_SINCE_ELASTICSEARCH: (u32, u32) = (5, 1);
+
 /// The instance families neither encryption at rest nor node-to-node encryption is
 /// available on, whatever the engine version
 /// (`InstanceTypeDetails$EncryptionEnabled`). Fine-grained access control requires
@@ -169,14 +183,19 @@ pub fn offers_encryption(instance_type: &str) -> bool {
     !UNENCRYPTED_FAMILIES.contains(&family)
 }
 
-/// The Elasticsearch release BOTH features `InstanceTypeDetails$EncryptionEnabled`
-/// reports are available from.
+/// The Elasticsearch release the features `InstanceTypeDetails$EncryptionEnabled`
+/// reports are offered from.
 ///
-/// AWS documents encryption at rest as requiring OpenSearch or Elasticsearch 5.1 or
-/// later and node-to-node encryption as requiring 6.0 or later; the member reports the
-/// two TOGETHER, and a release has the pair only once it has each of them, so the gate
-/// is the later of the two — node-to-node encryption's.
-pub(super) const ENCRYPTION_SINCE_ELASTICSEARCH: (u32, u32) = (6, 0);
+/// `InstanceTypeDetails$EncryptionEnabled` is documented "whether encryption at rest and
+/// node-to-node encryption are supported for the INSTANCE TYPE", so what it reports is a
+/// capability of the hardware; the one release that withholds it is one older than the
+/// release the service offers encryption on at all, which is encryption at rest's — AWS
+/// documents that feature as requiring OpenSearch or Elasticsearch 5.1 or later, the same
+/// release Amazon Cognito authentication and application logging arrived in. The recorded
+/// listings hold that boundary: a release at or past it reports the pair supported for
+/// every family that provides it, and the recorded listing of an older Elasticsearch
+/// release reports it for none.
+pub(super) const ENCRYPTION_SINCE_ELASTICSEARCH: (u32, u32) = (5, 1);
 
 /// Whether `version` offers both encryption features on `instance_type` — the whole of
 /// what `InstanceTypeDetails$EncryptionEnabled` reports.
@@ -281,32 +300,24 @@ impl CatalogFamily {
     /// The instance types of this family the service PUBLISHES, smallest size first.
     ///
     /// The sizes a family is offered in are the catalog's own
-    /// ([`Self::instance_types`]); which of them a caller may NAME is the model's
-    /// (`OpenSearchPartitionInstanceType`), and a value outside that set never reaches a
-    /// handler at all — the request boundary refuses it against the modelled value set
-    /// before any operation runs. What is published is therefore the INTERSECTION of the
-    /// two ([`nameable_instance_type`]): a listing that offered a caller a size the
-    /// boundary then refuses would publish a type no request can use, and a family left
-    /// with no nameable size is published nowhere.
+    /// ([`Self::instance_types`]) and all of them are published: what a catalog read
+    /// REPORTS is the service's published content, while
+    /// `OpenSearchPartitionInstanceType` is the set a REQUEST may carry — an older
+    /// snapshot of the same catalog, which carries neither the families the service has
+    /// added since nor their sizes. Narrowing publication to that snapshot would withhold
+    /// rows the service publishes, which is what the recorded answers of both catalog
+    /// reads carry: the instance-type listing reports the seventh-generation Intel
+    /// families and the offering catalog reports an entry for every type of the catalog
+    /// below times each term times each payment option.
     pub(super) fn published_types(&self) -> impl Iterator<Item = &'static str> + use<'_> {
-        self.instance_types
-            .iter()
-            .copied()
-            .filter(|instance_type| nameable_instance_type(instance_type))
+        self.instance_types.iter().copied()
     }
 
-    /// Whether this family publishes `instance_type` — a size it is offered in that a
-    /// request may name ([`Self::published_types`]).
+    /// Whether this family publishes `instance_type` — a size it is offered in
+    /// ([`Self::published_types`]).
     pub(super) fn publishes(&self, instance_type: &str) -> bool {
-        self.instance_types.contains(&instance_type) && nameable_instance_type(instance_type)
+        self.instance_types.contains(&instance_type)
     }
-}
-
-/// Whether a request may NAME `instance_type`: whether the model declares it as a value of
-/// `OpenSearchPartitionInstanceType`, the one record of which instance types a caller can
-/// send.
-fn nameable_instance_type(instance_type: &str) -> bool {
-    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.contains(&instance_type)
 }
 
 /// The instance families AWS publishes as PREVIOUS generation for this service — the
@@ -352,13 +363,15 @@ pub(super) fn catalog_rank(entry: &CatalogFamily) -> (u8, &'static str) {
 /// the engine releases that offer a family nor the node roles an instance of it serves,
 /// which is most of what a catalog entry IS.
 ///
-/// What a caller may NAME is the model's own record, though, and a request carrying a value
-/// outside `OpenSearchPartitionInstanceType` is refused at the request boundary before any
-/// operation runs — so what this catalog PUBLISHES is the intersection of the two
-/// ([`CatalogFamily::published_types`]): every instance type a listing offers is one the
-/// caller may then name, and a family or a size the model does not declare is published
-/// nowhere, however the table below spells it. That is what keeps a listing, the limit
-/// catalog, the accepted-value set a refusal enumerates and what a create accepts in step.
+/// What a caller may NAME is the model's own record, and the
+/// `OpenSearchPartitionInstanceType` value set this model carries is an older snapshot of
+/// this same catalog: it declares neither the families the service has published since nor
+/// their sizes. That snapshot therefore bounds what a REQUEST may carry, not what the
+/// service PUBLISHES — a listing narrowed to it would withhold rows the service publishes,
+/// which is what the recorded answers of both catalog reads carry. Every value the snapshot
+/// does declare is a type of this table ([`publishes_every_modelled_instance_type`]), so
+/// nothing a caller may name is missing from the catalog, the limit catalog or the
+/// accepted-value set a refusal enumerates.
 ///
 /// The current generations are the ones this service has offered for a hot tier, newest
 /// first: the Graviton4 and seventh-generation Intel families, the Graviton3 and Graviton2
@@ -443,7 +456,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "m5.24xlarge.search",
         ],
         roles: ROLES_WITH_COORDINATOR,
-        releases: OfferedReleases::Every,
+        releases: OfferedReleases::SinceElasticsearch(FIFTH_GENERATION_SINCE_ELASTICSEARCH),
     },
     CatalogFamily {
         family: "m4",
@@ -523,7 +536,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "c5.18xlarge.search",
         ],
         roles: ROLES_WITH_COORDINATOR,
-        releases: OfferedReleases::Every,
+        releases: OfferedReleases::SinceElasticsearch(FIFTH_GENERATION_SINCE_ELASTICSEARCH),
     },
     CatalogFamily {
         family: "c4",
@@ -655,7 +668,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "r5.24xlarge.search",
         ],
         roles: ROLES_WITH_COORDINATOR,
-        releases: OfferedReleases::Every,
+        releases: OfferedReleases::SinceElasticsearch(FIFTH_GENERATION_SINCE_ELASTICSEARCH),
     },
     CatalogFamily {
         family: "r4",
@@ -869,7 +882,7 @@ pub(super) const INSTANCE_TYPE_CATALOG: &[CatalogFamily] = &[
             "t3.2xlarge.search",
         ],
         roles: ROLES_DATA_AND_MASTER,
-        releases: OfferedReleases::Every,
+        releases: OfferedReleases::SinceElasticsearch(FIFTH_GENERATION_SINCE_ELASTICSEARCH),
     },
     // The burstable previous generation, which the T3 family above succeeded. It is the one
     // previous generation the service did NOT carry over to the OpenSearch engine line: the
@@ -981,8 +994,9 @@ pub fn offered_instance_types(version: EngineVersion) -> Vec<&'static str> {
 ///
 /// The service's own accepted-value list — a value outside it names no instance type at
 /// all ([`publishes_instance_type`]) — so it is what a refusal of an unknown instance
-/// type enumerates, and it is the `OpenSearchPartitionInstanceType` value set the request
-/// boundary admits, which carries the same families.
+/// type enumerates, and it carries every value of the older
+/// `OpenSearchPartitionInstanceType` snapshot plus the families and sizes the service has
+/// published since ([`publishes_every_modelled_instance_type`]).
 /// [`offered_instance_types`] is the same catalog narrowed to one release;
 /// this is the set membership itself, which no release decides.
 pub fn published_instance_types() -> Vec<&'static str> {
@@ -1005,6 +1019,34 @@ pub fn publishes_every_modelled_instance_type() -> bool {
     OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES
         .iter()
         .all(|instance_type| publishes_instance_type(instance_type))
+}
+
+/// Whether a REQUEST may name `instance_type`: whether `OpenSearchPartitionInstanceType`
+/// declares it.
+///
+/// That value set is an older SNAPSHOT of the catalog
+/// ([`publishes_every_modelled_instance_type`] holds that it loses nothing), and it is the
+/// set the request boundary enforces: a member targeting that enum is refused against it
+/// before any operation runs. So it bounds what a request may CARRY, where
+/// [`published_instance_types`] is what a catalog read REPORTS.
+pub fn nameable_instance_type(instance_type: &str) -> bool {
+    OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.contains(&instance_type)
+}
+
+/// The instance types a REQUEST may name, in the order the catalog publishes them: the
+/// published catalog narrowed to the snapshot the request boundary enforces
+/// ([`nameable_instance_type`]).
+///
+/// This is what a refusal of an unknown instance type enumerates, because a refusal names
+/// the values the enumerated TYPE admits: a clause that named the whole published catalog
+/// would offer a caller a type the boundary then refuses. The ORDER is the catalog's, so
+/// the set a caller is offered is read off the catalog rather than off the schema the
+/// validation walk happened to report.
+pub fn nameable_instance_types() -> Vec<&'static str> {
+    published_instance_types()
+        .into_iter()
+        .filter(|instance_type| nameable_instance_type(instance_type))
+        .collect()
 }
 
 /// Whether the instance family of `instance_type` offers warm storage at all — what

@@ -31,9 +31,10 @@ use serde_json::Value;
 
 use super::domain_lifecycle::{error_code, Answer, Emulator, PREFIX};
 
-/// The instance type every catalog call below asks about: a burstable type on no
-/// engine-release gate, so the only thing a row can turn on is the engine version.
-const INSTANCE_TYPE: &str = "t3.small.search";
+/// The instance type every catalog call below asks about: a previous-generation type the
+/// catalog offers on every release it publishes, so the only thing a row can turn on is
+/// the engine version.
+const INSTANCE_TYPE: &str = "m4.large.search";
 
 /// `ListVersions`: `GET /2021-01-01/opensearch/versions`, read to the end of its
 /// pagination, so what it returns is the WHOLE advertised catalog however it is paged.

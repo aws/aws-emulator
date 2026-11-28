@@ -57,7 +57,7 @@ const RELEASES: [&str; 8] = [
     "OpenSearch_2.19",
 ];
 
-// The release BOTH features `EncryptionEnabled` reports are available from
+// The release the features `EncryptionEnabled` reports are offered from
 // (`ENCRYPTION_RELEASE`), and the families neither is available on at all
 // (`UNENCRYPTED_FAMILIES`), are imported above: the rule is stated once, so a correction
 // to it cannot reach one suite only.

@@ -16,7 +16,7 @@
 //! lexicographic.
 
 use serde_json::json;
-use service_com_amazonaws_opensearch_amazonopensearchservice::state::published_instance_types;
+use service_com_amazonaws_opensearch_amazonopensearchservice::state::nameable_instance_types;
 use service_common::validation_message::enum_value_bucket;
 
 use super::constraint_refusal_messages::message;
@@ -71,7 +71,7 @@ fn listed(answer: &Answer, case: &str) -> Vec<String> {
 async fn the_value_set_is_listed_in_the_order_computed_from_the_values() {
     let emulator = Emulator::new();
 
-    let published = published_instance_types();
+    let published = nameable_instance_types();
 
     // The rows span the members the type is carried in and the calls one client makes: a
     // URI label asked twice, and a member nested in a structure on another operation.
@@ -101,15 +101,15 @@ async fn the_value_set_is_listed_in_the_order_computed_from_the_values() {
             );
         }
 
-        // Nothing is lost or invented by the ordering: it is a permutation of the catalog
-        // the clause states as accepted.
+        // Nothing is lost or invented by the ordering: it is a permutation of the set the
+        // clause states as accepted.
         let mut sorted = stated.clone();
         sorted.sort();
         let mut catalog: Vec<String> = published.iter().map(|value| (*value).to_owned()).collect();
         catalog.sort();
         assert_eq!(
             sorted, catalog,
-            "case {case}: the listing must be a permutation of the published catalog, got {} \
+            "case {case}: the listing must be a permutation of the accepted set, got {} \
              values against {}",
             stated.len(),
             published.len()

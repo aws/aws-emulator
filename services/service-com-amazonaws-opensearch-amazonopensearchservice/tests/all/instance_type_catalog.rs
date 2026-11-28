@@ -48,7 +48,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::ops::types::OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES;
-use service_com_amazonaws_opensearch_amazonopensearchservice::state::publishes_every_modelled_instance_type;
+use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
+    published_instance_types, publishes_every_modelled_instance_type,
+};
 
 use super::domain_lifecycle::{error_code, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS};
 
@@ -123,12 +125,16 @@ const DATA_ONLY_FAMILIES: [&str; 7] = ["i7i", "i8g", "i8ge", "oi2", "om2", "or1"
 /// Shared with the sibling suites that state the same rule about one entry.
 pub(crate) const UNENCRYPTED_FAMILIES: [&str; 2] = ["m3", "t2"];
 
-/// The Elasticsearch release both features `InstanceTypeDetails$EncryptionEnabled`
-/// reports are available from: AWS documents encryption at rest from 5.1 and
-/// node-to-node encryption from 6.0, and the member reports the pair.
+/// The Elasticsearch release the features `InstanceTypeDetails$EncryptionEnabled`
+/// reports are offered from: the member is documented "whether encryption at rest and
+/// node-to-node encryption are supported for the INSTANCE TYPE"
+/// (`smithy_query(query="doc",shape="InstanceTypeDetails",member="EncryptionEnabled")`),
+/// so it reports a capability of the hardware, and the only release that withholds it is
+/// one older than the release the service offers encryption on at all — encryption at
+/// rest's, which AWS documents as Elasticsearch 5.1 or later.
 ///
 /// Shared with the sibling suites that state the same rule about one entry.
-pub(crate) const ENCRYPTION_RELEASE: (u32, u32) = (6, 0);
+pub(crate) const ENCRYPTION_RELEASE: (u32, u32) = (5, 1);
 
 /// The burstable families, which UltraWarm cannot be attached to.
 const BURSTABLE_FAMILIES: [&str; 3] = ["t2", "t3", "t4g"];
@@ -340,8 +346,12 @@ async fn the_listing_is_published_in_the_catalogs_documented_order() {
 
     for version in VERSIONS {
         let reported = instance_types(&whole_listing(&emulator, version, "").await);
+        // Every release publishes the generations it offers, and the smallest listing the
+        // catalog publishes is the oldest Elasticsearch releases' — the previous
+        // generations and the storage-optimized family that succeeded the previous
+        // generation's, whose membership [`super::published_catalog_keying`] holds.
         assert!(
-            reported.len() > 50,
+            reported.len() >= 40,
             "case {version}: expected the release's whole catalog, got {} entries",
             reported.len()
         );
@@ -397,25 +407,29 @@ async fn the_listing_is_published_in_the_catalogs_documented_order() {
         }
     }
 
-    // The catalog is the SERVICE's and not the modelled value set: the value set is the
-    // instance types that EXIST, one list for the whole service, while a listing is the
-    // ones one RELEASE offers — so a release's listing is a strict subset of that set and
-    // no listing is the set itself. A listing read off the enum could not answer this.
+    // The catalog is the SERVICE's and not the modelled value set: that set is an older
+    // SNAPSHOT of this catalog — it declares neither the families the service has
+    // published since nor their sizes — so it bounds what a REQUEST may carry rather than
+    // what a listing reports. A release's listing therefore carries types outside it, and
+    // is still narrower than the whole catalog, because a listing is the types one RELEASE
+    // offers. A listing read off the enum could not answer this.
     for version in ["OpenSearch_2.15", "OpenSearch_2.19", "Elasticsearch_7.10"] {
         let reported = instance_types(&whole_listing(&emulator, version, "").await);
-        for instance_type in &reported {
-            assert!(
-                OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.contains(&instance_type.as_str()),
-                "case {version}: expected every published type to be one the service accepts, \
-                 got {instance_type}"
-            );
-        }
         assert!(
-            reported.len() < OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.len(),
+            reported
+                .iter()
+                .any(|instance_type| !OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES
+                    .contains(&instance_type.as_str())),
+            "case {version}: expected the listing to publish types the modelled snapshot \
+             does not declare, got {} entries",
+            reported.len()
+        );
+        assert!(
+            reported.len() < published_instance_types().len(),
             "case {version}: expected one release's catalog to be narrower than the whole \
-             accepted set, got {} of {}",
+             published catalog, got {} of {}",
             reported.len(),
-            OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES.len()
+            published_instance_types().len()
         );
     }
 
@@ -939,9 +953,25 @@ async fn anchored_entries_are_reported_exactly() {
             "Elasticsearch_5.1",
             json!({
                 "InstanceType": "c4.large.search",
-                "EncryptionEnabled": false,
+                "EncryptionEnabled": true,
                 "CognitoEnabled": true,
                 "AppLogsEnabled": true,
+                "AdvancedSecurityEnabled": false,
+                "WarmEnabled": true,
+                "InstanceRole": ["data", "master"],
+            }),
+        ),
+        // The same family on a release OLDER than the one the service offers encryption
+        // from: the capability the instance provides is still reported, and the two
+        // encryption features are not — so the release half of that member is anchored on
+        // a family the features ARE available on, not only on one they never are.
+        (
+            "Elasticsearch_1.5",
+            json!({
+                "InstanceType": "c4.large.search",
+                "EncryptionEnabled": false,
+                "CognitoEnabled": false,
+                "AppLogsEnabled": false,
                 "AdvancedSecurityEnabled": false,
                 "WarmEnabled": true,
                 "InstanceRole": ["data", "master"],
