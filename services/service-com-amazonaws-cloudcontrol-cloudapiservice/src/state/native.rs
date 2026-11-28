@@ -140,6 +140,61 @@ pub const HANDLER_ERROR_INVALID_REQUEST: &str = "InvalidRequest";
 /// that service's refusal of it ([`NativeRefusal::Rejected`]).
 pub const HANDLER_ERROR_GENERAL_SERVICE_EXCEPTION: &str = "GeneralServiceException";
 
+/// Why the OWNING service would refuse the call a resource type's READ handler carries a
+/// REFERENCE in — the verdict that handler fails with when the reference it was handed never
+/// reaches an existence question at all.
+///
+/// A read is the type's handler forwarding that reference to an API of the owning service, so
+/// a reference that API will not take is refused THERE, before anything about any store is
+/// asked: the answer is the same whether or not a resource of that reference was ever
+/// created, which is what makes it a different class of refusal from absence. A caller tells
+/// the two apart by the verdict it is answered — a reference it cannot name a resource with
+/// is the caller's to fix, where an absent resource is one to create or stop polling for.
+///
+/// Narrower than [`NativeRefusal`] on purpose: the verdicts that refusal carries about a
+/// store's CONTENTS — absent, already there, at capacity — are answers to a question this one
+/// was never asked, so none of them can be stated here. What is left is the split
+/// [`NativeRefusal`]'s own two catch-all codes make: invalid input from the user, which no
+/// resource of the type could ever answer to ([`Self::Invalid`]), and an error the owning
+/// service raised that the handler maps to no verdict of its own ([`Self::Rejected`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum UnreadableReference {
+    /// The reference lies outside the DOMAIN the type's schema publishes for its identifier,
+    /// so the read handler fails with [`HANDLER_ERROR_INVALID_REQUEST`]. Carries the owning
+    /// service's own refusal of the call that was made.
+    Invalid(String),
+    /// The owning service raised an error about that call which the handler maps to no
+    /// verdict of its own, so it fails with [`HANDLER_ERROR_GENERAL_SERVICE_EXCEPTION`].
+    /// Carries that service's own diagnostic.
+    ///
+    /// No provider states one yet: every reference a provider here judges is judged against
+    /// the DOMAIN its type's schema publishes, which is invalid input from the user whichever
+    /// side spots it ([`Self::Invalid`]). The verdict is stated because the two codes are the
+    /// whole split a handler's catch-all verdicts make, so a provider whose owning service
+    /// refuses a read call for a reason the store does not settle has the honest code to
+    /// report it under rather than the one that calls the caller wrong.
+    Rejected(String),
+}
+
+impl UnreadableReference {
+    /// The `HandlerErrorCode` the read handler failed with — a value of the model's own
+    /// `HandlerErrorCode` enum, which `crate::state`'s wire-vocabulary check pins.
+    pub fn handler_error_code(&self) -> &'static str {
+        match self {
+            Self::Invalid(_) => HANDLER_ERROR_INVALID_REQUEST,
+            Self::Rejected(_) => HANDLER_ERROR_GENERAL_SERVICE_EXCEPTION,
+        }
+    }
+
+    /// The owning service's own answer to the refused call, which the handler's verdict
+    /// carries as its diagnostic.
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Invalid(detail) | Self::Rejected(detail) => detail,
+        }
+    }
+}
+
 /// EVERY property each resource type's registry schema declares, by `TypeName`.
 ///
 /// One row per type whose provider reads a resource model: the set is the PROVIDER's, stated
@@ -282,6 +337,25 @@ pub trait NativeResourceProvider: Send + Sync {
     /// The resource model of `identifier` in `region`, or `None` when the owning service
     /// holds no such resource there.
     fn read(&self, region: &str, identifier: &str) -> Option<Value>;
+
+    /// Why the OWNING service would refuse the call this type's READ handler carries
+    /// `identifier` in, or `None` where that call is one it would take.
+    ///
+    /// Asked BEFORE a resource is resolved, because the handler's own call is: a reference
+    /// the owning service's read will not accept at the member it arrives on is refused by
+    /// that service before it answers any existence question, so the handler's verdict is
+    /// about the reference ([`UnreadableReference`]) rather than about a resource that cannot
+    /// be found — and reporting it as absence would tell a caller to create what it cannot
+    /// name.
+    ///
+    /// A provider that states no such rule answers `None`, the position every catalogue of
+    /// this crate takes about what it does not state, and its references are resolved by
+    /// [`Self::read`] alone: what the owning service's API takes at that member is that
+    /// service's to publish, so a provider states it only where that service does.
+    fn unreadable_reference(&self, identifier: &str) -> Option<UnreadableReference> {
+        let _ = identifier;
+        None
+    }
 
     /// The resources of this type the owning service holds in `region`, as
     /// `(primary identifier, resource model)` in identifier order: at most `limit` of

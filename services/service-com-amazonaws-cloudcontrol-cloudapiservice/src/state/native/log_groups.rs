@@ -38,7 +38,7 @@ use ::service_com_amazonaws_cloudwatchlogs_logs_20140328::state as logs;
 
 use super::{
     epoch_millis, require_held, require_value, text, window, LogsState, NativeRefusal,
-    NativeResourceProvider,
+    NativeResourceProvider, UnreadableReference,
 };
 
 /// The classes of log group the owning service's model admits, which is the catalogue a
@@ -55,6 +55,13 @@ const IDENTIFIER_PROPERTY: &str = "LogGroupName";
 /// The type's one read-only property: the group's ARN
 /// (`readOnlyProperties: ["/properties/Arn"]`).
 const ARN: &str = "Arn";
+
+/// The member of the call this type's READ handler makes that carries the reference it was
+/// handed: the read reports the group through `logs:DescribeLogGroups`, which takes the name
+/// as "the prefix to match" (`logGroupNamePrefix`) — a member whose shape is the owning
+/// service's own `LogGroupName`, which is the same domain this type's schema publishes for
+/// its `LogGroupName` property.
+const READ_PREFIX_MEMBER: &str = "logGroupNamePrefix";
 
 /// The class of the log group (`LogGroupClass`).
 const LOG_GROUP_CLASS: &str = "LogGroupClass";
@@ -141,6 +148,17 @@ impl NativeResourceProvider for LogGroupProvider {
     /// the same spelling this provider reports as the group's `Arn`.
     fn resource_arn(&self, region: &str, identifier: &str) -> Option<String> {
         Some(logs::log_group_arn(region, identifier, true))
+    }
+
+    /// The read forwards the reference to `logs:DescribeLogGroups` at its
+    /// [`READ_PREFIX_MEMBER`], so a reference outside what the owning service takes there —
+    /// a value past either end of that shape's length or carrying a character its class
+    /// excludes — is refused by that call, in that service's own words, before any group is
+    /// looked for. No log group can carry such a name, so it is invalid input from the user
+    /// rather than a group that is not there.
+    fn unreadable_reference(&self, identifier: &str) -> Option<UnreadableReference> {
+        logs::log_group_name_member_refusal(READ_PREFIX_MEMBER, identifier)
+            .map(UnreadableReference::Invalid)
     }
 
     fn read(&self, region: &str, identifier: &str) -> Option<Value> {

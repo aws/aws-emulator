@@ -267,6 +267,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .map_err(crate::scaffolded::Scaffolded::validation)?;
 
+        // This read IS the resource type's read handler being called with that reference, so
+        // a reference the OWNING service's own read will not take is answered with the
+        // verdict that handler fails with — not reported as a resource that cannot be found,
+        // which would tell a caller to create what it cannot even name. Asked before
+        // anything is resolved, because the handler's call is refused before it answers any
+        // existence question ([`crate::state::unreadable_identifier`]).
+        if let Some(refusal) =
+            crate::state::unreadable_identifier(&native, &input.type_name, &input.identifier)
+        {
+            let message = Some(crate::state::unreadable_identifier_refusal(
+                &input.type_name,
+                &refusal,
+            ));
+            return Err(match refusal {
+                // "The resource handler has returned that invalid input from the user has
+                // generated a generic exception" (`InvalidRequestException`).
+                crate::state::native::UnreadableReference::Invalid(_) => {
+                    GetResourceErrorModeled::InvalidRequestException(InvalidRequestException {
+                        message,
+                    })
+                }
+                // "...that the downstream service generated an error that doesn't map to any
+                // other handler error code" (`GeneralServiceException`).
+                crate::state::native::UnreadableReference::Rejected(_) => {
+                    GetResourceErrorModeled::GeneralServiceException(GeneralServiceException {
+                        message,
+                    })
+                }
+            }
+            .into());
+        }
+
         let now = ::std::time::SystemTime::now();
         // What this store owes an OWNING service's own API, carried out before the store is
         // locked ([`crate::state::owning_api::settle`]).

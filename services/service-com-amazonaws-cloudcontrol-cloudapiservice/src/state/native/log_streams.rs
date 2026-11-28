@@ -27,7 +27,10 @@ use ::std::time::SystemTime;
 use ::serde_json::{Map, Value};
 use ::service_com_amazonaws_cloudwatchlogs_logs_20140328::state as logs;
 
-use super::{epoch_millis, require_value, LogsState, NativeRefusal, NativeResourceProvider};
+use super::{
+    epoch_millis, require_value, LogsState, NativeRefusal, NativeResourceProvider,
+    UnreadableReference,
+};
 
 /// The `TypeName` this provider stands behind.
 pub const TYPE_NAME: &str = "AWS::Logs::LogStream";
@@ -58,6 +61,18 @@ const MAX_STREAM_NAME_CHARACTERS: usize = 512;
 
 /// The characters `LogStreamName`'s pattern excludes.
 const EXCLUDED_STREAM_NAME_CHARACTERS: [char; 2] = [':', '*'];
+
+/// The member of the call this type's READ handler makes that carries the GROUP segment of
+/// the reference: the read reports the stream through `logs:DescribeLogStreams`, which takes
+/// the group to list the streams of as `logGroupName` — the same `LogGroupName` shape of the
+/// owning service the group type's own read submits its reference at.
+const READ_GROUP_MEMBER: &str = "logGroupName";
+
+/// The member of that same call which carries the STREAM segment: "the prefix to match"
+/// (`logStreamNamePrefix`), whose shape is the owning service's `LogStreamName` — a WIDER
+/// domain than a group name's, so each segment is judged against the shape of the member it
+/// travels on rather than against one rule for both.
+const READ_STREAM_PREFIX_MEMBER: &str = "logStreamNamePrefix";
 
 /// The CloudWatch Logs log streams of one engine, as Cloud Control API resources.
 pub struct LogStreamProvider {
@@ -103,6 +118,20 @@ impl NativeResourceProvider for LogStreamProvider {
     fn resource_arn(&self, region: &str, identifier: &str) -> Option<String> {
         let (group, stream) = segments(identifier)?;
         Some(logs::log_stream_arn(region, group, stream))
+    }
+
+    /// The read forwards the two segments of the reference to `logs:DescribeLogStreams` at
+    /// its [`READ_GROUP_MEMBER`] and [`READ_STREAM_PREFIX_MEMBER`], so a reference the owning
+    /// service will not take at either member is refused by that call, in that service's own
+    /// words, before any stream is looked for: no stream can live in a group of a name
+    /// CloudWatch Logs cannot hold, and none can answer to a name of its own that service
+    /// will not match on. The segments are judged in the order the type's schema lists its
+    /// identifier's pointers, each against the shape of the member it travels on.
+    fn unreadable_reference(&self, identifier: &str) -> Option<UnreadableReference> {
+        let (group, stream) = segments(identifier)?;
+        logs::log_group_name_member_refusal(READ_GROUP_MEMBER, group)
+            .or_else(|| logs::log_stream_name_member_refusal(READ_STREAM_PREFIX_MEMBER, stream))
+            .map(UnreadableReference::Invalid)
     }
 
     fn read(&self, region: &str, identifier: &str) -> Option<Value> {

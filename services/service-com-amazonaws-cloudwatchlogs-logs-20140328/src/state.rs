@@ -2625,6 +2625,126 @@ pub fn validation_message(member: &str, constraint: &str) -> String {
     crate::service::one_violation_message(member, constraint)
 }
 
+/// Why this service would refuse `value` submitted at `member`, for a member whose shape is
+/// `LogGroupName` (`@length` 1..512, `@pattern ^[\.\-_/#A-Za-z0-9]+$`,
+/// `smithy_query(query="shape",shape="LogGroupName")`) — or `None` for a name that shape
+/// admits.
+///
+/// Every member of this service's API that carries a log group name targets that one shape
+/// (`logGroupName`, and the `logGroupNamePrefix` of the reads), so one reading answers for all
+/// of them and the clause names whichever member the caller is about to submit the name on.
+///
+/// Worded through the one envelope every refusal of this service is worded through
+/// (`crate::service`'s `constraint_envelope`), so a name judged here reads exactly as the same
+/// name refused by the framework's own validating walk does: the clause naming the member and
+/// the constraint it failed, or — for a name past the bound the two log-name shapes share —
+/// the one sentence this service states that bound with.
+///
+/// Published for a CALLER acting on an account's behalf — another emulated service's resource
+/// handler, which reaches a log group by making a call of this service's own — so what that
+/// caller reports for a name this service would not take is this service's own refusal of the
+/// call, rather than a domain or a wording restated elsewhere.
+pub fn log_group_name_member_refusal(member: &str, value: &str) -> Option<String> {
+    crate::service::constraint_envelope(&[::smithy_server_runtime::Violation {
+        path: member.to_string(),
+        kind: log_group_name_violation(value)?,
+        // A clause about a scalar member names the position alone, so the name a caller
+        // submitted travels into no refusal of it.
+        value: None,
+        sensitive: false,
+    }])
+}
+
+/// The `@pattern` the model declares on `LogGroupName`
+/// (`smithy_query(query="shape",shape="LogGroupName")`), which is the expression a clause
+/// about a member carrying a log group name states — rendered in the form AWS publishes by
+/// `crate::service`, which owns that rendering for every `@pattern` this service states.
+const DECLARED_LOG_GROUP_NAME_PATTERN: &str = r"^[\.\-_/#A-Za-z0-9]+$";
+
+/// The constraint of its shape `value` fails as a log group name, or `None` where it is a name
+/// that shape admits.
+///
+/// The `@length` is judged at either end first and the character class after it, so a name
+/// that breaks both is reported for its length — the one of the two this service states a
+/// sentence of its own for. Both the bounds and the class are the ONE reading of which names
+/// CloudWatch Logs holds (`service_common::cloudwatch_logs`), so the shape this judges a name
+/// by cannot drift from the shape the handlers hold one to.
+fn log_group_name_violation(value: &str) -> Option<::smithy_server_runtime::ViolationKind> {
+    use ::service_common::cloudwatch_logs::{
+        is_log_group_name, MAX_LOG_GROUP_NAME_CHARS, MIN_LOG_GROUP_NAME_CHARS,
+    };
+    use ::smithy_server_runtime::ViolationKind;
+
+    let characters = value.chars().count();
+    if characters < MIN_LOG_GROUP_NAME_CHARS {
+        return Some(ViolationKind::MinLength(
+            i64::try_from(MIN_LOG_GROUP_NAME_CHARS).unwrap_or(i64::MAX),
+        ));
+    }
+    if characters > MAX_LOG_GROUP_NAME_CHARS {
+        return Some(ViolationKind::MaxLength(
+            i64::try_from(MAX_LOG_GROUP_NAME_CHARS).unwrap_or(i64::MAX),
+        ));
+    }
+    // Within the bounds, what is left of the shape is its character class.
+    (!is_log_group_name(value))
+        .then(|| ViolationKind::Pattern(DECLARED_LOG_GROUP_NAME_PATTERN.to_string()))
+}
+
+/// Why this service would refuse `value` submitted at `member`, for a member whose shape is
+/// `LogStreamName` (`@length` 1..512, `@pattern ^[^:*]*$`,
+/// `smithy_query(query="shape",shape="LogStreamName")`) — or `None` for a name that shape
+/// admits.
+///
+/// The sibling of [`log_group_name_member_refusal`], for the OTHER log-name shape of this
+/// service: every member carrying a stream name targets it (`logStreamName`, and the
+/// `logStreamNamePrefix` of the reads), and its domain is WIDER than a group name's — the two
+/// characters CloudWatch Logs keeps for addressing and matching are the only ones it excludes
+/// — so a caller that holds a reference to a stream learns what this service answers for the
+/// member it is about to submit rather than what it answers for a group.
+pub fn log_stream_name_member_refusal(member: &str, value: &str) -> Option<String> {
+    crate::service::constraint_envelope(&[::smithy_server_runtime::Violation {
+        path: member.to_string(),
+        kind: log_stream_name_violation(value)?,
+        value: None,
+        sensitive: false,
+    }])
+}
+
+/// The `@pattern` the model declares on `LogStreamName`
+/// (`smithy_query(query="shape",shape="LogStreamName")`), stated in a clause the way
+/// `crate::service` publishes it.
+const DECLARED_LOG_STREAM_NAME_PATTERN: &str = r"^[^:*]*$";
+
+/// The characters that pattern excludes: the colon CloudWatch Logs addresses with and the
+/// wildcard it matches with, as the expression above spells them.
+const LOG_STREAM_NAME_EXCLUDED_CHARACTERS: [char; 2] = [':', '*'];
+
+/// The constraint of its shape `value` fails as a log stream name, or `None` where it is a
+/// name that shape admits — the two bounds first, then the class, as
+/// [`log_group_name_violation`] judges a group's.
+fn log_stream_name_violation(value: &str) -> Option<::smithy_server_runtime::ViolationKind> {
+    use ::service_common::cloudwatch_logs::{MAX_LOG_GROUP_NAME_CHARS, MIN_LOG_GROUP_NAME_CHARS};
+    use ::smithy_server_runtime::ViolationKind;
+
+    // The `@length` the model declares is the same on both log-name shapes, which is why this
+    // service states one sentence for the bound they share.
+    let characters = value.chars().count();
+    if characters < MIN_LOG_GROUP_NAME_CHARS {
+        return Some(ViolationKind::MinLength(
+            i64::try_from(MIN_LOG_GROUP_NAME_CHARS).unwrap_or(i64::MAX),
+        ));
+    }
+    if characters > MAX_LOG_GROUP_NAME_CHARS {
+        return Some(ViolationKind::MaxLength(
+            i64::try_from(MAX_LOG_GROUP_NAME_CHARS).unwrap_or(i64::MAX),
+        ));
+    }
+    value
+        .contains(LOG_STREAM_NAME_EXCLUDED_CHARACTERS)
+        .then(|| ViolationKind::Pattern(DECLARED_LOG_STREAM_NAME_PATTERN.to_string()))
+}
+
 /// Judge a `logGroupNamePattern` — the member `ListLogGroups` and
 /// `ListAggregateLogGroupSummaries` share — answering the message to refuse it with.
 ///

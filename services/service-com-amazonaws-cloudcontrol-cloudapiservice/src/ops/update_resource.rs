@@ -459,6 +459,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }),
         )
         .map_err(crate::scaffolded::Scaffolded::validation)?;
+        // The patch is applied to the model the type's READ handler reports, so this request
+        // makes that handler's own read call with the reference it carried: a reference the
+        // OWNING service's read will not take is answered with the verdict that handler fails
+        // with, rather than reported as a resource that cannot be found
+        // ([`crate::state::unreadable_identifier`], the one reading of it for every operation
+        // that resolves a reference through that read).
+        if let Some(refusal) =
+            crate::state::unreadable_identifier(&native, &input.type_name, &input.identifier)
+        {
+            let message = Some(crate::state::unreadable_identifier_refusal(
+                &input.type_name,
+                &refusal,
+            ));
+            return Err(match refusal {
+                // "The resource handler has returned that invalid input from the user has
+                // generated a generic exception" (`InvalidRequestException`).
+                crate::state::native::UnreadableReference::Invalid(_) => {
+                    UpdateResourceErrorModeled::InvalidRequestException(InvalidRequestException {
+                        message,
+                    })
+                }
+                // "...that the downstream service generated an error that doesn't map to any
+                // other handler error code" (`GeneralServiceException`).
+                crate::state::native::UnreadableReference::Rejected(_) => {
+                    UpdateResourceErrorModeled::GeneralServiceException(GeneralServiceException {
+                        message,
+                    })
+                }
+            }
+            .into());
+        }
+
         let fingerprint = crate::state::request_fingerprint(&[
             Some(Self::NAME),
             Some(&input.type_name),

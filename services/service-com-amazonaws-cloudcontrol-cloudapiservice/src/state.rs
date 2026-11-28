@@ -2116,6 +2116,46 @@ pub fn resource_not_found_refusal(type_name: &str, identifier: &str) -> String {
     )
 }
 
+/// Why the resource type's READ handler could not carry the reference a request addressed a
+/// resource by to the owning service's own read at all.
+///
+/// Asked by every operation that resolves a reference through that read, BEFORE it reports
+/// anything about the resource: a reference the owning service will not accept at the member
+/// the handler submits it on is refused by that service before it answers any existence
+/// question ([`native::UnreadableReference`]), so what the operation reports is the verdict
+/// the handler failed with and not a resource that cannot be found.
+///
+/// `None` for a reference that read would take, for a type whose provider states no such rule
+/// and for a type whose resources live in this service's OWN store — whose read is this store,
+/// which takes any identifier the model admits.
+pub fn unreadable_identifier(
+    native: &NativeResources,
+    type_name: &str,
+    identifier: &str,
+) -> Option<native::UnreadableReference> {
+    native.provider(type_name)?.unreadable_reference(identifier)
+}
+
+/// The `Message` a resource-level operation refuses such a reference with: the handler
+/// envelope ([`handler_failure_message`]) around the owning service's own answer to the
+/// refused call, under the `HandlerErrorCode` that handler failed with.
+///
+/// The token is minted here for the same reason the absent-resource refusal's is
+/// ([`resource_not_found_refusal`]): the handler invocation this refusal reports IS this call,
+/// so nothing was accepted, there is no resource operation request to poll and no record for
+/// the token to name.
+pub fn unreadable_identifier_refusal(
+    type_name: &str,
+    refusal: &native::UnreadableReference,
+) -> String {
+    handler_failure_message(
+        type_name,
+        refusal.detail(),
+        refusal.handler_error_code(),
+        &mint_token(),
+    )
+}
+
 /// How a mutating operation words a refusal caused by the request itself, with the
 /// prefix Cloud Control API states an invalid request behind.
 pub fn invalid_request_message(detail: &str) -> String {
@@ -2703,6 +2743,8 @@ mod tests {
         for code in [
             EffectFailure::ResourceGone.error_code(),
             EffectFailure::ResourceExists.error_code(),
+            native::UnreadableReference::Invalid(String::new()).handler_error_code(),
+            native::UnreadableReference::Rejected(String::new()).handler_error_code(),
         ] {
             assert!(
                 crate::ops::types::HANDLER_ERROR_CODE_VALUES.contains(&code),
