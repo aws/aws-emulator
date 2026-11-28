@@ -54,29 +54,12 @@ pub struct AccountSetupInProgressException {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InvalidInputException")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InvalidInputException {
     pub code: Option<String>,
     pub docs: Option<String>,
     pub message: Option<String>,
     pub tip: Option<String>,
-}
-
-/// An input-validation refusal carries its sub-classification in the body's `code`
-/// (`crate::scaffolded::INVALID_PARAMS_CODE`), which is what tells it apart from the
-/// other 400s one operation can answer — so `code` is part of the refusal whether or
-/// not the handler that builds it names the member, and this shape's default is where
-/// it comes from. Written out rather than derived for that one member; every other
-/// member is absent until a refusal fills it.
-impl Default for InvalidInputException {
-    fn default() -> Self {
-        Self {
-            code: Some(crate::scaffolded::INVALID_PARAMS_CODE.to_string()),
-            docs: None,
-            message: None,
-            tip: None,
-        }
-    }
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#NotFoundException")]
@@ -486,6 +469,47 @@ pub struct DistributionCustomErrorResponse {
     pub error_caching_min_ttl: Option<i64>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafRule")]
+#[derive(Debug, Clone, Default)]
+pub struct WafRule {
+    pub name: String,
+    pub atp_config: Option<WafAtpConfig>,
+    pub acfp_config: Option<WafAcfpConfig>,
+    pub bot_control_config: Option<WafBotControlConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafAtpConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct WafAtpConfig {
+    pub login_path: Option<String>,
+    pub payload_type: Option<String>,
+    pub username_field: Option<String>,
+    pub password_field: Option<String>,
+    pub response_inspection: Option<WafResponseInspection>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafResponseInspection")]
+#[derive(Debug, Clone, Default)]
+pub struct WafResponseInspection {
+    pub success_codes: Option<Vec<i32>>,
+    pub failure_codes: Option<Vec<i32>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafAcfpConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct WafAcfpConfig {
+    pub payload_type: Option<String>,
+    pub creation_path: Option<String>,
+    pub registration_page_path: Option<String>,
+    pub response_inspection: Option<WafResponseInspection>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafBotControlConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct WafBotControlConfig {
+    pub inspection_level: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#LightsailDistribution")]
 #[derive(Debug, Clone, Default)]
 pub struct LightsailDistribution {
@@ -512,6 +536,8 @@ pub struct LightsailDistribution {
     pub viewer_minimum_tls_protocol_version: Option<String>,
     pub default_root_object: Option<String>,
     pub custom_error_responses: Option<Vec<DistributionCustomErrorResponse>>,
+    pub waf: Option<WafConfig>,
+    pub subdomain: Option<LightsailDistributionSubdomain>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#Origin")]
@@ -524,6 +550,22 @@ pub struct Origin {
     pub response_timeout: Option<i32>,
     pub ip_address_type: Option<String>,
     pub is_private_origin_access_enabled: Option<bool>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#WafConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct WafConfig {
+    pub is_waf_enabled: Option<bool>,
+    pub waf_rules: Option<Vec<WafRule>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#LightsailDistributionSubdomain")]
+#[derive(Debug, Clone, Default)]
+pub struct LightsailDistributionSubdomain {
+    pub name: String,
+    pub state: String,
+    pub error_code: Option<String>,
+    pub error_details: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#DomainEntry")]
@@ -548,6 +590,31 @@ pub struct KeyPair {
     pub resource_type: Option<String>,
     pub tags: Option<Vec<Tag>>,
     pub fingerprint: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#Subdomain")]
+#[derive(Debug, Clone, Default)]
+pub struct Subdomain {
+    pub subdomain_name: Option<String>,
+    pub arn: Option<String>,
+    pub fqdn: Option<String>,
+    pub depth: Option<i32>,
+    pub state: Option<String>,
+    pub attached_resource: Option<SubdomainAttachableResource>,
+    pub attaching_resource: Option<SubdomainAttachableResource>,
+    pub location: Option<ResourceLocation>,
+    pub created_at: Option<::aws_smithy_types::DateTime>,
+    pub parent_fqdn: Option<String>,
+    pub children: Option<Vec<Subdomain>>,
+    pub tags: Option<Vec<Tag>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#SubdomainAttachableResource")]
+#[derive(Debug, Clone, Default)]
+pub struct SubdomainAttachableResource {
+    pub arn: Option<String>,
+    pub name: Option<String>,
+    pub attached_at: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#MetricDatapoint")]
@@ -691,6 +758,8 @@ pub struct Instance {
     pub username: Option<String>,
     pub ssh_key_name: Option<String>,
     pub metadata_options: Option<InstanceMetadataOptions>,
+    pub instance_status: Option<InstanceHealthStatus>,
+    pub system_status: Option<InstanceHealthStatus>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InstanceHardware")]
@@ -744,6 +813,21 @@ pub struct InstanceMetadataOptions {
     pub http_endpoint: Option<String>,
     pub http_put_response_hop_limit: Option<i32>,
     pub http_protocol_ipv6: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InstanceHealthStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct InstanceHealthStatus {
+    pub status: Option<String>,
+    pub details: Option<Vec<InstanceHealthStatusDetail>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InstanceHealthStatusDetail")]
+#[derive(Debug, Clone, Default)]
+pub struct InstanceHealthStatusDetail {
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub impaired_since: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InstanceSnapshot")]
@@ -1032,7 +1116,7 @@ pub const DISK_STATE_VALUES: &[&str] = &["available", "error", "in-use", "pendin
 
 
 /// The values `DistributionMetricName` accepts on the wire.
-pub const DISTRIBUTION_METRIC_NAME_VALUES: &[&str] = &["BytesDownloaded", "BytesUploaded", "Http4xxErrorRate", "Http5xxErrorRate", "Requests", "TotalErrorRate"];
+pub const DISTRIBUTION_METRIC_NAME_VALUES: &[&str] = &["BytesDownloaded", "BytesUploaded", "Http4xxErrorRate", "Http5xxErrorRate", "Requests", "TotalErrorRate", "WafAllowedRequests", "WafBlockedRequests"];
 
 
 /// The values `DnsRecordCreationStateCode` accepts on the wire.
@@ -1075,6 +1159,18 @@ pub const INSTANCE_HEALTH_REASON_VALUES: &[&str] = &["Instance.DeregistrationInP
 pub const INSTANCE_HEALTH_STATE_VALUES: &[&str] = &["draining", "healthy", "initial", "unavailable", "unhealthy", "unused"];
 
 
+/// The values `InstanceHealthStatusDetailName` accepts on the wire.
+pub const INSTANCE_HEALTH_STATUS_DETAIL_NAME_VALUES: &[&str] = &["reachability"];
+
+
+/// The values `InstanceHealthStatusDetailValue` accepts on the wire.
+pub const INSTANCE_HEALTH_STATUS_DETAIL_VALUE_VALUES: &[&str] = &["failed", "initializing", "insufficient-data", "passed"];
+
+
+/// The values `InstanceHealthStatusValue` accepts on the wire.
+pub const INSTANCE_HEALTH_STATUS_VALUE_VALUES: &[&str] = &["impaired", "initializing", "insufficient-data", "not-applicable", "ok"];
+
+
 /// The values `InstanceMetadataState` accepts on the wire.
 pub const INSTANCE_METADATA_STATE_VALUES: &[&str] = &["applied", "pending"];
 
@@ -1093,6 +1189,10 @@ pub const INSTANCE_SNAPSHOT_STATE_VALUES: &[&str] = &["available", "error", "pen
 
 /// The values `IpAddressType` accepts on the wire.
 pub const IP_ADDRESS_TYPE_VALUES: &[&str] = &["dualstack", "ipv4", "ipv6"];
+
+
+/// The values `LightsailDistributionSubdomainStateEnum` accepts on the wire.
+pub const LIGHTSAIL_DISTRIBUTION_SUBDOMAIN_STATE_ENUM_VALUES: &[&str] = &["Attached", "Attaching", "Creating", "Error"];
 
 
 /// The values `LoadBalancerAttributeName` accepts on the wire.
@@ -1160,7 +1260,7 @@ pub const OPERATION_STATUS_VALUES: &[&str] = &["Completed", "Failed", "NotStarte
 
 
 /// The values `OperationType` accepts on the wire.
-pub const OPERATION_TYPE_VALUES: &[&str] = &["AllocateStaticIp", "AttachCertificateToDistribution", "AttachDisk", "AttachInstancesToLoadBalancer", "AttachLoadBalancerTlsCertificate", "AttachStaticIp", "CloseInstancePublicPorts", "CreateBucket", "CreateBucketAccessKey", "CreateCertificate", "CreateContactMethod", "CreateContainerService", "CreateContainerServiceDeployment", "CreateContainerServiceRegistryLogin", "CreateDisk", "CreateDiskFromSnapshot", "CreateDiskSnapshot", "CreateDistribution", "CreateDomain", "CreateInstance", "CreateInstanceSnapshot", "CreateInstancesFromSnapshot", "CreateLoadBalancer", "CreateLoadBalancerTlsCertificate", "CreateRelationalDatabase", "CreateRelationalDatabaseFromSnapshot", "CreateRelationalDatabaseSnapshot", "DeleteAlarm", "DeleteBucket", "DeleteBucketAccessKey", "DeleteCertificate", "DeleteContactMethod", "DeleteContainerImage", "DeleteContainerService", "DeleteDisk", "DeleteDiskSnapshot", "DeleteDistribution", "DeleteDomain", "DeleteDomainEntry", "DeleteInstance", "DeleteInstanceSnapshot", "DeleteKnownHostKeys", "DeleteLoadBalancer", "DeleteLoadBalancerTlsCertificate", "DeleteRelationalDatabase", "DeleteRelationalDatabaseSnapshot", "DetachCertificateFromDistribution", "DetachDisk", "DetachInstancesFromLoadBalancer", "DetachStaticIp", "DisableAddOn", "EnableAddOn", "GetAlarms", "GetContactMethods", "GetProfile", "OpenInstancePublicPorts", "PutAlarm", "PutInstancePublicPorts", "RebootInstance", "RebootRelationalDatabase", "RegisterContainerImage", "ReleaseStaticIp", "ResetDistributionCache", "SendContactMethodVerification", "SetIpAddressType", "SetResourceAccessForBucket", "SetupInstanceHttps", "StartGUISession", "StartInstance", "StartRelationalDatabase", "StopGUISession", "StopInstance", "StopRelationalDatabase", "TestAlarm", "UpdateBucket", "UpdateBucketBundle", "UpdateContainerService", "UpdateDistribution", "UpdateDistributionBundle", "UpdateDomainEntry", "UpdateInstanceMetadataOptions", "UpdateLoadBalancerAttribute", "UpdateRelationalDatabase", "UpdateRelationalDatabaseParameters"];
+pub const OPERATION_TYPE_VALUES: &[&str] = &["AllocateStaticIp", "AttachCertificateToDistribution", "AttachDisk", "AttachInstancesToLoadBalancer", "AttachLoadBalancerTlsCertificate", "AttachStaticIp", "CloseInstancePublicPorts", "CreateBucket", "CreateBucketAccessKey", "CreateCertificate", "CreateContactMethod", "CreateContainerService", "CreateContainerServiceDeployment", "CreateContainerServiceRegistryLogin", "CreateDisk", "CreateDiskFromSnapshot", "CreateDiskSnapshot", "CreateDistribution", "CreateDomain", "CreateInstance", "CreateInstanceSnapshot", "CreateInstancesFromSnapshot", "CreateLoadBalancer", "CreateLoadBalancerTlsCertificate", "CreateRelationalDatabase", "CreateRelationalDatabaseFromSnapshot", "CreateRelationalDatabaseSnapshot", "CreateSubdomain", "DeleteAlarm", "DeleteBucket", "DeleteBucketAccessKey", "DeleteCertificate", "DeleteContactMethod", "DeleteContainerImage", "DeleteContainerService", "DeleteDisk", "DeleteDiskSnapshot", "DeleteDistribution", "DeleteDomain", "DeleteDomainEntry", "DeleteInstance", "DeleteInstanceSnapshot", "DeleteKnownHostKeys", "DeleteLoadBalancer", "DeleteLoadBalancerTlsCertificate", "DeleteRelationalDatabase", "DeleteRelationalDatabaseSnapshot", "DeleteSubdomain", "DetachCertificateFromDistribution", "DetachDisk", "DetachInstancesFromLoadBalancer", "DetachStaticIp", "DisableAddOn", "EnableAddOn", "GetAlarms", "GetContactMethods", "GetProfile", "OpenInstancePublicPorts", "PutAlarm", "PutInstancePublicPorts", "RebootInstance", "RebootRelationalDatabase", "RegisterContainerImage", "ReleaseStaticIp", "ResetDistributionCache", "SendContactMethodVerification", "SetIpAddressType", "SetResourceAccessForBucket", "SetupInstanceHttps", "StartGUISession", "StartInstance", "StartRelationalDatabase", "StopGUISession", "StopInstance", "StopRelationalDatabase", "TestAlarm", "UpdateBucket", "UpdateBucketBundle", "UpdateContainerService", "UpdateDistribution", "UpdateDistributionBundle", "UpdateDomainEntry", "UpdateInstanceMetadataOptions", "UpdateLoadBalancerAttribute", "UpdateRelationalDatabase", "UpdateRelationalDatabaseParameters", "UpdateSubdomainAssociation"];
 
 
 /// The values `OriginIpAddressTypeEnum` accepts on the wire.
@@ -1228,7 +1328,7 @@ pub const RESOURCE_BUCKET_ACCESS_VALUES: &[&str] = &["allow", "deny"];
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["Alarm", "Bucket", "Certificate", "CloudFormationStackRecord", "ContactMethod", "ContainerService", "Disk", "DiskSnapshot", "Distribution", "Domain", "ExportSnapshotRecord", "Instance", "InstanceSnapshot", "KeyPair", "LoadBalancer", "LoadBalancerTlsCertificate", "PeeredVpc", "RelationalDatabase", "RelationalDatabaseSnapshot", "StaticIp"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["Alarm", "Bucket", "Certificate", "CloudFormationStackRecord", "ContactMethod", "ContainerService", "Disk", "DiskSnapshot", "Distribution", "Domain", "ExportSnapshotRecord", "Instance", "InstanceSnapshot", "KeyPair", "LoadBalancer", "LoadBalancerTlsCertificate", "PeeredVpc", "RelationalDatabase", "RelationalDatabaseSnapshot", "StaticIp", "Subdomain"];
 
 
 /// The values `SetupStatus` accepts on the wire.
@@ -1243,6 +1343,14 @@ pub const STATUS_VALUES: &[&str] = &["failedInstanceCreation", "failedStartingGU
 pub const STATUS_TYPE_VALUES: &[&str] = &["Active", "Inactive"];
 
 
+/// The values `SubdomainAssociationAction` accepts on the wire.
+pub const SUBDOMAIN_ASSOCIATION_ACTION_VALUES: &[&str] = &["ASSOCIATE", "DISASSOCIATE", "TRANSFER"];
+
+
+/// The values `SubdomainState` accepts on the wire.
+pub const SUBDOMAIN_STATE_VALUES: &[&str] = &["ATTACHED", "ATTACHING", "CREATE_FAILED", "CREATING", "DETACHING", "IMPLICIT", "TRANSFERRING", "UNATTACHED"];
+
+
 /// The values `TierName` accepts on the wire.
 pub const TIER_NAME_VALUES: &[&str] = &["Accelerate", "Essential", "Growth", "Premier"];
 
@@ -1253,5 +1361,13 @@ pub const TREAT_MISSING_DATA_VALUES: &[&str] = &["breaching", "ignore", "missing
 
 /// The values `ViewerMinimumTlsProtocolVersionEnum` accepts on the wire.
 pub const VIEWER_MINIMUM_TLS_PROTOCOL_VERSION_ENUM_VALUES: &[&str] = &["TLSv1.1_2016", "TLSv1.2_2018", "TLSv1.2_2019", "TLSv1.2_2021"];
+
+
+/// The values `WafInspectionLevelEnum` accepts on the wire.
+pub const WAF_INSPECTION_LEVEL_ENUM_VALUES: &[&str] = &["COMMON", "TARGETED"];
+
+
+/// The values `WafPayloadTypeEnum` accepts on the wire.
+pub const WAF_PAYLOAD_TYPE_ENUM_VALUES: &[&str] = &["FORM_ENCODED", "JSON"];
 
 

@@ -15,6 +15,13 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-lightsail-lightsail-201
 #[derive(Debug, Clone, Default)]
 pub struct StartInstanceInput {
     pub instance_name: String,
+    pub attribute_updates: Option<InstanceAttributeUpdates>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.lightsail#InstanceAttributeUpdates")]
+#[derive(Debug, Clone, Default)]
+pub struct InstanceAttributeUpdates {
+    pub bundle_id: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#StartInstanceResult")]

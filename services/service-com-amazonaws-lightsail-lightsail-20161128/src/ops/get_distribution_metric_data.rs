@@ -383,10 +383,7 @@ fn epoch_millis(
 /// member that is wrong and the rule it broke — or states the Region restriction
 /// the model documents on that same shape.
 fn invalid(message: String) -> GetDistributionMetricDataError {
-    GetDistributionMetricDataErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetDistributionMetricDataErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

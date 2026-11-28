@@ -218,13 +218,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// page to answer: a page token is the bundle id a previous page reported as
 /// `nextPageToken`, and the ids of that list are what the refusal names.
 fn invalid_page_token(token: &str, reported: &[Bundle]) -> GetBundlesError {
-    GetBundlesErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
-            "pageToken {token:?} does not name a bundle of this request's catalog; a page \
-             token is the bundle id a previous page reported as nextPageToken, one of: {}",
-            crate::state::reported_bundle_ids(reported)
-        )),
-        ..Default::default()
-    })
+    GetBundlesErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(format!(
+        "pageToken {token:?} does not name a bundle of this request's catalog; a page \
+         token is the bundle id a previous page reported as nextPageToken, one of: {}",
+        crate::state::reported_bundle_ids(reported)
+    )))
     .into()
 }

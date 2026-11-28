@@ -20,6 +20,7 @@ pub mod attach_disk_types;
 pub mod attach_instances_to_load_balancer_types;
 pub mod attach_load_balancer_tls_certificate_types;
 pub mod attach_static_ip_types;
+pub mod check_subdomain_availability_types;
 pub mod close_instance_public_ports_types;
 pub mod copy_snapshot_types;
 pub mod create_bucket_access_key_types;
@@ -46,6 +47,7 @@ pub mod create_load_balancer_types;
 pub mod create_relational_database_from_snapshot_types;
 pub mod create_relational_database_snapshot_types;
 pub mod create_relational_database_types;
+pub mod create_subdomain_types;
 pub mod delete_alarm_types;
 pub mod delete_auto_snapshot_types;
 pub mod delete_bucket_access_key_types;
@@ -67,6 +69,7 @@ pub mod delete_load_balancer_tls_certificate_types;
 pub mod delete_load_balancer_types;
 pub mod delete_relational_database_snapshot_types;
 pub mod delete_relational_database_types;
+pub mod delete_subdomain_types;
 pub mod detach_certificate_from_distribution_types;
 pub mod detach_disk_types;
 pub mod detach_instances_from_load_balancer_types;
@@ -141,6 +144,7 @@ pub mod get_relational_databases_types;
 pub mod get_setup_history_types;
 pub mod get_static_ip_types;
 pub mod get_static_ips_types;
+pub mod get_subdomains_types;
 pub mod import_key_pair_types;
 pub mod is_vpc_peered_types;
 pub mod open_instance_public_ports_types;
@@ -177,6 +181,7 @@ pub mod update_instance_metadata_options_types;
 pub mod update_load_balancer_attribute_types;
 pub mod update_relational_database_parameters_types;
 pub mod update_relational_database_types;
+pub mod update_subdomain_association_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use allocate_static_ip_types::*;
@@ -190,6 +195,8 @@ pub use attach_instances_to_load_balancer_types::*;
 pub use attach_load_balancer_tls_certificate_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use attach_static_ip_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use check_subdomain_availability_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use close_instance_public_ports_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -243,6 +250,8 @@ pub use create_relational_database_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_relational_database_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_subdomain_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_alarm_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_auto_snapshot_types::*;
@@ -284,6 +293,8 @@ pub use delete_load_balancer_types::*;
 pub use delete_relational_database_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_relational_database_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_subdomain_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use detach_certificate_from_distribution_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -433,6 +444,8 @@ pub use get_static_ip_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_static_ips_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_subdomains_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use import_key_pair_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use is_vpc_peered_types::*;
@@ -504,4 +517,6 @@ pub use update_load_balancer_attribute_types::*;
 pub use update_relational_database_parameters_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_relational_database_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_subdomain_association_types::*;
 

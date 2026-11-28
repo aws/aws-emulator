@@ -403,10 +403,7 @@ fn plural(count: usize) -> &'static str {
 /// the modelled `InvalidInputException`, whose message names what is wrong with the
 /// request.
 fn invalid(message: String) -> DeleteBucketError {
-    DeleteBucketErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    DeleteBucketErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

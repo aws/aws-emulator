@@ -460,10 +460,7 @@ fn set_distribution_ip_address_type(
 /// does not serve: the modelled `InvalidInputException`, whose message names the
 /// member that is wrong and the rule it broke.
 fn invalid(message: String) -> SetIpAddressTypeError {
-    SetIpAddressTypeErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    SetIpAddressTypeErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

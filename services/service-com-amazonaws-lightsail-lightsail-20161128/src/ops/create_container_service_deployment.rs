@@ -264,10 +264,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateContainerServiceDeploymentError {
-    CreateContainerServiceDeploymentErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateContainerServiceDeploymentErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

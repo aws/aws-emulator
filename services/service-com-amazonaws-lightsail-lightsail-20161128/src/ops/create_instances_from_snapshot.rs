@@ -810,10 +810,7 @@ fn operation_failure(message: String) -> CreateInstancesFromSnapshotError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateInstancesFromSnapshotError {
-    CreateInstancesFromSnapshotErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateInstancesFromSnapshotErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

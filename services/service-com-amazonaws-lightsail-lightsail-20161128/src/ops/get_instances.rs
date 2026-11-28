@@ -172,6 +172,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // itself is the ONE page walk every listing of this service shares
         // (`crate::state::resource_page`).
         let page_token = input.page_token.filter(|token| !token.is_empty());
+        // "This value is returned only when you set `includeHealthStatus` to
+        // `true` in your request" (`Instance$instanceStatus`), which is as true
+        // of a listed instance as of a read one — so the flag travels into the
+        // same view `GetInstance` renders.
+        let include_health_status = input.include_health_status.unwrap_or(false);
 
         crate::state::with_state(&*self.engine, |store| {
             let (instances, next_page_token) = crate::state::resource_page(
@@ -180,7 +185,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::INSTANCE_PAGE_SIZE,
                 // The SAME view `GetInstance` reports: one stored record read by
                 // two operations, never a second rendering of an instance.
-                |_, instance| store.instance_view_of(instance),
+                |_, instance| store.instance_view_of(instance, include_health_status),
             )
             .ok_or_else(|| {
                 invalid_page_token(page_token.as_deref().unwrap_or_default())
@@ -202,10 +207,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// not conform to the validation rules of an input field". The message is built
 /// from the request and says what a page token is.
 fn invalid_page_token(token: &str) -> GetInstancesError {
-    GetInstancesErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(crate::state::invalid_page_token_message(token, "an instance")),
-        ..Default::default()
-    })
+    GetInstancesErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(
+        crate::state::invalid_page_token_message(token, "an instance"),
+    ))
     .into()
 }
 

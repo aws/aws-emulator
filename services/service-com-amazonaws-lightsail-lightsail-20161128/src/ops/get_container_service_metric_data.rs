@@ -342,10 +342,7 @@ fn epoch_millis(
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the rule it broke.
 fn invalid(message: String) -> GetContainerServiceMetricDataError {
-    GetContainerServiceMetricDataErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetContainerServiceMetricDataErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

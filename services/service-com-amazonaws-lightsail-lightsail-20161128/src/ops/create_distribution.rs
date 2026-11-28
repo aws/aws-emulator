@@ -321,6 +321,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid(message));
         }
         let private_origin_access = input.enable_private_origin_access.unwrap_or(false);
+        // The Web Application Firewall the request asks the distribution to
+        // inspect viewer requests with: enabled only where the plan offers it,
+        // and under rule groups that plan supports, as the crate's one owner of
+        // those documented rules decides. "When you enable WAF without
+        // specifying the `wafRules` parameter, the distribution has no WAF rule
+        // groups enabled", so a request that named none records none.
+        //
+        // The list is caller-sized and is STORED on the record, so it is
+        // bounded here, before the first write, at the WAF rule groups this
+        // service offers at all (`MAX_WAF_RULES_PER_DISTRIBUTION`): no request
+        // can grow a stored distribution past them.
+        let waf_enabled = input.enable_waf.unwrap_or(false);
+        let waf_rules = input.waf_rules.clone().unwrap_or_default();
+        if waf_rules.len() > crate::state::MAX_WAF_RULES_PER_DISTRIBUTION {
+            return Err(invalid(format!(
+                "wafRules carries {} entries, more than the {} WAF rule groups this service \
+                 offers",
+                waf_rules.len(),
+                crate::state::MAX_WAF_RULES_PER_DISTRIBUTION
+            )));
+        }
+        if let Some(message) =
+            crate::state::waf_refusal(&input.bundle_id, waf_enabled, &waf_rules)
+        {
+            return Err(invalid(message));
+        }
+        // The Lightsail subdomain the distribution is to be reachable at, held
+        // to the name rule every subdomain call applies — the crate's one owner
+        // of it — before anything is written, so a request naming a subdomain
+        // this account could not hold creates no distribution either.
+        let subdomain_name = input.subdomain_name.clone();
+        if let Some(message) = subdomain_name
+            .as_deref()
+            .and_then(|name| crate::state::subdomain_name_refusal("subdomainName", name))
+        {
+            return Err(invalid(message));
+        }
 
         let name = input.distribution_name.clone();
         let location = crate::state::StoredLocation::regional(crate::state::DISTRIBUTION_REGION_NAME);
@@ -371,6 +408,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                      emulator holds",
                     crate::state::MAX_DISTRIBUTIONS
                 )));
+            }
+            // The subdomain this distribution is to be reachable at has to be
+            // one this account can hold: a name it already holds a subdomain
+            // under is not available to create, and the account's subdomains
+            // are capped at the published quota. Both are checked BEFORE the
+            // first write — so, unlike AWS, which creates the distribution and
+            // reports the subdomain in the `Error` state, a request this
+            // service cannot serve the subdomain for creates nothing at all.
+            if let Some(subdomain_name) = &subdomain_name {
+                if !store.subdomain_is_available(subdomain_name) {
+                    return Err(invalid(format!(
+                        "subdomainName '{subdomain_name}' already names a subdomain of this \
+                         account"
+                    )));
+                }
+                if store.subdomains_toward_quota() >= crate::state::MAX_SUBDOMAINS {
+                    return Err(invalid(format!(
+                        "creating a subdomain would take this account past the {} it may hold",
+                        crate::state::MAX_SUBDOMAINS
+                    )));
+                }
             }
             // A distribution serves HTTPS traffic with the certificate its
             // record names, so a certificate this request names has to be one
@@ -454,6 +512,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // A new distribution has cached nothing yet, so nothing has
                 // been reset: `ResetDistributionCache` is what records one.
                 latest_cache_reset: None,
+                waf_enabled,
+                waf_rules,
             };
             // The certificate the request named, recorded as the attachment it
             // asked for — the same one `AttachCertificateToDistribution` and
@@ -463,11 +523,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(attachment) = attachment {
                 distribution.attach_certificate(attachment);
             }
+            let distribution_arn = distribution.arn.clone();
+            // "After the distribution is deployed, Lightsail creates the
+            // subdomain and associates it with the distribution" — so the
+            // subdomain is being created for this distribution from the instant
+            // of this call, it exists once the deployment the clock owes the
+            // distribution is due, and the association it is then in follows one
+            // span later ([`StoredSubdomain::advance`]). The distribution
+            // reports its progress through the subdomain's own record, which is
+            // where the association lives.
+            let subdomain = subdomain_name.as_deref().map(|subdomain_name| {
+                let id = store.mint_uuid();
+                let mut subdomain = crate::state::StoredSubdomain::created(
+                    subdomain_name,
+                    crate::state::subdomain_arn(&id),
+                    now,
+                    Vec::new(),
+                    crate::state::DueNamedState {
+                        at_ms: due.at_ms,
+                        state: crate::state::SUBDOMAIN_STATE_ATTACHING,
+                    },
+                );
+                subdomain.attaching = Some(crate::state::StoredSubdomainAttachment::new(
+                    &distribution_arn,
+                    &name,
+                    now,
+                ));
+                subdomain
+            });
+            // The answer is rendered from the records this call is storing, with
+            // the subdomain's progress towards the distribution read off the
+            // subdomain itself — the same pair a later `GetDistributions`
+            // assembles from the store.
+            let view = distribution.view(
+                subdomain
+                    .as_ref()
+                    .and_then(|subdomain| subdomain.resource_subdomain_view(&distribution_arn)),
+            );
             store.insert_distribution(distribution);
-            let view = store
-                .distribution(&name)
-                .expect("the distribution this call just stored is in the store")
-                .view();
+            if let Some(subdomain) = subdomain {
+                store.insert_subdomain(subdomain);
+            }
             // The log entry stays non-terminal until the deployment the clock
             // owes the distribution is due, which is the same instant its
             // status settles.
@@ -492,10 +588,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateDistributionError {
-    CreateDistributionErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateDistributionErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

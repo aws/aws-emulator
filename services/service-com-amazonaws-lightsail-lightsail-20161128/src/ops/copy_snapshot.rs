@@ -604,10 +604,7 @@ fn operation_failure(message: String) -> CopySnapshotError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CopySnapshotError {
-    CopySnapshotErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CopySnapshotErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

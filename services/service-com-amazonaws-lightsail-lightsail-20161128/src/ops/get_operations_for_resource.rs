@@ -226,13 +226,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// not conform to the validation rules of an input field". The message is built
 /// from the request and says what a page token is.
 fn invalid_page_token(token: &str, resource_name: &str) -> GetOperationsForResourceError {
-    GetOperationsForResourceErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetOperationsForResourceErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name an operation recorded against {resource_name:?}; \
              a page token is the operation id a previous page reported as nextPageToken"
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 

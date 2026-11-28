@@ -556,6 +556,26 @@ pub fn bundle_platform(bundle_id: &str) -> &'static str {
     }
 }
 
+/// The column the plan `bundle_id` names is published in: the inverse of
+/// [`column_bundle_id`], read from the tokens that function writes between a
+/// size and a generation.
+///
+/// What a caller holding a stored instance's bundle id reads to find the SAME
+/// plan at another generation — the equivalence the modelled
+/// `InstanceAttributeUpdates$bundleId` documents when it takes `auto` ("Updates
+/// an instance that runs on a previous-generation bundle to the
+/// newer-generation equivalent of that bundle").
+pub fn bundle_column(bundle_id: &str) -> BundleColumn {
+    let platform = bundle_platform(bundle_id);
+    let ipv6_only = bundle_id.split('_').any(|token| token == BUNDLE_IPV6_ONLY_TOKEN);
+    match (platform == PLATFORM_WINDOWS, ipv6_only) {
+        (true, true) => BundleColumn::WindowsIpv6Only,
+        (true, false) => BundleColumn::Windows,
+        (false, true) => BundleColumn::LinuxUnixIpv6Only,
+        (false, false) => BundleColumn::LinuxUnix,
+    }
+}
+
 /// The friendly name of a plan of `size` — `Bundle$name`, "A friendly name for
 /// the bundle (`Micro`)".
 ///

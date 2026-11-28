@@ -183,9 +183,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// not: the modelled `InvalidInputException`, whose message states the rule the
 /// request broke.
 fn invalid(message: String) -> GetDistributionBundlesError {
-    GetDistributionBundlesErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetDistributionBundlesErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }

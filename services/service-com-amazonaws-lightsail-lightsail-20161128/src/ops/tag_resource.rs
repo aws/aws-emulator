@@ -309,10 +309,7 @@ fn not_found(name: &str, region: &str) -> TagResourceError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> TagResourceError {
-    TagResourceErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    TagResourceErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

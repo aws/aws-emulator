@@ -275,10 +275,7 @@ fn resource_does_not_exist(name: &str) -> EnableAddOnError {
 /// does not: the modelled `InvalidInputException`, whose message names the
 /// member that is wrong and the constraint it broke.
 fn invalid(message: String) -> EnableAddOnError {
-    EnableAddOnErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    EnableAddOnErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

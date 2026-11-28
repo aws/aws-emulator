@@ -221,10 +221,7 @@ fn invalid_page_token(token: &str, resource_name: &str) -> GetSetupHistoryError 
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> GetSetupHistoryError {
-    GetSetupHistoryErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetSetupHistoryErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

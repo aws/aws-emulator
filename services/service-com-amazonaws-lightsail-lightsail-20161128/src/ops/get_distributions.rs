@@ -202,7 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .distribution(name)
                     .ok_or_else(|| not_found(name))?;
                 return Ok(GetDistributionsOutput {
-                    distributions: Some(vec![distribution.view()]),
+                    distributions: Some(vec![store.distribution_view(distribution)]),
                     next_page_token: None,
                 });
             }
@@ -211,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::records_from(&store.distributions, page_token.as_deref()),
                 page_token.as_deref(),
                 crate::state::DISTRIBUTION_PAGE_SIZE,
-                |_, distribution| distribution.view(),
+                |_, distribution| store.distribution_view(distribution),
             )
             .ok_or_else(|| {
                 invalid(crate::state::invalid_page_token_message(
@@ -235,10 +235,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// does not: the modelled `InvalidInputException`, whose message states the rule
 /// the request broke.
 fn invalid(message: String) -> GetDistributionsError {
-    GetDistributionsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetDistributionsErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

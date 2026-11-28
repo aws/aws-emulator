@@ -334,10 +334,7 @@ fn not_found(name: &str) -> DeleteRelationalDatabaseError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> DeleteRelationalDatabaseError {
-    DeleteRelationalDatabaseErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    DeleteRelationalDatabaseErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

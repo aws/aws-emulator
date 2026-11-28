@@ -332,6 +332,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .to_string(),
             ));
         }
+        // `wafRules` is caller-sized and is STORED on the distribution's
+        // record, so it is bounded here, before the first write, at the WAF
+        // rule groups this service offers at all
+        // (`MAX_WAF_RULES_PER_DISTRIBUTION`) — the same bound a create applies,
+        // so no request can grow a stored distribution past them. Which of
+        // those groups this distribution's own plan admits is checked below,
+        // where the plan is in hand.
+        if let Some(rules) = &input.waf_rules {
+            if rules.len() > crate::state::MAX_WAF_RULES_PER_DISTRIBUTION {
+                return Err(invalid(format!(
+                    "wafRules carries {} entries, more than the {} WAF rule groups this service \
+                     offers",
+                    rules.len(),
+                    crate::state::MAX_WAF_RULES_PER_DISTRIBUTION
+                )));
+            }
+        }
 
         let now = crate::state::now_ms();
 
@@ -416,6 +433,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )));
             }
 
+            // The Web Application Firewall is one rule over two members too, so
+            // again it is the configuration the request WOULD leave behind that
+            // has to satisfy it: WAF is available only on the plans that offer
+            // it, the rule groups have to be ones this distribution's plan
+            // supports, and `wafRules` "can be specified only when WAF is
+            // enabled for the distribution". The array a request carries
+            // "replaces the existing WAF rule groups"; one that carries none
+            // keeps them, unless WAF is being switched off, which "removes its
+            // WAF rule groups". Checked through the crate's one owner of those
+            // rules, the same one the create asks.
+            let waf_enabled = input.enable_waf.unwrap_or(distribution.waf_enabled);
+            let waf_rules = match (&input.waf_rules, waf_enabled) {
+                (Some(rules), _) => rules.clone(),
+                (None, false) => Vec::new(),
+                (None, true) => distribution.waf_rules.clone(),
+            };
+            if let Some(message) =
+                crate::state::waf_refusal(&distribution.bundle_id, waf_enabled, &waf_rules)
+            {
+                return Err(invalid(message));
+            }
+
             // The configuration itself. A member the request carries replaces
             // what the distribution had — "The cacheBehaviorSettings specified in
             // your UpdateDistributionRequest will replace your distribution's
@@ -457,6 +496,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(default_root_object) = input.default_root_object {
                 distribution.default_root_object = Some(default_root_object);
             }
+            distribution.waf_enabled = waf_enabled;
+            distribution.waf_rules = waf_rules;
             match attachment {
                 // A certificate of the account, with the domains it covers — the
                 // same attachment `AttachCertificateToDistribution` and
@@ -533,10 +574,7 @@ struct OriginPatch {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> UpdateDistributionError {
-    UpdateDistributionErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    UpdateDistributionErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

@@ -205,13 +205,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// input does not conform to the validation rules of an input field". The message
 /// is built from the request and says what a page token is.
 fn invalid_page_token(token: &str) -> GetExportSnapshotRecordsError {
-    GetExportSnapshotRecordsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(crate::state::invalid_page_token_message(
+    GetExportSnapshotRecordsErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(crate::state::invalid_page_token_message(
             token,
             "an export snapshot record",
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 

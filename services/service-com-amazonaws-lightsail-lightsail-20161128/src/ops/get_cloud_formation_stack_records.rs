@@ -208,13 +208,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// not conform to the validation rules of an input field". The message is built
 /// from the request and says what a page token is.
 fn invalid_page_token(token: &str) -> GetCloudFormationStackRecordsError {
-    GetCloudFormationStackRecordsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(crate::state::invalid_page_token_message(
+    GetCloudFormationStackRecordsErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(crate::state::invalid_page_token_message(
             token,
             "a CloudFormation stack record",
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 

@@ -304,10 +304,7 @@ fn not_found(name: &str) -> StartGUISessionError {
 /// cannot serve: the modelled `InvalidInputException`, whose message names the
 /// virtual computer and the state that stops a session being started on it.
 fn invalid(message: String) -> StartGUISessionError {
-    StartGUISessionErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    StartGUISessionErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

@@ -279,10 +279,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// does not serve: the modelled `InvalidInputException`, whose message names the
 /// member that is wrong and the rule it broke.
 fn invalid(message: String) -> UpdateInstanceMetadataOptionsError {
-    UpdateInstanceMetadataOptionsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    UpdateInstanceMetadataOptionsErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

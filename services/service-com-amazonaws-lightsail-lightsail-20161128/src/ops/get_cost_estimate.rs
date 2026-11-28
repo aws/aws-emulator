@@ -778,10 +778,7 @@ fn epoch_millis(
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> GetCostEstimateError {
-    GetCostEstimateErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetCostEstimateErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

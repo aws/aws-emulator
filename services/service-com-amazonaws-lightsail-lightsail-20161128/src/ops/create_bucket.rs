@@ -373,10 +373,7 @@ fn release_claim<Eng: Send + Sync + 'static>(engine: &Eng, bucket_name: &str, wh
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateBucketError {
-    CreateBucketErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateBucketErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

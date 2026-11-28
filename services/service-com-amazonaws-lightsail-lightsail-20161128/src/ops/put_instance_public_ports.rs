@@ -249,10 +249,7 @@ fn not_found(name: &str) -> PutInstancePublicPortsError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> PutInstancePublicPortsError {
-    PutInstancePublicPortsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    PutInstancePublicPortsErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

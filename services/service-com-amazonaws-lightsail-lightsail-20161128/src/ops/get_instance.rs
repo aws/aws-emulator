@@ -163,10 +163,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // absent or malformed name. A well-formed name that names nothing is
         // the service's `DoesNotExist` rejection, never a zeroed 200.
         let name = input.instance_name;
+        // "This value is returned only when you set `includeHealthStatus` to
+        // `true` in your request" (`Instance$instanceStatus`): a request that
+        // carries no flag asked for no health, so the member is left out.
+        let include_health_status = input.include_health_status.unwrap_or(false);
 
         crate::state::with_state(&*self.engine, |store| {
             store
-                .instance_view(&name)
+                .instance_view(&name, include_health_status)
                 .ok_or_else(|| not_found(&name))
         })
         .ok_or_else(unavailable)?

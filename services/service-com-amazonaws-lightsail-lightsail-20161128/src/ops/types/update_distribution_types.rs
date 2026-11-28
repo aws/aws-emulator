@@ -26,6 +26,8 @@ pub struct UpdateDistributionInput {
     pub enable_private_origin_access: Option<bool>,
     pub default_root_object: Option<String>,
     pub custom_error_responses: Option<Vec<DistributionCustomErrorResponse>>,
+    pub enable_waf: Option<bool>,
+    pub waf_rules: Option<Vec<WafRule>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#UpdateDistributionResult")]

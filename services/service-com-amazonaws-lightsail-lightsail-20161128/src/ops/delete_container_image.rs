@@ -211,10 +211,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// operations use, and the message is built from the request: the name it
 /// carried, quoted, said not to exist.
 fn service_does_not_exist(name: &str) -> DeleteContainerImageError {
-    DeleteContainerImageErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!("Service \"{name}\" does not exist.")),
-        ..Default::default()
-    })
+    DeleteContainerImageErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(
+        format!("Service \"{name}\" does not exist."),
+    ))
     .into()
 }
 

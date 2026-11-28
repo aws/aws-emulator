@@ -75,8 +75,8 @@
 //!   sentence with the single-entry list.
 //!
 //! An input-validation refusal carries its own discriminator, [`INVALID_PARAMS_CODE`],
-//! which the modelled `InvalidInputException`'s `Default` puts in `code` — so every
-//! refusal this crate builds from that shape carries it.
+//! which [`invalid_input`] puts in `code` — so every refusal this crate builds through
+//! that one owner carries it.
 
 use aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use aws_smithy_schema::{Schema, ShapeId, ShapeType};
@@ -235,10 +235,28 @@ pub const NOT_FOUND_EXCEPTION_CODE: &str = "NotFoundException";
 /// sub-classification that tells an input-validation refusal apart from the other 400s
 /// an operation can answer, `OperationFailureException` among them.
 ///
-/// It is what the modelled `InvalidInputException`'s `Default` carries, so a refusal
-/// written as `InvalidInputException { message: Some(..), ..Default::default() }` — the
-/// form every handler in this crate refuses a request with — is served with it.
+/// It is what [`invalid_input`] puts in `code`, and every handler of this crate builds
+/// its input refusal through that one owner, so a refusal cannot be served without the
+/// discriminator a client branches on.
 pub const INVALID_PARAMS_CODE: &str = "InvalidParams";
+
+/// The modelled `InvalidInputException` this crate refuses a request with: `message`,
+/// and the discriminator Lightsail reports for an input-validation refusal
+/// ([`INVALID_PARAMS_CODE`]) in `code`.
+///
+/// The ONE owner of that pair. The shape's own `Default` is derived from the model, so
+/// it carries no `code` — the member is a plain optional string there — and a body
+/// without it hands an SDK client, which branches on `code` rather than on the HTTP
+/// status, nothing to branch on. So every handler builds its refusal here rather than
+/// from the shape's defaults, which is also what keeps the discriminator in one place
+/// when the model is re-rendered.
+pub fn invalid_input(message: impl Into<String>) -> crate::ops::types::InvalidInputException {
+    crate::ops::types::InvalidInputException {
+        code: Some(INVALID_PARAMS_CODE.to_string()),
+        message: Some(message.into()),
+        ..Default::default()
+    }
+}
 
 /// The message Lightsail refuses a request that named a resource by BOTH its own
 /// identifier and its kind with: fixed text naming the resource type, then the

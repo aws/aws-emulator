@@ -246,10 +246,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// cannot serve in the state the account is in: the modelled
 /// `InvalidInputException`, whose message names what stands in the way.
 fn invalid(message: String) -> DeleteLoadBalancerError {
-    DeleteLoadBalancerErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    DeleteLoadBalancerErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

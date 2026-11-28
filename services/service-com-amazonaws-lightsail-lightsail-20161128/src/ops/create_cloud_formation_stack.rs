@@ -376,10 +376,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// that is AWS's wording where AWS words this refusal, otherwise one naming the
 /// member that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateCloudFormationStackError {
-    CreateCloudFormationStackErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateCloudFormationStackErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

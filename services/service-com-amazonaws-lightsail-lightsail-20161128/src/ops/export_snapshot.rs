@@ -411,10 +411,7 @@ fn operation_failure(message: String) -> ExportSnapshotError {
 /// does not: the modelled `InvalidInputException`, whose message names what was
 /// wrong and the bound it broke.
 fn invalid(message: String) -> ExportSnapshotError {
-    ExportSnapshotErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    ExportSnapshotErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

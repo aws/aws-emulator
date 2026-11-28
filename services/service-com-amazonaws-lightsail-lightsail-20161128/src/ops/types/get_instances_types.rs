@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-lightsail-lightsail-201
 #[derive(Debug, Clone, Default)]
 pub struct GetInstancesInput {
     pub page_token: Option<String>,
+    pub include_health_status: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.lightsail#GetInstancesResult")]

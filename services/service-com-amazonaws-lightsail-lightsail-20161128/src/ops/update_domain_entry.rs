@@ -291,10 +291,7 @@ fn present(member: &str, value: Option<&str>) -> Result<String, UpdateDomainEntr
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> UpdateDomainEntryError {
-    UpdateDomainEntryErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    UpdateDomainEntryErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

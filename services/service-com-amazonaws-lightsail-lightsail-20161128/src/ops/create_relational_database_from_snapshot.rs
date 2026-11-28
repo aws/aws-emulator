@@ -660,10 +660,7 @@ fn default_windows(name: &str) -> Option<(String, String)> {
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateRelationalDatabaseFromSnapshotError {
     CreateRelationalDatabaseFromSnapshotErrorModeled::InvalidInputException(
-        InvalidInputException {
-            message: Some(message),
-            ..Default::default()
-        },
+        crate::scaffolded::invalid_input(message),
     )
     .into()
 }

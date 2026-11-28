@@ -404,10 +404,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// discriminator in the body's `code` (the shape's own default) and a message
 /// naming the member that is wrong and the constraint it broke.
 fn invalid(message: String) -> PutAlarmError {
-    PutAlarmErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    PutAlarmErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

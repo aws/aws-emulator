@@ -208,12 +208,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// the modelled `InvalidInputException`, documented as "user input does not
 /// conform to the validation rules of an input field".
 fn invalid_page_token(token: &str) -> GetRelationalDatabaseBlueprintsError {
-    GetRelationalDatabaseBlueprintsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetRelationalDatabaseBlueprintsErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name a database blueprint; a page token is the blueprint id a previous page reported as nextPageToken, one of: {}",
             crate::state::relational_database_blueprint_ids()
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }

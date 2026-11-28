@@ -183,10 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// This operation's 400 refusal for a request the model admits but the service
 /// does not serve: the modelled `InvalidInputException`.
 fn invalid(message: String) -> GetDomainError {
-    GetDomainErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetDomainErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

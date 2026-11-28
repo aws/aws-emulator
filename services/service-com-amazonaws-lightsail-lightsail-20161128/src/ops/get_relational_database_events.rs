@@ -262,15 +262,14 @@ fn not_found(name: &str) -> GetRelationalDatabaseEventsError {
 /// conform to the validation rules of an input field", whose message names the
 /// member, the value it carried and the published bounds.
 fn invalid_duration(duration_in_minutes: i32) -> GetRelationalDatabaseEventsError {
-    GetRelationalDatabaseEventsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetRelationalDatabaseEventsErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "durationInMinutes {duration_in_minutes} is outside the window this operation \
              retrieves events from: the minimum is {} and the maximum is {} minutes",
             crate::state::RELATIONAL_DATABASE_EVENT_MIN_DURATION_MINUTES,
             crate::state::RELATIONAL_DATABASE_EVENT_MAX_DURATION_MINUTES,
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 
@@ -279,14 +278,13 @@ fn invalid_duration(duration_in_minutes: i32) -> GetRelationalDatabaseEventsErro
 /// the one a previous page reported as `nextPageToken`, and a shorter window — or
 /// one asked for later — need not still hold that event.
 fn invalid_page_token(token: &str, name: &str) -> GetRelationalDatabaseEventsError {
-    GetRelationalDatabaseEventsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetRelationalDatabaseEventsErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name an event of the database {name} inside the \
              requested window; a page token is the one a previous \
              GetRelationalDatabaseEvents page reported as nextPageToken"
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 

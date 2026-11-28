@@ -250,13 +250,12 @@ fn invalid_page_token(
     token: &str,
     specs: &[crate::state::RelationalDatabaseParameterSpec],
 ) -> GetRelationalDatabaseParametersError {
-    GetRelationalDatabaseParametersErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetRelationalDatabaseParametersErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name a parameter of this database; a page token is the parameter name a previous page reported as nextPageToken, one of: {}",
             crate::state::relational_database_parameter_names(specs)
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }
 

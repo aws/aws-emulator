@@ -209,12 +209,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// input does not conform to the validation rules of an input field".
 fn invalid_page_token(token: &str, include_inactive: bool) -> GetRelationalDatabaseBundlesError {
     let reportable = crate::state::relational_database_bundles(include_inactive);
-    GetRelationalDatabaseBundlesErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetRelationalDatabaseBundlesErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name a database bundle in this response; a page token is the bundle id a previous page reported as nextPageToken, one of: {}",
             crate::state::relational_database_bundle_ids(&reportable)
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }

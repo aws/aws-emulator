@@ -385,10 +385,7 @@ fn epoch_millis(
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the rule it broke.
 fn invalid(message: String) -> GetRelationalDatabaseMetricDataError {
-    GetRelationalDatabaseMetricDataErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetRelationalDatabaseMetricDataErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

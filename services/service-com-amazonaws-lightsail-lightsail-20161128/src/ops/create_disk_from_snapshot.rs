@@ -491,10 +491,7 @@ fn operation_failure(message: String) -> CreateDiskFromSnapshotError {
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> CreateDiskFromSnapshotError {
-    CreateDiskFromSnapshotErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    CreateDiskFromSnapshotErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

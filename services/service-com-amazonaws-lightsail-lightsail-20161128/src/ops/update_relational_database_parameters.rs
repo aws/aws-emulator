@@ -279,10 +279,7 @@ fn not_found(name: &str) -> UpdateRelationalDatabaseParametersError {
 /// does not: the modelled `InvalidInputException`, whose message names the entry
 /// and the member that are wrong and the constraint they broke.
 fn invalid(message: String) -> UpdateRelationalDatabaseParametersError {
-    UpdateRelationalDatabaseParametersErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    UpdateRelationalDatabaseParametersErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

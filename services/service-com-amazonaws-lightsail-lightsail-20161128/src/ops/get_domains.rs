@@ -215,10 +215,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// does not serve: the modelled `InvalidInputException`, whose message states the
 /// rule the request broke.
 fn invalid(message: String) -> GetDomainsError {
-    GetDomainsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    GetDomainsErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

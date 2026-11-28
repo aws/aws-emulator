@@ -213,13 +213,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// validation rules of an input field". The message is built from the request and
 /// says what a page token is.
 fn invalid_page_token(token: &str) -> GetDiskSnapshotsError {
-    GetDiskSnapshotsErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(crate::state::invalid_page_token_message(
-            token,
-            "a disk snapshot",
-        )),
-        ..Default::default()
-    })
+    GetDiskSnapshotsErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(
+        crate::state::invalid_page_token_message(token, "a disk snapshot"),
+    ))
     .into()
 }
 

@@ -319,10 +319,7 @@ fn boolean_value(
 /// does not: the modelled `InvalidInputException`, whose message names the member
 /// that is wrong and the constraint it broke.
 fn invalid(message: String) -> UpdateLoadBalancerAttributeError {
-    UpdateLoadBalancerAttributeErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(message),
-        ..Default::default()
-    })
+    UpdateLoadBalancerAttributeErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
     .into()
 }
 

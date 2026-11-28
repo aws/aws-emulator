@@ -203,14 +203,13 @@ fn invalid_page_token(
     token: &str,
     reported: &[LoadBalancerTlsPolicy],
 ) -> GetLoadBalancerTlsPoliciesError {
-    GetLoadBalancerTlsPoliciesErrorModeled::InvalidInputException(InvalidInputException {
-        message: Some(format!(
+    GetLoadBalancerTlsPoliciesErrorModeled::InvalidInputException(
+        crate::scaffolded::invalid_input(format!(
             "pageToken {token:?} does not name a TLS security policy of this service's \
              catalog; a page token is the policy name a previous page reported as \
              nextPageToken, one of: {}",
             crate::state::reported_load_balancer_tls_policy_names(reported)
         )),
-        ..Default::default()
-    })
+    )
     .into()
 }

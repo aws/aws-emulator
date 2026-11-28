@@ -168,12 +168,75 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let name = input.instance_name;
         let now = crate::state::now_ms();
+        // "The attributes to update on a Lightsail instance when it starts":
+        // the one attribute the model carries is the plan the instance is to run
+        // on from this start onward. `auto` is not a bundle id but the rule
+        // "updates an instance that runs on a previous-generation bundle to the
+        // newer-generation equivalent of that bundle", so it is resolved
+        // against the instance's own plan once that instance is in hand.
+        let requested_bundle_id = input
+            .attribute_updates
+            .and_then(|updates| updates.bundle_id);
 
         crate::state::with_state(&*self.engine, |store| {
+            // The plan change the request asks for, resolved and refused BEFORE
+            // anything is written: a request this service cannot serve must not
+            // start the instance either.
+            let bundle_change = match &requested_bundle_id {
+                None => None,
+                Some(requested) => {
+                    let instance = store.instance(&name).ok_or_else(|| not_found(&name))?;
+                    // "The instance must be in the stopped state to update its
+                    // bundle" — and a start is exactly the call that moves it
+                    // out of that state, so this is the state the instance has
+                    // to be in when the request arrives.
+                    if instance.state != crate::state::STOPPED {
+                        return Err(operation_failure(format!(
+                            "The instance {name} is {}: its bundle can be updated only while the \
+                             instance is {}.",
+                            instance.state.name,
+                            crate::state::STOPPED.name
+                        )));
+                    }
+                    // `auto` asks for "the newer-generation equivalent of that
+                    // bundle": the same size in the same column of the plan
+                    // table, at the generation this service's catalog serves.
+                    // An instance already on that generation is already its own
+                    // equivalent, so `auto` leaves its plan where it is.
+                    let bundle_id = if requested == BUNDLE_ID_AUTO {
+                        let size = crate::state::bundle_spec(&instance.bundle_id)
+                            .ok_or_else(|| unpriced_bundle(&instance.bundle_id))?
+                            .size;
+                        crate::state::column_bundle_id(
+                            size,
+                            crate::state::bundle_column(&instance.bundle_id),
+                            crate::state::BUNDLE_GENERATION,
+                        )
+                    } else {
+                        requested.clone()
+                    };
+                    let bundle = crate::state::bundle_spec(&bundle_id).ok_or_else(|| {
+                        invalid(format!(
+                            "attributeUpdates.bundleId '{bundle_id}' names no Lightsail bundle: \
+                             its leading size token must be one of [{}]",
+                            crate::state::bundle_sizes()
+                        ))
+                    })?;
+                    Some((bundle_id, bundle))
+                }
+            };
+
             let (location, ip_address_type, settles_at_ms, starting) = {
                 let Some(instance) = store.instance_mut(&name) else {
                     return Err(not_found(&name));
                 };
+                // The plan the instance starts on: the attribute update the
+                // request asked for, applied as the instance comes up, so every
+                // later read reports the hardware of that plan.
+                if let Some((bundle_id, bundle)) = bundle_change {
+                    instance.bundle_id = bundle_id;
+                    instance.bundle = bundle;
+                }
                 // An instance that is already running, or already on its way up,
                 // is left where it is: starting it again cannot move it anywhere
                 // it is not already headed, and the operation is the record of
@@ -229,6 +292,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .ok_or_else(unavailable)?
     }
 }
+
+/// The value `attributeUpdates.bundleId` carries to ask for "the
+/// newer-generation equivalent" of the plan the instance already runs on, rather
+/// than naming a plan: "**`auto`** – Updates an instance that runs on a
+/// previous-generation bundle to the newer-generation equivalent of that bundle"
+/// (the modelled `InstanceAttributeUpdates$bundleId` documentation).
+const BUNDLE_ID_AUTO: &str = "auto";
 
 /// Assign the instance `name` the PUBLIC addresses starting it gives it, where
 /// `ip_address_type` is that instance's own modelled `ipAddressType`.
@@ -299,6 +369,41 @@ fn not_found(name: &str) -> StartInstanceError {
         crate::state::RESOURCE_TYPE_INSTANCE,
         name,
     )
+}
+
+/// This operation's 400 refusal for a request the model admits but the service
+/// does not: the modelled `InvalidInputException`, whose message names the
+/// member that is wrong and the constraint it broke.
+fn invalid(message: String) -> StartInstanceError {
+    StartInstanceErrorModeled::InvalidInputException(crate::scaffolded::invalid_input(message))
+    .into()
+}
+
+/// Lightsail's refusal of a well-formed request the instance's own state does
+/// not allow: the modelled `OperationFailureException` — HTTP 400, "Lightsail
+/// throws this exception when an operation fails to execute" — whose message
+/// names the instance and the state it is in.
+fn operation_failure(message: String) -> StartInstanceError {
+    StartInstanceErrorModeled::OperationFailureException(OperationFailureException {
+        message: Some(message),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The stored instance runs on a plan this service's catalog cannot resolve, so
+/// the plan it is equivalent to at the catalog's generation cannot be read: a
+/// modelled server fault, because every plan this store writes comes from that
+/// catalog.
+fn unpriced_bundle(bundle_id: &str) -> StartInstanceError {
+    StartInstanceErrorModeled::ServiceException(ServiceException {
+        message: Some(format!(
+            "the bundle '{bundle_id}' this instance runs on is not in the Lightsail bundle \
+             catalog, so its newer-generation equivalent cannot be resolved"
+        )),
+        ..Default::default()
+    })
+    .into()
 }
 
 /// The store is unreachable — the engine is not the shared in-memory one. A

@@ -79,8 +79,10 @@ use crate::ops::types::{
     Domain, DomainEntry, DomainValidationRecord, ExportSnapshotRecord,
     ExportSnapshotRecordSourceInfo,
     HostKeyAttributes, Instance,
-    InstanceHardware, InstanceHealthSummary, InstanceMetadataOptions, InstanceNetworking,
-    InstancePortInfo, InstanceState, KeyPair, LightsailDistribution, LoadBalancer,
+    InstanceHardware, InstanceHealthStatus, InstanceHealthStatusDetail, InstanceHealthSummary,
+    InstanceMetadataOptions, InstanceNetworking,
+    InstancePortInfo, InstanceState, KeyPair, LightsailDistribution,
+    LightsailDistributionSubdomain, LoadBalancer,
     LoadBalancerTlsCertificate, LoadBalancerTlsCertificateDomainValidationOption,
     LoadBalancerTlsCertificateDomainValidationRecord, LoadBalancerTlsCertificateRenewalSummary,
     LoadBalancerTlsCertificateSummary,
@@ -88,7 +90,7 @@ use crate::ops::types::{
     Region,
     RelationalDatabaseBundle, RelationalDatabaseParameter,
     ResourceLocation, ResourceReceivingAccess,
-    StaticIp, Tag, REGION_NAME_VALUES,
+    StaticIp, Subdomain, SubdomainAttachableResource, Tag, WafConfig, WafRule, REGION_NAME_VALUES,
 };
 
 // ---------------------------------------------------------------------------
@@ -435,6 +437,28 @@ pub struct ComAmazonawsLightsailLightsail20161128State {
     /// `BTreeMap` so `GetCertificates` walks a stable, total order and a page
     /// token can name the next certificate.
     pub certificates: BTreeMap<String, StoredCertificate>,
+    /// Every subdomain, keyed by its subdomain name — the identifier every
+    /// subdomain operation takes. NOT keyed by region, for the same reason a
+    /// distribution is not: a subdomain is published under one global domain
+    /// and addressed from the one Region its API is served in (see
+    /// [`SUBDOMAIN_REGION_NAME`]). A `BTreeMap` so `GetSubdomains` walks a
+    /// stable, total order and a page token can name the next subdomain.
+    ///
+    /// Bounded by [`MAX_SUBDOMAINS`] records a caller created, each of which
+    /// can hold one IMPLICIT parent beside it.
+    pub subdomains: BTreeMap<String, StoredSubdomain>,
+    /// The reservation this account holds of each free subdomain, keyed by the
+    /// TOP-LEVEL name it is held under, with the instant it expires at.
+    ///
+    /// Beside the subdomain records rather than among them: a reservation holds
+    /// a name the account does NOT hold a subdomain under, which is what makes
+    /// it a reservation. Bounded by [`MAX_SUBDOMAIN_RESERVATIONS`]: the ONE call
+    /// that reads and writes reservations (`CheckSubdomainAvailability`)
+    /// releases every expired entry and refuses a sixth live one before it
+    /// writes, so every reservation held here is still active and the map never
+    /// grows past that quota. A `BTreeMap` so it is walked in a stable, total
+    /// order.
+    pub subdomain_reservations: BTreeMap<String, i64>,
     /// The profile of the account this emulator serves — the Lightsail partner
     /// program membership it holds — which `GetProfile` reports.
     ///
@@ -589,22 +613,29 @@ impl ComAmazonawsLightsailLightsail20161128State {
     }
 
     /// The instance `name` names as the modelled `Instance`, with every block
-    /// storage disk attached to it reported in its hardware.
+    /// storage disk attached to it reported in its hardware — and, when
+    /// `include_health_status` says the reading request asked for it, the health
+    /// of the instance's checks.
     ///
     /// The one way a reporting operation renders an instance: an attachment
     /// lives on the DISK record, so assembling the view needs the whole store,
     /// not just the instance.
-    pub fn instance_view(&self, name: &str) -> Option<Instance> {
-        Some(self.instance_view_of(self.instances.get(name)?))
+    pub fn instance_view(&self, name: &str, include_health_status: bool) -> Option<Instance> {
+        Some(self.instance_view_of(self.instances.get(name)?, include_health_status))
     }
 
     /// The same view for an instance record a caller already holds — the listing
     /// walk, which has the record in hand and renders it exactly as `GetInstance`
     /// does rather than keeping a second rendering of an instance.
-    pub fn instance_view_of(&self, instance: &StoredInstance) -> Instance {
+    pub fn instance_view_of(
+        &self,
+        instance: &StoredInstance,
+        include_health_status: bool,
+    ) -> Instance {
         instance.view(
             self.attached_disk_views(&instance.name),
             self.next_auto_snapshot_time_of_day(RESOURCE_TYPE_INSTANCE, &instance.name),
+            include_health_status,
         )
     }
 
@@ -1465,6 +1496,20 @@ impl ComAmazonawsLightsailLightsail20161128State {
     /// The CDN distribution `name` names, for a reporting operation.
     pub fn distribution(&self, name: &str) -> Option<&StoredDistribution> {
         self.distributions.get(name)
+    }
+
+    /// The CDN distribution whose ARN is `arn`, for a call that addresses a
+    /// resource BY ARN rather than by name — the way a subdomain names the
+    /// resource it is to be associated with
+    /// (`UpdateSubdomainAssociationRequest$targetResourceArn`).
+    ///
+    /// The walk is over the account's distributions, bounded by
+    /// [`MAX_DISTRIBUTIONS`], and an ARN is unique to one record because this
+    /// store mints it from an id of its own.
+    pub fn distribution_with_arn(&self, arn: &str) -> Option<&StoredDistribution> {
+        self.distributions
+            .values()
+            .find(|distribution| distribution.arn == arn)
     }
 
     /// The most recent cache reset of ANY distribution this account holds, or
@@ -2544,17 +2589,6 @@ impl ComAmazonawsLightsailLightsail20161128State {
         ))
     }
 
-    /// Append `operation` to the log, dropping the oldest entries past
-    /// [`MAX_OPERATION_HISTORY`] so the log stays bounded however many calls a
-    /// caller makes.
-    pub fn record_operation(&mut self, operation: StoredOperation) -> StoredOperation {
-        self.operations.push(operation.clone());
-        if let Some(excess) = self.operations.len().checked_sub(MAX_OPERATION_HISTORY) {
-            self.operations.drain(..excess);
-        }
-        operation
-    }
-
     /// The live set of registry log in credentials for `region` that `username`
     /// and `password` log in with, if the store holds one.
     ///
@@ -2635,61 +2669,6 @@ impl ComAmazonawsLightsailLightsail20161128State {
         self.image_registry_mut(region)
             .start_upload(session.clone(), repository, now_ms);
         session
-    }
-
-    /// Build and record an operation of `operation_type` against
-    /// `resource_name` — the ONE place an operation-log entry is built, so every
-    /// entry this service writes carries the same members and names the call
-    /// that wrote it whether or not the modelled `OperationType` enum declares a
-    /// member for that call (see [`OPERATION_TYPE_COPY_SNAPSHOT`]).
-    ///
-    /// `resource_type` is the kind of resource the operation acted on, from the
-    /// modelled `ResourceType` enum, so the log says what each entry is about.
-    ///
-    /// `settles_at_ms` is the instant the clock owes the operation its terminal
-    /// status — `None` for work that was already finished when the call
-    /// returned, in which case the operation is answered terminal.
-    ///
-    /// `operationDetails` is "details about the operation": a member BESIDE the
-    /// `resourceName` the entry already carries, so it never repeats that name.
-    /// Every one of this service's calls acts on the resource the entry names
-    /// and has nothing further to detail, so an entry reports NO detail —
-    /// except the entry of a call that took that resource away
-    /// ([`operation_removes_its_resource`]), whose detail is empty
-    /// ([`OPERATION_DETAILS_REMOVED`]) because the record it would describe is
-    /// the one the call just removed.
-    pub fn start_operation(
-        &mut self,
-        now_ms: i64,
-        operation_type: &str,
-        resource_type: &str,
-        resource_name: &str,
-        location: &StoredLocation,
-        settles_at_ms: Option<i64>,
-    ) -> StoredOperation {
-        let id = self.mint_uuid();
-        let terminal = settles_at_ms.is_none();
-        let operation = StoredOperation {
-            id,
-            resource_name: resource_name.to_string(),
-            resource_type: resource_type.to_string(),
-            created_at_ms: now_ms,
-            location: location.clone(),
-            is_terminal: terminal,
-            operation_details: operation_removes_its_resource(operation_type)
-                .then(|| OPERATION_DETAILS_REMOVED.to_string()),
-            operation_type: operation_type.to_string(),
-            status: if terminal {
-                OPERATION_STATUS_SUCCEEDED.to_string()
-            } else {
-                OPERATION_STATUS_STARTED.to_string()
-            },
-            status_changed_at_ms: now_ms,
-            error_code: None,
-            error_details: None,
-            settles_at_ms,
-        };
-        self.record_operation(operation)
     }
 
     /// Append `setup` to the `SetupInstanceHttps` history, dropping the oldest
@@ -3027,6 +3006,12 @@ impl ComAmazonawsLightsailLightsail20161128State {
                 certificate.due = None;
             }
         }
+        // A subdomain the service was still creating exists, and one it was
+        // still associating with a resource is associated with it: each step
+        // was owed at the instant it fell due whether or not anybody asked.
+        for subdomain in self.subdomains.values_mut() {
+            subdomain.advance(now_ms);
+        }
         // The `AutoSnapshot` add-on takes a copy of the resource it is enabled
         // on once a day: that copy was owed at the instant the schedule named
         // whether or not anybody called, so the clock is what takes it — and
@@ -3141,6 +3126,7 @@ impl ComAmazonawsLightsailLightsail20161128State {
         names.extend(self.key_pairs.keys().cloned());
         names.extend(self.distributions.keys().cloned());
         names.extend(self.certificates.keys().cloned());
+        names.extend(self.subdomains.keys().cloned());
         // The maps keyed by the Region together with the name.
         names.extend(names_in_region(&self.buckets, region));
         names.extend(names_in_region(&self.container_services, region));
@@ -3237,6 +3223,14 @@ impl ComAmazonawsLightsailLightsail20161128State {
         // too — exactly like the distribution it is attached to.
         if let Some(record) = self.certificates.get_mut(name) {
             return Some(body(record, RESOURCE_TYPE_CERTIFICATE));
+        }
+        // A subdomain is held under its name alone, the name every subdomain
+        // operation addresses it by, so a tag change resolves it that way too —
+        // and the modelled `Subdomain$tags` names this door itself ("returned
+        // only by the `GetSubdomains` action when you specify a subdomain",
+        // populated by a create or by `TagResource`).
+        if let Some(record) = self.subdomains.get_mut(name) {
+            return Some(body(record, RESOURCE_TYPE_SUBDOMAIN));
         }
         // Only the Region-keyed maps need the pair, so it is built here rather
         // than above: a name the maps keyed by name alone hold never allocates
@@ -4364,18 +4358,20 @@ pub fn domain_region_refusal(parts: &::http::request::Parts) -> Option<String> {
 }
 
 /// The kinds of record the restriction [`domain_region_refusal`] carries covers:
-/// the DNS zone, the CDN distribution, and the SSL/TLS certificate a
-/// distribution is served with — the records whose own operations all ask that
-/// helper, each held under its name alone because it is addressed from the one
-/// Region its API is served in (see [`DISTRIBUTION_REGION_NAME`]).
+/// the DNS zone, the CDN distribution, the SSL/TLS certificate a distribution is
+/// served with, and the subdomain a distribution is reachable at — the records
+/// whose own operations all ask that helper, each held under its name alone
+/// because it is addressed from the one Region its API is served in (see
+/// [`DISTRIBUTION_REGION_NAME`]).
 ///
 /// A load balancer's SSL/TLS certificate is NOT one of them: it is a record of
 /// the Region its load balancer lives in, and the load balancer API is served in
 /// every Region.
-pub const DOMAIN_REGION_ONLY_RESOURCE_TYPES: [&str; 3] = [
+pub const DOMAIN_REGION_ONLY_RESOURCE_TYPES: [&str; 4] = [
     RESOURCE_TYPE_DOMAIN,
     RESOURCE_TYPE_DISTRIBUTION,
     RESOURCE_TYPE_CERTIFICATE,
+    RESOURCE_TYPE_SUBDOMAIN,
 ];
 
 /// The refusal for a call onto a record of `resource_type` this request cannot
@@ -4601,6 +4597,10 @@ pub use certificates::*;
 /// The content delivery network distributions and their bundles.
 mod distributions;
 pub use distributions::*;
+
+/// The subdomains the account holds, and the resources they route traffic to.
+mod subdomains;
+pub use subdomains::*;
 
 /// Released attachments, VPC peering and the account profile.
 mod account;

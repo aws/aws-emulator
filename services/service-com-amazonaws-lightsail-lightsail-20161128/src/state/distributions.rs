@@ -212,6 +212,142 @@ impl DistributionBundleSpec {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The Web Application Firewall of a distribution
+// ---------------------------------------------------------------------------
+
+/// The bundles a distribution may have the Web Application Firewall enabled on.
+///
+/// From the modelled `enableWaf` documentation: "WAF is available only for
+/// distributions that use the `medium_1_0` or `large_1_0` bundle." The ids are
+/// those of [`DISTRIBUTION_BUNDLE_SPECS`].
+pub const WAF_BUNDLE_IDS: &[&str] = &["medium_1_0", "large_1_0"];
+
+/// The WAF rule groups a distribution on the smaller of the two WAF bundles may
+/// enable, from the modelled `wafRules` documentation: "`medium_1_0` – Supports
+/// the `AWSManagedRulesCommonRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`,
+/// and `AWSManagedRulesAnonymousIpList` rule groups."
+pub const WAF_RULE_GROUPS_MEDIUM: &[&str] = &[
+    "AWSManagedRulesCommonRuleSet",
+    "AWSManagedRulesKnownBadInputsRuleSet",
+    "AWSManagedRulesAnonymousIpList",
+];
+
+/// The WAF rule groups only a distribution on the larger WAF bundle may enable,
+/// from the same documentation: "`large_1_0` – Supports the rule groups for
+/// `medium_1_0`, plus …" — so the groups that bundle offers are these beside
+/// [`WAF_RULE_GROUPS_MEDIUM`].
+pub const WAF_RULE_GROUPS_LARGE_ONLY: &[&str] = &[
+    "AWSManagedRulesAdminProtectionRuleSet",
+    "AWSManagedRulesSQLiRuleSet",
+    "AWSManagedRulesLinuxRuleSet",
+    "AWSManagedRulesUnixRuleSet",
+    "AWSManagedRulesWindowsRuleSet",
+    "AWSManagedRulesPHPRuleSet",
+    "AWSManagedRulesWordPressRuleSet",
+    "AWSManagedRulesAmazonIpReputationList",
+    WAF_RULE_GROUP_ATP,
+    WAF_RULE_GROUP_ACFP,
+    WAF_RULE_GROUP_BOT_CONTROL,
+];
+
+/// The account takeover prevention rule group, whose own configuration is
+/// "required when the `name` is `AWSManagedRulesATPRuleSet`" and may be defined
+/// "only when" it is (the modelled `WafRule$atpConfig` documentation).
+pub const WAF_RULE_GROUP_ATP: &str = "AWSManagedRulesATPRuleSet";
+/// The account creation fraud prevention rule group, whose
+/// `WafRule$acfpConfig` carries the same constraint.
+pub const WAF_RULE_GROUP_ACFP: &str = "AWSManagedRulesACFPRuleSet";
+/// The bot control rule group, whose `WafRule$botControlConfig` carries the same
+/// constraint.
+pub const WAF_RULE_GROUP_BOT_CONTROL: &str = "AWSManagedRulesBotControlRuleSet";
+
+/// The most WAF rule groups one distribution's record holds.
+///
+/// Every group this service offers, on the plan that offers the most of them
+/// ([`WAF_RULE_GROUPS_MEDIUM`] plus [`WAF_RULE_GROUPS_LARGE_ONLY`]): a group is
+/// either enabled on the distribution or it is not, so a list longer than that
+/// names one twice, which [`waf_refusal`] refuses. It is the bound a create and
+/// an update check the caller-sized `wafRules` list against before they store
+/// it, so no request can grow a stored record past the groups that exist.
+pub const MAX_WAF_RULES_PER_DISTRIBUTION: usize =
+    WAF_RULE_GROUPS_MEDIUM.len() + WAF_RULE_GROUPS_LARGE_ONLY.len();
+
+/// The WAF rule groups a distribution on the plan `bundle_id` names may enable:
+/// none for a plan WAF is not available on, the medium set for the smaller WAF
+/// plan, and that set plus the large-only groups for the larger one.
+pub fn waf_rule_groups_for_bundle(bundle_id: &str) -> Vec<&'static str> {
+    if !WAF_BUNDLE_IDS.contains(&bundle_id) {
+        return Vec::new();
+    }
+    let mut groups = WAF_RULE_GROUPS_MEDIUM.to_vec();
+    // The larger plan supports "the rule groups for `medium_1_0`, plus" its own.
+    if bundle_id == "large_1_0" {
+        groups.extend_from_slice(WAF_RULE_GROUPS_LARGE_ONLY);
+    }
+    groups
+}
+
+/// The refusal for a WAF configuration a distribution on the plan `bundle_id`
+/// may not serve under, and `None` when it may — the crate's ONE owner of the
+/// WAF rules, asked by the create and by the update.
+///
+/// What the model cannot express and its documentation states: WAF itself is
+/// only available on [`WAF_BUNDLE_IDS`]; `wafRules` can be specified "only when
+/// WAF is enabled for the distribution"; the groups a distribution may enable
+/// depend on its plan ([`waf_rule_groups_for_bundle`]); and each of the three
+/// rule groups that takes a configuration of its own requires it and is the only
+/// group that may carry it.
+pub fn waf_refusal(bundle_id: &str, enabled: bool, rules: &[WafRule]) -> Option<String> {
+    if enabled && !WAF_BUNDLE_IDS.contains(&bundle_id) {
+        return Some(format!(
+            "enableWaf is only available for a distribution on the {} bundle, and this one is \
+             on '{bundle_id}'",
+            quoted_options_phrase(WAF_BUNDLE_IDS)
+        ));
+    }
+    if !enabled && !rules.is_empty() {
+        return Some(
+            "wafRules can be specified only when WAF is enabled for the distribution"
+                .to_string(),
+        );
+    }
+    let offered = waf_rule_groups_for_bundle(bundle_id);
+    for (position, rule) in rules.iter().enumerate() {
+        if !offered.contains(&rule.name.as_str()) {
+            return Some(format!(
+                "wafRules names the rule group '{}', which a distribution on the '{bundle_id}' \
+                 bundle does not offer; it offers {}",
+                rule.name,
+                quoted_options_phrase(&offered)
+            ));
+        }
+        if rules[..position]
+            .iter()
+            .any(|earlier| earlier.name == rule.name)
+        {
+            return Some(format!(
+                "wafRules names the rule group '{}' more than once",
+                rule.name
+            ));
+        }
+        for (group, configured) in [
+            (WAF_RULE_GROUP_ATP, rule.atp_config.is_some()),
+            (WAF_RULE_GROUP_ACFP, rule.acfp_config.is_some()),
+            (WAF_RULE_GROUP_BOT_CONTROL, rule.bot_control_config.is_some()),
+        ] {
+            if (rule.name == group) != configured {
+                return Some(format!(
+                    "wafRules names the rule group '{}', and the configuration of '{group}' is \
+                     defined only for that rule group and required when the rule group is it",
+                    rule.name
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// The bundles a `GetDistributionBundles` call reports out of `specs`: EVERY
 /// plan the catalog holds, retired ones included.
 ///
@@ -591,6 +727,16 @@ pub struct StoredDistribution {
     /// requested: `None` on a distribution whose cache has never been reset,
     /// which has no timestamp and no status of a reset to report.
     pub latest_cache_reset: Option<StoredCacheReset>,
+    /// Whether the Web Application Firewall inspects this distribution's viewer
+    /// requests, which `enableWaf` sets on the create and the update.
+    pub waf_enabled: bool,
+    /// The WAF rule groups enabled on this distribution, which `wafRules`
+    /// replaces — EMPTY on a distribution whose WAF is enabled with no rule
+    /// group ("the distribution has no WAF rule groups enabled and doesn't
+    /// block any requests") and on one whose WAF is disabled, because disabling
+    /// it "removes its WAF rule groups". What a request carries is held to the
+    /// rules of the WAF documentation by [`waf_refusal`] before it is recorded.
+    pub waf_rules: Vec<WafRule>,
 }
 
 /// The attachment of one SSL/TLS certificate to a distribution: the certificate
@@ -653,8 +799,18 @@ impl StoredDistribution {
         bundle_change_available(self.bundle_updated_at_ms, now_ms)
     }
 
-    /// This record as the modelled `LightsailDistribution`.
-    pub fn view(&self) -> LightsailDistribution {
+    /// This record as the modelled `LightsailDistribution`, with `subdomain`
+    /// the Lightsail subdomain this distribution is reachable at.
+    ///
+    /// The subdomain is passed in because the association lives on the
+    /// SUBDOMAIN record, so only the store can resolve it — see
+    /// [`ComAmazonawsLightsailLightsail20161128State::distribution_view`],
+    /// which is the one door a reporting operation renders a distribution
+    /// through.
+    pub fn view(
+        &self,
+        subdomain: Option<LightsailDistributionSubdomain>,
+    ) -> LightsailDistribution {
         LightsailDistribution {
             name: Some(self.name.clone()),
             arn: Some(self.arn.clone()),
@@ -683,6 +839,13 @@ impl StoredDistribution {
                 .clone(),
             default_root_object: self.default_root_object.clone(),
             custom_error_responses: Some(self.custom_error_responses.clone()),
+            waf: Some(WafConfig {
+                is_waf_enabled: Some(self.waf_enabled),
+                // A list member is reported EMPTY rather than left out, for the
+                // same reason the alternate domain names are.
+                waf_rules: Some(self.waf_rules.clone()),
+            }),
+            subdomain,
         }
     }
 }

@@ -222,6 +222,78 @@ impl StoredMetadataOptions {
     }
 }
 
+/// `InstanceHealthStatus$status` values this slice reports, from the modelled
+/// `InstanceHealthStatusValue` enum and that member's own documentation:
+/// "`ok` - All checks are passing. The instance is reachable",
+/// "`initializing` - The instance was recently started, and the checks are in
+/// progress" and "`not-applicable` - The check doesn't apply because the
+/// instance isn't running". The enum's remaining members describe an instance
+/// one or more checks have failed on (`impaired`) and one there is not enough
+/// data for (`insufficient-data`), neither of which this store can produce —
+/// nothing here impairs an instance, and the state of every instance it holds
+/// is known.
+pub const INSTANCE_HEALTH_OK: &str = "ok";
+/// See [`INSTANCE_HEALTH_OK`].
+pub const INSTANCE_HEALTH_INITIALIZING: &str = "initializing";
+/// See [`INSTANCE_HEALTH_OK`].
+pub const INSTANCE_HEALTH_NOT_APPLICABLE: &str = "not-applicable";
+
+/// `InstanceHealthStatusDetail$name`'s only value, from the modelled
+/// `InstanceHealthStatusDetailName` enum: "The type of instance status. The only
+/// possible value is `reachability`."
+pub const INSTANCE_HEALTH_DETAIL_REACHABILITY: &str = "reachability";
+
+/// `InstanceHealthStatusDetail$status` values this slice reports, from the
+/// modelled `InstanceHealthStatusDetailValue` enum: "`passed` - The check
+/// passed" and "`initializing` - The check is in progress". The enum's other
+/// members describe a check that failed and one there is not enough data for,
+/// neither of which this store can produce.
+pub const INSTANCE_HEALTH_DETAIL_PASSED: &str = "passed";
+/// See [`INSTANCE_HEALTH_DETAIL_PASSED`].
+pub const INSTANCE_HEALTH_DETAIL_INITIALIZING: &str = "initializing";
+
+/// The health of an instance in the lifecycle state `state`: what its
+/// reachability check reports, and the status that check adds up to.
+///
+/// The ONE owner of that rule, asked for both health members an instance
+/// reports — "impaired functionality that stems from issues internal to the
+/// instance" (`instanceStatus`) and "issues related to the systems that support
+/// an instance" (`systemStatus`) — because the same evidence decides both: the
+/// instance's own lifecycle state is what this store knows about its
+/// reachability. A serving instance is reachable and its check has passed; one
+/// the clock is still bringing up has a check in progress; and one that is not
+/// running has no check that applies, so it reports that and no check result at
+/// all.
+pub fn instance_health_status(state: Lifecycle) -> InstanceHealthStatus {
+    let (status, detail) = if state == RUNNING {
+        (INSTANCE_HEALTH_OK, Some(INSTANCE_HEALTH_DETAIL_PASSED))
+    } else if state == PENDING {
+        (
+            INSTANCE_HEALTH_INITIALIZING,
+            Some(INSTANCE_HEALTH_DETAIL_INITIALIZING),
+        )
+    } else {
+        (INSTANCE_HEALTH_NOT_APPLICABLE, None)
+    };
+    InstanceHealthStatus {
+        status: Some(status.to_string()),
+        // A list member is reported EMPTY rather than left out: an absent
+        // member hands a typed caller a null where it iterates.
+        details: Some(
+            detail
+                .map(|status| InstanceHealthStatusDetail {
+                    name: Some(INSTANCE_HEALTH_DETAIL_REACHABILITY.to_string()),
+                    status: Some(status.to_string()),
+                    // "The time when a status check failed" — no check this
+                    // store reports has failed, so no detail carries one.
+                    impaired_since: None,
+                })
+                .into_iter()
+                .collect(),
+        ),
+    }
+}
+
 /// The device path an instance's system disk is exposed at.
 ///
 /// A Lightsail instance is an EC2 instance whose root volume is the first device
@@ -243,10 +315,17 @@ impl StoredInstance {
     /// instance is due, which lives on the SCHEDULE its add-on runs on rather
     /// than on this record, so it too is passed in by the store
     /// ([`ComAmazonawsLightsailLightsail20161128State::next_auto_snapshot_time_of_day`]).
+    ///
+    /// `include_health_status` is what the READING operation's own
+    /// `includeHealthStatus` asked for: both health members are "returned only
+    /// when you set `includeHealthStatus` to `true` in your request"
+    /// (`Instance$instanceStatus`, `Instance$systemStatus`), so a request that
+    /// did not ask for them is answered without them.
     pub fn view(
         &self,
         attached_disks: Vec<crate::ops::types::Disk>,
         next_auto_snapshot_time_of_day: Option<String>,
+        include_health_status: bool,
     ) -> Instance {
         Instance {
             name: Some(self.name.clone()),
@@ -294,6 +373,11 @@ impl StoredInstance {
                 self.metadata_options
                     .view(&self.ip_address_type, &self.location.region_name),
             ),
+            // Both health members report the same evidence this store holds
+            // about the instance, through the crate's one owner of that rule:
+            // the instance's own lifecycle state.
+            instance_status: include_health_status.then(|| instance_health_status(self.state)),
+            system_status: include_health_status.then(|| instance_health_status(self.state)),
         }
     }
 

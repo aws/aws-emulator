@@ -96,6 +96,7 @@ pub fn operation_removes_its_resource(operation_type: &str) -> bool {
             | OPERATION_TYPE_DELETE_RELATIONAL_DATABASE
             | OPERATION_TYPE_DELETE_RELATIONAL_DATABASE_SNAPSHOT
             | OPERATION_TYPE_DELETE_CONTAINER_SERVICE
+            | OPERATION_TYPE_DELETE_SUBDOMAIN
             | OPERATION_TYPE_RELEASE_STATIC_IP
     )
 }
@@ -320,3 +321,88 @@ pub const OPERATION_TYPE_START_GUI_SESSION: &str = "StartGUISession";
 /// The `operationType` the log entry of a `StopGUISession` call carries, the
 /// modelled `OperationType` enum's own `StopGUISession` member.
 pub const OPERATION_TYPE_STOP_GUI_SESSION: &str = "StopGUISession";
+
+/// The `operationType` the log entry of a `CreateSubdomain` call carries, the
+/// modelled `OperationType` enum's own `CreateSubdomain` member.
+pub const OPERATION_TYPE_CREATE_SUBDOMAIN: &str = "CreateSubdomain";
+/// The `operationType` the log entry of an `UpdateSubdomainAssociation` call
+/// carries, the modelled `OperationType` enum's own
+/// `UpdateSubdomainAssociation` member.
+pub const OPERATION_TYPE_UPDATE_SUBDOMAIN_ASSOCIATION: &str = "UpdateSubdomainAssociation";
+/// The `operationType` the log entry of a `DeleteSubdomain` call carries, the
+/// modelled `OperationType` enum's own `DeleteSubdomain` member.
+pub const OPERATION_TYPE_DELETE_SUBDOMAIN: &str = "DeleteSubdomain";
+
+impl ComAmazonawsLightsailLightsail20161128State {
+    /// Append `operation` to the log, dropping the oldest entries past
+    /// [`MAX_OPERATION_HISTORY`] so the log stays bounded however many calls a
+    /// caller makes.
+    pub fn record_operation(&mut self, operation: StoredOperation) -> StoredOperation {
+        self.operations.push(operation.clone());
+        if let Some(excess) = self.operations.len().checked_sub(MAX_OPERATION_HISTORY) {
+            self.operations.drain(..excess);
+        }
+        operation
+    }
+
+    /// Build and record an operation of `operation_type` against
+    /// `resource_name` — the ONE place an operation-log entry is built, so every
+    /// entry this service writes carries the same members and names the call
+    /// that wrote it whether or not the modelled `OperationType` enum declares a
+    /// member for that call (see [`OPERATION_TYPE_COPY_SNAPSHOT`]).
+    ///
+    /// It is also the ONE place a request can grow the log, and the growth is
+    /// bounded here: the entry is appended through [`Self::record_operation`],
+    /// which keeps at most [`MAX_OPERATION_HISTORY`] entries and drops the
+    /// oldest, so however many calls a caller makes the log holds no more than
+    /// that.
+    ///
+    /// `resource_type` is the kind of resource the operation acted on, from the
+    /// modelled `ResourceType` enum, so the log says what each entry is about.
+    ///
+    /// `settles_at_ms` is the instant the clock owes the operation its terminal
+    /// status — `None` for work that was already finished when the call
+    /// returned, in which case the operation is answered terminal.
+    ///
+    /// `operationDetails` is "details about the operation": a member BESIDE the
+    /// `resourceName` the entry already carries, so it never repeats that name.
+    /// Every one of this service's calls acts on the resource the entry names
+    /// and has nothing further to detail, so an entry reports NO detail —
+    /// except the entry of a call that took that resource away
+    /// ([`operation_removes_its_resource`]), whose detail is empty
+    /// ([`OPERATION_DETAILS_REMOVED`]) because the record it would describe is
+    /// the one the call just removed.
+    pub fn start_operation(
+        &mut self,
+        now_ms: i64,
+        operation_type: &str,
+        resource_type: &str,
+        resource_name: &str,
+        location: &StoredLocation,
+        settles_at_ms: Option<i64>,
+    ) -> StoredOperation {
+        let id = self.mint_uuid();
+        let terminal = settles_at_ms.is_none();
+        let operation = StoredOperation {
+            id,
+            resource_name: resource_name.to_string(),
+            resource_type: resource_type.to_string(),
+            created_at_ms: now_ms,
+            location: location.clone(),
+            is_terminal: terminal,
+            operation_details: operation_removes_its_resource(operation_type)
+                .then(|| OPERATION_DETAILS_REMOVED.to_string()),
+            operation_type: operation_type.to_string(),
+            status: if terminal {
+                OPERATION_STATUS_SUCCEEDED.to_string()
+            } else {
+                OPERATION_STATUS_STARTED.to_string()
+            },
+            status_changed_at_ms: now_ms,
+            error_code: None,
+            error_details: None,
+            settles_at_ms,
+        };
+        self.record_operation(operation)
+    }
+}
