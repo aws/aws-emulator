@@ -116,15 +116,68 @@ const RUN_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// take of THIS host is bounded beside it ([`AGENT_RUN_HOST_CEILING`]).
 pub const AGENT_RUN_WALL_CLOCK: Duration = Duration::from_secs(10);
 
+/// How many traced events ONE invocation may spend, which is the step budget it is given
+/// ([`agent_run_budget`]).
+///
+/// Named here because the tick one reading of the invocation's clock moves
+/// ([`AGENT_RUN_CLOCK_TICK`]) is sized against it: the two together decide which bound answers
+/// a run that spends everything it is given.
+const AGENT_RUN_STEPS: u32 = 50_000_000;
+
+/// How many times the engine reads ONE invocation's clock per traced event the run delivers.
+///
+/// MEASURED, not chosen: the engine reads the clock to compare the run against its deadline
+/// and reads it again for the span the run has spent of that deadline, so one traced event
+/// moves a clock the run drives by this many ticks. The tick below has to be sized against
+/// it: sized as though an event moved the clock once, the traced events a run is allowed
+/// would spend the whole of the invocation's own span, and a run that spent the work it is
+/// given would be reported as having run out of TIME rather than on the work it did.
+const CLOCK_READINGS_PER_TRACED_EVENT: u32 = 2;
+
+/// What share of the invocation's own span the WHOLE step budget may spend: one over this.
+///
+/// CHOSEN: room beside the readings the run's own events take — the host's own watch over the
+/// run reads the same clock, and so does every seam the run makes a blocking call through —
+/// so no reading this emulator took of its own accord spends the span the agent is given.
+const STEP_BUDGET_SHARE_OF_THE_SPAN: u32 = 4;
+
 /// How far ONE reading of an invocation's clock moves it.
 ///
 /// The span above is spent by what the RUN does, and a traced event is one of those: the
 /// engine reads the run's clock once per event the agent delivers and once per sample the
-/// host's watch takes over it. The tick is sized so that the whole step budget
-/// ([`agent_run_budget`]) spends part of that span, which leaves an agent that computes
-/// without end to be answered by a count of its OWN work rather than by how fast this host
-/// interprets it.
-pub const AGENT_RUN_CLOCK_TICK: Duration = Duration::from_nanos(100);
+/// host's watch takes over it.
+///
+/// DERIVED, not chosen: the whole step budget, at every reading one traced event takes of the
+/// clock, spends the stated SHARE of the invocation's span and no more. So a run that spends
+/// the traced events it is allowed is answered on that count — what it DID — and the span is
+/// left to be spent by the waits the agent itself asks for, which are the other thing a run
+/// spends its own time on. A tick that let the step budget spend the whole span would make
+/// which of the two bounds answers an accident of how many times the engine happens to read
+/// the clock per event.
+pub const AGENT_RUN_CLOCK_TICK: Duration = match AGENT_RUN_WALL_CLOCK.checked_div(
+    AGENT_RUN_STEPS
+        .saturating_mul(CLOCK_READINGS_PER_TRACED_EVENT)
+        .saturating_mul(STEP_BUDGET_SHARE_OF_THE_SPAN),
+) {
+    Some(tick) => tick,
+    // Unreachable while the divisor above is a count of readings: a clock that stood still
+    // would never reach a deadline even the waits an agent asked for had spent.
+    None => Duration::from_nanos(1),
+};
+
+/// The CLOCK one invocation of a deployed agent is bounded against.
+///
+/// A clock the RUN's own readings drive, so the span the invocation is given is spent by what
+/// the agent did — the traced events it delivers and the waits it asks for — and by no span of
+/// this host's time: the interpreter one invocation runs in is built for it and the deployed
+/// code's own modules are read in it, work a loaded host may need several times as long over,
+/// and none of it is the agent's doing. What the run may take of THIS host is stated on the
+/// clock beside it ([`AGENT_RUN_HOST_CEILING`]), which is the bound that holds the CPU one run
+/// of caller-supplied code may take.
+#[must_use]
+pub fn agent_run_clock() -> python::Clock {
+    python::Clock::driven(AGENT_RUN_CLOCK_TICK).within(AGENT_RUN_HOST_CEILING)
+}
 
 /// Every span the ENGINE spends on one invocation, in the run's own time: building the
 /// execution environment the agent runs in ([`ENVIRONMENT_BUILD_SPAN`]), reading the deployed
@@ -192,7 +245,7 @@ pub const AGENT_RUN_HOST_WAIT: Duration = AGENT_RUN_HOST_CEILING.saturating_add(
 pub fn agent_run_budget() -> Budget {
     Budget {
         wall_clock: AGENT_RUN_WALL_CLOCK,
-        steps: 50_000_000,
+        steps: u64::from(AGENT_RUN_STEPS),
         memory_bytes: 256 * 1024 * 1024,
         // The agent sees no writable directory of its own beyond what the engine serves one,
         // so this bounds what a run that writes files can make this process hold.
@@ -329,8 +382,8 @@ pub async fn run_agent(run: &AgentRun<'_>) -> Result<AgentAnswer, AgentRunFailur
                 },
                 // The clock the run's own span is read against: one the RUN drives, a tick
                 // per traced event it delivers, stating what the run may take of THIS host
-                // besides.
-                &python::Clock::driven(AGENT_RUN_CLOCK_TICK).within(AGENT_RUN_HOST_CEILING),
+                // besides ([`agent_run_clock`]).
+                &agent_run_clock(),
             );
             let _ = sender.send(finished);
         });
