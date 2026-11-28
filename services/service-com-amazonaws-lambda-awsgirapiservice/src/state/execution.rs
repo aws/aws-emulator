@@ -42,13 +42,13 @@
 //! ([`INIT_PHASE_LIMIT`]), which is waited out beside the handler's `Timeout` and charged to
 //! neither the deadline the run is stopped at nor the time the handler is told it has left.
 //!
-//! WHICH invocations pay that phase is the engine's. Under the Python interpreter an
-//! environment is initialized once per [`warm_pool::EnvironmentKey`] and then serves
-//! invocation after invocation, exactly as Lambda keeps one: the invocation that finds no
-//! environment of its own standing pays the initialization, and every invocation a standing
-//! environment serves is the handler's run alone ([`warm_pool`]). Under the node engine every
-//! invocation still initializes an environment of its own, because that runtime settles an
-//! invocation inside the context it was started in.
+//! WHICH invocations pay that phase is the POOL's reading, and it is the same for both
+//! engines: an environment is initialized once per [`warm_pool::EnvironmentKey`] and then
+//! serves invocation after invocation, exactly as Lambda keeps one — the invocation that finds
+//! no environment of its own standing pays the initialization, and every invocation a standing
+//! environment serves is the handler's run alone ([`warm_pool`]). That reuse is also what makes
+//! the state a handler leaves behind be there for the next invocation, down to the timers it
+//! scheduled and did not wait for.
 //!
 //! The engines of the runs in flight hold at most [`MAX_CONCURRENT_RUN_MEMORY_MB`] of memory
 //! between them, so what the handlers of this process take of the host is bounded however
@@ -530,11 +530,9 @@ pub const GUEST_WAIT_HOST_SPAN: Duration = Duration::from_secs(20);
 /// follows it is the handler's own run. This is the span that setup is allowed, over and above
 /// the `Timeout` the handler itself is given.
 ///
-/// It bounds ONE initialization, not every invocation: under the Python interpreter the
-/// environment is built for the invocation that finds none standing and then serves the
-/// invocations after it, each of which is the handler's run alone ([`warm_pool`]); under the
-/// node engine every invocation initializes an environment of its own and so is bounded by
-/// this span as well as by its `Timeout`.
+/// It bounds ONE initialization, not every invocation: the environment is built for the
+/// invocation that finds none standing, and the invocations after it are each the handler's
+/// run alone ([`warm_pool`]).
 pub const INIT_PHASE_LIMIT: Duration = Duration::from_secs(10);
 
 /// How long this emulator may spend STANDING UP the execution environment an invocation runs
@@ -1284,7 +1282,6 @@ pub async fn run_invocation(
     {
         budget.wall_clock = left;
     }
-    let heap_bytes = run_heap_bytes(invocation.memory_size);
     let started = SystemTime::now();
     // Whether this invocation is the run of a DURABLE EXECUTION, which is what decides the
     // span its wait below allows for a run sitting SUSPENDED on a callback of that execution
@@ -1317,46 +1314,30 @@ pub async fn run_invocation(
                 lifecycle: thread_lifecycle,
             };
             let event = event_text(&invocation.payload);
-            let finished = match engine {
-                // The run happens in an execution environment of this function version
-                // ([`warm_pool::serve`]): the one already standing when there is one, which
-                // is what makes a warm invocation the handler's own run and nothing besides.
-                Engine::Python => warm_pool::serve(
-                    &environment_key,
-                    warm_pool::Served {
-                        modules: Arc::new(modules),
-                        handler: handler.clone(),
-                        environment,
-                        architecture: invocation.architecture.clone(),
-                        event,
-                        request_id: invocation.request_id.clone(),
-                        invoked_function_arn: invocation.invoked_function_arn.clone(),
-                        client_context: invocation.client_context.clone(),
-                        tenant_id: invocation.tenant_id.clone(),
-                        cognito_identity: invocation.cognito_identity.clone(),
-                        budget,
-                        aws: invocation.aws.clone(),
-                        durable,
-                        file_systems,
-                    },
-                ),
-                Engine::Node => node::run(&node::Run {
-                    modules: &modules,
-                    handler: &handler,
-                    runtime: invocation.runtime.as_deref().unwrap_or_default(),
-                    architecture: &invocation.architecture,
-                    environment: &environment,
-                    event: event.as_deref(),
-                    request_id: &invocation.request_id,
-                    invoked_function_arn: &invocation.invoked_function_arn,
-                    client_context: invocation.client_context.as_deref(),
-                    tenant_id: invocation.tenant_id.as_deref(),
-                    cognito_identity: invocation.cognito_identity.as_ref(),
+            // The run happens in an execution environment of this function version
+            // ([`warm_pool::serve`]): the one already standing when there is one, which is
+            // what makes a warm invocation the handler's own run and nothing besides — and
+            // what makes the state its handler left behind, including the timers it scheduled
+            // and did not wait for, be there for the invocation that follows.
+            let finished = warm_pool::serve(
+                &environment_key,
+                warm_pool::Served {
+                    modules: Arc::new(modules),
+                    handler: handler.clone(),
+                    environment,
+                    architecture: invocation.architecture.clone(),
+                    event,
+                    request_id: invocation.request_id.clone(),
+                    invoked_function_arn: invocation.invoked_function_arn.clone(),
+                    client_context: invocation.client_context.clone(),
+                    tenant_id: invocation.tenant_id.clone(),
+                    cognito_identity: invocation.cognito_identity.clone(),
                     budget,
-                    heap_bytes,
-                    aws: invocation.aws.as_ref(),
-                }),
-            };
+                    aws: invocation.aws.clone(),
+                    durable,
+                    file_systems,
+                },
+            );
             let _ = sender.send(finished);
         });
     if let Err(error) = spawned {

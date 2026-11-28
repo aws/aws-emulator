@@ -3,23 +3,27 @@
 //! The EXECUTION ENVIRONMENTS this process keeps standing, and which invocation each may
 //! serve.
 //!
-//! An invocation of a `python3.x` function runs in an execution environment: an interpreter
-//! with this emulator's runtime installed and the function's own handler module imported
-//! ([`super::python::Prepared`]). Building one is the INIT phase, and none of it depends on
+//! An invocation runs in an execution ENVIRONMENT: the engine of the function's own language
+//! with this emulator's runtime installed and the handler's module loaded — an interpreter for
+//! a `python3.x` function ([`super::python::Prepared`]), the JavaScript engine for a `nodejs*`
+//! one ([`super::node::Standing`]). Building one is the INIT phase, and none of it depends on
 //! the invocation that is served in it — which is why Lambda does not build one per call:
 //! "After a Lambda function is invoked, Lambda maintains the execution environment for some
 //! time in anticipation of another invocation", and an invocation an already-initialized
 //! environment serves "skips the initialization phase". That reuse is also what makes the
 //! global state a handler leaves behind — a client it created outside the handler, a cached
-//! value — be there for the next invocation, which AWS documents handlers may rely on.
+//! value, the work it left on its event loop — be there for the next invocation, which AWS
+//! documents handlers may rely on.
 //!
 //! So this module holds the environments that are standing and idle, keyed by WHICH
 //! invocations they may serve ([`EnvironmentKey`]): one function's one version, at one
 //! revision of its configuration, in one Region, for one tenant, with one kind of
-//! initialization. An invocation that finds no environment of its own builds one; every other
-//! invocation is served by the environment already standing, and pays none of that cost.
+//! initialization — and, because the runtime is part of that key, an environment of one engine
+//! never serves an invocation of the other. An invocation that finds no environment of its own
+//! builds one; every other invocation is served by the environment already standing, and pays
+//! none of that cost.
 //!
-//! An environment is a THREAD, because the interpreter and every object in it belong to the
+//! An environment is a THREAD, because the engine and every object in it belong to the
 //! thread they were built on: an invocation reaches one by being handed to its thread, which
 //! answers what the run came to. Exactly one invocation is ever in flight in an environment —
 //! an environment being used is OUT of this pool for as long as it is — so the invocations of
@@ -27,23 +31,23 @@
 //! many of them at an instant as the memory envelope admits runs ([`super::run_invocation`]).
 //!
 //! What a STANDING environment holds is bounded on its own, because that memory is held
-//! outside the per-invocation envelope: an environment is kept only while the interpreter in
-//! it has grown no further than the memory its function is configured for
-//! ([`python::Prepared::grown_bytes`]) and has served fewer than
-//! [`MAX_INVOCATIONS_PER_ENVIRONMENT`] invocations, and the environments standing idle are
+//! outside the per-invocation envelope: an environment is kept only while the engine in it has
+//! grown no further than the memory its function is configured for
+//! ([`python::Prepared::grown_bytes`], [`node::Standing::grown_bytes`]) and has served fewer
+//! than [`MAX_INVOCATIONS_PER_ENVIRONMENT`] invocations, and the environments standing idle are
 //! held together to [`MAX_IDLE_ENVIRONMENTS`] of them and [`MAX_STANDING_BYTES`] of memory
 //! between them, the longest-idle retired until both fit, and every one of them past
 //! [`IDLE_LIFETIME`] retired with them — on the next operation the pool performs, because
 //! nothing of this emulator polls a pool nobody is using.
 //!
-//! Three things end an environment, and each ends its THREAD, which finalizes its interpreter
-//! and gives that memory back. An invocation the HOST stopped leaves it mid-frame, so it is
+//! Three things end an environment, and each ends its THREAD, which tears its engine down and
+//! gives that memory back. An invocation the HOST stopped leaves it mid-frame, so it is
 //! not kept ([`reusable`]) — which is what AWS does with the environment of a run its timeout
 //! ended. One of the bounds above being reached retires it. And so does the pool dropping it
 //! to make room for another.
 //!
 //! Beside the initialized environments this module keeps a few BLANK ones ([`Blanks`]): the
-//! half of an environment that reads no function's configuration at all
+//! half of an INTERPRETER environment that reads no function's configuration at all
 //! ([`python::Blank`]) — the interpreter, the narrowing of its native surface and this
 //! emulator's own runtime — stood up while a function is being PROVISIONED ([`provision`])
 //! rather than on the path of its first invocation. AWS builds the environment of a function
@@ -62,8 +66,8 @@ use super::super::durable_steps::DurableStepJournal;
 use super::aws_api::AwsAccess;
 use super::outcome::{Budget, Completion, Finished};
 use super::package::PackageModule;
-use super::python;
 use super::run_clock::Clock;
+use super::{node, python};
 
 /// How long an environment nothing has used is kept standing.
 ///
@@ -223,6 +227,33 @@ impl Served {
             file_systems: &self.file_systems,
         }
     }
+
+    /// This invocation as the run the JAVASCRIPT engine is handed.
+    ///
+    /// The same invocation, read by the other engine: what it carries beyond the python run
+    /// above is the release line the runtime reports and the engine's own allocation ceiling,
+    /// both of which are the ENVIRONMENT's and are therefore read off the key the environment
+    /// is held under ([`EnvironmentKey`]) rather than stated twice. What it does not carry is
+    /// the durable journal and the file-system mounts, which are no part of a node run
+    /// ([`node::Run`]).
+    fn as_node_run<'a>(&'a self, key: &'a EnvironmentKey) -> node::Run<'a> {
+        node::Run {
+            modules: &self.modules,
+            handler: &self.handler,
+            runtime: &key.runtime,
+            architecture: &self.architecture,
+            environment: &self.environment,
+            event: self.event.as_deref(),
+            request_id: &self.request_id,
+            invoked_function_arn: &self.invoked_function_arn,
+            client_context: self.client_context.as_deref(),
+            tenant_id: self.tenant_id.as_deref(),
+            cognito_identity: self.cognito_identity.as_ref(),
+            budget: self.budget,
+            heap_bytes: super::run_heap_bytes(key.memory_size),
+            aws: self.aws.as_ref(),
+        }
+    }
 }
 
 /// Serve `served` in an environment of `key`: the one already standing when there is one,
@@ -241,7 +272,11 @@ pub fn serve(key: &EnvironmentKey, served: Served) -> Finished {
     // Two attempts at most: only an environment that was already standing can be lost this
     // way, so the second attempt builds one and has nothing to lose.
     for standing_first in [true, false] {
-        let standing = match standing_first.then(|| checkout(key)).flatten().or_else(start) {
+        let standing = match standing_first
+            .then(|| checkout(key))
+            .flatten()
+            .or_else(|| start(key))
+        {
             Some(standing) => standing,
             None => {
                 return reported(
@@ -452,10 +487,134 @@ fn building() -> Option<Standing> {
     Some(Standing { jobs })
 }
 
-/// An environment for the invocation on its way to it: the blank one already standing when
-/// there is one, and a thread that builds one when there is not.
-fn start() -> Option<Standing> {
-    adopted_blank().or_else(building)
+/// An environment for the invocation on its way to it: one the engine that serves this
+/// invocation's runtime stands on.
+///
+/// The PYTHON engine has blank environments standing ahead of an invocation ([`Blanks`]), so
+/// one of those is adopted where there is one, and a thread that builds one is started where
+/// there is not. The JAVASCRIPT engine has no blank half to adopt — an environment of it is
+/// built from the function's own package ([`node::Standing::stand_up`]) — so a thread is
+/// started that builds one for this invocation and then keeps it standing.
+fn start(key: &EnvironmentKey) -> Option<Standing> {
+    match super::engine_for(Some(&key.runtime)) {
+        Some(super::Engine::Node) => node_building(key.clone()),
+        _ => adopted_blank().or_else(building),
+    }
+}
+
+/// Start the thread of a NODE environment for an invocation that is waiting for one now: it
+/// takes that invocation, builds the environment its package needs and then serves invocation
+/// after invocation in it.
+fn node_building(key: EnvironmentKey) -> Option<Standing> {
+    let (jobs, incoming) = channel();
+    ::std::thread::Builder::new()
+        .name("lambda-execution-environment".to_string())
+        .stack_size(super::RUN_STACK_BYTES)
+        .spawn(move || serve_node_jobs(incoming, &key))
+        .ok()?;
+    Some(Standing { jobs })
+}
+
+/// One JAVASCRIPT execution environment's whole life, on its own thread.
+///
+/// The environment is built from the FIRST invocation's own package — there is no half of one
+/// that reads no function's configuration here — and every invocation that follows is served
+/// in it, which is what makes the state a handler left behind, the modules it loaded and the
+/// timers it scheduled and did not wait for be there for the next invocation
+/// ([`node::Standing`]).
+fn serve_node_jobs(jobs: Receiver<Job>, key: &EnvironmentKey) {
+    let building = Instant::now();
+    let clock = Clock::host();
+    let Ok(first) = jobs.recv() else {
+        // Nothing will be served here: the pool dropped this handle, or this process is going
+        // down. Nothing was built, so there is nothing to tear down.
+        return;
+    };
+    // The log STREAM this execution environment writes to: one stream per environment, which
+    // is what makes the invocations a standing environment serves share a stream and a new
+    // environment open one of its own.
+    let log_stream = first
+        .served
+        .environment
+        .get(super::LOG_STREAM_VARIABLE)
+        .cloned();
+    let mut budget = first.served.budget;
+    let standing = match node::Standing::stand_up(&first.served.as_node_run(key), &clock) {
+        Ok(standing) => standing,
+        Err(failed) => {
+            // An environment that could not be stood up is answered to the invocation that
+            // asked for one, and none is kept.
+            let mut finished = *failed;
+            finished.elapsed = building.elapsed();
+            finished.log_stream = log_stream.clone();
+            let _ = first.answer.send(Answered {
+                finished,
+                reusable: false,
+                grown: 0,
+            });
+            return;
+        }
+    };
+    let mut cold = Some(building);
+    let mut job = first;
+    let mut served = 0u64;
+    loop {
+        served = served.saturating_add(1);
+        // Every invocation served here reports the stream of the environment serving it,
+        // whichever stream its own caller composed.
+        if let Some(stream) = log_stream.clone() {
+            job.served
+                .environment
+                .insert(super::LOG_STREAM_VARIABLE.to_string(), stream);
+        }
+        let mut finished = standing.serve(&job.served.as_node_run(key), &clock);
+        finished.log_stream = log_stream.clone();
+        // The invocation the environment was BUILT for waited for that build as well as for
+        // its own run, so that is what its duration is, and what the build itself took is what
+        // its report states as its `Init Duration`. Every later invocation waited for its own
+        // run alone, which is the whole point of the environment still standing.
+        if let Some(initializing) = cold.take() {
+            let whole = initializing.elapsed();
+            finished.init_duration = Some(whole.saturating_sub(finished.elapsed));
+            finished.elapsed = whole;
+        }
+        // Whether this environment may stand: the invocation it just served has to have
+        // COMPLETED, and the engine in it has to be within the memory its function is
+        // configured for and within the invocations one environment serves — the same two
+        // bounds the interpreter environments are kept against ([`serve_in`]).
+        let grown = standing.grown_bytes();
+        let within_memory = grown <= budget.memory_bytes;
+        let keep = reusable(&finished.completion)
+            && within_memory
+            && served < MAX_INVOCATIONS_PER_ENVIRONMENT;
+        if !within_memory {
+            ::tracing::debug!(
+                grown_bytes = grown,
+                configured_bytes = budget.memory_bytes,
+                served,
+                "an execution environment of this emulator has grown past the memory its \
+                 function is configured for, so it was retired rather than kept standing"
+            );
+        }
+        let _ = job.answer.send(Answered {
+            finished,
+            reusable: keep,
+            grown,
+        });
+        if !keep {
+            break;
+        }
+        match jobs.recv() {
+            Ok(next) => {
+                budget = next.served.budget;
+                job = next;
+            }
+            // The pool dropped this environment: its idle span ran out, it was retired to
+            // make room, or this process is going down.
+            Err(_) => break,
+        }
+    }
+    standing.discard();
 }
 
 /// One execution environment's whole life, on its own thread, for an invocation that is

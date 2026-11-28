@@ -1,9 +1,8 @@
 Issue-Severity: HIGH
 Issue-Corpus: simparity-behavioral-aws-v1
 Issue-Corpus-Kind: behavioral
-Issue-Trace-Ids: lambda.deep-lambda-runtime-truth-stream-error-after-first-chunk-rejected-in-trailer lambda.get-durable-execution-state-invalid-checkpoint-token-rejected lambda.durable-execution-kms-enforcement lambda.durable-execution-name-conflict-rejected lambda.nodejs-missing-module-rejected-as-import-module-error lambda.layer-nodejs-other-major-directory-not-resolvable-rejected lambda.nodejs-pending-timer-runs-in-next-invocation-when-not-waiting
+Issue-Trace-Ids: lambda.get-durable-execution-state-invalid-checkpoint-token-rejected lambda.durable-execution-kms-enforcement lambda.durable-execution-name-conflict-rejected lambda.nodejs-missing-module-rejected-as-import-module-error lambda.layer-nodejs-other-major-directory-not-resolvable-rejected lambda.nodejs-pending-timer-runs-in-next-invocation-when-not-waiting
 Issue-Shape-Id: com.amazonaws.lambda#AWSGirApiService
-Issue-Key: lambda.deep-lambda-runtime-truth-stream-error-after-first-chunk-rejected-in-trailer|run#10|AssertionError|assert [r["seq"] for _, r in ok_records] == [1, 2, 3], f"control records {ok_records!r}"
 Issue-Key: lambda.get-durable-execution-state-invalid-checkpoint-token-rejected|run#10|AssertionError|assert code == "InvalidParameterValueException", f"expected InvalidParameterValueException, got {code}"
 Issue-Key: lambda.durable-execution-kms-enforcement|run#13|AssertionError|assert msg == disabled_msg, f"GetDurableExecution KMS refusal message: {msg!r}"
 Issue-Key: lambda.durable-execution-name-conflict-rejected|run#11|AssertionError|assert msg == f"Execution already started: {arn1}", f"name-reuse refusal message: {msg!r}"
@@ -16,13 +15,28 @@ Issue-Commit: c607a2586d7f91da73a3e70d6fec1fead9553942
 
 > _Note: this issue was identified against the code base at commit `c607a2586d7f91da73a3e70d6fec1fead9553942`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
+> _Resolution: causes 2 to 7 are fixed — `GetDurableExecutionState` is implemented and validates
+> its `CheckpointToken`, the durable-execution KMS and name-conflict refusals carry AWS's
+> wording, node's ES-module resolution failures are reported as node's own resolver reports
+> them, the require-stack trace is shaped like node's, and a node execution environment is kept
+> standing so work a handler left on its event loop runs during the next invocation it serves.
+> CAUSE 1 is NOT fixed: no service crate can deliver a response incrementally, because the
+> emulator's own service contract hands the whole response over as one buffered value
+> (`vendor/server/src/lib.rs:183`, `vendor/smithy-server-runtime/src/multi_service_router.rs:602`,
+> both read-only). It is re-filed with its `Issue-Key` and its trace id as
+> `issues/things-that-do-not-work/20261128T120000Z-lambda-invokewithresponsestream-answers-its-whole-event-stream-at-once.md`,
+> so that check is not recorded as working; the same outstanding work is also named by
+> `20261027T180000Z-lambda-invokewithresponsestream-refuses-every-real-streaming-invocation.md`._
+
 ## Operation
 InvokeWithResponseStream
 
 ## Description
 Seven distinct root causes behind seven failing checks in the lambda group, none of them carried by an open issue (the nearest neighbours — 20261107T091747Z-lambda-code-signing-not-enforced-no-in-flight.md for streaming, 20261107T135301Z-lambda-9-net-new-root-causes-in-durable.md for durable execution, 20261107T091747Z-lambda-lambda-layers-are-never-materialized-into-the.md for layers, 20261107T135301Z-lambda-10-net-new-root-causes-in-the--r2.md for the Node runtime — do not list these checks).
 
-Cause 1 of 7: InvokeWithResponseStream delivers no response chunks at all.
+Cause 1 of 7: InvokeWithResponseStream delivers no response chunks at all. RE-FILED, NOT FIXED —
+see the resolution note above and
+`issues/things-that-do-not-work/20261128T120000Z-lambda-invokewithresponsestream-answers-its-whole-event-stream-at-once.md`.
 AWS: Smithy lambda InvokeWithResponseStream (POST /2021-11-15/functions/{FunctionName}/response-streaming-invocations) returns output member EventStream (streaming, httpPayload) carrying PayloadChunk events as the handler writes them, followed by InvokeComplete; a handler that writes three chunks and then errors delivers the already-written chunks and reports the error in the terminating event.
 Emulator: the client observes no chunks whatsoever — the control leg that must see the handler's records 1, 2, 3 sees an empty list, so neither the streamed prefix nor the trailing error can be asserted.
 Why: a streaming client gets an empty body for a successful stream; progressive delivery, and the AWS contract that bytes already written survive a later handler error, are both unobservable.

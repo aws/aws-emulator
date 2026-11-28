@@ -551,12 +551,14 @@ impl FunctionRecord {
     ) -> DurableExecutionStart {
         if let Some(held) = self.durable_executions.get(name) {
             if held.tenant_id.as_deref() != tenant_id {
-                return DurableExecutionStart::NameAlreadyStarted;
+                return DurableExecutionStart::NameAlreadyStarted(None);
             }
             if held.input_payload == payload {
                 return DurableExecutionStart::AlreadyStarted(self.durable_execution_arn(held));
             }
-            return DurableExecutionStart::NameAlreadyStarted;
+            return DurableExecutionStart::NameAlreadyStarted(Some(
+                self.durable_execution_arn(held),
+            ));
         }
         if self.durable_executions.len() >= MAX_DURABLE_EXECUTIONS {
             return DurableExecutionStart::LimitExceeded;

@@ -498,14 +498,19 @@ async fn attaching_the_managed_policy_makes_the_next_invocation_deliver_its_log(
          against {reported:?}"
     );
     assert!(
-        lines
-            .first()
-            .is_some_and(|line| line.starts_with("INIT_START Runtime Version: ")),
-        "case {case:?}: expected the delivered log to open on the environment's \
-         initialization, got {lines:?}"
+        lines.first().is_some_and(|line| line.starts_with(START_PREFIX)),
+        "case {case:?}: expected the delivered log to open on the invocation's own START \
+         line, got {lines:?}"
     );
+    // The initialization record is the ENVIRONMENT's, written once ahead of the first
+    // invocation it serves ([`crate::environment_init_record_opens_the_stream`]): this
+    // environment was initialized while the role still carried no logs grant, so what is
+    // delivered here is the invocation's own log and not a second initialization.
     assert!(
-        lines.get(1).is_some_and(|line| line.starts_with(START_PREFIX)),
-        "case {case:?}: expected the invocation's START line after it, got {lines:?}"
+        !lines
+            .iter()
+            .any(|line| line.starts_with("INIT_START Runtime Version: ")),
+        "case {case:?}: expected no initialization record for a run that paid none, got \
+         {lines:?}"
     );
 }

@@ -152,6 +152,17 @@ fn member(execution: &Value, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The sentence a refusal carries, under either spelling the model gives the member.
+fn refusal_message(answer: &Answer) -> String {
+    let body = answer.json();
+    for name in ["message", "Message"] {
+        if let Some(stated) = body.get(name).and_then(Value::as_str) {
+            return stated.to_string();
+        }
+    }
+    String::new()
+}
+
 /// How many asynchronous invocations the function `name` holds queued — the other thing an
 /// accepted `Event` invocation performs, read through the service's own state because
 /// Lambda exposes no operation that reports the queue.
@@ -625,6 +636,16 @@ async fn a_repeat_of_a_live_execution_name_starts_no_duplicate() {
                 "case {:?}: a refused invocation must answer no execution ARN, got {:?}",
                 case.case,
                 repeat.header(DURABLE_EXECUTION_ARN_HEADER)
+            );
+            // The refusal NAMES the execution already started: the fixed sentence, then that
+            // execution's own ARN, which is how a client recovers the in-flight execution
+            // from the refusal — the ARN every read of a durable execution is addressed by.
+            assert_eq!(
+                refusal_message(&repeat),
+                format!("Execution already started: {arn}"),
+                "case {:?}: expected the refusal to name the execution already started, got {}",
+                case.case,
+                String::from_utf8_lossy(&repeat.body)
             );
         }
 

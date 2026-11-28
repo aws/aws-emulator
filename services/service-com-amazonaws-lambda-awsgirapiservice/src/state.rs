@@ -2487,7 +2487,13 @@ pub enum DurableExecutionStart {
     /// The function already held an execution of that name carrying a DIFFERENT payload,
     /// which is the state the modelled `DurableExecutionAlreadyStartedException`
     /// describes. Nothing was stored.
-    NameAlreadyStarted,
+    ///
+    /// The ARN is the EXISTING execution's, which the refusal names so the caller can reach
+    /// the execution already running under the name it asked for. It is absent when the name
+    /// is held by ANOTHER tenant: an execution is one tenant's work, so nothing of it —
+    /// including the ARN it is addressed by — is reported to a caller it does not belong to
+    /// ([`FunctionRecord::start_durable_execution_for_tenant`]).
+    NameAlreadyStarted(Option<String>),
     /// The function already holds [`MAX_DURABLE_EXECUTIONS`], so the start was refused
     /// and nothing was stored.
     LimitExceeded,

@@ -707,19 +707,38 @@ async fn an_es_module_handler_imports_every_bundled_package_by_name() {
     );
 }
 
-/// A handler whose import names a module this runtime cannot resolve fails the way the node
-/// runtime reports a module it cannot find: `Runtime.ImportModuleError`, with the specifier
-/// named — one row per form an unresolvable specifier takes.
+/// A handler whose import names a module this runtime cannot resolve fails the way node's own
+/// ES module resolver reports it: a BARE specifier names the package that is nowhere and a
+/// PATH specifier names the file that was looked for, each beside the module the import was
+/// written in, and neither under the class a failed `require` is reported under — one row per
+/// form an unresolvable specifier takes.
 #[tokio::test]
-async fn an_import_of_a_module_the_runtime_cannot_resolve_fails_as_an_import_module_error() {
-    let cases: &[(&str, &str)] = &[
-        ("a scoped package no runtime supplies", "@aws-sdk/lib-absent"),
-        ("a bare package the deployment package does not hold", "left-pad"),
-        ("a relative module the deployment package does not hold", "./absent.mjs"),
-        ("a directory of the package that is not there", "./lib/absent/"),
+async fn an_import_of_a_module_the_runtime_cannot_resolve_fails_as_the_resolvers_own_error() {
+    // (case, the specifier, the message node's resolver states for it)
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "a scoped package no runtime supplies",
+            "@aws-sdk/lib-absent",
+            "Cannot find package '@aws-sdk/lib-absent' imported from /var/task/index.mjs",
+        ),
+        (
+            "a bare package the deployment package does not hold",
+            "left-pad",
+            "Cannot find package 'left-pad' imported from /var/task/index.mjs",
+        ),
+        (
+            "a relative module the deployment package does not hold",
+            "./absent.mjs",
+            "Cannot find module '/var/task/absent.mjs' imported from /var/task/index.mjs",
+        ),
+        (
+            "a directory of the package that is not there",
+            "./lib/absent/",
+            "Cannot find module '/var/task/lib/absent' imported from /var/task/index.mjs",
+        ),
     ];
     let router = router();
-    for (index, (case, specifier)) in cases.iter().enumerate() {
+    for (index, (case, specifier, stated)) in cases.iter().enumerate() {
         let name = format!("esm-absent-{index}");
         let source =
             format!("import held from \"{specifier}\";\nexport const handler = async () => held;\n");
@@ -732,15 +751,14 @@ async fn an_import_of_a_module_the_runtime_cannot_resolve_fails_as_an_import_mod
         );
         assert_eq!(
             payload["errorType"],
-            json!("Runtime.ImportModuleError"),
-            "case {case:?}: expected the class the node runtime reports for a module it could \
-             not import, got {payload}"
+            json!("Error"),
+            "case {case:?}: expected the class node's module resolver reports a resolution \
+             failure under, got {payload}"
         );
         assert_eq!(
             payload["errorMessage"],
-            json!(format!("Error: Cannot find module '{specifier}'")),
-            "case {case:?}: expected the specifier to be named as the module that was not \
-             found, got {payload}"
+            json!(stated),
+            "case {case:?}: expected {stated:?}, got {payload}"
         );
     }
 }

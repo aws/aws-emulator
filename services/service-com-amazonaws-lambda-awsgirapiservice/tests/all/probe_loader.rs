@@ -3,12 +3,12 @@
 //! End-to-end tests that probe the other half of the node module LOADER: the `import`
 //! path.
 //!
-//! The rule under test: a specifier an `import` cannot resolve fails the invocation as the
-//! loader's own class, `Runtime.ImportModuleError`, naming the specifier that resolved to
-//! nothing. That is the same class a `require` of a missing module reports
-//! (`node_loader_errors`), and this suite is the boundary of that rule: a module the engine's
-//! own loader resolves is reached through no require chain, so the failure names no REQUIRE
-//! STACK — only a `require` carries one.
+//! The rule under test: a specifier an `import` cannot resolve fails the invocation as node's
+//! own ES module RESOLVER reports it — the `Error` that resolver raises, naming the package or
+//! the file it looked for and the module the import was written in — which is NOT the class a
+//! `require` of a missing module reports (`node_loader_errors`). This suite is the boundary of
+//! that rule: a module the engine's own loader resolves is reached through no require chain, so
+//! the failure names no REQUIRE STACK — only a `require` carries one.
 //!
 //! The rows differ along the specifier's form, which is what the resolution generalises
 //! over: a bare package, a scoped package, a relative file, a core module this runtime does
@@ -27,9 +27,10 @@ use crate::function_lifecycle::{
 /// Where `Invoke` is bound (`POST /2015-03-31/functions/{FunctionName}/invocations`).
 const FUNCTIONS_URI: &str = "/2015-03-31/functions";
 
-/// The loader's own class for a module that could not be imported, which is what a node
-/// runtime reports for one.
-const IMPORT_MODULE_ERROR: &str = "Runtime.ImportModuleError";
+/// The class node's own module resolver raises a resolution failure under: one of the
+/// language's errors, told apart from a failed `require` by its own code rather than by a
+/// runtime class of Lambda's.
+const RESOLVER_ERROR: &str = "Error";
 
 /// A .zip deployment package holding `entries`.
 fn package(entries: &[(&str, &str)]) -> Vec<u8> {
@@ -92,8 +93,8 @@ async fn invoke(router: &smithy_server_runtime::MultiServiceRouter, name: &str) 
     .await
 }
 
-/// One row of the import table: the case, the package's entries, and the specifier the
-/// failure must name.
+/// One row of the import table: the case, the package's entries, and the text the failure must
+/// name — the package or the file node's resolver looked for.
 type ImportCase<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 
 #[tokio::test]
@@ -106,7 +107,7 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
                 "index.mjs",
                 "import held from 'left-pad';\nexport const handler = async () => held;\n",
             )],
-            "left-pad",
+            "Cannot find package 'left-pad' imported from /var/task/index.mjs",
         ),
         (
             "an .mjs importing a scoped package no runtime supplies",
@@ -114,7 +115,7 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
                 "index.mjs",
                 "import held from '@acme/absent';\nexport const handler = async () => held;\n",
             )],
-            "@acme/absent",
+            "Cannot find package '@acme/absent' imported from /var/task/index.mjs",
         ),
         (
             "an .mjs importing a relative file the package does not hold",
@@ -122,7 +123,7 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
                 "index.mjs",
                 "import held from './absent.mjs';\nexport const handler = async () => held;\n",
             )],
-            "./absent.mjs",
+            "Cannot find module '/var/task/absent.mjs' imported from /var/task/index.mjs",
         ),
         (
             "an .mjs importing a core module this runtime does not supply",
@@ -130,7 +131,7 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
                 "index.mjs",
                 "import held from 'node:absent';\nexport const handler = async () => held;\n",
             )],
-            "node:absent",
+            "No such built-in module: node:absent",
         ),
         (
             "a .js of a package that declares itself a module",
@@ -141,10 +142,10 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
                     "import held from 'left-pad';\nexport const handler = async () => held;\n",
                 ),
             ],
-            "left-pad",
+            "Cannot find package 'left-pad' imported from /var/task/index.js",
         ),
     ];
-    for (index, (case, entries, specifier)) in cases.iter().enumerate() {
+    for (index, (case, entries, stated)) in cases.iter().enumerate() {
         let engine = Arc::new(engine::InMemoryEngine::new());
         let router = router_on(&engine);
         let function = format!("node-import-{index}");
@@ -161,16 +162,16 @@ async fn a_specifier_an_import_cannot_resolve_is_the_loaders_own_failure() {
         let document = answer.json();
         assert_eq!(
             document.get("errorType").and_then(Value::as_str),
-            Some(IMPORT_MODULE_ERROR),
-            "case {case:?}: expected the loader's own class, got {document}"
+            Some(RESOLVER_ERROR),
+            "case {case:?}: expected the class node's module resolver raises, got {document}"
         );
         let message = document
             .get("errorMessage")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        assert!(
-            message.contains(specifier),
-            "case {case:?}: the failure must name the specifier {specifier:?}, got {message:?}"
+        assert_eq!(
+            message, *stated,
+            "case {case:?}: expected {stated:?}, got {message:?}"
         );
         // Only a `require` carries a require stack: an import resolved by the engine's own
         // loader was reached through no require chain.

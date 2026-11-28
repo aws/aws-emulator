@@ -1429,14 +1429,21 @@ fn start_durable_execution(
                 deduplicated: true,
             })
         }
-        crate::state::DurableExecutionStart::NameAlreadyStarted => Err(
+        crate::state::DurableExecutionStart::NameAlreadyStarted(existing) => Err(
             InvokeErrorModeled::DurableExecutionAlreadyStartedException(
                 DurableExecutionAlreadyStartedException {
                     r#type: None,
+                    // How this refusal is worded: the fixed sentence, then the execution
+                    // ALREADY STARTED under the name the request asked for — which is how a
+                    // client recovers the in-flight execution from the refusal, since the
+                    // ARN is the handle every read of a durable execution is addressed by.
+                    // A name another TENANT holds carries no ARN here, because nothing of
+                    // that tenant's execution is this caller's to be told
+                    // (`crate::state::DurableExecutionStart::NameAlreadyStarted`): the
+                    // refusal then names the execution the caller itself asked for.
                     message: Some(format!(
-                        "The durable execution {name} has already been started. Each durable \
-                         execution name must be unique within the function. Use a different \
-                         name or check the status of the existing execution."
+                        "{ALREADY_STARTED_PREFIX}{}",
+                        existing.as_deref().unwrap_or(&name)
                     )),
                 },
             )
@@ -1474,6 +1481,15 @@ struct StartedDurableExecution {
     /// creating a duplicate", which therefore performs nothing a second time.
     deduplicated: bool,
 }
+
+/// How a start under a `DurableExecutionName` the function already holds is worded: the
+/// fixed sentence AWS refuses one with, followed by the execution already started under
+/// that name.
+///
+/// Every word of it is fixed; the only variable part is the `DurableExecutionArn` that
+/// follows, which is read off the execution the function holds rather than from the request
+/// ([`start_durable_execution`]).
+const ALREADY_STARTED_PREFIX: &str = "Execution already started: ";
 
 /// `InvocationType` values, from the model's `InvocationType` enum
 /// (`Event | RequestResponse | DryRun`).

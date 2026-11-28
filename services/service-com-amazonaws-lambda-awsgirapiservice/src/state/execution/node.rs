@@ -9,6 +9,13 @@
 //! engine. Nothing about a run is synthesised — a payload, a log line, an error type or a
 //! duration here is the one the guest produced.
 //!
+//! The engine is built ONCE per execution environment ([`Standing`]) and serves invocation
+//! after invocation in it, which is what the pool that keeps those environments standing is
+//! for ([`super::warm_pool`]): what an invocation brings is its own event, log, bounds and SDK
+//! seam ([`Session`]), and what it inherits is everything the environment holds — the modules
+//! already loaded, what a handler left in module scope, and the work its event loop still has
+//! to run.
+//!
 //! # Containment
 //!
 //! The guest reaches exactly what this module installs, and nothing else:
@@ -235,17 +242,317 @@ pub fn run_against(request: &Run<'_>, clock: &Clock) -> Finished {
     // The run's own DURATION is this host's own elapsed time whatever clock bounds the run:
     // what it reports is how long the caller waited, which is not a bound.
     let started = Instant::now();
-    let capture = Arc::new(Mutex::new(Capture::new(request.budget.log_bytes)));
-    let bounds = Arc::new(Bounds::new(&request.budget, clock.clone()));
-    let completion = evaluate(request, &capture, &bounds);
-    let elapsed = started.elapsed();
-    // The stop LATCH wins over whatever the guest answered: a run whose budget was spent
-    // is a stopped run even if the guest caught the exception the engine raised in it.
+    let mut finished = match Standing::stand_up(request, clock) {
+        Ok(standing) => {
+            let finished = standing.serve(request, clock);
+            standing.discard();
+            finished
+        }
+        Err(finished) => *finished,
+    };
+    // The environment was built for this one invocation and torn down after it, so what the
+    // caller waited for is both.
+    finished.elapsed = started.elapsed();
+    finished
+}
+
+/// What one invocation writes its log into and what it spends, which [`Session`] binds onto
+/// the environment serving it.
+type Spending = (Arc<Mutex<Capture>>, Arc<Bounds>);
+
+/// An execution ENVIRONMENT of one function version: the engine standing with this emulator's
+/// own runtime on it, ready to serve an invocation.
+///
+/// Building one is what no invocation served in it has to pay for again — "after a Lambda
+/// function is invoked, Lambda maintains the execution environment for some time in
+/// anticipation of another invocation", and an invocation an initialized environment serves
+/// "skips the initialization phase" — so one environment serves invocation after invocation
+/// ([`super::warm_pool`]). That reuse is also what makes the state a handler leaves behind be
+/// there for the next invocation: the modules it loaded, the globals it set, and the TIMERS it
+/// scheduled and did not wait for, which the event loop of this environment still holds and
+/// which the next invocation served here therefore runs.
+///
+/// It is NOT `Send`: the engine and every object in it belong to the thread they were built
+/// on, so an environment is reached by handing an invocation to that thread.
+pub(super) struct Standing {
+    /// The engine itself, carrying the memory ceiling, the stack bound, the module loader and
+    /// the rejection tracker of this environment.
+    engine: Runtime,
+    /// The context this emulator's runtime stands in, and the handler's own modules are loaded
+    /// and cached in.
+    context: Context,
+    /// What the invocation being served brings ([`Session`]).
+    session: Arc<Session>,
+    /// The log and the bounds the BUILD was spent against, until the invocation it was built
+    /// for has been served.
+    ///
+    /// That invocation keeps them: the module-level code of its own deployment package runs in
+    /// its initialization, so what that code wrote belongs in its log and what it allocated is
+    /// measured from the baseline the host took before it. Every later invocation brings its
+    /// own, because nothing of the environment it is served in is its doing.
+    initializing: ::std::cell::RefCell<Option<Spending>>,
+}
+
+impl ::std::fmt::Debug for Standing {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        formatter.debug_struct("Standing").finish_non_exhaustive()
+    }
+}
+
+impl Standing {
+    /// Build the environment for `request`, the first invocation it will serve: the engine,
+    /// every bound on it, the host surface and this emulator's own runtime source.
+    ///
+    /// Nothing of the function's own code is read here — the handler's module is loaded by the
+    /// INIT phase of the invocation served in it ([`Self::serve`]) — so this span is this
+    /// process's own work and is bounded as such ([`Bounds::begin_provisioning`]).
+    ///
+    /// `Err` carries what an invocation whose environment could not be stood up is answered
+    /// with; no environment is kept in that case.
+    pub(super) fn stand_up(request: &Run<'_>, clock: &Clock) -> Result<Self, Box<Finished>> {
+        let capture = Arc::new(Mutex::new(Capture::new(request.budget.log_bytes)));
+        let bounds = Arc::new(Bounds::new(&request.budget, clock.clone()));
+        let session = Arc::new(Session::default());
+        session.bind(&capture, &bounds, request.aws);
+        // From here until the engine stands with this emulator's own runtime on it, what is in
+        // flight is this process's work and none of the function's, so it is bounded by the span
+        // that work is allowed rather than by either of the run's own spans.
+        bounds.begin_provisioning();
+        let failed = |why: String| {
+            Box::new(finished_run(
+                Completion::Internal(why),
+                &bounds,
+                &capture,
+                Duration::ZERO,
+                true,
+            ))
+        };
+        let engine = match Runtime::new() {
+            Ok(engine) => engine,
+            Err(error) => return Err(failed(format!("the engine did not start: {error}"))),
+        };
+        // Every bound is on the engine BEFORE a line of the package is compiled.
+        engine.set_memory_limit(request.heap_bytes);
+        engine.set_max_stack_size(ENGINE_STACK_BYTES);
+        // A promise REJECTED with nothing to handle it ends a node process, so the runtime is
+        // told of every such rejection and of every one that is handled after the fact: the
+        // engine reports both, and which of the two it is decides whether the invocation fails
+        // ([`runtime`]'s `rejectionTracked`).
+        engine.set_host_promise_rejection_tracker(Some(Box::new(
+            |ctx: Ctx<'_>, promise: Value<'_>, reason: Value<'_>, handled: bool| {
+                // Before the runtime has installed its protocol there is no invocation to fail,
+                // so a rejection then is nothing to report.
+                let _: Result<(), String> =
+                    runtime_call(&ctx, "rejectionTracked", (promise, reason, handled));
+            },
+        )));
+        // The only module resolution there is: this package's files and the core modules.
+        engine.set_loader(RuntimeResolver, RuntimeLoader);
+        let context = match Context::full(&engine) {
+            Ok(context) => context,
+            Err(error) => return Err(failed(format!("the engine did not start: {error}"))),
+        };
+        let sources: Arc<BTreeMap<String, String>> = Arc::new(
+            request
+                .modules
+                .iter()
+                .map(|module| (module.path.clone(), module.source.clone()))
+                .collect(),
+        );
+        let prepared = context.with(|ctx| -> Result<(), String> {
+            install_host(&ctx, &session, &sources)?;
+            evaluate_runtime_unit(&ctx, RUNTIME_ENTRY_UNIT, runtime::RUNTIME_SOURCE)?;
+            // `Intl` and the local-zone reading of `Date`, which stand on the zone database the
+            // host looks a zone's offset up in ([`intl`]).
+            evaluate_runtime_unit(&ctx, RUNTIME_INTL_UNIT, intl::INTL_SOURCE)?;
+            // The WHATWG globals the runtime defines beside the language's own
+            // ([`web_globals`]), installed before a line of the package is loaded — which is
+            // where a managed runtime has them, so a module BODY that reads one reads it.
+            evaluate_runtime_unit(&ctx, RUNTIME_WEB_UNIT, web_globals::WEB_GLOBALS_SOURCE)
+        });
+        if let Err(error) = prepared {
+            return Err(failed(error));
+        }
+        Ok(Self {
+            engine,
+            context,
+            session,
+            initializing: ::std::cell::RefCell::new(Some((capture, bounds))),
+        })
+    }
+
+    /// Serve ONE invocation in this environment: bind what the invocation brings, let the
+    /// runtime load the handler and call it, and drive the event loop until it answers.
+    ///
+    /// The invocation that BUILT the environment is spent against the log and the bounds the
+    /// build was ([`Self::stand_up`]); every later one brings its own and reports no
+    /// initialization, because it paid none.
+    pub(super) fn serve(&self, request: &Run<'_>, clock: &Clock) -> Finished {
+        let started = Instant::now();
+        let initializing = self.initializing.borrow_mut().take();
+        let initialized = initializing.is_some();
+        let (capture, bounds) = initializing.unwrap_or_else(|| {
+            (
+                Arc::new(Mutex::new(Capture::new(request.budget.log_bytes))),
+                Arc::new(Bounds::new(&request.budget, clock.clone())),
+            )
+        });
+        let input = match runtime_input(request) {
+            Ok(input) => input,
+            Err(error) => {
+                return finished_run(
+                    Completion::Internal(error),
+                    &bounds,
+                    &capture,
+                    started.elapsed(),
+                    initialized,
+                )
+            }
+        };
+        self.session.bind(&capture, &bounds, request.aws);
+        // The DEADLINE and the STEP ceiling are checked by the engine's own interrupt handler,
+        // which is installed per invocation: the bounds it spends are the ones of the run in
+        // flight, and no guest call can read, replace or clear it.
+        let interrupt = Arc::clone(&bounds);
+        self.engine
+            .set_interrupt_handler(Some(Box::new(move || interrupt.step().is_some())));
+        let prepared = self.context.with(|ctx| -> Result<(), String> {
+            // The runtime is installed; from here it loads the handler's module, which is the
+            // INIT phase. The engine is standing and nothing of the RUN's own code has been
+            // read yet, so this is where the memory the run itself takes is measured from, and
+            // where the span its initialization is allowed starts running. The host takes
+            // both, never the guest.
+            bounds.measure_memory_from_here();
+            bounds.begin_initialization();
+            // The runtime itself says when that phase is over, by the
+            // one host call that begins the invoke phase ([`install_host`]'s
+            // `__hostBeginInvocation`) — so the bounds measure the handler and not the
+            // environment it runs in.
+            runtime_call::<_, ()>(&ctx, "start", (input,))
+        });
+        let completion = match prepared {
+            Ok(()) => drive(&self.engine, &self.context, &bounds),
+            Err(error) => Completion::Internal(error),
+        };
+        // One last reading of what the run holds, taken before anything of the engine is torn
+        // down: it is the handler's own work that is being measured, and the stretch of it
+        // after the last reading the driver took is this run's too.
+        bounds.sample_memory();
+        // The run is over, and nothing the engine does between two invocations is the guest's
+        // work: the interrupt handler that stopped it is taken off, so no stop lands outside a
+        // run of the handler.
+        self.engine.set_interrupt_handler(None);
+        // A bound the engine enforced by raising inside the guest leaves that exception
+        // pending in the context; it is taken here, so nothing of the stopped run is left held
+        // in an environment that may go on to serve another invocation.
+        self.context.with(|ctx| drop(ctx.catch()));
+        // The invocation is over, so the environment stops holding the seam it reached this
+        // emulator through: an environment standing idle holds no caller's credential, and the
+        // next invocation served in it brings its own.
+        self.session.release();
+        finished_run(completion, &bounds, &capture, started.elapsed(), initialized)
+    }
+
+    /// What the engine of this environment HOLDS, in bytes, which is what the pool keeps a
+    /// standing environment against ([`super::warm_pool`]): the engine's own accounting of
+    /// what is allocated in it, which is what a handler leaving state behind grows.
+    pub(super) fn grown_bytes(&self) -> u64 {
+        u64::try_from(self.engine.memory_usage().malloc_size).unwrap_or_default()
+    }
+
+    /// Tear the environment down: the engine and everything in it are dropped here, which
+    /// gives that memory back.
+    pub(super) fn discard(self) {
+        drop(self);
+    }
+}
+
+/// What one invocation brings to the environment serving it, which the host surface reads it
+/// through: the log it writes, the bounds it is spent against, the seam it reaches this
+/// emulator through and the count of calls it has made on that seam.
+///
+/// The host functions are installed ONCE per environment ([`install_host`]) and an environment
+/// serves invocation after invocation, so what belongs to ONE invocation is held here rather
+/// than captured in those closures: an environment with no invocation bound writes to no log,
+/// spends no budget and holds no caller's credential.
+#[derive(Debug, Default)]
+struct Session {
+    /// The log the invocation in flight writes, and the bounds it is spent against.
+    spending: Mutex<Option<Spending>>,
+    /// How that invocation reaches the rest of this emulator ([`super::aws_api`]), and `None`
+    /// for an environment standing idle or an invocation given no seam at all.
+    access: Mutex<Option<AwsAccess>>,
+    /// How many calls the invocation in flight has made into this emulator, which is the bound
+    /// on the RUN's calls ([`MAX_CALLS_PER_RUN`]): it is reset when an invocation is bound, so
+    /// each invocation gets its own allowance however many the environment has served.
+    calls: AtomicU64,
+}
+
+impl Session {
+    /// Bind what one invocation brings, and give it its own call allowance.
+    fn bind(&self, capture: &Arc<Mutex<Capture>>, bounds: &Arc<Bounds>, aws: Option<&AwsAccess>) {
+        *self
+            .spending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((Arc::clone(capture), Arc::clone(bounds)));
+        *self.access.lock().unwrap_or_else(PoisonError::into_inner) = aws.cloned();
+        self.calls.store(0, Ordering::Relaxed);
+    }
+
+    /// Release the seam the invocation just served reached this emulator through; see
+    /// [`Standing::serve`].
+    fn release(&self) {
+        *self.access.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The log the invocation in flight writes.
+    fn capture(&self) -> Option<Arc<Mutex<Capture>>> {
+        self.spending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(capture, _)| Arc::clone(capture))
+    }
+
+    /// The bounds the invocation in flight is spent against.
+    fn bounds(&self) -> Option<Arc<Bounds>> {
+        self.spending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, bounds)| Arc::clone(bounds))
+    }
+
+    /// The seam that invocation reaches this emulator through.
+    fn access(&self) -> Option<AwsAccess> {
+        self.access
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Claim one of this invocation's calls into this emulator, reporting how many it had
+    /// already made.
+    fn claim_call(&self) -> u64 {
+        self.calls.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// One finished run, from what it came to and what it spent.
+fn finished_run(
+    completion: Completion,
+    bounds: &Arc<Bounds>,
+    capture: &Arc<Mutex<Capture>>,
+    elapsed: Duration,
+    initialized: bool,
+) -> Finished {
+    // The stop LATCH wins over whatever the guest answered: a run whose budget was spent is a
+    // stopped run even if the guest caught the exception the engine raised in it.
     let completion = match bounds.stopped() {
         Some(stop) => Completion::Stopped(stop),
         None => completion,
     };
-    let written = captured(&capture);
+    let written = captured(capture);
     let (log, log_records) = (written.text.clone(), written.invocation_records());
     let init_records = written.init_records();
     drop(written);
@@ -254,12 +561,15 @@ pub fn run_against(request: &Run<'_>, clock: &Clock) -> Finished {
         log,
         log_records,
         init_records,
-        // Every invocation of a node function initializes an execution environment of its
-        // own, because this engine settles an invocation inside the context it was started in
-        // (see this module's docs and [`super::warm_pool`]): so the init phase of this run is
-        // this run's own.
-        initialized: true,
-        init_duration: bounds.init_duration(),
+        // Whether this run paid the INITIALIZATION phase: the invocation an environment was
+        // BUILT for pays it, and every later invocation that environment serves pays none of
+        // it ([`Standing::serve`]).
+        initialized,
+        init_duration: if initialized {
+            bounds.init_duration()
+        } else {
+            None
+        },
         log_stream: None,
         elapsed,
         // This engine WAITS OUT every wait its run asks for — a timer is waited for on the
@@ -268,92 +578,6 @@ pub fn run_against(request: &Run<'_>, clock: &Clock) -> Finished {
         unwaited: Duration::ZERO,
         max_memory_bytes: Some(bounds.max_memory_bytes()),
     }
-}
-
-/// Build the engine, install the host surface and the runtime, and drive the invocation.
-fn evaluate(request: &Run<'_>, capture: &Arc<Mutex<Capture>>, bounds: &Arc<Bounds>) -> Completion {
-    let input = match runtime_input(request) {
-        Ok(input) => input,
-        Err(error) => return Completion::Internal(error),
-    };
-    // From here until the engine stands with this emulator's own runtime on it, what is in
-    // flight is this process's work and none of the function's, so it is bounded by the span
-    // that work is allowed rather than by either of the run's own spans.
-    bounds.begin_provisioning();
-    let engine = match Runtime::new() {
-        Ok(engine) => engine,
-        Err(error) => return Completion::Internal(format!("the engine did not start: {error}")),
-    };
-    // Every bound is on the engine BEFORE a line of the package is compiled.
-    engine.set_memory_limit(request.heap_bytes);
-    engine.set_max_stack_size(ENGINE_STACK_BYTES);
-    let interrupt = Arc::clone(bounds);
-    engine.set_interrupt_handler(Some(Box::new(move || interrupt.step().is_some())));
-    // A promise REJECTED with nothing to handle it ends a node process, so the runtime is
-    // told of every such rejection and of every one that is handled after the fact: the
-    // engine reports both, and which of the two it is decides whether the invocation fails
-    // ([`runtime`]'s `rejectionTracked`).
-    engine.set_host_promise_rejection_tracker(Some(Box::new(
-        |ctx: Ctx<'_>, promise: Value<'_>, reason: Value<'_>, handled: bool| {
-            // Before the runtime has installed its protocol there is no invocation to fail,
-            // so a rejection then is nothing to report.
-            let _: Result<(), String> =
-                runtime_call(&ctx, "rejectionTracked", (promise, reason, handled));
-        },
-    )));
-    // The only module resolution there is: this package's files and the core modules.
-    engine.set_loader(RuntimeResolver, RuntimeLoader);
-    let context = match Context::full(&engine) {
-        Ok(context) => context,
-        Err(error) => return Completion::Internal(format!("the engine did not start: {error}")),
-    };
-    let sources: Arc<BTreeMap<String, String>> = Arc::new(
-        request
-            .modules
-            .iter()
-            .map(|module| (module.path.clone(), module.source.clone()))
-            .collect(),
-    );
-    let prepared = context.with(|ctx| -> Result<(), String> {
-        install_host(&ctx, capture, &sources, bounds, request.aws)?;
-        evaluate_runtime_unit(&ctx, RUNTIME_ENTRY_UNIT, runtime::RUNTIME_SOURCE)?;
-        // `Intl` and the local-zone reading of `Date`, which stand on the zone database the
-        // host looks a zone's offset up in ([`intl`]).
-        evaluate_runtime_unit(&ctx, RUNTIME_INTL_UNIT, intl::INTL_SOURCE)?;
-        // The WHATWG globals the runtime defines beside the language's own ([`web_globals`]),
-        // installed before a line of the package is loaded — which is where a managed runtime
-        // has them, so a module BODY that reads one reads it.
-        evaluate_runtime_unit(&ctx, RUNTIME_WEB_UNIT, web_globals::WEB_GLOBALS_SOURCE)?;
-        // The runtime is installed; from here it loads the handler's module, which is the
-        // rest of the INIT phase. The engine is standing and nothing of the RUN's own code
-        // has been read yet, so this is where the memory the run itself takes is measured
-        // from, and where the span its initialization is allowed starts running. The host
-        // takes both, never the guest.
-        bounds.measure_memory_from_here();
-        bounds.begin_initialization();
-        // The runtime itself says when that phase is over, by the
-        // one host call that begins the invoke phase ([`install_host`]'s
-        // `__hostBeginInvocation`) — so the bounds measure the handler and not the
-        // environment it runs in.
-        runtime_call::<_, ()>(&ctx, "start", (input,))
-    });
-    if let Err(error) = prepared {
-        return Completion::Internal(error);
-    }
-    let completion = drive(&engine, &context, bounds);
-    // One last reading of what the run holds, taken before anything of the engine is torn
-    // down: it is the handler's own work that is being measured, and the stretch of it after
-    // the last reading the driver took is this run's too.
-    bounds.sample_memory();
-    // The run is over, and nothing the engine does to tear itself down is the guest's
-    // work: the interrupt handler that stopped it is taken off first, so no stop lands
-    // inside the engine's own teardown.
-    engine.set_interrupt_handler(None);
-    // A bound the engine enforced by raising inside the guest leaves that exception
-    // pending in the context; it is taken here, so nothing of the stopped run is left
-    // held when the engine is torn down.
-    context.with(|ctx| drop(ctx.catch()));
-    completion
 }
 
 /// Drive the invocation to its answer: the engine's own job queue first, then the timer
@@ -506,27 +730,33 @@ fn memory_exhausted(engine: &Runtime, bounds: &Arc<Bounds>) -> bool {
 /// arithmetic over what it was handed.
 fn install_host(
     ctx: &Ctx<'_>,
-    capture: &Arc<Mutex<Capture>>,
+    session: &Arc<Session>,
     sources: &Arc<BTreeMap<String, String>>,
-    bounds: &Arc<Bounds>,
-    aws: Option<&AwsAccess>,
 ) -> Result<(), String> {
-    let log = Arc::clone(capture);
+    let log = Arc::clone(session);
     let globals = ctx.globals();
     globals
         .set(
             "__hostLog",
-            Func::from(move |text: String| captured(&log).write(&text)),
+            Func::from(move |text: String| {
+                if let Some(capture) = log.capture() {
+                    captured(&capture).write(&text);
+                }
+            }),
         )
         .map_err(|error| format!("the invocation log could not be installed: {error}"))?;
     // The same log, written a RECORD at a time: what the runtime's own logging interface
     // hands the platform is a whole record, so it is framed as one however many line breaks
     // its formatted message carries ([`super::outcome::Capture::write_record`]).
-    let framed = Arc::clone(capture);
+    let framed = Arc::clone(session);
     globals
         .set(
             "__hostRecord",
-            Func::from(move |text: String| captured(&framed).write_record(&text)),
+            Func::from(move |text: String| {
+                if let Some(capture) = framed.capture() {
+                    captured(&capture).write_record(&text);
+                }
+            }),
         )
         .map_err(|error| format!("the invocation log could not be installed: {error}"))?;
     let held = Arc::clone(sources);
@@ -559,11 +789,15 @@ fn install_host(
     // `EphemeralStorage.Size` ("the size of the function's /tmp directory in MB"), which is
     // what the filesystem module writes into and reports ([`core_modules`]'s `fs`). The figure
     // is the HOST's: the run reads it and never sets it.
-    let ephemeral_bytes = bounds.ephemeral_bytes;
+    let storage = Arc::clone(session);
     globals
         .set(
             "__hostEphemeralBytes",
-            Func::from(move || ephemeral_bytes as f64),
+            Func::from(move || {
+                storage
+                    .bounds()
+                    .map_or(0.0, |bounds| bounds.ephemeral_bytes as f64)
+            }),
         )
         .map_err(|error| format!("the ephemeral storage could not be installed: {error}"))?;
     // How a module of the package is COMPILED: as a compilation unit named by the module's
@@ -579,8 +813,7 @@ fn install_host(
     // the instant that `Timeout` is up at, which is what the handler is told it has left.
     // It is ONE-SHOT ([`Bounds::start`]), and the runtime takes it off the globals with the
     // rest of this surface before a line of the package is loaded.
-    let phase_bounds = Arc::clone(bounds);
-    let phase_capture = Arc::clone(capture);
+    let phase = Arc::clone(session);
     globals
         .set(
             "__hostBeginInvocation",
@@ -588,12 +821,14 @@ fn install_host(
                 // Everything written up to here was written by the INITIALIZATION, which is
                 // what makes the module-level output of the package precede the invocation's
                 // own opening frame in the function's log ([`Capture::begin_invocation`]).
-                captured(&phase_capture).begin_invocation();
+                if let Some(capture) = phase.capture() {
+                    captured(&capture).begin_invocation();
+                }
                 // Milliseconds since the epoch as a NUMBER, which is how JavaScript states
                 // an instant: the value is far inside the integers a double holds exactly.
                 #[allow(clippy::cast_precision_loss)]
                 {
-                    phase_bounds.start() as f64
+                    phase.bounds().map_or(0.0, |bounds| bounds.start() as f64)
                 }
             }),
         )
@@ -751,11 +986,14 @@ fn install_host(
     // own loopback, the private zone of the VPC the function is attached to, and the names a
     // DNS standard itself fixes. No lookup leaves this process, and a name no such zone holds
     // resolves to nothing.
-    let inside = aws.and_then(AwsAccess::inside_vpc);
+    let resolving = Arc::clone(session);
     globals
         .set(
             "__hostResolve",
             Func::from(move |host: String| {
+                let inside = resolving
+                    .access()
+                    .and_then(|access| AwsAccess::inside_vpc(&access));
                 super::guest_resolver::addresses_of(inside.as_ref(), &host)
                     .iter()
                     .map(ToString::to_string)
@@ -810,14 +1048,9 @@ fn install_host(
     // table, the signature and the destination are all [`super::aws_api`]'s, so what the
     // guest decides is only which operation of which reachable service it asks for and
     // what it sends; the two bounds that are this run's — how many calls it may make and
-    // how long one may take — are held here, where no guest code can reach them.
-    let access = aws.cloned();
-    let call_bounds = Arc::clone(bounds);
-    // How many calls this run has made, shared by the two seams a call can be made on: the
-    // bound is on the RUN's calls into this emulator, so a request sent by hand spends the
-    // same count an SDK call does.
-    let made = Arc::new(AtomicU64::new(0));
-    let counted = Arc::clone(&made);
+    // how long one may take — are held in the invocation's own session, where no guest code
+    // can reach them.
+    let calling = Arc::clone(session);
     globals
         .set(
             "__hostAwsCall",
@@ -828,13 +1061,19 @@ fn install_host(
                       body: String,
                       credentials: String,
                       endpoint: String| {
+                    let Some(call_bounds) = calling.bounds() else {
+                        return refusal_answer(
+                            "not_made",
+                            "no invocation is running, so no call was made",
+                        );
+                    };
                     // A run whose budget is already spent makes no further call: the
                     // latched stop is its answer, so work it starts afterwards is work
                     // nothing will report.
                     if call_bounds.stopped().is_some() {
                         return refusal_answer("not_made", "the run's budget is spent");
                     }
-                    if counted.fetch_add(1, Ordering::Relaxed) >= MAX_CALLS_PER_RUN as u64 {
+                    if calling.claim_call() >= MAX_CALLS_PER_RUN as u64 {
                         return refusal_answer(
                             "not_made",
                             &format!(
@@ -843,7 +1082,7 @@ fn install_host(
                             ),
                         );
                     }
-                    let Some(access) = access.as_ref() else {
+                    let Some(access) = calling.access() else {
                         return refusal_answer(
                             "not_made",
                             "this invocation was given no AWS SDK seam, so no call was made",
@@ -861,8 +1100,8 @@ fn install_host(
                         Err(detail) => return refusal_answer("not_made", &detail),
                     };
                     let access = match signing {
-                        Some(identity) => access.clone().signing_as(Some(identity)),
-                        None => access.clone(),
+                        Some(identity) => access.signing_as(Some(identity)),
+                        None => access,
                     };
                     // Addressed at the endpoint the client this call was made through was
                     // built with, where it was built with one: an API whose resource is named
@@ -881,10 +1120,8 @@ fn install_host(
     // endpoint builds the request with them. The addresses a URL may name, the signature and
     // the destination are all [`super::guest_http`]'s; the two bounds that are this run's —
     // the call count it shares with the SDK seam above and how long one request may take —
-    // are held here, where no guest code can reach them.
-    let sending = aws.cloned();
-    let send_bounds = Arc::clone(bounds);
-    let sent = Arc::clone(&made);
+    // are held in the invocation's own session, where no guest code can reach them.
+    let sending = Arc::clone(session);
     globals
         .set(
             "__hostHttpSend",
@@ -895,16 +1132,21 @@ fn install_host(
                     // reason a request was not made at all.
                     let not_made =
                         |detail: String| super::guest_http::answer_document(&Err(Refusal::NotMade(detail)));
+                    let Some(send_bounds) = sending.bounds() else {
+                        return not_made(
+                            "no invocation is running, so no request was sent".to_string(),
+                        );
+                    };
                     if send_bounds.stopped().is_some() {
                         return not_made("the run's budget is spent".to_string());
                     }
-                    if sent.fetch_add(1, Ordering::Relaxed) >= MAX_CALLS_PER_RUN as u64 {
+                    if sending.claim_call() >= MAX_CALLS_PER_RUN as u64 {
                         return not_made(format!(
                             "one invocation may make at most {MAX_CALLS_PER_RUN} calls into this \
                              emulator"
                         ));
                     }
-                    let Some(access) = sending.as_ref() else {
+                    let Some(access) = sending.access() else {
                         return not_made(
                             "this invocation was given no seam to send a request on, so none was \
                              sent"
@@ -1294,24 +1536,27 @@ impl Resolver for RuntimeResolver {
     ) -> rquickjs::Result<String> {
         let resolved: Option<String> =
             runtime_call(ctx, "resolveModule", (base.to_string(), name.to_string()))
-                .map_err(|_| module_not_found(ctx, name))?;
-        resolved.ok_or_else(|| module_not_found(ctx, name))
+                .map_err(|_| import_not_found(ctx, base, name))?;
+        resolved.ok_or_else(|| import_not_found(ctx, base, name))
     }
 }
 
-/// The failure a specifier that resolves to nothing is reported as: the error the node
-/// runtime raises for a module it cannot find, raised as the exception the resolution fails
-/// with.
+/// The failure an `import` of a specifier that resolves to nothing is reported as: the error
+/// the node runtime's own ES module resolver raises for it, raised as the exception the
+/// resolution fails with.
 ///
-/// It is the SAME error a `require` of that specifier throws — `MODULE_NOT_FOUND`, "Cannot
-/// find module '<specifier>'" — so a failed `import` is classified the way a failed `require`
-/// is, which is the class the node runtime reports for a module it could not import
-/// (`Runtime.ImportModuleError`) rather than as whatever the engine's own resolver failure
-/// looks like.
-fn module_not_found<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Error {
-    match runtime_call::<_, Value<'js>>(ctx, "moduleNotFound", (name.to_string(),)) {
+/// This resolver serves `import` alone — a `require` is resolved inside the runtime itself,
+/// where the chain of requiring files it names lives ([`runtime`]'s `requireNotFound`) — and
+/// the two failures are NOT the same error. Node's module resolver reports a specifier it
+/// could not resolve as `ERR_MODULE_NOT_FOUND`, naming the package or the file it looked for
+/// and the module the import was written in, which is not the `MODULE_NOT_FOUND` a require
+/// throws: so a failed import is reported as the error it is rather than under the class the
+/// runtime reports a module it could not require under.
+fn import_not_found<'js>(ctx: &Ctx<'js>, base: &str, name: &str) -> rquickjs::Error {
+    match runtime_call::<_, Value<'js>>(ctx, "importNotFound", (base.to_string(), name.to_string()))
+    {
         Ok(error) => ctx.throw(error),
-        Err(_) => rquickjs::Error::new_resolving(String::new(), name.to_string()),
+        Err(_) => rquickjs::Error::new_resolving(base.to_string(), name.to_string()),
     }
 }
 
@@ -3134,37 +3379,96 @@ mod tests {
         }
     }
 
-    /// A specifier this runtime cannot resolve fails the way the node runtime reports a
-    /// module it cannot find — the class of the INITIALIZATION phase, naming the specifier —
-    /// whether the handler's module reaches it with an `import` or with a `require`, which is
-    /// the one resolution.
+    /// An `import` specifier this runtime cannot resolve fails the way node's own ES module
+    /// resolver reports it: a BARE specifier names the package that is nowhere, a PATH
+    /// specifier names the file that was looked for, a `node:` name no runtime supplies is
+    /// reported as the built-in that does not exist, and each names the module the import was
+    /// written in. None of them is the class a failed `require` is reported under, because an
+    /// import resolution is not a require.
     #[test]
-    fn a_specifier_that_resolves_to_nothing_is_a_module_not_found() {
-        let cases: &[(&str, &str, &str)] = &[
+    fn an_import_that_resolves_to_nothing_is_the_module_resolver_failure() {
+        // (case, the handler's module, the errorType owed, the errorMessage owed)
+        let cases: &[(&str, &str, &str, &str)] = &[
             (
                 "an ES module importing a scoped package no runtime supplies",
                 "import held from '@aws-sdk/lib-absent';\n\
                  export const handler = async () => held;\n",
-                "@aws-sdk/lib-absent",
+                "Error",
+                "Cannot find package '@aws-sdk/lib-absent' imported from /var/task/index.mjs",
             ),
             (
                 "an ES module importing a bare package the package does not hold",
                 "import held from 'left-pad';\nexport const handler = async () => held;\n",
-                "left-pad",
+                "Error",
+                "Cannot find package 'left-pad' imported from /var/task/index.mjs",
+            ),
+            (
+                "an ES module importing a subpath of a package that is nowhere",
+                "import held from 'left-pad/inner.js';\n\
+                 export const handler = async () => held;\n",
+                "Error",
+                "Cannot find package 'left-pad' imported from /var/task/index.mjs",
             ),
             (
                 "an ES module importing a relative module the package does not hold",
                 "import held from './absent.mjs';\nexport const handler = async () => held;\n",
-                "./absent.mjs",
+                "Error",
+                "Cannot find module '/var/task/absent.mjs' imported from /var/task/index.mjs",
             ),
             (
                 "an ES module importing a core module this runtime does not supply",
                 "import held from 'node:absent';\nexport const handler = async () => held;\n",
-                "node:absent",
+                "Error",
+                "No such built-in module: node:absent",
+            ),
+        ];
+        for (case, source, expected_type, expected_message) in cases {
+            let finished = ran_package(&[("index.mjs", source)], "index.handler", None);
+            match &finished.completion {
+                Completion::Raised {
+                    error_type,
+                    error_message,
+                    ..
+                } => {
+                    assert_eq!(
+                        error_type, expected_type,
+                        "case {case:?}: expected the class node reports a resolution failure \
+                         under, got {error_type} ({error_message})"
+                    );
+                    assert_eq!(
+                        error_message, expected_message,
+                        "case {case:?}: expected {expected_message:?}, got {error_message:?}"
+                    );
+                }
+                other => panic!("case {case:?}: expected a raised error, got {other:?}"),
+            }
+        }
+    }
+
+    /// A `require` of a specifier this runtime cannot resolve fails the way the node runtime
+    /// reports a module it cannot find — the class of the INITIALIZATION phase, naming the
+    /// specifier and the chain of files that were requiring.
+    #[test]
+    fn a_required_specifier_that_resolves_to_nothing_is_a_module_not_found() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "a CommonJS module requiring a scoped package no runtime supplies",
+                "const held = require('@aws-sdk/lib-absent');\nexports.handler = async () => held;\n",
+                "@aws-sdk/lib-absent",
+            ),
+            (
+                "a CommonJS module requiring a bare package the package does not hold",
+                "const held = require('left-pad');\nexports.handler = async () => held;\n",
+                "left-pad",
+            ),
+            (
+                "a CommonJS module requiring a relative module the package does not hold",
+                "const held = require('./absent.js');\nexports.handler = async () => held;\n",
+                "./absent.js",
             ),
         ];
         for (case, source, specifier) in cases {
-            let finished = ran_package(&[("index.mjs", source)], "index.handler", None);
+            let finished = ran_package(&[("index.js", source)], "index.handler", None);
             match &finished.completion {
                 Completion::Raised {
                     error_type,
@@ -3176,9 +3480,9 @@ mod tests {
                         "case {case:?}: expected the class of a module that would not import, \
                          got {error_type} ({error_message})"
                     );
-                    assert_eq!(
-                        error_message,
-                        &format!("Error: Cannot find module '{specifier}'"),
+                    assert!(
+                        error_message
+                            .starts_with(&format!("Error: Cannot find module '{specifier}'")),
                         "case {case:?}: expected the specifier to be named as the module that \
                          was not found, got {error_message}"
                     );

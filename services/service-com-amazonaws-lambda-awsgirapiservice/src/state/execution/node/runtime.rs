@@ -36,8 +36,9 @@
 //! * `resolveModule(base, name)` / `moduleSource(id)` — how an `import` is resolved and
 //!   loaded, which is the same resolution `require` performs: a file of this package, or a
 //!   core module this emulator supplies, and nothing else.
-//! * `moduleNotFound(name)` — the error a specifier that resolves to nothing fails with,
-//!   which the host raises from its own resolver.
+//! * `importNotFound(base, name)` — the error an IMPORT of a specifier that resolves to
+//!   nothing fails with, which the host raises from its own resolver (that resolver serves
+//!   `import` alone; a `require` is resolved inside the runtime itself).
 
 /// The JavaScript source of the runtime, evaluated once per invocation in a fresh engine.
 pub(super) const RUNTIME_SOURCE: &str = r##"
@@ -610,13 +611,82 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         return held;
     }
 
-    function moduleNotFound(request) {
+    // Whether a specifier names a PATH rather than a package: the resolution reads a specifier
+    // that begins with `.` or `/`, or that is a `file:` url, as a path of one of this
+    // function's mounts, and every other one as a bare package specifier ([`resolveRequest`]).
+    function pathSpecifier(request) {
+        return request.charAt(0) === '.' || request.charAt(0) === '/'
+            || request.indexOf(FILE_URL_PREFIX) === 0;
+    }
+
+    // The PACKAGE a bare specifier names, which is what node names as the package it could not
+    // find: the one the resolution itself looked for ([`packageSpecifier`]), the subpath after
+    // it being inside that package.
+    function packageOf(request) {
+        var named = packageSpecifier(request);
+        return named === null ? request : named.name;
+    }
+
+    // The absolute path a specifier names as seen from the module `base` is of, for the
+    // failure of an import that resolved to nothing: node names the file it looked for, not
+    // the specifier as written. A specifier that names nothing inside this function's mounts
+    // is reported as it was written, because there is no path of this function to name.
+    function importedPath(base, request) {
+        var baseId = idOfEngineName(base);
+        var directory = baseId === null ? '' : directoryOf(baseId);
+        var id = packagePath(directory, request);
+        return id === null ? request : filenameOf(id);
+    }
+
+    // The module an import was written IN, as the path node names it by in that import's
+    // failure: the importing file itself, and the name the engine knows it by when it is of
+    // no mount of this function.
+    function importerPath(base) {
+        var baseId = idOfEngineName(base);
+        if (baseId !== null) {
+            return filenameOf(baseId);
+        }
+        var named = String(base);
+        return named.indexOf(FILE_URL_PREFIX) === 0
+            ? named.slice(FILE_URL_PREFIX.length)
+            : named;
+    }
+
+    // The failure an IMPORT that resolves to nothing fails with, which is a different error
+    // from the one a `require` of the same specifier throws ([`requireNotFound`]): the ES
+    // module resolver reports `ERR_MODULE_NOT_FOUND` — "Cannot find package '<name>' imported
+    // from <importer>" for a bare specifier, naming the package that is nowhere, and "Cannot
+    // find module '<path>' imported from <importer>" for a path specifier, naming the file it
+    // looked for — and `ERR_UNKNOWN_BUILTIN_MODULE` for a `node:` name no runtime supplies.
+    // None of them is a `MODULE_NOT_FOUND`, so an import that fails this way is reported as
+    // the error it is rather than under the class a failed require is reported under.
+    //
+    // `base` is the importing module as the engine names it, which is where the import was
+    // written; `request` is the specifier as written.
+    function importNotFound(base, request) {
         var refused = takeUnexported();
         if (refused !== null) {
             return packageNotExported(refused);
         }
-        var error = new Error("Cannot find module '" + request + "'");
-        error.code = 'MODULE_NOT_FOUND';
+        var importer = importerPath(base);
+        var error;
+        if (String(request).indexOf('node:') === 0) {
+            error = new Error('No such built-in module: ' + request);
+            error.code = 'ERR_UNKNOWN_BUILTIN_MODULE';
+            return error;
+        }
+        if (pathSpecifier(String(request))) {
+            error = new Error(
+                "Cannot find module '" + importedPath(base, request)
+                    + "' imported from " + importer
+            );
+        } else {
+            error = new Error(
+                "Cannot find package '" + packageOf(String(request))
+                    + "' imported from " + importer
+            );
+        }
+        error.code = 'ERR_MODULE_NOT_FOUND';
         return error;
     }
 
@@ -635,9 +705,9 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
     // module. The stack is what tells a caller WHERE the missing module was asked for, so a
     // packaging error can be told apart from a handler-name one.
     //
-    // An `import` that resolves to nothing fails with [`moduleNotFound`] instead: a module
+    // An `import` that resolves to nothing fails with [`importNotFound`] instead: a module
     // the engine's own loader resolves is reached through no require chain, so there is no
-    // require stack to name.
+    // require stack to name, and node's module resolver words that failure its own way.
     function requireNotFound(request, frames) {
         var refused = takeUnexported();
         if (refused !== null) {
@@ -2676,6 +2746,28 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         });
     }
 
+    // Whether this execution environment has already been STOOD UP: the process object, the
+    // globals and the runtime's own options are the ENVIRONMENT's, installed once, and a
+    // warm invocation served in it inherits them exactly as it inherits the modules the
+    // environment has loaded and the timers its event loop still holds.
+    var stoodUp = false;
+
+    // What a WARM invocation re-exports into the environment it is served in: the variables
+    // the platform sets per invocation (the invocation's own trace header among them) reach the
+    // handler through `process.env`, so the process object the environment stood up with is
+    // updated rather than replaced — a handler that held on to `process.env` reads this
+    // invocation's values from it.
+    function rebindEnvironment(input) {
+        var environment = globalThis.process === undefined ? null : globalThis.process.env;
+        if (environment === null || environment === undefined) {
+            return;
+        }
+        var names = Object.keys(input.environment);
+        for (var index = 0; index < names.length; index += 1) {
+            environment[names[index]] = input.environment[names[index]];
+        }
+    }
+
     function start(inputJson) {
         var input = JSON.parse(inputJson);
         state = {
@@ -2699,16 +2791,23 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
             // ([`callHandler`]).
             invocation: null
         };
-        nodeMajor = input.nodeMajor;
-        installProcess(input);
-        installGlobals();
-        installAwsLambda();
-        // The runtime's own options are applied before any module of the package is
-        // loaded, because one of them decides which module is loaded first.
-        var refused = applyNodeOptions(input.environment.NODE_OPTIONS);
-        if (refused !== null) {
-            settle(refused);
-            return;
+        if (!stoodUp) {
+            nodeMajor = input.nodeMajor;
+            installProcess(input);
+            installGlobals();
+            installAwsLambda();
+            // The runtime's own options are applied before any module of the package is
+            // loaded, because one of them decides which module is loaded first. They are the
+            // ENVIRONMENT's: a module `--require` preloaded is loaded once, where a managed
+            // runtime loads it, and not again for every invocation served here.
+            var refused = applyNodeOptions(input.environment.NODE_OPTIONS);
+            if (refused !== null) {
+                settle(refused);
+                return;
+            }
+            stoodUp = true;
+        } else {
+            rebindEnvironment(input);
         }
         Promise.resolve().then(function () {
             return invoke(input);
@@ -2753,10 +2852,11 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         reportUnhandledRejection: reportUnhandledRejection,
         resolveModule: resolveModule,
         moduleSource: moduleSource,
-        // The error a specifier that resolves to nothing fails with, which is the one a
-        // `require` of it throws: the host raises it from its own resolver, so an `import`
-        // that resolves to nothing fails the way a `require` of the same specifier does.
-        moduleNotFound: moduleNotFound,
+        // The error an IMPORT that resolves to nothing fails with, which the ES module
+        // resolver words its own way ([`importNotFound`]): the host raises it from its own
+        // resolver, which serves `import` alone — a `require` that resolves to nothing throws
+        // [`requireNotFound`] inside the runtime, where the require chain it names is.
+        importNotFound: importNotFound,
         requireId: requireId,
         // A FRESH instance of a module of this function's own mounts, which is what a
         // WORKER's entry point is: a worker shares no module cache with the thread that

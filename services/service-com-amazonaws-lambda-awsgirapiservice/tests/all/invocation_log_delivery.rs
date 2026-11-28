@@ -748,10 +748,14 @@ async fn an_invocation_delivers_its_log_to_the_functions_log_group() {
     }
 }
 
-/// Two invocations of one function are two runs, so each takes a stream of its own in the
-/// same group — which is what makes one invocation's output readable apart from another's.
+/// Two invocations of one function are two runs, so each writes its own log — and both write
+/// it to the stream of the EXECUTION ENVIRONMENT that served them: an environment is kept
+/// after an invocation and serves the next one, and it writes to ONE stream for its whole life,
+/// so the two runs' logs sit in that one stream in the order they ran. That is what makes one
+/// invocation's output readable apart from another's inside it: each run's records are framed
+/// by its own `START`/`END`/`REPORT` lines naming its own request id.
 #[tokio::test]
-async fn each_invocation_writes_its_own_stream_of_the_one_group() {
+async fn the_invocations_one_environment_serves_write_their_logs_to_its_one_stream() {
     let _stream = crate::invoke_request_id::one_invocation_stream_at_a_time().await;
     let case = "two invocations of one function";
     let router = emulator();
@@ -778,18 +782,18 @@ async fn each_invocation_writes_its_own_stream_of_the_one_group() {
     let held = streams(&router, case, group).await;
     assert_eq!(
         held.len(),
-        2,
-        "case {case:?}: expected one stream per invocation, got {held:?}"
+        1,
+        "case {case:?}: the second invocation is served by the environment the first one left, \
+         which writes to one stream, got {held:?}"
     );
-    for stream in &held {
-        let (records, _) = delivered(&router, case, group, stream).await;
-        let rebuilt = invocations_log(&records);
-        assert!(
-            rebuilt == first || rebuilt == second,
-            "case {case:?}: expected {stream:?} to hold one of the two runs' logs, got \
-             {rebuilt:?}"
-        );
-    }
+    let (records, _) = delivered(&router, case, group, &held[0]).await;
+    let rebuilt = invocations_log(&records);
+    assert_eq!(
+        rebuilt,
+        format!("{first}{second}"),
+        "case {case:?}: expected the stream to hold both runs' logs whole, in the order they \
+         ran, got {rebuilt:?}"
+    );
 }
 
 /// One row of the permission table: the logs grant the execution role carries, and what that
