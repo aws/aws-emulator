@@ -312,11 +312,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         .method_arn();
 
-        let mut log = ExecutionLog::started_at(
-            crate::state::now()
-                .fmt(::aws_smithy_types::date_time::Format::DateTime)
-                .unwrap_or_default(),
-        );
+        let mut log = ExecutionLog::started();
         log.line(format!(
             "Authorizer: {id}, type: {kind}, identity source: {source}",
             id = authorizer.id,
@@ -324,9 +320,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             source = authorizer.identity_source.as_deref().unwrap_or("none"),
         ));
         log.line(format!("Method request path: {request_path}"));
-        if let Some(query) = query {
-            log.line(format!("Method request query string: {query}"));
-        }
+        // Stated whatever the simulated request carried, through the one rendering of a
+        // parameter map the sibling `TestInvokeMethod` states one with: a request that named
+        // no query string states the EMPTY map rather than leaving the step out of the log.
+        log.line(format!(
+            "Method request query string: {}",
+            super::test_invoke_method::stated_parameters(
+                &crate::service::invoke::sent_query_parameters(query.unwrap_or_default())
+            )
+        ));
         log.line(crate::service::invoke::stage_logs::traced_header_names_line(
             &headers.names(),
         ));

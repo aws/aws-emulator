@@ -137,11 +137,12 @@ use crate::service::invoke::{simulated_integration, simulated_request};
 use crate::service::invoke::trace_context::{reported_header, TRACE_HEADER};
 use crate::service::mapping_template::TemplateInputs;
 
-/// The request this operation's execution log is a log of. A simulated invocation never
-/// reaches the data plane, so it has no request id of its own: the log names the kind of
-/// execution it reports instead of minting an identifier nothing else can be correlated
-/// with.
-const TEST_INVOKE_REQUEST_ID: &str = "test-invoke-request";
+/// How every line of an API Gateway execution log STATES the instant it reports: the
+/// abbreviated day of the week and month, the day of the month, the time of day, the zone
+/// and the year, each separated by a space — the form a client reading a log splits the
+/// line's own text off after, which is why the prefix carries spaces where an ISO-8601
+/// stamp carries none.
+const EXECUTION_STAMP: &str = "%a %b %d %H:%M:%S %Z %Y";
 
 /// Why a simulated invocation answers a gateway response rather than an integration's own
 /// answer: the method's own REQUEST VALIDATOR refused the request, or the integration could
@@ -187,43 +188,140 @@ pub(crate) const TEST_INVOKE_STAGE: &str = "test-invoke-stage";
 /// The reported response header the rendered body's media type travels in.
 const CONTENT_TYPE_HEADER: &str = "Content-Type";
 
+/// Emulator resource guard, NOT an AWS limit: the most LINES one execution log states, and
+/// the most bytes one of those lines carries.
+///
+/// A step's text is as large as the request that caused it — a payload that crossed a
+/// transformation point, a query string, a map of names a caller supplied — and a step
+/// written over several lines becomes one stamped line per line of it ([`ExecutionLog::line`]),
+/// so the log is bounded where every line of it is appended rather than left to grow with
+/// what one request carried. A log that reaches either bound states that it is not complete,
+/// in one line, instead of carrying the rest.
+const MAX_LOG_LINES: usize = 512;
+
+/// The most bytes one line of an execution log carries; see [`MAX_LOG_LINES`]. The same order
+/// as the bound a traced payload is stated under
+/// ([`crate::service::invoke::stage_logs::traced_payload_line`]), so a payload line that fits
+/// that bound fits this one.
+const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
+
+/// What the log says instead of the lines it does not state, once either bound is reached.
+const LOG_BOUND_REACHED: &str =
+    "The rest of this execution log is not stated: the log of a simulated invocation is \
+     bounded";
+
 /// The API Gateway execution log this operation reports: the steps the simulation took, in
 /// the order it took them.
 ///
 /// Every line carries ONE instant, the one the call started at. The whole simulation is
 /// performed in process out of stored records, with no backend call to wait on, so there is
 /// no later instant for a line to be stamped with.
+///
+/// The log is the log of ONE invocation and names it: the opening line and the line that
+/// states the execution started both carry the id this invocation is correlated by, which is
+/// minted per call ([`ExecutionLog::started`]) — a client reading the log reads the request
+/// it holds the answer of, not the kind of call that produced it.
 #[derive(Debug)]
 pub(crate) struct ExecutionLog {
-    /// The instant the simulation started, rendered as this service renders a timestamp.
+    /// The instant the simulation started, in the form every line states it
+    /// ([`EXECUTION_STAMP`]).
     stamp: String,
     /// The log, first line first.
     lines: Vec<String>,
+    /// Whether the log reached its bound ([`MAX_LOG_LINES`]), which it states once and then
+    /// states nothing further.
+    bounded: bool,
 }
 
 impl ExecutionLog {
-    /// The log of an execution that started at `stamp`, opened with the two lines every
-    /// execution log opens with: what it is a log of, and that the execution started.
-    pub(crate) fn started_at(stamp: String) -> Self {
+    /// The log of an execution that starts NOW, opened with the two lines every execution
+    /// log opens with: what it is a log of, and that the execution started — both naming
+    /// this invocation's own request id.
+    pub(crate) fn started() -> Self {
+        Self::of(
+            crate::state::now(),
+            &::service_common::query_error_envelope::new_request_id(),
+        )
+    }
+
+    /// The log of an execution that started at `at` and is correlated by `request_id`.
+    fn of(at: ::aws_smithy_types::DateTime, request_id: &str) -> Self {
         let mut log = Self {
-            stamp,
-            lines: vec![format!("Execution log for request {TEST_INVOKE_REQUEST_ID}")],
+            stamp: stated_instant(at),
+            lines: vec![format!("Execution log for request {request_id}")],
+            bounded: false,
         };
-        log.line(format!(
-            "Starting execution for request: {TEST_INVOKE_REQUEST_ID}"
-        ));
+        log.line(format!("Starting execution for request: {request_id}"));
         log
     }
 
     /// Append one step of the execution.
+    ///
+    /// A step whose text spans LINES — one stating a payload, which is the bytes that
+    /// crossed a transformation point and may be a document written over several lines — is
+    /// appended as one stamped line per line of it, so every line of the log states the
+    /// instant it belongs to and a client that splits a line on ` : ` reads a step out of
+    /// each of them. A text that ENDS with a line break ends with that line and no further
+    /// one, so no line of the log states an instant and no step.
+    ///
+    /// What one step can add to the log is bounded, because a step's text is as large as the
+    /// request that caused it: a line carries at most [`MAX_LOG_LINE_BYTES`] and the log
+    /// holds at most [`MAX_LOG_LINES`] of them, after which it states [`LOG_BOUND_REACHED`]
+    /// once and nothing more.
     pub(crate) fn line(&mut self, text: String) {
-        self.lines.push(format!("{} : {text}", self.stamp));
+        for line in text.split_terminator('\n') {
+            if self.lines.len() >= MAX_LOG_LINES {
+                if !self.bounded {
+                    self.bounded = true;
+                    self.lines
+                        .push(format!("{} : {LOG_BOUND_REACHED}", self.stamp));
+                }
+                return;
+            }
+            self.lines
+                .push(format!("{} : {}", self.stamp, bounded_line(line)));
+        }
     }
 
     /// The log as the operation reports it: one line per step, newline separated.
     pub(crate) fn rendered(&self) -> String {
         self.lines.join("\n")
     }
+}
+
+/// `line` within [`MAX_LOG_LINE_BYTES`]: the line as given, or its first whole characters
+/// inside that bound for one longer than it.
+fn bounded_line(line: &str) -> &str {
+    if line.len() <= MAX_LOG_LINE_BYTES {
+        return line;
+    }
+    let mut within = MAX_LOG_LINE_BYTES;
+    while within > 0 && !line.is_char_boundary(within) {
+        within -= 1;
+    }
+    &line[..within]
+}
+
+/// The instant `at` as a line of an execution log states it ([`EXECUTION_STAMP`]).
+fn stated_instant(at: ::aws_smithy_types::DateTime) -> String {
+    ::chrono::DateTime::<::chrono::Utc>::from_timestamp(at.secs(), 0)
+        .map(|instant| instant.format(EXECUTION_STAMP).to_string())
+        .unwrap_or_default()
+}
+
+/// A map of request parameters as a line of an execution log states it: each name beside the
+/// value it carries, comma separated, inside braces — and the empty braces for a request that
+/// carried none of that kind, which is the same line stating that nothing was carried.
+///
+/// `pub(crate)` for the sibling `TestInvokeAuthorizer`, so the two simulated executions state
+/// a parameter map one way.
+pub(crate) fn stated_parameters(parameters: &BTreeMap<String, String>) -> String {
+    let stated = parameters
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("{{{stated}}}")
 }
 
 // How the members a simulated request carries are read — its headers, its path, its query
@@ -351,11 +449,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(bad_request(crate::state::NO_INTEGRATION_DEFINED));
         }
 
-        let mut log = ExecutionLog::started_at(
-            crate::state::now()
-                .fmt(::aws_smithy_types::date_time::Format::DateTime)
-                .unwrap_or_default(),
-        );
+        let mut log = ExecutionLog::started();
         // What the simulated request carries, read by the one reader of a simulated
         // request's members ([`simulated_request`]).
         let headers = simulated_request::SimulatedHeaders::of(
@@ -369,12 +463,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let supplied_trace = headers.value(TRACE_HEADER);
         log.line(format!("HTTP Method: {verb}, Resource Path: {resource_path}"));
         let (path, query) = simulated_request::split_query(input.path_with_query_string.as_deref());
-        if let Some(path) = path {
-            log.line(format!("Method request path: {path}"));
-        }
-        if let Some(query) = query {
-            log.line(format!("Method request query string: {query}"));
-        }
+        // The PARAMETERS the method request carried at the address it was made at: the path
+        // parameters the resource's own template binds out of the address, and the query
+        // parameters the query string carries. The same two maps the integration's own
+        // mappings read ([`TemplateInputs`] below), so the log states the values the
+        // simulation was performed from.
+        let path_parameters = matched_path_parameters(&resource_path, path.unwrap_or(""));
+        let query_parameters = sent_query_parameters(query.unwrap_or_default());
+        // The four facts of the METHOD REQUEST, each stated whatever the request carries: an
+        // execution log states the path parameters the call was made with, the query string
+        // it carried, the headers it carried and the body it carried, in that order — a
+        // client reading the log reads each of them off a line of it, and a request that
+        // carried none of a kind states the EMPTY map rather than leaving the step out, so a
+        // reader tells "nothing was carried" from a line it can read.
+        log.line(format!(
+            "Method request path: {}",
+            stated_parameters(&path_parameters)
+        ));
+        log.line(format!(
+            "Method request query string: {}",
+            stated_parameters(&query_parameters)
+        ));
         log.line(crate::service::invoke::stage_logs::traced_header_names_line(
             &headers.names(),
         ));
@@ -441,8 +550,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_bytes()
                     .to_vec(),
             ),
-            path: matched_path_parameters(&resource_path, path.unwrap_or("")),
-            querystring: sent_query_parameters(query.unwrap_or_default()),
+            path: path_parameters,
+            querystring: query_parameters,
             header: headers.single_valued(),
             stage_variables: simulated_variables.clone(),
             context: BTreeMap::from([
@@ -578,40 +687,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Err(unserved) => Err(Refused::Integration(unserved)),
             },
         };
-        let (status, body, mut headers) = match performed {
+        let (status, body, mut headers, completed) = match performed {
             Ok((served, configuration_error, exchanged)) => {
                 let mut headers = served.headers;
                 headers.insert(CONTENT_TYPE_HEADER.to_string(), vec![served.content_type]);
-                // The INTEGRATION REQUEST as the integration's own transformation made it,
-                // where the call crossed to a backend at all: the step between the method
-                // request and the backend's answer, which the stage's own execution log
-                // records at this very point ([`crate::service::invoke::stage_logs`]).
-                if let Some((sent, _)) = exchanged.as_ref() {
+                // The two INTEGRATION PHASES of a call that crossed to a BACKEND, which the
+                // stage's own execution log records at this very point
+                // ([`crate::service::invoke::stage_logs`]): the integration request as the
+                // integration's own transformation made it, and the backend's answer as it
+                // arrived, before this api's integration responses mapped it. An integration
+                // performed from the API's own records crosses neither point.
+                if let Some((sent, received)) = exchanged.as_ref() {
                     log.line(crate::service::invoke::stage_logs::traced_payload_line(
                         "Endpoint request body after transformations",
                         sent,
                     ));
-                }
-                // A backend answer API Gateway could not use is a configuration error of the
-                // integration, in the same sentence the stage's own execution log states it
-                // in ([`crate::service::invoke::stage_logs`]): the call WAS performed, so
-                // this is what the log says instead of a completed execution.
-                match configuration_error {
-                    Some(reason) => log.line(format!(
-                        "Execution failed due to configuration error: {reason}"
-                    )),
-                    None => log.line("Successfully completed execution".to_string()),
-                }
-                // And the BACKEND's own answer as it arrived, before this api's integration
-                // responses mapped it — the other half of the integration's phases, logged
-                // where the stage logs it.
-                if let Some((_, received)) = exchanged.as_ref() {
                     log.line(crate::service::invoke::stage_logs::traced_payload_line(
                         "Endpoint response body before transformations",
                         received,
                     ));
                 }
-                (served.status, served.body, headers)
+                // How the execution ENDED, which the log states once the method response it
+                // produced has been stated: a backend answer API Gateway could not use is a
+                // configuration error of the integration, in the same sentence the stage's own
+                // execution log states it in ([`crate::service::invoke::stage_logs`]) — the
+                // call WAS performed, so that is what the log says instead of a completed
+                // execution.
+                let completed = match configuration_error {
+                    Some(reason) => {
+                        format!("Execution failed due to configuration error: {reason}")
+                    }
+                    None => "Successfully completed execution".to_string(),
+                };
+                (served.status, served.body, headers, Some(completed))
             }
             Err(refused) => {
                 // The same sentence the data plane logs for this call, and the same gateway
@@ -649,7 +757,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 for (name, value) in rendered.headers {
                     headers.insert(name, vec![value]);
                 }
-                (rendered.status, rendered.body, headers)
+                // A call the api REFUSED completed no execution: the log already states why
+                // it was refused and what it was answered through, which is what ends its
+                // account of the execution.
+                (rendered.status, rendered.body, headers, None)
             }
         };
         // The tracing header API Gateway attaches to every answer it serves: the trace
@@ -667,6 +778,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ::std::time::SystemTime::now(),
             )],
         );
+        // The METHOD RESPONSE as the caller is answered it, body then headers — the last
+        // transformation point of the call, after which the log states how the execution
+        // ended and the status it completed with.
+        log.line(crate::service::invoke::stage_logs::traced_payload_line(
+            "Method response body after transformations",
+            &body,
+        ));
         // The response headers with their VALUES, where the request-side line above logs
         // names only: a response header is rendered from the API's own records (a static
         // mapping a control-plane call stored), so no caller credential travels in one.
@@ -679,10 +797,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .collect::<Vec<String>>()
                 .join(", ")
         ));
-        log.line(crate::service::invoke::stage_logs::traced_payload_line(
-            "Method response body after transformations",
-            &body,
-        ));
+        if let Some(completed) = completed {
+            log.line(completed);
+        }
         log.line(format!("Method completed with status: {status}"));
 
         Ok(TestInvokeMethodOutput {
