@@ -203,13 +203,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let requested = requested_settings(&input);
-        let user = guard
-            .pool_mut(&user_pool_id)
-            .and_then(|pool| pool.user_mut(&username))
-            .ok_or_else(internal_error)?;
+        let pool = guard.pool_mut(&user_pool_id).ok_or_else(internal_error)?;
+        // Which factors the POOL turns on is read before the write: it decides
+        // which of the two preconditions an activation the user cannot receive is
+        // refused for — the pool's configuration of the factor or this user's own
+        // enrolment in it.
+        let offered = pool.mfa_factors_offered();
+        let user = pool.user_mut(&username).ok_or_else(internal_error)?;
         // Checked as a whole before anything is written, so a refused request
         // leaves this user's activated factors and preferred factor as they were.
-        user.set_mfa_preference(&requested, now)
+        user.set_mfa_preference(&requested, offered, now)
             .map_err(|rejection| invalid_parameter(rejection.message()))?;
         // Passkey MFA is the one submitted factor that is no `UserMFASettingList`
         // setting and carries no `PreferredMfa` member — "this type doesn't include

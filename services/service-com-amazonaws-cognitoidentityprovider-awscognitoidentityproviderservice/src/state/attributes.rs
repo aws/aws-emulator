@@ -1187,21 +1187,64 @@ impl MfaSettingRequest<'_> {
     }
 }
 
+/// Which MFA factors the POOL a user belongs to turns on
+/// ([`UserPool::mfa_factors_offered`]), which is what an activation the user
+/// cannot receive is judged against: the pool's own configuration of a factor and
+/// the user's enrolment in it are two different preconditions, and the refusal
+/// reports the one that is missing ([`User::set_mfa_preference`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MfaFactorsOffered {
+    /// Whether the pool turns TOTP MFA on: `SoftwareTokenMfaConfigType.Enabled`
+    /// is "the activation state of TOTP MFA" for a user pool (this service's
+    /// model), so a pool no `SetUserPoolMfaConfig` turned it on for offers the
+    /// factor to nobody.
+    pub software_token: bool,
+}
+
 /// Why a submitted MFA preference is refused ([`User::set_mfa_preference`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MfaPreferenceRejection {
     /// The request marks more than one factor as the user's preferred one, which
     /// is a conflict within the request itself.
     TwoPreferred,
-    /// The `UserMFASettingList` setting the request asks to ACTIVATE while the
-    /// user holds no delivery configuration for it.
+    /// The `UserMFASettingList` setting the request asks to ACTIVATE while no
+    /// delivery configuration the factor would reach the user through is in
+    /// place.
     NoDeliveryConfig(String),
+    /// The request asks to ACTIVATE software token MFA in a pool that DOES turn
+    /// that factor on, for a user that has not verified an authenticator for it:
+    /// the configuration the factor is turned on with is in place and it is the
+    /// user's own enrolment that is missing.
+    SoftwareTokenNotVerified,
     /// The request asks for a factor to be the user's PREFERRED one while not
     /// activating it: a factor that is off is not one a user prefers.
     PreferredWhileDisabled,
 }
 
 impl MfaPreferenceRejection {
+    /// Which precondition of ACTIVATING the `UserMFASettingList` setting
+    /// `setting` a user that holds no delivery configuration for it is missing,
+    /// given what its pool offers ([`MfaFactorsOffered`]).
+    ///
+    /// Activating a factor needs TWO things: the pool's own configuration of that
+    /// factor, which `SetUserPoolMfaConfig` writes, and the user's enrolment in
+    /// it ([`User::holds_mfa_delivery_config`]). Where the pool turns TOTP MFA on
+    /// and the user has registered no authenticator, the configuration the factor
+    /// is turned on with is in place and the step the USER still owes is its own
+    /// verification, which is what the refusal reports
+    /// ([`SOFTWARE_TOKEN_NOT_VERIFIED_MESSAGE`]); every other missing
+    /// precondition is reported as the delivery configuration the factor would
+    /// reach the user through, naming the setting the request asked for.
+    ///
+    /// A pure function of the two arguments: it decides what the refusal reports
+    /// and reads or writes nothing stored.
+    pub fn for_activation(setting: &str, offered: MfaFactorsOffered) -> Self {
+        if setting == SOFTWARE_TOKEN_MFA_SETTING && offered.software_token {
+            return Self::SoftwareTokenNotVerified;
+        }
+        Self::NoDeliveryConfig(setting.to_string())
+    }
+
     /// What the refusal reports.
     ///
     /// A request marking two factors preferred reports the conflict and the one
@@ -1209,23 +1252,28 @@ impl MfaPreferenceRejection {
     /// be set as preferred" (`SetUserMFAPreference` in this service's model), so
     /// what is refused is the pair of preferences rather than either factor.
     ///
-    /// An activation the user cannot receive reports the delivery configuration
-    /// the factor would reach the user through, naming the factor the request
-    /// asked for — the same sentence for EVERY factor, the recorded refusal of a
-    /// `SOFTWARE_TOKEN_MFA` activation included: what the user is missing is the
-    /// configuration that factor is turned on with, whether that is a message
-    /// medium or a registered authenticator, and the only part taken from the
-    /// request is the `UserMFASettingList` setting it named. A preference over a
-    /// factor the request leaves off reports that alone and names NO factor, a
-    /// factor that is off not being one a user prefers, so the refusal is about
-    /// the preference rather than about any one factor. Nothing stored is
-    /// disclosed by any of them.
+    /// An activation no delivery configuration is in place for reports that
+    /// configuration, naming the factor the request asked for — the same sentence
+    /// for every factor, whether what is missing is a message medium or the
+    /// pool's activation of TOTP MFA — and the only part taken from the request
+    /// is the `UserMFASettingList` setting it named. Where the pool DOES turn
+    /// software token MFA on and only the user's own authenticator is
+    /// unverified, the refusal reports that step instead
+    /// ([`SOFTWARE_TOKEN_NOT_VERIFIED_MESSAGE`]), so the two preconditions a
+    /// caller has to satisfy are told apart: an administrator's pool
+    /// configuration and the user's own enrolment.
+    ///
+    /// A preference over a factor the request leaves off reports that alone and
+    /// names NO factor, a factor that is off not being one a user prefers, so
+    /// the refusal is about the preference rather than about any one factor.
+    /// Nothing stored is disclosed by any of them.
     pub fn message(&self) -> String {
         match self {
             Self::TwoPreferred => TWO_PREFERRED_MFA_TYPES_MESSAGE.to_string(),
             Self::NoDeliveryConfig(setting) => {
                 format!("User does not have delivery config set to turn on {setting}")
             }
+            Self::SoftwareTokenNotVerified => SOFTWARE_TOKEN_NOT_VERIFIED_MESSAGE.to_string(),
             Self::PreferredWhileDisabled => "Can't mark a disabled mfa as preferred".to_string(),
         }
     }
@@ -1240,6 +1288,20 @@ impl MfaPreferenceRejection {
 /// were marked does not change that only one preference can be held.
 pub const TWO_PREFERRED_MFA_TYPES_MESSAGE: &str =
     "Two MFA types marked as preferred, only one is allowed.";
+
+/// The sentence an activation of software token MFA is refused with when the pool
+/// turns that factor on but the user has not VERIFIED an authenticator for it.
+///
+/// "Users must register a TOTP authenticator before they set this as their
+/// preferred MFA method" (`SetUserMFAPreference.SoftwareTokenMfaSettings` in this
+/// service's model) and a verification "marks the user's software token MFA
+/// status as verified" (`VerifySoftwareToken`), so the step this user still owes
+/// is its own verification rather than anything an administrator configures for
+/// the pool.
+///
+/// Entirely fixed text, with no part taken from the request or from state:
+/// neither the user, nor the pool, nor the factor's setting name appears in it.
+pub const SOFTWARE_TOKEN_NOT_VERIFIED_MESSAGE: &str = "User has not verified software token mfa";
 
 /// Why a submitted `MFAOptionListType` configures no SMS MFA option
 /// ([`sms_mfa_options`]).

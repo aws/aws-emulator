@@ -5,11 +5,17 @@
 //! AWSCognitoIdentityProviderService.AdminSetUserMFAPreference`).
 //!
 //! The rule under test: **activating an MFA factor needs the delivery configuration that
-//! factor reaches the user through, and a request asking to activate one the user has no
-//! configuration for is refused `InvalidParameterException` (400) with "User does not have
-//! delivery config set to turn on <the MFA type the request named>" — one sentence for every
-//! factor, whose only variable part is the `UserMFASettingList` setting taken from the
-//! request.** Turning a factor OFF needs no configuration, so it is served.
+//! factor reaches the user through, and a request asking to activate one for which no such
+//! configuration is in place — in a pool that turns the factor on for nobody — is refused
+//! `InvalidParameterException` (400) with "User does not have delivery config set to turn on
+//! <the MFA type the request named>" — one sentence for every factor, whose only variable
+//! part is the `UserMFASettingList` setting taken from the request.** Turning a factor OFF
+//! needs no configuration, so it is served.
+//!
+//! Each row's pool stores no `SoftwareTokenMfaConfiguration`, which is what makes this the
+//! sentence for the software token too: a pool that DOES turn TOTP MFA on has that
+//! configuration in place and reports the user's own missing verification instead, which
+//! `mfa_preference_software_token_precondition.rs` is the table for.
 //!
 //! The rows span what the rule generalises over: every `UserMFASettingList` value — "the
 //! possible values in this list are `SMS_MFA`, `EMAIL_OTP`, and `SOFTWARE_TOKEN_MFA`"

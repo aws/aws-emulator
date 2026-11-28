@@ -2030,9 +2030,7 @@ impl UserPool {
             ),
             (
                 SOFTWARE_TOKEN_MFA_SETTING,
-                self.software_token_mfa_configuration
-                    .as_ref()
-                    .is_some_and(|config| config.enabled),
+                self.mfa_factors_offered().software_token,
             ),
         ]
         .into_iter()
@@ -2041,6 +2039,25 @@ impl UserPool {
         })
         .map(|(setting, _)| setting.to_string())
         .collect()
+    }
+
+    /// Which MFA factors this pool TURNS ON, as the preference writes judge an
+    /// activation against ([`User::set_mfa_preference`]).
+    ///
+    /// `SetUserPoolMfaConfig` is what "sets the user pool multi-factor
+    /// authentication (MFA) and passkey configuration" and
+    /// `SoftwareTokenMfaConfigType.Enabled` is "the activation state of TOTP MFA"
+    /// (this service's model), so a pool that was never given that configuration
+    /// turns the factor on for nobody — the pool's own precondition, which is
+    /// separate from the enrolment each USER completes for a factor the pool does
+    /// offer.
+    pub fn mfa_factors_offered(&self) -> MfaFactorsOffered {
+        MfaFactorsOffered {
+            software_token: self
+                .software_token_mfa_configuration
+                .as_ref()
+                .is_some_and(|config| config.enabled),
+        }
     }
 
     /// The modelled view of this pool's MFA and passkey configuration, rendered

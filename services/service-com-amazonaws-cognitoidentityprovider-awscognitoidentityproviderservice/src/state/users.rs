@@ -423,13 +423,16 @@ impl User {
     }
 
     /// Apply `requested` as this user's MFA preference as of `now`, or report why
-    /// it is refused.
+    /// it is refused. `offered` is what the user's POOL turns on
+    /// ([`UserPool::mfa_factors_offered`]).
     ///
     /// Each submitted setting REPLACES what this user held for the factor it
     /// configures, and a factor the request names none of is left exactly as it
     /// was. Activating a factor needs the delivery configuration it reaches the
     /// user through ([`User::holds_mfa_delivery_config`]), so a request that asks
-    /// for one the user cannot receive is refused; and a factor the request does
+    /// for one the user cannot receive is refused for the precondition that is
+    /// missing ([`MfaPreferenceRejection::for_activation`]); and a factor the
+    /// request does
     /// not activate is not one it can also make PREFERRED, so a setting that asks
     /// for the preference without the activation is refused for the preference
     /// itself. The WHOLE request is checked before anything is written, so a
@@ -445,6 +448,7 @@ impl User {
     pub fn set_mfa_preference(
         &mut self,
         requested: &[MfaSettingRequest<'_>],
+        offered: MfaFactorsOffered,
         now: SystemTime,
     ) -> Result<(), MfaPreferenceRejection> {
         // "Only one factor can be set as preferred" (`SetUserMFAPreference` in
@@ -474,8 +478,9 @@ impl User {
             .iter()
             .find(|setting| setting.activates() && !self.holds_mfa_delivery_config(setting.setting))
         {
-            return Err(MfaPreferenceRejection::NoDeliveryConfig(
-                refused.setting.to_string(),
+            return Err(MfaPreferenceRejection::for_activation(
+                refused.setting,
+                offered,
             ));
         }
         for setting in requested {
