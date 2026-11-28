@@ -74,8 +74,9 @@
 //! authorization step ([`super::git_authorization`], which also states what a
 //! credential can and cannot prove here).
 //!
-//! A credential that resolves to NO principal is answered with that same `401` and
-//! challenge: the git credentials of this service are a user name and a password, the
+//! A credential that resolves to NO principal is answered `403` with an
+//! `UnrecognizedClientException` error document: the git credentials of this service are
+//! a user name and a password, the
 //! account keeps the verifier of the password it minted, and a pair it never issued —
 //! a wrong password, a credential since deleted or made inactive, a user name nothing
 //! holds — authenticates nobody, so there is no principal to decide a step for. It
@@ -120,15 +121,24 @@ const FLUSH: &[u8] = b"0000";
 /// The challenge a request that presented NO credential is answered with, which is
 /// what makes a git client ask its credential helper for one and send the request
 /// again: the scheme CodeCommit's git transport authenticates under (a git client
-/// presents HTTPS git credentials as HTTP Basic ones) and the realm it names.
-const BASIC_CHALLENGE: &str = "Basic realm=\"CodeCommit\"";
+/// presents HTTPS git credentials as HTTP Basic ones) and the empty realm it names.
+const BASIC_CHALLENGE: &str = "Basic realm=\"\"";
 
-/// What a request this transport authenticates nobody for is told — one that presented
-/// no credential at all, and one whose credentials this account never issued. A git
-/// client prints its own message for a `401`; this is the body behind it, and it is one
-/// body for both, because a refusal must not say which half of a credential was wrong.
-const CREDENTIALS_REQUIRED: &str =
-    "This repository requires the git credentials of an authorized IAM principal.";
+/// The error a request that presented NO credential at all is refused with: the code
+/// CodeCommit's git transport answers that case with, and the fixed sentence it
+/// carries. A git client prints its own message for the `401`; this is the document
+/// behind it, which is what a CodeCommit client reads to tell this case from the one
+/// below.
+const NOT_AUTHORIZED_CODE: &str = "NotAuthorizedException";
+const NOT_AUTHORIZED_MESSAGE: &str = "SPNEGO token required";
+
+/// The error a request whose credentials this account never issued is refused with —
+/// a wrong password, a credential since deleted or made inactive, a user name nothing
+/// holds. One document for all of them, because a refusal must not say which half of
+/// a credential was wrong; it is a different CODE from the one above because the
+/// request did present something, and a client branches on that.
+const UNRECOGNIZED_CLIENT_CODE: &str = "UnrecognizedClientException";
+const UNRECOGNIZED_CLIENT_MESSAGE: &str = "The security token included in the request is invalid.";
 
 /// Which of the two git services a request addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,13 +219,34 @@ impl Response {
         }
     }
 
-    /// The refusal of a request this transport authenticates nobody for: a `401`
-    /// carrying the challenge under which the client may present credentials.
-    pub fn challenge(message: &str) -> Self {
+    /// An AWS error document: the XML form this transport refuses an AUTHENTICATION
+    /// step in, whose root element is the error code and whose `Message` is that
+    /// code's own sentence. It is what a CodeCommit client parses a git-transport
+    /// refusal with, where git itself only prints the status.
+    fn xml_error(status: u16, code: &str, message: &str) -> Self {
+        Self {
+            status,
+            content_type: "text/xml".to_string(),
+            body: format!("<{code}><Message>{message}</Message></{code}>").into_bytes(),
+            www_authenticate: None,
+        }
+    }
+
+    /// The refusal of a request that presented NO credential: a `401` carrying the
+    /// challenge under which the client may present them — which is what makes a git
+    /// client run its credential helper and send the request again.
+    pub fn challenge() -> Self {
         Self {
             www_authenticate: Some(BASIC_CHALLENGE.to_string()),
-            ..Self::text(401, message)
+            ..Self::xml_error(401, NOT_AUTHORIZED_CODE, NOT_AUTHORIZED_MESSAGE)
         }
+    }
+
+    /// The refusal of a request whose credentials this account never issued: a `403`,
+    /// because the request DID present a credential and it identifies nobody — there
+    /// is nothing a challenge would get the client to present differently.
+    pub fn unrecognized_credential() -> Self {
+        Self::xml_error(403, UNRECOGNIZED_CLIENT_CODE, UNRECOGNIZED_CLIENT_MESSAGE)
     }
 }
 
@@ -295,18 +326,52 @@ pub fn split_uri(uri: &str) -> (String, Option<String>) {
 /// nor the pack reader is ever handed a body the transport could not accept anyway.
 pub const MAX_REQUEST_BODY_BYTES: usize = git_pack::MAX_PACK_BYTES + 64 * 1024;
 
+/// What a git request presented for the authentication step, and what it resolved to.
+///
+/// The three cases this transport answers differently: a request carrying no
+/// credential at all is challenged for one; a request that DID present a credential
+/// which no store of this emulator holds (or whose password does not verify against
+/// what the store that minted it kept) identifies nobody, and no challenge would get
+/// the client to present anything different; and everything else speaks for the
+/// principal its credential was minted for
+/// ([`super::git_authorization::presented_principal`], which is where a presented
+/// credential's proof is checked and which resolves the first two cases to `None`).
+#[derive(Debug, Clone, Copy)]
+pub enum PresentedCaller<'a> {
+    /// The request carried no credential for this transport to read.
+    Nothing,
+    /// It carried one this account never issued.
+    Unrecognized,
+    /// The principal it speaks for.
+    Principal(&'a GitPrincipal),
+}
+
+impl<'a> PresentedCaller<'a> {
+    /// What a request carrying `authorization` and resolving to `principal` presented.
+    ///
+    /// `authorization` is the request's `Authorization` header, so a request that sent
+    /// one and resolved to no principal presented a credential this account never
+    /// issued, while one that sent none (or sent nothing in it) presented nothing.
+    pub fn of(authorization: Option<&str>, principal: Option<&'a GitPrincipal>) -> Self {
+        match (principal, authorization.map(str::trim)) {
+            (Some(principal), _) => Self::Principal(principal),
+            (None, None) | (None, Some("")) => Self::Nothing,
+            (None, Some(_)) => Self::Unrecognized,
+        }
+    }
+}
+
 /// Serve one git transport request against the store.
 ///
 /// `body` is the request body with its `Content-Encoding` already undone
 /// ([`decode_body`]), so the decompression — caller-driven CPU over caller-supplied
 /// bytes — happens before the store guard this function is handed is taken.
 ///
-/// `caller` is the principal the credentials the request PRESENTED speak for
-/// ([`super::git_authorization`]), or `None` for a request that presented none and for
-/// one whose credentials this account never issued — each answered with a challenge,
-/// because every request to a CodeCommit repository's git transport is made with git
-/// credentials and the principal behind them is what the authorization steps below are
-/// decided for.
+/// `caller` is what the request presented ([`PresentedCaller`]). NOTHING below is
+/// served to a request that presented no credential, or one this account never issued:
+/// each is refused here, before the repository is read or written, because every
+/// request to a CodeCommit repository's git transport is made with git credentials and
+/// the principal behind them is what every authorization step is decided for.
 ///
 /// Each of those steps is one IAM decision, taken BEFORE the state of the repository
 /// is consulted: a refusal is an authorization refusal and never git's own
@@ -317,10 +382,12 @@ pub fn serve(
     store: &mut Store,
     request: &Request,
     body: &[u8],
-    caller: Option<&GitPrincipal>,
+    caller: PresentedCaller<'_>,
 ) -> Response {
-    let Some(principal) = caller else {
-        return Response::challenge(CREDENTIALS_REQUIRED);
+    let principal = match caller {
+        PresentedCaller::Nothing => return Response::challenge(),
+        PresentedCaller::Unrecognized => return Response::unrecognized_credential(),
+        PresentedCaller::Principal(principal) => principal,
     };
     let Some(repository) = store.repositories.get_mut(&request.repository) else {
         // The same refusal a git host gives for a path that names no repository;
@@ -457,16 +524,20 @@ fn advertise(repository: &Repository, service: GitService) -> Response {
         GitService::Upload => Vec::new(),
     };
     if let (GitService::Upload, Some((branch, _))) = (service, &head) {
-        // Only a fetching client reads HEAD, and only it is told which branch
-        // HEAD is a symbolic ref to; receive-pack advertises neither.
+        // Only a FETCHING client reads which branch HEAD is a symbolic ref to, so
+        // only it is told; a pushing client is advertised HEAD's value alone.
         capabilities.push(format!("symref=HEAD:{HEADS_PREFIX}{branch}"));
     }
     capabilities.push(AGENT.to_string());
     let capabilities = capabilities.join(" ");
 
     let mut first = true;
-    if let (GitService::Upload, Some((_, tip))) = (service, &head) {
-        // A fetching client reads HEAD to learn which branch to check out.
+    if let Some((_, tip)) = &head {
+        // HEAD is advertised by BOTH services, as the repository's own symbolic ref
+        // resolved to the default branch's tip: it is how a client learns which
+        // branch the repository's HEAD names, which a clone needs to pick a branch
+        // to check out. A repository with no default branch has no HEAD to resolve,
+        // so none is advertised.
         write_pkt(
             &mut out,
             format!("{tip} HEAD\0{capabilities}\n").as_bytes(),

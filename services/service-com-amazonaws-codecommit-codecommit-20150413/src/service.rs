@@ -191,6 +191,16 @@ fn trigger_refusal_for(violation: &Violation) -> Option<Refused> {
     })
 }
 
+/// What `FileContentSizeLimitExceededException` says wherever a `fileContent` past
+/// `FileContent`'s modelled maximum is refused: the bound, the two faces it applies
+/// to, and the git client as the supported way to add content past it. One text for
+/// every member that carries the shape, whether it is a top-level `fileContent` or
+/// one nested in an entry of `CreateCommit`'s `putFiles` or of a merge's
+/// `conflictResolution`.
+const FILE_CONTENT_SIZE_LIMIT_MESSAGE: &str =
+    "The maximum file size for adding a file from the AWS CodeCommit console or using the \
+     PutFile API is 6 MB. For files larger than 6 MB but smaller than 2 GB, use a Git client.";
+
 /// The error CodeCommit names for one rejected member, or `None` to leave the
 /// framework's wording in place.
 ///
@@ -277,9 +287,20 @@ fn refusal_for(violation: &Violation) -> Option<Refused> {
             "FileContentRequiredException",
             "The file cannot be added because it is empty.",
         ),
+        // `FileContent` is `@length max 6291456`, so content past 6 MB is refused at
+        // the boundary. The text states the bound, where it applies and the
+        // supported way to add content past it, which is what CodeCommit answers:
+        // the only place this refusal tells a caller about the git client. It is the
+        // same refusal wherever the member is carried, so the LEAF arm below words a
+        // `fileContent` nested in `CreateCommit`'s `putFiles` entries and in a
+        // merge's `conflictResolution` the same way.
         ("fileContent", ViolationKind::MaxLength(_)) => (
             "FileContentSizeLimitExceededException",
-            "The file cannot be added because it is too large.",
+            FILE_CONTENT_SIZE_LIMIT_MESSAGE,
+        ),
+        (_, ViolationKind::MaxLength(_)) if leaf == "fileContent" => (
+            "FileContentSizeLimitExceededException",
+            FILE_CONTENT_SIZE_LIMIT_MESSAGE,
         ),
         ("fileMode", ViolationKind::EnumValue(_)) => (
             "InvalidFileModeException",
@@ -735,14 +756,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // WHO the request speaks for, resolved before this service's store is
         // locked: the principal reads the IAM and STS stores, and the decisions the
         // transport takes per authorization step are then made from that snapshot
-        // alone, so no two stores are held at once. `None` is a request this transport
-        // authenticates nobody for — one that presented no credential, and one whose
-        // credentials this account never issued — which the transport answers with a
-        // challenge.
-        let caller = git_authorization::presented_principal(
-            &*self.engine,
-            req.headers().get("authorization"),
-        );
+        // alone, so no two stores are held at once. A request this transport
+        // authenticates nobody for resolves to no principal, and the transport is
+        // told whether it presented a credential at all, because it refuses those
+        // two cases differently.
+        let authorization = req.headers().get("authorization");
+        let principal = git_authorization::presented_principal(&*self.engine, authorization);
+        let caller = git_http::PresentedCaller::of(authorization, principal.as_ref());
         // A body that is not in memory is a body this service never read: it must
         // not be served as an EMPTY one, which a push would answer as a no-op
         // success. The router buffers every request body, so this is the
@@ -798,7 +818,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
                         // and its budget) — so the span the lock is held for is
                         // bounded whatever the body carries.
                         Ok(decoded) => off_the_async_worker(|| {
-                            git_http::serve(&mut state.lock(), &request, &decoded, caller.as_ref())
+                            git_http::serve(&mut state.lock(), &request, &decoded, caller)
                         }),
                         Err(message) => git_http::Response::text(400, &message),
                     }

@@ -786,6 +786,17 @@ pub const INVALID_RESOURCE_ARN_MESSAGE: &str = "Inputted resource arn is not for
 pub const COMMENT_CONTENT_REQUIRED_MESSAGE: &str =
     "The comment could not be saved because no content was provided. Comments cannot be empty.";
 
+/// What `IdempotencyParameterMismatchException` says: NOTHING. CodeCommit answers a
+/// client request token reused with changed parameters with the code and the status
+/// alone and serializes no `message` member at all, so the absence of one is as much
+/// part of that refusal as its code is.
+///
+/// Every operation that takes an `@idempotencyToken` — `PostCommentForComparedCommit`,
+/// `PostCommentForPullRequest`, `PostCommentReply`, `CreatePullRequest` — words that
+/// refusal through this one constant, so none of them invents prose for it or echoes
+/// the token back.
+pub const IDEMPOTENCY_PARAMETER_MISMATCH_MESSAGE: Option<String> = None;
+
 /// The message `InvalidBranchNameException` carries for a `branchName` that is
 /// present but EMPTY — a FIXED sentence, distinct from the wording of a branch name
 /// that is non-empty and still not a valid reference name.
@@ -1112,6 +1123,20 @@ pub fn invalid_blob_id_message(blob_id: &str) -> String {
 pub const FILE_TOO_LARGE_MESSAGE: &str =
     "The specified file exceeds the file size limit for CodeCommit. For more information about \
      limits in CodeCommit, see Quotas in the CodeCommit User Guide.";
+
+/// The largest object the API hands BACK: `FileContent`'s modelled maximum
+/// (`@length max 6291456`), which is also the largest content `PutFile` accepts. A
+/// git client may push a larger object — the git transport is the documented way in
+/// for content past this — and a read of one is refused rather than served.
+pub const MAX_RETRIEVABLE_OBJECT_BYTES: usize = 6 * 1024 * 1024;
+
+/// `FileTooLargeException`'s message for a READ of an object past
+/// [`MAX_RETRIEVABLE_OBJECT_BYTES`]: the fixed text CodeCommit answers that case
+/// with, which states the bound was exceeded and the one way to get the content —
+/// nothing in it comes from the request.
+pub const OBJECT_TOO_LARGE_TO_RETRIEVE_MESSAGE: &str =
+    "This object exceeds the max size for retrieval via the API. Use the git client to retrieve \
+     this file.";
 
 /// The combined size of all the file content one commit may carry, in bytes.
 /// CodeCommit documents this on `FileContentSizeLimitExceededException`: "The
@@ -2105,9 +2130,10 @@ impl CommentContentProblem {
     pub fn message(self) -> String {
         match self {
             Self::Required => COMMENT_CONTENT_REQUIRED_MESSAGE.to_string(),
-            Self::TooLarge => format!(
-                "the comment is too large: comments are limited to {MAX_COMMENT_CHARACTERS} characters"
-            ),
+            // The fixed text CodeCommit states the bound in, followed by the bound
+            // itself ([`MAX_COMMENT_CHARACTERS`]) — the only variable part, and the
+            // value a caller parses out of this refusal.
+            Self::TooLarge => format!("The size limit for comments is {MAX_COMMENT_CHARACTERS}"),
         }
     }
 }
@@ -2125,12 +2151,33 @@ pub fn checked_comment_content(content: &str) -> Result<(), CommentContentProble
     Ok(())
 }
 
+/// The two halves of a LINE anchor, named as CodeCommit names the one a location
+/// left out: the refusal of a half-specified location is `<member> is not provided`,
+/// and these are the member names it uses.
+pub const LINE_ANCHOR_SIDE_MEMBER: &str = "RelativeFileVersion";
+pub const LINE_ANCHOR_POSITION_MEMBER: &str = "FilePosition";
+
+/// `InvalidFilePositionException`'s message for a `filePosition` below the first
+/// line: the FIXED text CodeCommit answers that case with, which states the rule
+/// (`Location.filePosition` is a 1-based line number) and names nothing from the
+/// request.
+pub const INVALID_FILE_POSITION_MESSAGE: &str =
+    "The line number is not valid. Either the line number was 0 or a negative number. Check to \
+     make sure you've included the positive value of the line number in the file for the comment, \
+     and try again.";
+
 /// Why the `location` a comment names is not a place in a comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentLocationProblem {
     /// The location names a position or a version but no file at all:
     /// `InvalidFileLocationException`.
     FileLocation,
+    /// The location anchors to a LINE and carries only one half of that anchor —
+    /// a position with no side of the comparison, or a side with no position:
+    /// `InvalidFileLocationException`, carrying the name of the member that was
+    /// not provided ([`LINE_ANCHOR_SIDE_MEMBER`],
+    /// [`LINE_ANCHOR_POSITION_MEMBER`]).
+    HalfAnchored(&'static str),
     /// `PathRequiredException`.
     PathRequired,
     /// `InvalidPathException`, carrying the path as the request spelled it.
@@ -2150,14 +2197,15 @@ impl CommentLocationProblem {
             Self::FileLocation => {
                 "the location of the file is not valid: it names no file path".to_string()
             }
+            // The member whose absence left the line anchor half-specified, then
+            // the fixed text CodeCommit words that absence with.
+            Self::HalfAnchored(member) => format!("{member} is not provided"),
             Self::PathRequired => "a file path is required".to_string(),
-            Self::InvalidPath(file_path) => format!("the path {file_path} is not valid"),
+            Self::InvalidPath(file_path) => invalid_path_message(file_path),
             Self::RelativeFileVersion(version) => format!(
                 "the relative file version {version} is not valid: expected {RELATIVE_FILE_VERSION_BEFORE} or {RELATIVE_FILE_VERSION_AFTER}"
             ),
-            Self::FilePosition => {
-                "the position is not valid: a line number starts at 1".to_string()
-            }
+            Self::FilePosition => INVALID_FILE_POSITION_MESSAGE.to_string(),
         }
     }
 }
@@ -2205,6 +2253,23 @@ pub fn normalized_comment_location(
     if place.file_position.is_some_and(|position| position < 1) {
         return Err(CommentLocationProblem::FilePosition);
     }
+    // A comment anchors either to a whole FILE (a path alone) or to a LINE of one
+    // side of the comparison, and a line is named by BOTH halves: a position with
+    // no side names a line of neither version, and a side with no position names no
+    // line of the one it does name. Either half on its own is refused before
+    // anything is written, so no comment is stored at a place neither side of the
+    // comparison can render.
+    match (place.file_position, place.relative_file_version.as_deref()) {
+        (Some(_), None) => {
+            return Err(CommentLocationProblem::HalfAnchored(LINE_ANCHOR_SIDE_MEMBER))
+        }
+        (None, Some(_)) => {
+            return Err(CommentLocationProblem::HalfAnchored(
+                LINE_ANCHOR_POSITION_MEMBER,
+            ))
+        }
+        _ => {}
+    }
     Ok(location)
 }
 
@@ -2222,6 +2287,12 @@ pub enum CommentAnchorProblem {
         position: i64,
         lines: i64,
     },
+    /// The side of the comparison the comment names holds no such file, while the
+    /// OTHER side does: the file exists in the comparison, but not in the portion
+    /// the caller asked to comment on, which is
+    /// `InvalidRelativeFileVersionEnumException` rather than a path that the
+    /// comparison does not know at all.
+    WrongSide { version: String },
     /// The before version was asked for in a comparison that has no before
     /// commit: `InvalidRelativeFileVersionEnumException`.
     NoBeforeVersion,
@@ -2243,6 +2314,16 @@ impl CommentAnchorProblem {
             } => format!(
                 "the position {position} is not valid: {file_path} has {lines} line(s) in the \
                  {version} version of the comparison"
+            ),
+            // The fixed text CodeCommit answers a comment on a file that is absent
+            // from the named portion of the comparison with, whose one variable
+            // part is that portion's name as the request spelled it.
+            Self::WrongSide { version } => format!(
+                "You can only comment on existing files. You attempted to comment on a file that \
+                 does not exist in this portion of the comparison between commits: {version}. \
+                 Either the file has been deleted, or has not been added to the repository at the \
+                 time of this commit. Try commenting on the file in the other commit portion of \
+                 the comparison."
             ),
             Self::NoBeforeVersion => format!(
                 "the relative file version {RELATIVE_FILE_VERSION_BEFORE} is not valid for a \
@@ -2296,10 +2377,23 @@ pub fn comment_anchor(
     } else {
         after_entry.clone()
     };
-    let commented = commented.ok_or_else(|| CommentAnchorProblem::PathDoesNotExist {
-        file_path: file_path.to_string(),
-        version: version.clone(),
-    })?;
+    // A path the COMMENTED side does not hold is refused, and which refusal it is
+    // depends on the other side: a file the comparison holds on its other side
+    // exists, just not in the portion the caller named (it was added or deleted
+    // between the two commits), and a retry on the other portion is the remedy; a
+    // path neither side holds is a path the comparison does not know at all.
+    let commented = match commented {
+        Some(commented) => commented,
+        None if before_entry.is_some() || after_entry.is_some() => {
+            return Err(CommentAnchorProblem::WrongSide { version })
+        }
+        None => {
+            return Err(CommentAnchorProblem::PathDoesNotExist {
+                file_path: file_path.to_string(),
+                version,
+            })
+        }
+    };
     if let Some(position) = location.and_then(|location| location.file_position) {
         let lines = repository.blob(&commented.blob_id).map_or(0, line_count);
         if position > lines {
@@ -4392,6 +4486,34 @@ pub fn normalize_path(raw: &str) -> Result<String, PathProblem> {
         return Err(PathProblem::Invalid);
     }
     Ok(trimmed.to_string())
+}
+
+/// `InvalidPathException`'s message for a `filePath` that cannot name a file in a
+/// tree: a fixed first sentence, a fixed sentence naming the DEFECT, and a fixed
+/// pointer at the service's published path limits. `raw` is read to tell the defects
+/// apart and is NOT interpolated — the whole message is fixed text, so a caller
+/// learns which path rule it broke rather than reading its own value back.
+pub fn invalid_path_message(raw: &str) -> String {
+    const OPENING: &str = "The path is not valid.";
+    const LIMITS: &str = "For more information about limitations for file paths, see Limits in the \
+                          AWS CodeCommit User Guide.";
+    let segments = raw.trim_start_matches('/').split('/');
+    let defect = if segments.clone().any(|segment| segment == "." || segment == "..") {
+        // A path that walks the tree from where it is written rather than from the
+        // repository root.
+        Some("The path is a relative path.")
+    } else if segments.clone().any(str::is_empty) {
+        Some("The path contains an empty directory name.")
+    } else {
+        // Every other way a path fails to name an entry (its depth, a byte a tree
+        // entry name cannot hold) gets the opening and the pointer with no claim
+        // about which defect it was.
+        None
+    };
+    match defect {
+        Some(defect) => format!("{OPENING} {defect} {LIMITS}"),
+        None => format!("{OPENING} {LIMITS}"),
+    }
 }
 
 /// Why a paginated list request cannot be served.

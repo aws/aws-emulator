@@ -34,8 +34,15 @@ pub const MAX_PACK_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PACK_OBJECTS: usize = 20_000;
 
 /// The largest single object this emulator inflates from a pack, in bytes. The
-/// emulator's own bound; CodeCommit's own documented file limit is smaller still.
-pub const MAX_OBJECT_BYTES: usize = 6 * 1024 * 1024;
+/// emulator's own bound, equal to the whole pack it accepts ([`MAX_PACK_BYTES`]),
+/// so one entry can be as large as one request.
+///
+/// It is deliberately ABOVE the service's own 6 MB API limit
+/// ([`crate::state::MAX_RETRIEVABLE_OBJECT_BYTES`]): a git client is the documented
+/// way to put content past that limit into a repository, and an object it pushed
+/// above it is held and served to git while a read of it through the API is refused.
+/// A bound at the API limit would make that refusal unreachable.
+pub const MAX_OBJECT_BYTES: usize = MAX_PACK_BYTES;
 
 /// The total inflated bytes one pack may produce, across every entry and every
 /// delta it expands.

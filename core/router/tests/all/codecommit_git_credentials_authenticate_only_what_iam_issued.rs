@@ -12,11 +12,13 @@
 //! `ListServiceSpecificCredentials` reports it — so the password is the whole proof: the
 //! account keeps a verifier of the password it minted, and the transport asks the
 //! account whether the pair a request presented is one it issued. Every other
-//! presentation identifies nobody and is answered with the same `401` and
-//! `WWW-Authenticate: Basic realm="CodeCommit"` challenge a request presenting NO
-//! credential gets — a wrong password, a credential since deleted, one made `Inactive`,
+//! presentation identifies nobody and is answered `403` with an
+//! `UnrecognizedClientException` error document — a wrong password, a credential since
+//! deleted, one made `Inactive`,
 //! a password a reset superseded, a user name or access key id the account holds no
-//! record of — and nothing such a request asked for is served: a refused push leaves
+//! record of — while a request that presents no credential at all is answered `401`
+//! with the `WWW-Authenticate: Basic` challenge that asks for one; and
+//! nothing such a request asked for is served: a refused push leaves
 //! every reference where it stood.
 //!
 //! Two crates have to agree for the rule to hold — IAM mints the credential and keeps
@@ -56,10 +58,19 @@ const IAM_API_VERSION: &str = "2010-05-08";
 /// `CreateServiceSpecificCredential`'s own `ServiceName` for them.
 const GIT_CREDENTIAL_SERVICE: &str = "codecommit.amazonaws.com";
 
-/// The challenge a request the transport authenticates nobody for must carry, which is
-/// what makes a git client ask its credential helper for credentials and send the
-/// request again.
-const BASIC_CHALLENGE: &str = "Basic realm=\"CodeCommit\"";
+/// The challenge a request that presented NO credential must carry, which is what makes
+/// a git client ask its credential helper for credentials and send the request again.
+const BASIC_CHALLENGE: &str = "Basic realm=\"\"";
+
+/// The error document the transport refuses an authentication step with: the root
+/// element is the code and `Message` is that code's own sentence. A request that
+/// presented NO credential is told that one is required; a request whose credential this
+/// account never issued is told the credential is not recognized.
+const NOT_AUTHORIZED_DOCUMENT: &str =
+    "<NotAuthorizedException><Message>SPNEGO token required</Message></NotAuthorizedException>";
+const UNRECOGNIZED_CLIENT_DOCUMENT: &str = "<UnrecognizedClientException><Message>The security \
+                                            token included in the request is invalid.</Message>\
+                                            </UnrecognizedClientException>";
 
 /// The branch the rows read and try to move, and the one a refused push would create.
 const MAIN: &str = "main";
@@ -378,21 +389,31 @@ async fn branch_tip(router: &MultiServiceRouter, repository: &str, branch: &str)
     string_at(&read, "/branch/commitId")
 }
 
-/// Assert that `reply` is the refusal the transport answers a credential it
-/// authenticates nobody for with: a `401` carrying the `Basic` challenge, and no part of
-/// what was asked for.
-fn assert_challenged(case: &str, reply: &Reply) {
+/// Assert that `reply` is the refusal the transport answers a request it authenticates
+/// nobody for with: the status, the AWS error document that status carries, the `Basic`
+/// challenge on the `401` that asks a client for credentials and none on the `403` that
+/// has nothing more to ask for, and no part of what was asked for.
+fn assert_refused_authentication(case: &str, reply: &Reply, expected: u16) {
     assert_eq!(
-        reply.status, 401,
-        "case {case:?}: a credential this account did not issue must be refused 401, got \
-         {} with {:?}",
+        reply.status, expected,
+        "case {case:?}: a request this account authenticates nobody for must be refused \
+         {expected}, got {} with {:?}",
         reply.status, reply.body
+    );
+    let (document, challenge) = if expected == 401 {
+        (NOT_AUTHORIZED_DOCUMENT, Some(BASIC_CHALLENGE))
+    } else {
+        (UNRECOGNIZED_CLIENT_DOCUMENT, None)
+    };
+    assert_eq!(
+        reply.body, document,
+        "case {case:?}: expected the error document {document:?}, got {:?}",
+        reply.body
     );
     assert_eq!(
         reply.challenge.as_deref(),
-        Some(BASIC_CHALLENGE),
-        "case {case:?}: the 401 must carry the challenge a git client re-presents \
-         credentials under, got {:?}",
+        challenge,
+        "case {case:?}: expected the challenge {challenge:?}, got {:?}",
         reply.challenge
     );
     assert!(
@@ -400,6 +421,12 @@ fn assert_challenged(case: &str, reply: &Reply) {
         "case {case:?}: nothing of the advertisement may be served, got {:?}",
         reply.body
     );
+}
+
+/// The refusal of a request that presented a credential this account never issued: it
+/// identifies nobody, and no challenge would change that.
+fn assert_unrecognized(case: &str, reply: &Reply) {
+    assert_refused_authentication(case, reply, 403);
 }
 
 /// Assert that `reply` is a served ref advertisement.
@@ -492,13 +519,13 @@ async fn only_the_password_iam_minted_authenticates_a_git_credential() {
             ),
             "case {case:?}: the row must differ from the pair the account issued"
         );
-        assert_challenged(
+        assert_unrecognized(
             case,
             &fetch_advertisement(&router, &repo.clone_url, Some(basic(&user, &password))).await,
         );
         // The same presentation proves nothing on the write endpoint either, and the
         // push it carried changes nothing.
-        assert_challenged(
+        assert_unrecognized(
             case,
             &push(
                 &router,
@@ -618,11 +645,11 @@ async fn a_git_credential_the_account_no_longer_holds_is_refused() {
             }
         }
 
-        assert_challenged(
+        assert_unrecognized(
             case,
             &fetch_advertisement(&router, &repo.clone_url, Some(presented.clone())).await,
         );
-        assert_challenged(
+        assert_unrecognized(
             case,
             &push(
                 &router,
@@ -669,21 +696,27 @@ async fn a_credential_the_account_never_issued_identifies_nobody() {
     iam(&router, "CreateUser", &[("UserName", "Nikki_Wolf")]).await;
     let account = engine::emulator_account_id();
 
-    // Each row: what the request presents, and why it is nothing this account issued.
+    // Each row: what the request presents, why it is nothing this account issued, and
+    // the status that case is refused with — a request that carries no credential at
+    // all is asked for one, and a request that presented something the account never
+    // issued identifies nobody, which no challenge would change.
     // The rows span the forms a client can present and a request that presents none.
-    let rows: Vec<(&str, Option<String>)> = vec![
-        ("no credentials at all", None),
+    let rows: Vec<(&str, Option<String>, u16)> = vec![
+        ("no credentials at all", None, 401),
         (
             "a git user name nothing minted",
             Some(basic(&format!("Invented_User-at-{account}"), "any-password")),
+            403,
         ),
         (
             "a git user name of a user holding no credential",
             Some(basic(&format!("Nikki_Wolf-at-{account}"), "any-password")),
+            403,
         ),
         (
             "an access key id no store holds",
             Some(basic("AKIAIOSFODNN7INVENTD", "a-signature")),
+            403,
         ),
         (
             "an access key id with a session token, as the credential helper writes one",
@@ -691,6 +724,7 @@ async fn a_credential_the_account_never_issued_identifies_nobody() {
                 "ASIAIOSFODNN7INVENTD%an-opaque-session-token",
                 "a-signature",
             )),
+            403,
         ),
         (
             "a SigV4 signature naming a credential no store holds",
@@ -698,16 +732,21 @@ async fn a_credential_the_account_never_issued_identifies_nobody() {
                 "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7INVENTD/20260101/{REGION}/\
                  codecommit/aws4_request, SignedHeaders=host, Signature=0000"
             )),
+            403,
         ),
-        ("an empty Basic value", Some("Basic ".to_string())),
+        // A header that carries nothing a credential can be read out of still
+        // PRESENTED something, and this refusal does not tell a malformed credential
+        // apart from one the account never issued.
+        ("an empty Basic value", Some("Basic ".to_string()), 403),
     ];
 
-    for (case, credentials) in rows {
-        assert_challenged(
+    for (case, credentials, expected) in rows {
+        assert_refused_authentication(
             case,
             &fetch_advertisement(&router, &repo.clone_url, credentials.clone()).await,
+            expected,
         );
-        assert_challenged(
+        assert_refused_authentication(
             case,
             &push(
                 &router,
@@ -718,6 +757,7 @@ async fn a_credential_the_account_never_issued_identifies_nobody() {
                 "refs/heads/invented",
             )
             .await,
+            expected,
         );
     }
 
@@ -758,7 +798,7 @@ async fn a_credential_the_account_never_issued_identifies_nobody() {
     // nothing published and nothing minted.
     let mut altered = published.access_key_id.clone();
     altered.push('X');
-    assert_challenged(
+    assert_unrecognized(
         "an access key id one character from the published one",
         &fetch_advertisement(&router, &repo.clone_url, Some(basic(&altered, "a-signature"))).await,
     );

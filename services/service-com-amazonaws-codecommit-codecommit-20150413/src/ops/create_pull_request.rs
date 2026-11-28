@@ -621,10 +621,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     return Err(
                         CreatePullRequestErrorModeled::IdempotencyParameterMismatchException(
                             IdempotencyParameterMismatchException {
-                                message: Some(format!(
-                                    "the client request token {client_request_token} was used in \
-                                     a previous request with different parameters"
-                                )),
+                                // This refusal carries NO message: worded (as
+                                // nothing) in the one place this crate words that
+                                // code.
+                                message: crate::state::IDEMPOTENCY_PARAMETER_MISMATCH_MESSAGE,
                             },
                         )
                         .into(),

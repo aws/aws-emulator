@@ -196,10 +196,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 UpdateCommentErrorModeled::CommentContentSizeLimitExceededException(
                     CommentContentSizeLimitExceededException {
-                        message: Some(format!(
-                            "the comment is {characters} characters, and comments are limited to {} characters",
-                            crate::state::MAX_COMMENT_CHARACTERS
-                        )),
+                        // Worded in the one place this crate words this code, so an
+                        // edit refused for size says what a post refused for size
+                        // says.
+                        message: Some(crate::state::CommentContentProblem::TooLarge.message()),
                     },
                 )
                 .into(),

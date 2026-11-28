@@ -70,7 +70,11 @@ fn delete_cases() -> Vec<DeleteCase> {
             label: "a multi-line comment on the first line of the after version",
             content: "multi\nline\ncomment".to_string(),
             with_before: true,
-            location: Some(json!({ "filePath": PATH, "filePosition": 1 })),
+            location: Some(json!({
+                "filePath": PATH,
+                "filePosition": 1,
+                "relativeFileVersion": "AFTER",
+            })),
             reacted: true,
         },
         DeleteCase {

@@ -286,7 +286,7 @@ async fn a_comment_nobody_reacted_to_reports_an_empty_reaction_count_map() {
     let at_file = comment_on(
         &fixture,
         "at the file",
-        Some(json!({ "filePath": PATH, "relativeFileVersion": "AFTER" })),
+        Some(json!({ "filePath": PATH })),
     )
     .await;
     let at_line = comment_on(

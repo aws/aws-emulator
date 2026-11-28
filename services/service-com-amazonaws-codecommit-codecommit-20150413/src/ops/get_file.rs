@@ -257,6 +257,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
         })?;
 
+        // A file a git client pushed may be larger than the 6 MB `fileContent` the
+        // API accepts, and one past that bound is not served through the API at all:
+        // the read is refused, and the git transport is the way to its bytes.
+        if content.len() > crate::state::MAX_RETRIEVABLE_OBJECT_BYTES {
+            return Err(GetFileErrorModeled::FileTooLargeException(FileTooLargeException {
+                message: Some(crate::state::OBJECT_TOO_LARGE_TO_RETRIEVE_MESSAGE.to_string()),
+            })
+            .into());
+        }
+
         Ok(GetFileOutput {
             commit_id: commit.commit_id.clone(),
             blob_id: entry.blob_id.clone(),

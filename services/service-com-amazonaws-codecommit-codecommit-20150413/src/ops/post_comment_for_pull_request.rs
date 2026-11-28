@@ -344,7 +344,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map_err(|problem| {
                 let message = Some(problem.message());
                 match problem {
-                    crate::state::CommentLocationProblem::FileLocation => {
+                    crate::state::CommentLocationProblem::FileLocation
+                    | crate::state::CommentLocationProblem::HalfAnchored(_) => {
                         PostCommentForPullRequestErrorModeled::InvalidFileLocationException(
                             InvalidFileLocationException { message },
                         )
@@ -508,7 +509,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         InvalidFilePositionException { message },
                     )
                 }
-                crate::state::CommentAnchorProblem::NoBeforeVersion => {
+                crate::state::CommentAnchorProblem::WrongSide { .. }
+                | crate::state::CommentAnchorProblem::NoBeforeVersion => {
                     PostCommentForPullRequestErrorModeled::InvalidRelativeFileVersionEnumException(
                         InvalidRelativeFileVersionEnumException { message },
                     )
@@ -555,9 +557,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     Err(
                         PostCommentForPullRequestErrorModeled::IdempotencyParameterMismatchException(
                             IdempotencyParameterMismatchException {
-                                message: Some(format!(
-                                    "the client request token {token} was used in a previous request with different parameters"
-                                )),
+                                // This refusal carries NO message: worded (as
+                                // nothing) in the one place this crate words that
+                                // code.
+                                message: crate::state::IDEMPOTENCY_PARAMETER_MISMATCH_MESSAGE,
                             },
                         )
                         .into(),

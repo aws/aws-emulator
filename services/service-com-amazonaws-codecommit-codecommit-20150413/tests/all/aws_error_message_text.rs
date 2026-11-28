@@ -25,12 +25,18 @@
 //! shape="ApprovalRuleTemplateName")` — `len 1..100`, no pattern; `BranchName` —
 //! `len 1..256`; `Content` and `ResourceArn` — unconstrained, so their emptiness is
 //! a handler rule).
+//!
+//! One of these codes carries NO message at all — `IdempotencyParameterMismatchException`
+//! — and the absence is as much part of that refusal as the code is, so it is asserted
+//! here beside the texts.
 
 use serde_json::{json, Value};
 
-use crate::comment_lifecycle::{fixture, PATH};
+use crate::comment_lifecycle::{fixture, Fixture, MAX_COMMENT_CHARACTERS, PATH};
 use crate::harness::error_with_message;
-use crate::repository_lifecycle::{emulator, ok, string_at, REGION};
+use crate::pull_request_comments::{pull_request_on, PullRequest};
+use crate::repository_lifecycle::{base64, emulator, ok, string_at, REGION};
+use crate::wire::fresh_client_request_token;
 
 /// The HTTP status every error asserted here models (`errorKind: client`,
 /// `httpError: 400` on each of these error shapes).
@@ -1248,5 +1254,687 @@ async fn invalid_repository_trigger_destination_arn_message_is_a_constant() {
         held.get("triggers"),
         Some(&good),
         "expected the applied configuration to be read back, got {held}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The comment refusals: IdempotencyParameterMismatchException,
+// InvalidFilePositionException, InvalidPathException,
+// InvalidFileLocationException, InvalidRelativeFileVersionEnumException and
+// CommentContentSizeLimitExceededException
+// ---------------------------------------------------------------------------
+
+/// `body` with every member `overrides` names replaced, and every member it maps to
+/// `null` removed — how a row states the ONE thing it changes about a request.
+fn with(mut body: Value, overrides: Value) -> Value {
+    let Value::Object(overrides) = overrides else {
+        return body;
+    };
+    let members = body
+        .as_object_mut()
+        .expect("a request body is a JSON object");
+    for (member, value) in overrides {
+        if value.is_null() {
+            members.remove(&member);
+        } else {
+            members.insert(member, value);
+        }
+    }
+    body
+}
+
+/// A `PostCommentForComparedCommit` body on the fixture's comparison.
+fn compared_comment(f: &Fixture, overrides: Value) -> Value {
+    with(
+        json!({
+            "repositoryName": f.repository,
+            "beforeCommitId": f.before_commit,
+            "afterCommitId": f.after_commit,
+            "content": "a comment",
+        }),
+        overrides,
+    )
+}
+
+/// A `PostCommentForPullRequest` body on an open pull request's comparison.
+fn pull_request_comment(pr: &PullRequest, overrides: Value) -> Value {
+    with(
+        json!({
+            "pullRequestId": pr.pull_request_id,
+            "repositoryName": pr.repository,
+            "beforeCommitId": pr.before_commit,
+            "afterCommitId": pr.after_commit,
+            "content": "a comment",
+        }),
+        overrides,
+    )
+}
+
+/// Reusing a client request token with changed parameters is refused with the code
+/// and the status alone: CodeCommit serializes NO message member for it, so the
+/// ABSENCE of a message is part of that refusal.
+///
+/// The rows differ along what the rule generalises over: which operation carries the
+/// `@idempotencyToken` (every one of the four that does) and WHICH parameter of the
+/// first request the second one changed (its content, its location, its title).
+#[tokio::test]
+async fn an_idempotency_parameter_mismatch_carries_no_message() {
+    let f = fixture("token-mismatch-messages").await;
+    let pr = pull_request_on(&f.router, "token-mismatch-pull-request").await;
+
+    // A comment to reply to, posted outside the rows so a reply row's own token is
+    // the only token in play for it.
+    let posted = ok(
+        &f.router,
+        "PostCommentForComparedCommit",
+        &compared_comment(&f, json!({ "content": "the comment the replies answer" })),
+    )
+    .await;
+    let parent = string_at(&posted, "/comment/commentId");
+
+    let rows: Vec<(&str, &str, Value, Value)> = vec![
+        (
+            "a compared-commit comment with changed content",
+            "PostCommentForComparedCommit",
+            compared_comment(&f, json!({})),
+            json!({ "content": "a second comment" }),
+        ),
+        (
+            "a compared-commit comment with a changed location",
+            "PostCommentForComparedCommit",
+            compared_comment(&f, json!({})),
+            json!({
+                "location": {
+                    "filePath": PATH,
+                    "filePosition": 1,
+                    "relativeFileVersion": "AFTER",
+                },
+            }),
+        ),
+        (
+            "a pull request comment with changed content",
+            "PostCommentForPullRequest",
+            pull_request_comment(&pr, json!({})),
+            json!({ "content": "a second comment" }),
+        ),
+        (
+            "a reply with changed content",
+            "PostCommentReply",
+            json!({ "inReplyTo": parent, "content": "the first reply" }),
+            json!({ "content": "a second reply" }),
+        ),
+        (
+            "a pull request with a changed title",
+            "CreatePullRequest",
+            json!({
+                "title": "a change to review",
+                "targets": [{
+                    "repositoryName": pr.repository,
+                    "sourceReference": "feature",
+                    "destinationReference": "main",
+                }],
+            }),
+            json!({ "title": "a different title" }),
+        ),
+    ];
+
+    for (case, operation, first, change) in rows {
+        let first = with(first, json!({ "clientRequestToken": fresh_client_request_token() }));
+        ok(&f.router, operation, &first).await;
+        let (code, message) = error_with_message(
+            &f.router,
+            operation,
+            &with(first.clone(), change),
+            CLIENT_ERROR_STATUS,
+        )
+        .await;
+        assert_eq!(
+            code, "IdempotencyParameterMismatchException",
+            "case {case:?}: expected IdempotencyParameterMismatchException, got {code:?}"
+        );
+        assert_eq!(
+            message, "",
+            "case {case:?}: this refusal carries no message, got {message:?}"
+        );
+        // The refusal consumed nothing: the token still answers the request it was
+        // accepted for.
+        ok(&f.router, operation, &first).await;
+    }
+}
+
+/// A `filePosition` below the first line is refused with the FIXED line-number text:
+/// `Location.filePosition` is a 1-based line number
+/// (`smithy_query(query="shape",shape="Location")` — member `filePosition`, "The
+/// position of a change in a compared file, in line number format"), and the message
+/// states that rule without naming anything from the request.
+///
+/// The rows differ along the position (the line before the first, zero, a negative
+/// line far from it, and the smallest value a `long` holds), the side of the
+/// comparison the location names, and the operation that places the comment.
+#[tokio::test]
+async fn an_invalid_file_position_message_is_the_fixed_line_number_text() {
+    const EXPECTED: &str = "The line number is not valid. Either the line number was 0 or a \
+                            negative number. Check to make sure you've included the positive \
+                            value of the line number in the file for the comment, and try again.";
+    let f = fixture("file-position-messages").await;
+    let pr = pull_request_on(&f.router, "file-position-pull-request").await;
+
+    for position in [0_i64, -1, -4096, i64::MIN] {
+        for side in ["AFTER", "BEFORE"] {
+            let location = json!({
+                "filePath": PATH,
+                "filePosition": position,
+                "relativeFileVersion": side,
+            });
+            let requests = [
+                (
+                    "PostCommentForComparedCommit",
+                    compared_comment(&f, json!({ "location": location })),
+                ),
+                (
+                    "PostCommentForPullRequest",
+                    pull_request_comment(&pr, json!({ "location": location })),
+                ),
+            ];
+            for (operation, body) in requests {
+                let case = format!("{operation} at position {position} of the {side} version");
+                let (code, message) =
+                    error_with_message(&f.router, operation, &body, CLIENT_ERROR_STATUS).await;
+                assert_eq!(
+                    code, "InvalidFilePositionException",
+                    "case {case:?}: expected InvalidFilePositionException, got {code:?}"
+                );
+                assert_eq!(
+                    message, EXPECTED,
+                    "case {case:?}: expected message {EXPECTED:?}, got {message:?}"
+                );
+            }
+        }
+    }
+}
+
+/// `InvalidPathException`'s message NAMES THE DEFECT: a fixed opening sentence, a
+/// fixed sentence saying which path rule was broken, and a fixed pointer at the
+/// service's published path limits — with no part of the offending path in it.
+///
+/// The rows differ along the way a path fails to address a file in a tree: it climbs
+/// out of the tree, it walks the tree from inside it, it names the current
+/// directory, or it carries an empty directory name (in the middle and at the end).
+#[tokio::test]
+async fn an_invalid_path_message_names_the_defect_and_the_limits() {
+    const OPENING: &str = "The path is not valid.";
+    const LIMITS: &str = "For more information about limitations for file paths, see Limits in \
+                          the AWS CodeCommit User Guide.";
+    const RELATIVE: &str = "The path is a relative path.";
+    const EMPTY_DIRECTORY: &str = "The path contains an empty directory name.";
+    let f = fixture("invalid-path-messages").await;
+    let pr = pull_request_on(&f.router, "invalid-path-pull-request").await;
+
+    let rows: [(&str, &str); 6] = [
+        ("../docs/guide/intro.txt", RELATIVE),
+        ("docs/../intro.txt", RELATIVE),
+        ("./intro.txt", RELATIVE),
+        ("docs/./guide/intro.txt", RELATIVE),
+        ("docs//guide/intro.txt", EMPTY_DIRECTORY),
+        ("docs/guide//", EMPTY_DIRECTORY),
+    ];
+    for (file_path, defect) in rows {
+        let expected = format!("{OPENING} {defect} {LIMITS}");
+        let location = json!({
+            "filePath": file_path,
+            "filePosition": 1,
+            "relativeFileVersion": "AFTER",
+        });
+        let requests = [
+            (
+                "PostCommentForComparedCommit",
+                compared_comment(&f, json!({ "location": location })),
+            ),
+            (
+                "PostCommentForPullRequest",
+                pull_request_comment(&pr, json!({ "location": location })),
+            ),
+        ];
+        for (operation, body) in requests {
+            let case = format!("{operation} at {file_path:?}");
+            let (code, message) =
+                error_with_message(&f.router, operation, &body, CLIENT_ERROR_STATUS).await;
+            assert_eq!(
+                code, "InvalidPathException",
+                "case {case:?}: expected InvalidPathException, got {code:?}"
+            );
+            assert_eq!(
+                message, expected,
+                "case {case:?}: expected message {expected:?}, got {message:?}"
+            );
+        }
+    }
+}
+
+/// A comment anchors either to a whole FILE (a path alone) or to a LINE, and a line
+/// is named by BOTH halves of the anchor — the position and the side of the
+/// comparison it is a line of. Either half on its own is refused with
+/// `InvalidFileLocationException` naming the member that was not provided, and no
+/// comment is created.
+///
+/// The rows differ along which half is missing, whether the half that IS there would
+/// have been valid on its own (a position inside the file and one past its last
+/// line, each side of the comparison), and the operation that places the comment.
+#[tokio::test]
+async fn a_half_specified_comment_location_is_refused_and_stores_nothing() {
+    const NO_SIDE: &str = "RelativeFileVersion is not provided";
+    const NO_POSITION: &str = "FilePosition is not provided";
+    let f = fixture("half-anchored-locations").await;
+    let pr = pull_request_on(&f.router, "half-anchored-pull-request").await;
+
+    let rows: [(&str, Value, &str); 5] = [
+        (
+            "a position with no side",
+            json!({ "filePath": PATH, "filePosition": 1 }),
+            NO_SIDE,
+        ),
+        (
+            "a position past the last line with no side",
+            json!({ "filePath": PATH, "filePosition": 9_999 }),
+            NO_SIDE,
+        ),
+        (
+            "the after side with no position",
+            json!({ "filePath": PATH, "relativeFileVersion": "AFTER" }),
+            NO_POSITION,
+        ),
+        (
+            "the before side with no position",
+            json!({ "filePath": PATH, "relativeFileVersion": "BEFORE" }),
+            NO_POSITION,
+        ),
+        (
+            "a leading separator, a position and no side",
+            json!({ "filePath": format!("/{PATH}"), "filePosition": 2 }),
+            NO_SIDE,
+        ),
+    ];
+    for (label, location, expected) in rows {
+        let requests = [
+            (
+                "PostCommentForComparedCommit",
+                compared_comment(&f, json!({ "location": location })),
+            ),
+            (
+                "PostCommentForPullRequest",
+                pull_request_comment(&pr, json!({ "location": location })),
+            ),
+        ];
+        for (operation, body) in requests {
+            let case = format!("{operation} with {label}");
+            let (code, message) =
+                error_with_message(&f.router, operation, &body, CLIENT_ERROR_STATUS).await;
+            assert_eq!(
+                code, "InvalidFileLocationException",
+                "case {case:?}: expected InvalidFileLocationException, got {code:?}"
+            );
+            assert_eq!(
+                message, expected,
+                "case {case:?}: expected message {expected:?}, got {message:?}"
+            );
+        }
+    }
+
+    // Nothing any of those requests asked for was written: the comparison carries no
+    // comment at all.
+    let held = ok(
+        &f.router,
+        "GetCommentsForComparedCommit",
+        &json!({
+            "repositoryName": f.repository,
+            "beforeCommitId": f.before_commit,
+            "afterCommitId": f.after_commit,
+        }),
+    )
+    .await;
+    assert_eq!(
+        held.get("commentsForComparedCommitData"),
+        Some(&json!([])),
+        "a refused location must leave the comparison with no comment, got {held}"
+    );
+
+    // And the two locations that ARE anchors are accepted on the same comparison: a
+    // whole file, and a line named by both halves.
+    for (case, location) in [
+        ("a whole file", json!({ "filePath": PATH })),
+        (
+            "a line named by both halves",
+            json!({
+                "filePath": PATH,
+                "filePosition": 1,
+                "relativeFileVersion": "AFTER",
+            }),
+        ),
+    ] {
+        let posted = ok(
+            &f.router,
+            "PostCommentForComparedCommit",
+            &compared_comment(&f, json!({ "location": location })),
+        )
+        .await;
+        assert_eq!(
+            posted.pointer("/location"),
+            Some(&location),
+            "case {case:?}: the accepted location must be reported back, got {posted}"
+        );
+    }
+}
+
+/// A comment on a file the named PORTION of the comparison does not hold, while the
+/// other portion does, is refused with `InvalidRelativeFileVersionEnumException`:
+/// the file exists in the comparison, just not on the side the caller asked to
+/// comment on, so the remedy is the other side — which is what the message says, its
+/// one variable part being that side's name. A path NEITHER portion holds is
+/// `PathDoesNotExistException` instead.
+///
+/// The rows differ along which side lacks the file and why (a file added between the
+/// two commits, and one deleted between them), and the control rows post the same
+/// locations on the side that does hold the file.
+#[tokio::test]
+async fn a_comment_on_a_file_missing_from_the_named_side_is_refused_for_that_side() {
+    let router = emulator();
+    let repository = "comments-across-one-sided-files";
+    ok(
+        &router,
+        "CreateRepository",
+        &json!({ "repositoryName": repository }),
+    )
+    .await;
+    let put = |path: &'static str, parent: Option<String>| {
+        let router = &router;
+        let mut body = json!({
+            "repositoryName": repository,
+            "branchName": "main",
+            "filePath": path,
+            "fileContent": base64(b"one\ntwo\n"),
+            "commitMessage": format!("write {path}"),
+        });
+        if let Some(parent) = parent {
+            body["parentCommitId"] = json!(parent);
+        }
+        async move { string_at(&ok(router, "PutFile", &body).await, "/commitId") }
+    };
+    // The before side holds `kept.txt` and `legacy.css`; the after side holds
+    // `kept.txt` and `style.css`, with `legacy.css` deleted between the two.
+    let first = put("kept.txt", None).await;
+    let before = put("legacy.css", Some(first)).await;
+    let added = put("web/style.css", Some(before.clone())).await;
+    let deleted = ok(
+        &router,
+        "DeleteFile",
+        &json!({
+            "repositoryName": repository,
+            "branchName": "main",
+            "filePath": "legacy.css",
+            "parentCommitId": added,
+        }),
+    )
+    .await;
+    let after = string_at(&deleted, "/commitId");
+
+    let post = |file_path: &str, side: &str| {
+        json!({
+            "repositoryName": repository,
+            "beforeCommitId": before,
+            "afterCommitId": after,
+            "content": "a comment",
+            "location": {
+                "filePath": file_path,
+                "filePosition": 1,
+                "relativeFileVersion": side,
+            },
+        })
+    };
+    let wrong_side = |side: &str| {
+        format!(
+            "You can only comment on existing files. You attempted to comment on a file that \
+             does not exist in this portion of the comparison between commits: {side}. Either \
+             the file has been deleted, or has not been added to the repository at the time of \
+             this commit. Try commenting on the file in the other commit portion of the \
+             comparison."
+        )
+    };
+
+    let rows: [(&str, &str, &str, &str, String); 3] = [
+        (
+            "a file added between the commits, commented on the before side",
+            "web/style.css",
+            "BEFORE",
+            "InvalidRelativeFileVersionEnumException",
+            wrong_side("BEFORE"),
+        ),
+        (
+            "a file deleted between the commits, commented on the after side",
+            "legacy.css",
+            "AFTER",
+            "InvalidRelativeFileVersionEnumException",
+            wrong_side("AFTER"),
+        ),
+        (
+            "a path neither side of the comparison holds",
+            "docs/absent.md",
+            "AFTER",
+            "PathDoesNotExistException",
+            "the path docs/absent.md does not exist in the AFTER version of the comparison"
+                .to_string(),
+        ),
+    ];
+    for (case, file_path, side, expected_code, expected_message) in rows {
+        let (code, message) = error_with_message(
+            &router,
+            "PostCommentForComparedCommit",
+            &post(file_path, side),
+            CLIENT_ERROR_STATUS,
+        )
+        .await;
+        assert_eq!(
+            code, expected_code,
+            "case {case:?}: expected {expected_code}, got {code:?} with {message:?}"
+        );
+        assert_eq!(
+            message, expected_message,
+            "case {case:?}: expected message {expected_message:?}, got {message:?}"
+        );
+    }
+
+    // THE CONTROLS: the same file on the side that does hold it is accepted, so each
+    // refusal above is attributable to the side it named.
+    for (case, file_path, side) in [
+        ("the added file on the after side", "web/style.css", "AFTER"),
+        ("the deleted file on the before side", "legacy.css", "BEFORE"),
+        ("a file both sides hold", "kept.txt", "BEFORE"),
+    ] {
+        let posted = ok(
+            &router,
+            "PostCommentForComparedCommit",
+            &post(file_path, side),
+        )
+        .await;
+        assert_eq!(
+            posted.pointer("/location/filePath"),
+            Some(&json!(file_path)),
+            "case {case:?}: the comment must be posted at the file it named, got {posted}"
+        );
+    }
+}
+
+/// `CommentContentSizeLimitExceededException` states the LIMIT: the fixed text the
+/// service words that code with, followed by the number of characters a comment may
+/// carry — which is what a caller parses the limit out of.
+///
+/// The rows differ along how far past the limit the content is and what it is made
+/// of (one character over, far over, and one character over in characters that are
+/// several bytes each — the limit counts characters), and along the operation that
+/// saves comment content.
+#[tokio::test]
+async fn the_comment_size_limit_message_states_the_limit() {
+    const EXPECTED: &str = "The size limit for comments is 10240";
+    let f = fixture("comment-size-messages").await;
+    let pr = pull_request_on(&f.router, "comment-size-pull-request").await;
+    let posted = ok(
+        &f.router,
+        "PostCommentForComparedCommit",
+        &compared_comment(&f, json!({ "content": "the comment an edit will try to grow" })),
+    )
+    .await;
+    let comment_id = string_at(&posted, "/comment/commentId");
+
+    let contents: [(&str, String); 3] = [
+        (
+            "one character past the limit",
+            "x".repeat(MAX_COMMENT_CHARACTERS + 1),
+        ),
+        (
+            "far past the limit",
+            "x".repeat(MAX_COMMENT_CHARACTERS * 2),
+        ),
+        (
+            "one multi-byte character past the limit",
+            "é".repeat(MAX_COMMENT_CHARACTERS + 1),
+        ),
+    ];
+    for (label, content) in contents {
+        let requests = [
+            (
+                "PostCommentForComparedCommit",
+                compared_comment(&f, json!({ "content": content })),
+            ),
+            (
+                "PostCommentForPullRequest",
+                pull_request_comment(&pr, json!({ "content": content })),
+            ),
+            (
+                "PostCommentReply",
+                json!({ "inReplyTo": comment_id, "content": content }),
+            ),
+            (
+                "UpdateComment",
+                json!({ "commentId": comment_id, "content": content }),
+            ),
+        ];
+        for (operation, body) in requests {
+            let case = format!("{operation} with content {label}");
+            let (code, message) =
+                error_with_message(&f.router, operation, &body, CLIENT_ERROR_STATUS).await;
+            assert_eq!(
+                code, "CommentContentSizeLimitExceededException",
+                "case {case:?}: expected CommentContentSizeLimitExceededException, got {code:?}"
+            );
+            assert_eq!(
+                message, EXPECTED,
+                "case {case:?}: expected message {EXPECTED:?}, got {message:?}"
+            );
+        }
+    }
+
+    // Content AT the limit is saved: the refusals above are the bound's far side.
+    let at_limit = "x".repeat(MAX_COMMENT_CHARACTERS);
+    let accepted = ok(
+        &f.router,
+        "UpdateComment",
+        &json!({ "commentId": comment_id, "content": at_limit }),
+    )
+    .await;
+    assert_eq!(
+        accepted.pointer("/comment/content"),
+        Some(&json!(at_limit)),
+        "content at the limit must be saved, got {accepted}"
+    );
+}
+
+/// `FileContentSizeLimitExceededException` carries the GUIDANCE text: the limit, the
+/// two faces it applies to, and the git client as the way to add content past it —
+/// which is the only place the service tells a caller either of those.
+///
+/// The rows differ along the operation that carries the `fileContent` the model
+/// bounds (`smithy_query(query="shape",shape="FileContent")` — `@length max
+/// 6291456`) and how far past the bound the content is; the control writes content
+/// AT the bound, which is served back as the file it wrote.
+#[tokio::test]
+async fn the_file_content_size_limit_message_names_the_git_client() {
+    const EXPECTED: &str = "The maximum file size for adding a file from the AWS CodeCommit \
+                            console or using the PutFile API is 6 MB. For files larger than 6 \
+                            MB but smaller than 2 GB, use a Git client.";
+    /// `FileContent`'s modelled maximum, in bytes.
+    const LIMIT: usize = 6 * 1024 * 1024;
+    let router = emulator();
+    let repository = "file-content-size-messages";
+    ok(
+        &router,
+        "CreateRepository",
+        &json!({ "repositoryName": repository }),
+    )
+    .await;
+
+    let rows: [(&str, &str, Value); 2] = [
+        (
+            "PutFile one byte past the limit",
+            "PutFile",
+            json!({
+                "repositoryName": repository,
+                "branchName": "main",
+                "filePath": "big.bin",
+                "fileContent": base64(&vec![b'x'; LIMIT + 1]),
+            }),
+        ),
+        (
+            "CreateCommit with a file one byte past the limit",
+            "CreateCommit",
+            json!({
+                "repositoryName": repository,
+                "branchName": "main",
+                "putFiles": [{
+                    "filePath": "big.bin",
+                    "fileContent": base64(&vec![b'x'; LIMIT + 1]),
+                }],
+            }),
+        ),
+    ];
+    for (case, operation, body) in rows {
+        let (code, message) =
+            error_with_message(&router, operation, &body, CLIENT_ERROR_STATUS).await;
+        assert_eq!(
+            code, "FileContentSizeLimitExceededException",
+            "case {case:?}: expected FileContentSizeLimitExceededException, got {code:?}"
+        );
+        assert_eq!(
+            message, EXPECTED,
+            "case {case:?}: expected message {EXPECTED:?}, got {message:?}"
+        );
+    }
+
+    // THE CONTROL: content AT the limit is written, and a read serves it back — the
+    // bound is where the refusal starts, not where reads stop.
+    let written = ok(
+        &router,
+        "PutFile",
+        &json!({
+            "repositoryName": repository,
+            "branchName": "main",
+            "filePath": "at-the-limit.bin",
+            "fileContent": base64(&vec![b'x'; LIMIT]),
+        }),
+    )
+    .await;
+    assert!(
+        !string_at(&written, "/commitId").is_empty(),
+        "content at the limit must be written, got {written}"
+    );
+    let read_back = ok(
+        &router,
+        "GetFile",
+        &json!({ "repositoryName": repository, "filePath": "at-the-limit.bin" }),
+    )
+    .await;
+    assert_eq!(
+        read_back.get("fileSize").and_then(Value::as_i64),
+        Some(LIMIT as i64),
+        "a file at the limit must be served back whole, got fileSize {:?}",
+        read_back.get("fileSize")
     );
 }

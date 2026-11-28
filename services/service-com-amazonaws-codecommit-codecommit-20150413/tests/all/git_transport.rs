@@ -4229,8 +4229,18 @@ async fn a_whole_git_session_on_the_dialled_announced_address_round_trips_throug
 
 /// The challenge the `401` of this transport carries, which is what makes a git client
 /// ask its credential helper for credentials and send the request again: the scheme a
-/// client presents git credentials under, and the realm CodeCommit names.
-const BASIC_CHALLENGE: &str = "Basic realm=\"CodeCommit\"";
+/// client presents git credentials under, and the realm CodeCommit names (an empty one).
+const BASIC_CHALLENGE: &str = "Basic realm=\"\"";
+
+/// The error document a git-transport request that presented NO credential is refused
+/// with, and the one a request whose credential this account never issued is refused
+/// with: an AWS error document whose root element is the code and whose `Message` is
+/// that code's own sentence.
+const NOT_AUTHORIZED_DOCUMENT: &str =
+    "<NotAuthorizedException><Message>SPNEGO token required</Message></NotAuthorizedException>";
+const UNRECOGNIZED_CLIENT_DOCUMENT: &str = "<UnrecognizedClientException><Message>The security \
+                                            token included in the request is invalid.</Message>\
+                                            </UnrecognizedClientException>";
 
 #[tokio::test]
 async fn the_dialled_announced_address_challenges_a_credential_the_account_did_not_issue() {
@@ -4260,16 +4270,20 @@ async fn the_dialled_announced_address_challenges_a_credential_the_account_did_n
 
     // The rows span HOW a presentation is not the pair the account issued: none at
     // all, the right user name with a wrong password (longer, shorter and empty), and
-    // a user name the account holds no credential for.
+    // a user name the account holds no credential for. A request that presented
+    // NOTHING is challenged for credentials; one that presented a credential this
+    // account never issued identifies nobody, which is a different code and carries no
+    // challenge, because there is nothing the client would present differently.
     let issued = crate::wire::GIT_SERVICE_PASSWORD;
-    let rows: Vec<(&str, Option<String>)> = vec![
-        ("no credential at all", None),
+    let rows: Vec<(&str, Option<String>, u16)> = vec![
+        ("no credential at all", None, 401),
         (
             "the password with one more character",
             Some(crate::wire::git_basic_credentials(
                 &git_user(),
                 &format!("{issued}x"),
             )),
+            403,
         ),
         (
             "the password one character short",
@@ -4277,10 +4291,12 @@ async fn the_dialled_announced_address_challenges_a_credential_the_account_did_n
                 &git_user(),
                 &issued[..issued.len() - 1],
             )),
+            403,
         ),
         (
             "no password at all",
             Some(crate::wire::git_basic_credentials(&git_user(), "")),
+            403,
         ),
         (
             "a user name the account holds no credential for",
@@ -4288,9 +4304,10 @@ async fn the_dialled_announced_address_challenges_a_credential_the_account_did_n
                 &format!("Nobody-at-{}", engine::emulator_account_id()),
                 issued,
             )),
+            403,
         ),
     ];
-    for (case, authorization) in rows {
+    for (case, authorization, expected) in rows {
         // Both endpoints of the transport: the advertisement a client starts with, and
         // the pack request it would continue with.
         for (endpoint, request) in [
@@ -4318,17 +4335,33 @@ async fn the_dialled_announced_address_challenges_a_credential_the_account_did_n
             let case = format!("{case} at {endpoint}");
             let answer = dialled(&case, &authority, false, request).await;
             assert_eq!(
-                answer.status, 401,
+                answer.status, expected,
                 "case {case:?}: a request the transport authenticates nobody for must be \
-                 refused 401, got {} with {:?}",
+                 refused {expected}, got {} with {:?}",
                 answer.status,
+                String::from_utf8_lossy(&answer.body)
+            );
+            let (document, challenge) = if expected == 401 {
+                (NOT_AUTHORIZED_DOCUMENT, Some(BASIC_CHALLENGE))
+            } else {
+                (UNRECOGNIZED_CLIENT_DOCUMENT, None)
+            };
+            assert_eq!(
+                answer.header("content-type"),
+                Some("text/xml"),
+                "case {case:?}: the refusal must be served as an error document, got {:?}",
+                answer.header("content-type")
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&answer.body),
+                document,
+                "case {case:?}: expected the error document {document:?}, got {:?}",
                 String::from_utf8_lossy(&answer.body)
             );
             assert_eq!(
                 answer.header("www-authenticate"),
-                Some(BASIC_CHALLENGE),
-                "case {case:?}: the 401 must carry the challenge a client re-presents \
-                 credentials under, got {:?}",
+                challenge,
+                "case {case:?}: expected the challenge {challenge:?}, got {:?}",
                 answer.header("www-authenticate")
             );
             assert!(
@@ -4390,15 +4423,283 @@ async fn the_dialled_announced_address_challenges_a_credential_the_account_did_n
     )
     .await;
     assert_eq!(
-        answer.status, 401,
+        answer.status, 403,
         "case {case:?}: a deleted credential authenticates nobody, got {} with {:?}",
         answer.status,
         String::from_utf8_lossy(&answer.body)
     );
     assert_eq!(
-        answer.header("www-authenticate"),
-        Some(BASIC_CHALLENGE),
-        "case {case:?}: the 401 must carry the challenge, got {:?}",
-        answer.header("www-authenticate")
+        String::from_utf8_lossy(&answer.body),
+        UNRECOGNIZED_CLIENT_DOCUMENT,
+        "case {case:?}: expected the unrecognized-credential document, got {:?}",
+        String::from_utf8_lossy(&answer.body)
     );
+}
+
+// ------------------------------- HEAD in the advertisement, and the objects a git
+//                                 client puts beyond what the API serves
+
+/// BOTH advertisements name `HEAD` at the tip of the repository's default branch:
+/// `HEAD` is the repository's own symbolic reference, and it is how a client learns
+/// which branch to check out. Only a FETCHING client is also told which branch it
+/// resolves to (the `symref` capability), and a repository with no default branch
+/// advertises no `HEAD` at all.
+///
+/// The rows differ along which face wrote the default branch — a push that created
+/// it, and a write through the API — and along the branch's name, which is what
+/// `HEAD` resolves to.
+#[tokio::test]
+async fn both_advertisements_name_head_at_the_default_branch() {
+    let router = emulator();
+    let rows: [(&str, &str, &str, bool); 3] = [
+        ("a branch a push created", "head-pushed-main", "main", true),
+        ("a branch a push created under another name", "head-pushed-trunk", "trunk", true),
+        ("a branch the API wrote", "head-api-written", "main", false),
+    ];
+    for (case, repository, branch, pushed) in rows {
+        let created = ok(
+            &router,
+            "CreateRepository",
+            &json!({ "repositoryName": repository }),
+        )
+        .await;
+        let clone_url = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
+
+        // An empty repository has no default branch, so neither service advertises a
+        // HEAD: every row's HEAD below is one the write it made produced.
+        for service in ["git-receive-pack", "git-upload-pack"] {
+            let reply = advertise(&router, &clone_url, service).await;
+            let (refs, _) = parse_advertisement(service, &reply);
+            assert_eq!(
+                refs.get("HEAD"),
+                None,
+                "case {case:?}: an empty repository advertises no HEAD to {service}, got {refs:?}"
+            );
+        }
+
+        let tip = if pushed {
+            let files = snapshot(&[("100644", "README.md", b"# pushed\n".to_vec())]);
+            let (root, mut objects) = snapshot_objects(&files);
+            let commit = commit(&root, &[], "the first commit");
+            let tip = id_of(&commit);
+            objects.push(commit);
+            let reply = rpc(
+                &router,
+                &clone_url,
+                "git-receive-pack",
+                push_body(
+                    &[command(
+                        NULL_ID,
+                        &tip,
+                        &format!("refs/heads/{branch}"),
+                        "report-status",
+                    )],
+                    &objects,
+                ),
+            )
+            .await;
+            let (report, _) = parse_pkts(&reply.body);
+            assert_eq!(
+                report,
+                vec![
+                    "unpack ok\n".to_string(),
+                    format!("ok refs/heads/{branch}\n")
+                ],
+                "case {case:?}: the push must be accepted before HEAD is read"
+            );
+            tip
+        } else {
+            put_file(&router, repository, branch, "README.md", b"# written\n", None).await
+        };
+
+        // The default branch the write left, as the control plane reports it: what
+        // HEAD must resolve to.
+        let read = ok(
+            &router,
+            "GetRepository",
+            &json!({ "repositoryName": repository }),
+        )
+        .await;
+        assert_eq!(
+            string_at(&read, "/repositoryMetadata/defaultBranch"),
+            branch,
+            "case {case:?}: the write must leave {branch} as the default branch"
+        );
+
+        for service in ["git-receive-pack", "git-upload-pack"] {
+            let reply = advertise(&router, &clone_url, service).await;
+            let (refs, capabilities) = parse_advertisement(service, &reply);
+            assert_eq!(
+                refs.get("HEAD").map(String::as_str),
+                Some(tip.as_str()),
+                "case {case:?}: {service} must advertise HEAD at the default branch's tip, \
+                 got {refs:?}"
+            );
+            assert_eq!(
+                refs.get(&format!("refs/heads/{branch}")).map(String::as_str),
+                Some(tip.as_str()),
+                "case {case:?}: {service} must advertise the branch itself, got {refs:?}"
+            );
+            // Which branch HEAD is a symbolic ref TO is told to a fetching client
+            // only: a pushing client reads HEAD's value and never its target.
+            let symref = format!("symref=HEAD:refs/heads/{branch}");
+            assert_eq!(
+                capabilities.contains(&symref),
+                service == "git-upload-pack",
+                "case {case:?}: {service} capabilities must carry {symref:?} only for a \
+                 fetch, got {capabilities:?}"
+            );
+        }
+    }
+}
+
+/// An object a git client PUSHED above the size the API serves is held and served
+/// back to git, while a read of it through the API is refused with
+/// `FileTooLargeException` — the git client is the documented way to content past
+/// that bound, in both directions.
+///
+/// The rows differ along the size of the pushed object relative to the API's own
+/// limit: well inside it, and one byte past it. Content exactly AT the limit goes in
+/// through the API itself, so it is pinned where that write is
+/// (`crate::aws_error_message_text`), and keeping it out of this push leaves the
+/// clone below the bytes one fetch serves.
+#[tokio::test]
+async fn an_object_pushed_past_the_api_limit_is_refused_by_a_read_and_served_to_git() {
+    /// The largest object the API hands back: `FileContent`'s modelled maximum
+    /// (`smithy_query(query="shape",shape="FileContent")` — `@length max 6291456`),
+    /// which is the largest content `PutFile` accepts.
+    const API_LIMIT: usize = 6 * 1024 * 1024;
+    /// What a read of a larger object is refused with.
+    const TOO_LARGE: &str = "This object exceeds the max size for retrieval via the API. Use the \
+                             git client to retrieve this file.";
+    let router = emulator();
+    let repository = "pushed-past-the-api-limit";
+    let created = ok(
+        &router,
+        "CreateRepository",
+        &json!({ "repositoryName": repository }),
+    )
+    .await;
+    let clone_url = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
+
+    // One commit carrying all three sizes, so one push puts every row's object in the
+    // repository. The bytes repeat so the pack stays small while the OBJECT does not.
+    let rows: [(&str, &str, usize, bool); 2] = [
+        ("well inside the limit", "small.bin", 1_024, true),
+        ("one byte past the limit", "over-the-limit.bin", API_LIMIT + 1, false),
+    ];
+    let contents: Vec<(String, Vec<u8>)> = rows
+        .iter()
+        .map(|(_, path, size, _)| {
+            (
+                (*path).to_string(),
+                (0..=255u8).cycle().take(*size).collect::<Vec<u8>>(),
+            )
+        })
+        .collect();
+    let files: BTreeMap<String, (String, Vec<u8>)> = contents
+        .iter()
+        .map(|(path, content)| (path.clone(), ("100644".to_string(), content.clone())))
+        .collect();
+    let (root, mut objects) = snapshot_objects(&files);
+    let commit_object = commit(&root, &[], "objects of every size");
+    let tip = id_of(&commit_object);
+    objects.push(commit_object);
+    let reply = rpc(
+        &router,
+        &clone_url,
+        "git-receive-pack",
+        push_body(
+            &[command(NULL_ID, &tip, "refs/heads/main", "report-status")],
+            &objects,
+        ),
+    )
+    .await;
+    let (report, _) = parse_pkts(&reply.body);
+    assert_eq!(
+        report,
+        vec!["unpack ok\n".to_string(), "ok refs/heads/main\n".to_string()],
+        "the push must be accepted: it is how an object past the API's limit gets in"
+    );
+
+    for ((case, path, size, served), (_, content)) in rows.iter().zip(contents.iter()) {
+        let blob_id = id_of(&blob(content));
+        if *served {
+            let read = ok(
+                &router,
+                "GetFile",
+                &json!({ "repositoryName": repository, "filePath": path }),
+            )
+            .await;
+            assert_eq!(
+                read.get("fileSize").and_then(Value::as_i64),
+                Some(*size as i64),
+                "case {case:?}: GetFile must serve the whole file, got {read}"
+            );
+            assert_eq!(
+                content_of(&read),
+                *content,
+                "case {case:?}: GetFile must serve the pushed bytes"
+            );
+            let got = ok(
+                &router,
+                "GetBlob",
+                &json!({ "repositoryName": repository, "blobId": blob_id }),
+            )
+            .await;
+            assert_eq!(
+                from_base64(&string_at(&got, "/content")),
+                *content,
+                "case {case:?}: GetBlob must serve the pushed bytes"
+            );
+        } else {
+            for (operation, body) in [
+                (
+                    "GetFile",
+                    json!({ "repositoryName": repository, "filePath": path }),
+                ),
+                (
+                    "GetBlob",
+                    json!({ "repositoryName": repository, "blobId": blob_id }),
+                ),
+            ] {
+                let (code, message) = error_with_message(&router, operation, &body, 400).await;
+                assert_eq!(
+                    code, "FileTooLargeException",
+                    "case {case:?}: {operation} of {size} bytes must be refused \
+                     FileTooLargeException, got {code:?} with {message:?}"
+                );
+                assert_eq!(
+                    message, TOO_LARGE,
+                    "case {case:?}: {operation} expected message {TOO_LARGE:?}, got {message:?}"
+                );
+            }
+        }
+    }
+
+    // And the git client the refusal points at DOES get every one of them: a clone
+    // serves the oversized object with its exact bytes.
+    let reply = rpc(
+        &router,
+        &clone_url,
+        "git-upload-pack",
+        fetch_body(std::slice::from_ref(&tip), &[]),
+    )
+    .await;
+    let (lines, packfile) = parse_fetch(&reply.body);
+    assert_eq!(lines, vec!["NAK\n".to_string()], "NAK precedes the pack");
+    let served: BTreeMap<String, Object> = unpack(&packfile)
+        .into_iter()
+        .map(|object| (id_of(&object), object))
+        .collect();
+    for (path, content) in &contents {
+        let blob_id = id_of(&blob(content));
+        let object = served
+            .get(&blob_id)
+            .unwrap_or_else(|| panic!("the clone must serve {path} as the blob {blob_id}"));
+        assert_eq!(
+            object.data, *content,
+            "the clone must serve {path}'s exact bytes"
+        );
+    }
 }

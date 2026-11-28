@@ -849,7 +849,11 @@ async fn a_comment_the_comparison_cannot_carry_is_refused_with_the_modeled_error
             "before version of a comparison with no before commit",
             post(json!({
                 "beforeCommitId": null,
-                "location": { "filePath": FILE_PATH, "relativeFileVersion": "BEFORE" }
+                "location": {
+                    "filePath": FILE_PATH,
+                    "filePosition": 1,
+                    "relativeFileVersion": "BEFORE",
+                }
             })),
             "InvalidRelativeFileVersionEnumException",
         ),

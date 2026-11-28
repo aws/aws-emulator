@@ -10,7 +10,9 @@
 //!    trust material of any kind, and the git transport answers there.
 //! 2. Every request to that transport is made with git credentials, and one that
 //!    presents none is answered `401` with a `WWW-Authenticate: Basic` challenge —
-//!    which is what makes a git client ask its credential helper for them.
+//!    which is what makes a git client ask its credential helper for them — while one
+//!    whose credentials the account never issued identifies nobody and is answered
+//!    `403`.
 //! 3. The principal those credentials speak for decides what the request may do:
 //!    `codecommit:GitPull` for a fetch, `codecommit:GitPush` for a push, each
 //!    evaluated against the identity-based policies in force on that principal.
@@ -527,7 +529,7 @@ async fn a_request_presenting_no_git_credential_is_challenged() {
         );
         assert_eq!(
             reply.challenge.as_deref(),
-            Some("Basic realm=\"CodeCommit\""),
+            Some("Basic realm=\"\""),
             "case {case:?}: a 401 must carry the challenge that makes a git client supply \
              credentials, got {:?}",
             reply.challenge

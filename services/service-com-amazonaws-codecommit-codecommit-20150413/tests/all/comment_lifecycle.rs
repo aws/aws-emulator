@@ -147,10 +147,15 @@ fn post_cases() -> Vec<PostCase> {
             label: "the first line of the after version",
             content: "line one changed".to_string(),
             with_before: true,
-            sent_location: Some(json!({ "filePath": PATH, "filePosition": 1 })),
+            sent_location: Some(json!({
+                "filePath": PATH,
+                "filePosition": 1,
+                "relativeFileVersion": "AFTER",
+            })),
             expected_location: Some(json!({
                 "filePath": PATH,
                 "filePosition": 1,
+                "relativeFileVersion": "AFTER",
             })),
         },
         PostCase {
@@ -175,12 +180,14 @@ fn post_cases() -> Vec<PostCase> {
             sent_location: Some(json!({
                 "filePath": format!("/{PATH}"),
                 "filePosition": AFTER_LINES,
+                "relativeFileVersion": "AFTER",
             })),
             // The path is reported in the form a git tree holds it, with the
             // leading separator removed.
             expected_location: Some(json!({
                 "filePath": PATH,
                 "filePosition": AFTER_LINES,
+                "relativeFileVersion": "AFTER",
             })),
         },
         PostCase {
@@ -494,7 +501,13 @@ async fn a_post_that_names_what_the_service_does_not_hold_is_refused() {
         },
         RefusalCase {
             label: "a position past the last line of the after version",
-            patch: json!({ "location": { "filePath": PATH, "filePosition": AFTER_LINES + 1 } }),
+            patch: json!({
+                "location": {
+                    "filePath": PATH,
+                    "filePosition": AFTER_LINES + 1,
+                    "relativeFileVersion": "AFTER",
+                },
+            }),
             expected: "InvalidFilePositionException",
         },
         RefusalCase {
@@ -553,7 +566,11 @@ async fn a_post_that_names_what_the_service_does_not_hold_is_refused() {
             "repositoryName": fixture.repository,
             "afterCommitId": fixture.after_commit,
             "content": "a comment",
-            "location": { "filePath": PATH, "relativeFileVersion": "BEFORE" },
+            "location": {
+                "filePath": PATH,
+                "filePosition": 1,
+                "relativeFileVersion": "BEFORE",
+            },
         }),
         400,
     )

@@ -89,7 +89,11 @@ fn cases() -> Vec<Case> {
         Case {
             label: "a multi-line comment on the first line of the after version",
             content: "multi\nline\ncomment".to_string(),
-            location: Some(json!({ "filePath": PATH, "filePosition": 1 })),
+            location: Some(json!({
+                "filePath": PATH,
+                "filePosition": 1,
+                "relativeFileVersion": "AFTER",
+            })),
             author: OTHER_ACCESS_KEY_ID,
             reacted: true,
         },

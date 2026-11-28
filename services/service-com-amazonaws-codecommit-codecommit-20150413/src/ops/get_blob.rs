@@ -220,9 +220,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        // `FileTooLargeException` is not reachable from here: every stored blob was
-        // written through a `fileContent` the model bounds at 6 MB, so no object this
-        // store holds exceeds the size a read would have to refuse.
+        // An object a git client pushed may be larger than the 6 MB `fileContent`
+        // the API accepts, and one past that bound is not served through the API at
+        // all: the read is refused, and the git transport is the way to its bytes.
+        if content.len() > crate::state::MAX_RETRIEVABLE_OBJECT_BYTES {
+            return Err(GetBlobErrorModeled::FileTooLargeException(FileTooLargeException {
+                message: Some(crate::state::OBJECT_TOO_LARGE_TO_RETRIEVE_MESSAGE.to_string()),
+            })
+            .into());
+        }
         Ok(GetBlobOutput {
             content: content.to_vec(),
         })
