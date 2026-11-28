@@ -11,18 +11,22 @@
 //! definition was accepted, and one naming more parallelism than a run can have bounds
 //! the iterations in flight no more tightly than the largest concurrency a run can have
 //! does — so the state runs under that ceiling, every iteration runs, and the state's
-//! result carries one entry per item in item order. Only a figure the state RESOLVES as
-//! it runs — a reference path into the execution's data, or an expression computing one
-//! — can name a bound no iteration count could be, and that fails the execution with
-//! `States.Runtime`, stating the figure as the whole number it was read as.
+//! result carries one entry per item in item order. A figure NO whole-number reading
+//! exists for — one past the 64-bit integer a stated bound is held in, and one past the
+//! integer the member itself carries where the state resolved the figure as it ran —
+//! names no bound the state can run under, and fails the execution with
+//! `States.Runtime`.
 //!
 //! The tables span what the rule generalises over: the figure the bound carries (the
 //! member's documented default of no limit, a limit under the item count, the ceiling
-//! itself, one past it, and figures past every integer form), how many items the state
-//! iterates, the FORM the bound is written in (a JSON literal, a reference path, a
-//! JSONata expression), and — for a Distributed Map, which reports its own concurrency
-//! back — what `DescribeMapRun` answers for a state that stated more than the modelled
-//! integer carries.
+//! itself, one past it, and the largest a 64-bit whole number carries), how many items
+//! the state iterates, the FORM the bound is written in (a JSON literal, a reference
+//! path, a JSONata expression), and — for a Distributed Map, which reports its own
+//! concurrency back — what `DescribeMapRun` answers for a state that stated more than
+//! the modelled integer carries.
+//!
+//! The run-time reading of a bound that is no whole number at all, and of a negative
+//! one, is `map_concurrency_runtime_range`'s own table.
 //!
 //! The harness (`Emulator`, `create_machine`, `start_execution`, `describe_execution`,
 //! `string`) is the one `state_machine_lifecycle` builds, and the Distributed Map
@@ -143,8 +147,8 @@ struct DeclaredRow {
 /// and produces one result per item in item order, whatever figure the bound carries.
 ///
 /// The rows differ along the figure — the member's documented default of no limit, a
-/// limit below the item count, the ceiling itself, the figure one past it, and figures
-/// past what a 64-bit and what any integer carries — and along how many items the state
+/// limit below the item count, the ceiling itself, the figure one past it, and the
+/// largest figure a 64-bit whole number carries — and along how many items the state
 /// iterates.
 #[tokio::test]
 async fn a_stated_map_concurrency_runs_every_item_whatever_the_figure() {
@@ -183,11 +187,6 @@ async fn a_stated_map_concurrency_runs_every_item_whatever_the_figure() {
             case: "the largest figure a 64-bit whole number carries",
             concurrency: json!(i64::MAX),
             items: 2,
-        },
-        DeclaredRow {
-            case: "a figure past what any integer carries, written as a JSON number",
-            concurrency: json!(1e21),
-            items: 1,
         },
     ];
 
@@ -228,14 +227,13 @@ async fn a_stated_map_concurrency_runs_every_item_whatever_the_figure() {
 // A figure the state resolves as it runs is held to the range
 // ---------------------------------------------------------------------------
 
-/// One row: the `Map` state, the execution input that resolves its concurrency, the
-/// member the diagnosis names, and the figure it states.
+/// One row: the `Map` state, the execution input that resolves its concurrency, and the
+/// diagnosis the cause ends with.
 struct ResolvedRow {
     case: &'static str,
     state: Value,
     input: String,
-    member: &'static str,
-    stated: &'static str,
+    diagnosis: String,
 }
 
 /// A `Map` state written in the other query language `QueryLanguage` selects, whose
@@ -257,10 +255,10 @@ fn jsonata_map(concurrency: String) -> Value {
     })
 }
 
-/// A concurrency the `Map` state RESOLVES as it runs is held to the range a run's
-/// concurrency carries: a figure outside it fails the execution with `States.Runtime`,
-/// and the cause names the member the definition wrote and states the figure as the
-/// whole number it was read as.
+/// A concurrency the `Map` state RESOLVES as it runs is held to the integer the member
+/// carries: a figure outside it fails the execution with `States.Runtime`, and the cause
+/// names the member the definition wrote, the figure as the whole number it was read as,
+/// and — for the reference-path form — the path it came from.
 ///
 /// The rows differ along the FORM the figure is resolved through (a reference path, a
 /// JSONata expression) and along what it resolves to (one past the ceiling, a figure far
@@ -272,29 +270,26 @@ async fn a_resolved_map_concurrency_outside_the_range_fails_the_execution() {
             case: "a path resolving to one past the largest concurrency a run can have",
             state: map_over_items(json!({ "MaxConcurrencyPath": "$.limit" })),
             input: json!({ "items": [{ "n": 1 }], "limit": CEILING + 1 }).to_string(),
-            member: "MaxConcurrencyPath",
-            stated: "2147483648",
+            diagnosis: referred_value("2147483648"),
         },
         ResolvedRow {
             case: "a path resolving far past it",
             state: map_over_items(json!({ "MaxConcurrencyPath": "$.limit" })),
             input: json!({ "items": [{ "n": 1 }], "limit": 1_000_000_000_000_i64 }).to_string(),
-            member: "MaxConcurrencyPath",
-            stated: "1000000000000",
+            diagnosis: referred_value("1000000000000"),
         },
         ResolvedRow {
             case: "a path resolving to a fraction",
             state: map_over_items(json!({ "MaxConcurrencyPath": "$.limit" })),
             input: json!({ "items": [{ "n": 1 }], "limit": 2.5 }).to_string(),
-            member: "MaxConcurrencyPath",
-            stated: "2.5",
+            diagnosis: referred_value("2.5"),
         },
         ResolvedRow {
             case: "a JSONata expression computing one past the largest concurrency",
             state: jsonata_map(format!("{{% {CEILING} + 1 %}}")),
             input: json!({ "items": [{ "n": 1 }] }).to_string(),
-            member: "MaxConcurrency",
-            stated: "2147483648",
+            diagnosis: "The MaxConcurrency field cannot be parsed as an integer value: 2147483648"
+                .to_string(),
         },
     ];
 
@@ -322,13 +317,9 @@ async fn a_resolved_map_concurrency_outside_the_range_fails_the_execution() {
             "case {case:?}: expected FAILED with {RUNTIME_ERROR}, got {described:?}"
         );
         let cause = string(&described, "cause");
-        let expected = format!(
-            "The value referenced by {} must be a whole number from 0 to {CEILING}, but the \
-             value was: {}",
-            row.member, row.stated
-        );
+        let expected = &row.diagnosis;
         assert!(
-            cause.ends_with(&expected),
+            cause.ends_with(expected.as_str()),
             "case {case:?}: expected a cause ending {expected:?}, got {cause:?}"
         );
         assert!(
@@ -337,6 +328,15 @@ async fn a_resolved_map_concurrency_outside_the_range_fails_the_execution() {
             "case {case:?}: expected the cause to name the state it happened in, got {cause:?}"
         );
     }
+}
+
+/// The diagnosis a `MaxConcurrencyPath` whose resolved value is no whole number the
+/// member carries reports, for a row whose path is `$.limit`.
+fn referred_value(stated: &str) -> String {
+    format!(
+        "The MaxConcurrencyPath field refers to value \"{stated}\" which is not a valid integer: \
+         $.limit"
+    )
 }
 
 // ---------------------------------------------------------------------------

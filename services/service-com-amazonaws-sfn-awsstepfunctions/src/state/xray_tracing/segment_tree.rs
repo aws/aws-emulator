@@ -50,8 +50,9 @@
 //! Nothing here is a second interpreter: every entity, instant and mark is read off the
 //! execution's own HISTORY ([`super::super::HistoryEvent`]) — the `<Type>StateEntered`
 //! and `<Type>StateExited` events a state writes, the `<Type>StateAborted` one it writes
-//! when the work around it was stopped, the `MapIteration*` events one iteration writes,
-//! and the hand-over and outcome events one attempt at a state's work writes — and the
+//! when another unit's failure stopped the work around it, the `MapIteration*` events one
+//! iteration writes, and the hand-over and outcome events one attempt at a state's work
+//! writes — and the
 //! NESTING is read off the definition that execution ran
 //! ([`super::super::RanConfiguration::definition`]), which is the one record of which
 //! branch or processor a state belongs to. A history that names a state the definition
@@ -535,7 +536,7 @@ impl Tree {
     /// A failure that says the state's work was STOPPED because a sibling unit's failure
     /// stopped it is not a fault of this state's own work: it is work that did not
     /// happen, which is what the trace reports as canceled — the same thing the
-    /// `<Type>StateAborted` event says about a state the stop caught in flight.
+    /// `<Type>StateAborted` event says about a state another unit's failure stopped.
     fn faulted(&mut self, name: &str, details: &EventDetails, at: SystemTime) {
         let Some(index) = self.occurrence(name) else {
             return;

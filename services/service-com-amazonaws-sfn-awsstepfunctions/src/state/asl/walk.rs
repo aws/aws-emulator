@@ -3295,48 +3295,9 @@ impl Interpreter<'_> {
         // hands each iteration a BATCH of its items rather than one item, and the
         // `ItemSelector` is applied to each item on the way into its batch.
         let batcher = state.get("ItemBatcher");
-        let resolved = self
-            .number_member(state, language, "MaxConcurrency", &effective, context, 0.0)
+        let concurrency = self
+            .map_concurrency(state, language, &effective, context)
             .map_err(|failure| failure.at(at))?;
-        // "MaxConcurrency ... an upper bound on how many invocations of the Iterator may
-        // run in parallel": a bound the DEFINITION states as a whole number is one the
-        // definition was accepted under, and a whole number past the largest concurrency
-        // a run can have ([`MAX_MAP_CONCURRENCY`], the range a Map Run reports its own
-        // through) bounds the iterations in flight no more tightly than that largest
-        // figure does — so the state RUNS, under that ceiling, which is the bound a
-        // definition naming a figure no item count reaches asked for.
-        //
-        // The range is a RUN-TIME test for a figure the state resolves as it runs
-        // instead: a `MaxConcurrencyPath` into the execution's data, or an expression
-        // computing one, carries whatever that run produced, which no definition could
-        // be held to, so a value outside the range names no bound this state can be run
-        // under and the state fails for it. The same holds for a figure that is not a
-        // whole number, which is no iteration count either way. The member the definition
-        // wrote is the one the diagnosis names, as everywhere else the two forms are
-        // alternatives.
-        let ceiling = MAX_MAP_CONCURRENCY as f64;
-        let stated_whole = state.get("MaxConcurrency").is_some_and(Value::is_number)
-            && resolved.fract() == 0.0;
-        let concurrency = if stated_whole {
-            resolved.min(ceiling)
-        } else if resolved > ceiling || resolved.fract() != 0.0 {
-            let wrote = match state.contains_key("MaxConcurrency") {
-                true => "MaxConcurrency",
-                false => "MaxConcurrencyPath",
-            };
-            return Err(runtime(referenced_value_must_be(
-                wrote,
-                &bounded_concurrency(),
-                // The figure as the value it was READ as: a whole number resolved into a
-                // member that carries whole numbers is stated as the whole number it is,
-                // and not as a fraction of one.
-                &intrinsics::json_number(resolved),
-            ))
-            .at(at));
-        } else {
-            resolved
-        };
-        let concurrency = concurrency as usize;
         let tolerated_count = self
             .number_member(
                 state,
@@ -4334,6 +4295,123 @@ impl Interpreter<'_> {
         Err(failure.at(at))
     }
 
+    /// How many of a `Map` state's items run AT ONCE: the bound the state's
+    /// `MaxConcurrency` states, or the one its `MaxConcurrencyPath` resolves to, as the
+    /// whole number the member carries. `0` is the member's documented default, "which
+    /// places no limit".
+    ///
+    /// "MaxConcurrency ... an upper bound on how many invocations of the Iterator may run
+    /// in parallel": the bound is READ as a whole number, and an execution whose bound is
+    /// no value such a reading exists for, or is a negative one, fails at that state for
+    /// it — a value that is no iteration count is not a bound to be guessed at, defaulted
+    /// or clamped.
+    ///
+    /// WHICH whole numbers can be read, and what is wrong when none can, follow from
+    /// WHERE the figure came from:
+    ///
+    /// * a figure the DEFINITION STATES is read as the 64-bit integer such a stated bound
+    ///   is held in ([`STATED_BOUND_CEILING`]): one inside that integer is a bound the
+    ///   definition was accepted under and bounds the iterations in flight, by itself or
+    ///   — past the largest concurrency a run can have ([`MAX_MAP_CONCURRENCY`], the
+    ///   range a Map Run reports its own through) — no more tightly than that ceiling
+    ///   does, so the state runs under the ceiling;
+    /// * a figure the state RESOLVED as it ran — a path into the execution's data, or an
+    ///   expression computing one — is that run's own, which no definition could be held
+    ///   to, so it is read as the integer the member itself carries
+    ///   ([`MAX_MAP_CONCURRENCY`]);
+    /// * a value no such reading exists for is reported as the parse failure of the
+    ///   member the definition wrote ([`field_not_an_integer`]), and one a REFERENCE PATH
+    ///   referred to names that path and the value beside it
+    ///   ([`path_value_not_an_integer`]), since what a reader follows back there is the
+    ///   execution's own data;
+    /// * a figure that WAS read and is negative is reported under the bound's own member
+    ///   whichever form named it ([`concurrency_cannot_be_negative`]), because what is
+    ///   wrong with it is the figure rather than where it was written.
+    fn map_concurrency(
+        &self,
+        state: &Map<String, Value>,
+        language: &'static str,
+        input: &Value,
+        context: &Value,
+    ) -> Result<usize, Failure> {
+        let path_member = format!("{CONCURRENCY_MEMBER}Path");
+        let (declared, path) = match (
+            state.get(CONCURRENCY_MEMBER),
+            state.get(path_member.as_str()),
+        ) {
+            (Some(declared), _) => (
+                // The member is a figure in both languages, so a JSONata expression
+                // written in it is held to that type.
+                self.typed_field(
+                    language,
+                    declared,
+                    CONCURRENCY_MEMBER,
+                    super::super::jsonata::Kind::Number,
+                    input,
+                    context,
+                )?,
+                None,
+            ),
+            (None, Some(Value::String(reference))) => (
+                member_path_value(&path_member, reference, input, context).map_err(runtime)?,
+                Some(reference.as_str()),
+            ),
+            (None, Some(other)) => {
+                return Err(runtime(format!(
+                    "'{path_member}' must be a JSONPath string, not {other}"
+                )));
+            }
+            // "Its default value is 0, which places no limit on concurrency": every item
+            // of a state that declares neither member runs at once.
+            (None, None) => return Ok(0),
+        };
+        // A value of another JSON type the DEFINITION wrote is no figure the member can
+        // carry at all, which is the definition's own type error and is reported as one.
+        // (A figure a path referred to is the run's own data, and is read below.)
+        if path.is_none() && !declared.is_number() {
+            return Err(self.invalid_field_value(
+                language,
+                state.get(CONCURRENCY_MEMBER),
+                CONCURRENCY_MEMBER,
+                NON_NEGATIVE_NUMBER,
+                &declared,
+            ));
+        }
+        // Which integer the figure is read as: the one a STATED bound is held in, or the
+        // member's own where the state resolved the figure as it ran.
+        let stated = path.is_none() && state.get(CONCURRENCY_MEMBER).is_some_and(Value::is_number);
+        let read = match stated {
+            true => stated_bound(&declared),
+            false => whole_number_below(&declared, RESOLVED_BOUND_CEILING),
+        };
+        let Some(bound) = read else {
+            return Err(match path {
+                Some(reference) => {
+                    runtime(path_value_not_an_integer(&path_member, &declared, reference))
+                }
+                None => runtime(field_not_an_integer(CONCURRENCY_MEMBER, &declared)),
+            });
+        };
+        // A bound past the largest concurrency a run can have bounds it no more tightly
+        // than that ceiling does, which only a STATED figure can be: the reading above
+        // admits no resolved figure past it.
+        Self::non_negative_bound(bound.min(MAX_MAP_CONCURRENCY as f64), &declared)
+    }
+
+    /// The concurrency `bound`, read off `declared`, as the count of items that run at
+    /// once — or the failure a NEGATIVE bound reports, under the bound's own member.
+    ///
+    /// "An upper bound on how many invocations of the Iterator may run in parallel":
+    /// there is no state that runs fewer than none of its items at a time, so a figure
+    /// that was read and is negative is no bound, whichever member the definition named
+    /// it in ([`concurrency_cannot_be_negative`]).
+    fn non_negative_bound(bound: f64, declared: &Value) -> Result<usize, Failure> {
+        if bound < 0.0 {
+            return Err(runtime(concurrency_cannot_be_negative(declared)));
+        }
+        Ok(bound as usize)
+    }
+
     /// A numeric member of a state, from the literal member or from its `*Path` form.
     ///
     /// A value that is not a figure the member accepts is reported under the member the
@@ -4399,6 +4477,49 @@ impl Interpreter<'_> {
                 )
             })
     }
+}
+
+/// The largest whole number ONE PAST the 64-bit integer a `MaxConcurrency` the
+/// DEFINITION states is read as, which is what bounds that reading ([`stated_bound`]).
+///
+/// It is stated as the figure one past the integer's own largest value, because that
+/// integer's largest value is not a figure a double holds exactly: a reading is bounded
+/// by being BELOW this one rather than by being at most the largest.
+const STATED_BOUND_CEILING: f64 = 9_223_372_036_854_775_808.0;
+
+/// The same bound for a concurrency the state RESOLVED as it ran, which is read as the
+/// integer the member itself carries ([`MAX_MAP_CONCURRENCY`]).
+const RESOLVED_BOUND_CEILING: f64 = MAX_MAP_CONCURRENCY as f64 + 1.0;
+
+/// The whole number a `MaxConcurrency` the DEFINITION STATES can be READ as, which is
+/// the 64-bit integer such a bound is held in; `None` for a figure outside it, and for
+/// one carrying a fraction.
+///
+/// A JSON number inside that integer is read as it was written; every other figure is
+/// read through the double it was parsed as ([`whole_number_below`]), which is exact for
+/// every whole number the integer holds.
+fn stated_bound(value: &Value) -> Option<f64> {
+    match value.as_i64() {
+        Some(bound) => Some(bound as f64),
+        None => whole_number_below(value, STATED_BOUND_CEILING),
+    }
+}
+
+/// The whole number `value` can be READ as, where the integer doing the reading holds
+/// every whole number below `ceiling` in magnitude; `None` for a value no such reading
+/// exists for — one of another JSON type, one carrying a fraction, and one whose
+/// magnitude that integer does not hold.
+///
+/// The bound is stated as the figure ONE PAST the largest the reading integer holds,
+/// because the largest value of such an integer is not always a figure a double holds
+/// exactly ([`STATED_BOUND_CEILING`]). The figure comes back as the double it was read
+/// from rather than as an integer type, for the same reason: the reading is only ever
+/// compared, clamped and counted with.
+fn whole_number_below(value: &Value, ceiling: f64) -> Option<f64> {
+    let number = value.as_f64()?;
+    let readable =
+        number.is_finite() && number.fract() == 0.0 && number < ceiling && number >= -ceiling;
+    readable.then_some(number)
 }
 
 /// The value the state member `member` selects through `path`, with a path that

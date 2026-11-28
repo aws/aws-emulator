@@ -5,11 +5,12 @@
 //! (`BatchGetTraces`), with Step Functions, AWS Lambda and AWS X-Ray on ONE engine.
 //!
 //! The RULE under test: **a run that has left the state it ends at has finished, so a
-//! service that still owes an execution's outcome reports that state as still running; and
-//! every state a stop catches still running is left unfinished — it records the event its
-//! own kind writes for work a stop prevented, ahead of the execution's own
-//! `ExecutionAborted`, and the trace of the run marks that state's subsegment `error` with
-//! a `Canceled` cause while the run's own segment reports a fault.**
+//! service that still owes an execution's outcome reports that state as still running;
+//! and the history of a stopped execution is TRUNCATED at every state the stop caught
+//! still running — each is entered and never left, no record of its own is written for
+//! it, and the execution's own `ExecutionAborted` is the only abort the history holds —
+//! while the trace of the run marks each of those states' subsegments `error` with a
+//! `Canceled` cause and the run's own segment reports a fault.**
 //!
 //! The rows differ along what the rule generalises over: the KIND of state the stop catches
 //! — each of the kinds `HistoryEventType` models an aborted event for — how that state came
@@ -384,15 +385,35 @@ fn cause_messages(entity: &Value) -> (Option<String>, Option<String>) {
 /// The type of every event of `events` that reports a state the stop caught in flight, in
 /// the order the history reports them.
 ///
-/// The type is the whole of what such an event reports: `HistoryEvent` declares a detail
-/// structure for the state entered and the state exited and none for a state that was
-/// aborted (`smithy_query(query="shape",shape="HistoryEvent")`), so WHICH state each one is
-/// about is read off the trace of the run instead, where the subsegment carries its name.
+/// A stopped execution's history holds NONE: `HistoryEventType` models a
+/// `<Type>StateAborted` value per kind of state that can still be running
+/// (`smithy_query(query="shape",shape="HistoryEventType")`), and the walk writes one for
+/// each state another unit's FAILURE stopped, but a stop truncates the history at the
+/// states it caught instead — so this is what such a history must not carry.
 fn aborted_events(events: &[Value]) -> Vec<String> {
     types(events)
         .into_iter()
         .filter(|event_type| event_type.ends_with(STATE_ABORTED_SUFFIX))
         .collect()
+}
+
+/// The name of every state `events` reports as ENTERED, and of every one it reports as
+/// LEFT: `HistoryEvent` carries a detail structure for each
+/// (`smithy_query(query="shape",shape="HistoryEvent")`), and the state's own name is the
+/// `name` member of it.
+fn entered_and_left(events: &[Value]) -> (Vec<String>, Vec<String>) {
+    let named = |member: &str| -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| event.get(member))
+            .filter_map(|details| details.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    };
+    (
+        named("stateEnteredEventDetails"),
+        named("stateExitedEventDetails"),
+    )
 }
 
 /// The `type` of each event, in the order the history reports them.
@@ -410,8 +431,9 @@ struct Row {
     case: &'static str,
     definition: Value,
     input: Value,
-    /// The event each state the stop catches records, innermost first.
-    aborted: Vec<&'static str>,
+    /// The states the stop catches still running, innermost first: each is entered and
+    /// never left, and records nothing of its own.
+    unfinished: Vec<&'static str>,
     /// Where in the segment tree each of those states is reported, in the same order.
     canceled: Vec<Vec<&'static str>>,
 }
@@ -424,13 +446,14 @@ fn held(name: &str) -> Value {
     })
 }
 
-/// Every state a stop catches in flight is left unfinished: the history records the event
-/// its own kind writes, and the trace of the run marks its subsegment.
+/// Every state a stop catches in flight is left unfinished: the history is truncated at it
+/// — it is entered, never left, and records nothing of its own — and the trace of the run
+/// marks its subsegment.
 ///
 /// The kinds are the catalog `HistoryEventType` declares an aborted event for —
 /// `WaitStateAborted`, `TaskStateAborted`, `MapStateAborted` and `ParallelStateAborted`
 /// (`smithy_query(query="shape",shape="HistoryEventType")`) — one row per kind, each with
-/// that kind of state really in flight.
+/// that kind of state really in flight, and none of those events is what a STOP writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
     let emulator = Emulator::new();
@@ -440,7 +463,7 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
             case: "a Wait the clock has not reached",
             definition: held("Hold"),
             input: json!({}),
-            aborted: vec!["WaitStateAborted"],
+            unfinished: vec!["Hold"],
             canceled: vec![vec!["Hold"]],
         },
         Row {
@@ -452,7 +475,7 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
                 },
             }),
             input: json!({}),
-            aborted: vec!["TaskStateAborted"],
+            unfinished: vec!["Work"],
             canceled: vec![vec!["Work"]],
         },
         Row {
@@ -468,7 +491,7 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
                 },
             }),
             input: json!({}),
-            aborted: vec!["WaitStateAborted", "ParallelStateAborted"],
+            unfinished: vec!["Hold", "Fan"],
             canceled: vec![vec!["Fan", "Branch 0", "Hold"], vec!["Fan"]],
         },
         Row {
@@ -486,7 +509,7 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
                 },
             }),
             input: json!({ "values": [1, 2] }),
-            aborted: vec!["WaitStateAborted", "MapStateAborted"],
+            unfinished: vec!["Hold", "Each"],
             canceled: vec![vec!["Each", "Iteration 0", "Hold"], vec!["Each"]],
         },
     ];
@@ -515,15 +538,26 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
             "case {case:?}: expected the stopped run to be {ABORTED}, got {stopped}"
         );
 
-        // The history reports every state the stop caught, innermost first, and then the
-        // end of the execution itself.
+        // The history is truncated at every state the stop caught: each was entered and
+        // is never left, nothing of its own is recorded for it, and the end of the
+        // execution itself is the one abort the history holds.
         let events = emulator.history(&execution).await;
-        assert_eq!(
-            aborted_events(&events),
-            row.aborted,
-            "case {case:?}: expected the states the stop caught to record {:?}, got {events:?}",
-            row.aborted
+        assert!(
+            aborted_events(&events).is_empty(),
+            "case {case:?}: expected the stop to record no per-state abort, got {events:?}"
         );
+        let (entered, left) = entered_and_left(&events);
+        for state in &row.unfinished {
+            assert!(
+                entered.contains(&(*state).to_string()),
+                "case {case:?}: expected {state:?} to have been entered, got {entered:?}"
+            );
+            assert!(
+                !left.contains(&(*state).to_string()),
+                "case {case:?}: expected the stopped run never to report {state:?} as left, got \
+                 {left:?}"
+            );
+        }
         assert_eq!(
             types(&events).last().map(String::as_str),
             Some(EXECUTION_ABORTED),
@@ -563,7 +597,8 @@ async fn a_stop_leaves_every_state_it_catches_in_flight_unfinished() {
 
 /// A `Task` whose work was a CALL to another service is in flight for as long as the
 /// execution's own outcome is owed: a stop that lands then catches that task, so the run
-/// never reports it as left, the history records it as caught, and the trace marks it.
+/// never reports it as left, the history holds no record of its own for it, and the trace
+/// marks it.
 ///
 /// This is the rule over the state kind whose work leaves this service: the call is made
 /// and answered inside the start, and the state the run ends at is reported as left only
@@ -625,10 +660,10 @@ async fn a_stop_catches_the_task_whose_outcome_the_run_still_owes() {
         !reported.iter().any(|event| event == "TaskStateExited"),
         "case {case:?}: expected the stopped run never to report the task as left, got {events:?}"
     );
-    assert_eq!(
-        aborted_events(&events),
-        vec!["TaskStateAborted"],
-        "case {case:?}: expected the task the stop caught to be recorded, got {events:?}"
+    assert!(
+        aborted_events(&events).is_empty(),
+        "case {case:?}: expected the stop to record no per-state abort for the task, got \
+         {events:?}"
     );
     assert_eq!(
         reported.last().map(String::as_str),

@@ -400,6 +400,119 @@ fn express_callback_refusal(name: &str, entered_at: i64) -> Failure {
     runtime(executing_state(name, entered_at, EXPRESS_CALLBACK_UNSUPPORTED))
 }
 
+/// The clause that follows the member's own name in the diagnosis of a member whose
+/// value cannot be read as the WHOLE NUMBER that member carries
+/// ([`field_not_an_integer`]).
+///
+/// RECORDED text: a field holding a count is read as the integer it holds, so a value
+/// that integer cannot be read from — one too large for it, or no whole number at all —
+/// is reported as a parse failure of that field, with the offending value after the
+/// clause.
+const NOT_AN_INTEGER_CLAUSE: &str = " field cannot be parsed as an integer value: ";
+
+/// The clause that follows the member's own name in the diagnosis of a `*Path` member
+/// whose path RESOLVED to a value the member cannot be read from, and the clause that
+/// follows that value ([`path_value_not_an_integer`]).
+///
+/// RECORDED text: the member is a reference path, so the sentence states the value the
+/// path referred to, in quotes, and then the path itself — what a reader follows back is
+/// the data the execution ran on as much as the field.
+const REFERS_TO_VALUE_CLAUSE: &str = " field refers to value \"";
+const NOT_A_VALID_INTEGER_CLAUSE: &str = "\" which is not a valid integer: ";
+
+/// The diagnosis for the member `member`, written as a figure of the definition's own —
+/// a literal, or an expression the state computes in it — whose value the whole number
+/// that member carries cannot be read from: the member, and the value as it was read.
+///
+/// A value of the right JSON type the field cannot READ is a different failure from a
+/// value of another type ([`referenced_value_must_be`]) and from a figure that WAS read
+/// and the member does not allow ([`concurrency_cannot_be_negative`]), so each is worded
+/// as what it is: a client classifying a [`RUNTIME_ERROR`] by its cause acts on which of
+/// the three the definition made. The state names itself around the whole of it
+/// ([`executing_state`], through [`names_its_state`]).
+pub(super) fn field_not_an_integer(member: &str, value: &Value) -> String {
+    format!(
+        "{PARAMETER_OPENING}{member}{NOT_AN_INTEGER_CLAUSE}{}",
+        stated_value(value)
+    )
+}
+
+/// The diagnosis for the `*Path` member `member`, written as the reference path `path`,
+/// whose resolved value the whole number that member carries cannot be read from: the
+/// member, the value the path referred to, and the path as the definition wrote it.
+///
+/// The PATH form is worded differently from the literal one ([`field_not_an_integer`])
+/// because what a reader has to be told differs: the value is the execution's own data
+/// rather than the definition's, so the sentence quotes it and says which path it came
+/// from. The state names itself around the whole of it ([`executing_state`], through
+/// [`names_its_state`]).
+pub(super) fn path_value_not_an_integer(member: &str, value: &Value, path: &str) -> String {
+    format!(
+        "{PARAMETER_OPENING}{member}{REFERS_TO_VALUE_CLAUSE}{}{NOT_A_VALID_INTEGER_CLAUSE}{path}",
+        stated_value(value)
+    )
+}
+
+/// The member a `Map` state's concurrency bound is held under, whichever of the two
+/// forms the definition wrote it in: the bound itself is `MaxConcurrency`, and a
+/// `MaxConcurrencyPath` is a way of naming its value.
+pub(super) const CONCURRENCY_MEMBER: &str = "MaxConcurrency";
+
+/// The clause that follows [`CONCURRENCY_MEMBER`] in the diagnosis of a concurrency
+/// bound that WAS read and is negative ([`concurrency_cannot_be_negative`]).
+const CANNOT_BE_NEGATIVE_CLAUSE: &str = " cannot be negative but was: ";
+
+/// The diagnosis for a `Map` state's concurrency bound that was read as the whole number
+/// the member carries and is NEGATIVE: the bound's own member, and the figure read.
+///
+/// RECORDED text: it names the bound (`MaxConcurrency`) and not the member the
+/// definition wrote, because a figure that was read is a figure of the BOUND however it
+/// was named — what is wrong with it is that no state can run fewer than no iterations
+/// at once. The state names itself around it ([`executing_state`], through
+/// [`names_its_state`]).
+pub(super) fn concurrency_cannot_be_negative(value: &Value) -> String {
+    format!(
+        "{CONCURRENCY_MEMBER}{CANNOT_BE_NEGATIVE_CLAUSE}{}",
+        stated_value(value)
+    )
+}
+
+/// Whether `cause` is the diagnosis of a negative concurrency bound, which names the
+/// bound's own member first and so carries no fixed opening of its own
+/// ([`names_its_state`]).
+fn states_a_negative_bound(cause: &str) -> bool {
+    cause
+        .strip_prefix(CONCURRENCY_MEMBER)
+        .is_some_and(|rest| rest.starts_with(CANNOT_BE_NEGATIVE_CLAUSE))
+}
+
+/// A value a diagnosis states as the one a member carried, rendered the way the
+/// service's own sentences state it.
+///
+/// A whole number is stated as the whole number it is, whatever its magnitude — a figure
+/// a member holding whole numbers was read from is never stated as a fraction of one,
+/// and never in an exponent form the definition did not write. A string is stated as its
+/// own text, because the sentence quotes it where it quotes anything; every other value
+/// is stated as the JSON it is.
+pub(super) fn stated_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        _ => match value.as_f64() {
+            // Only a figure no integer type carries is rendered from its double: a
+            // whole number inside those types is already written exactly.
+            Some(number)
+                if !value.is_i64()
+                    && !value.is_u64()
+                    && number.is_finite()
+                    && number.fract() == 0.0 =>
+            {
+                format!("{number:.0}")
+            }
+            _ => value.to_string(),
+        },
+    }
+}
+
 /// How this service reports a diagnosis the interpreter raised WHILE EXECUTING a
 /// state: the state's own name, the id of the history event that state was ENTERED at,
 /// and then the diagnosis itself.
@@ -701,16 +814,10 @@ pub(super) const NON_NEGATIVE_NUMBER: &str = "a non-negative number";
 /// on the wire — `MaxConcurrency` (range 0..), the field a Map Run reports its own
 /// concurrency through — so a figure past it bounds the iterations in flight no more
 /// tightly than this one does. A bound the definition STATES past it is run under this
-/// ceiling; a figure resolved past it as the state runs names no bound the state can be
-/// run under at all.
+/// ceiling; a figure resolved past it as the state runs is no value the integer that
+/// member carries can be read from, so the state fails for it
+/// ([`path_value_not_an_integer`]).
 pub const MAX_MAP_CONCURRENCY: i64 = i32::MAX as i64;
-
-/// What a `Map` state's `MaxConcurrency` must carry where the state RESOLVES it as it
-/// runs: "an upper bound on how many invocations of the Iterator may run in parallel",
-/// inside the range the member carries ([`MAX_MAP_CONCURRENCY`]).
-pub(super) fn bounded_concurrency() -> String {
-    format!("a whole number from 0 to {MAX_MAP_CONCURRENCY}")
-}
 
 /// How [`referenced_value_must_be_a_string`] opens, which is what tells it from every
 /// other cause ([`names_its_state`]).
@@ -802,6 +909,7 @@ fn names_its_state(cause: &str) -> bool {
         || cause.starts_with(super::integration::UNUSABLE_PARAMETERS_OPENING)
         || (cause.starts_with(ACTIVITY_MISSING_OPENING)
             && cause.ends_with(ACTIVITY_MISSING_CLOSING))
+        || states_a_negative_bound(cause)
         || names_a_parameter(cause)
 }
 
@@ -829,6 +937,8 @@ const MEMBER_CLAUSES: &[&str] = &[
     NO_INPUT_VALUE_CLAUSE,
     NOT_A_LONG_CLAUSE,
     NOT_AN_INSTANT_CLAUSE,
+    NOT_AN_INTEGER_CLAUSE,
+    REFERS_TO_VALUE_CLAUSE,
 ];
 
 /// How the diagnosis of a PAYLOAD-TEMPLATE member whose path could not be found opens
@@ -2024,9 +2134,10 @@ pub const SIBLING_STOP_CAUSE: &str =
 /// `Choice`, a `Succeed` and a `Fail` leave in the same instant they are entered.
 ///
 /// Read by the walk, which writes one for every state a SIBLING unit's failure stopped
-/// ([`Interpreter::abort_units`]), and by the stop of an execution, which writes one for
-/// every state it caught in flight ([`super::in_flight::states_in_flight`]): the two are
-/// the same fact about the same state, so they name the event through one reading.
+/// ([`Interpreter::abort_units`]): the unit that failed is reported by its own events and
+/// the work it stopped by these, so a reader of the history can tell the two apart. A
+/// state that a `StopExecution` catches in flight records none — such a history is
+/// truncated at that state ([`super::in_flight`]).
 pub(crate) fn aborted_event(state_type: &str) -> Option<&'static str> {
     match state_type {
         "Wait" => Some("WaitStateAborted"),
@@ -2036,11 +2147,6 @@ pub(crate) fn aborted_event(state_type: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
-/// The bytes the longest event type [`aborted_event`] answers with holds, which the
-/// reserve a running execution holds for its own stop is measured with
-/// ([`super::STOP_RESERVE_BYTES`]).
-pub const MAX_ABORTED_EVENT_BYTES: usize = "ParallelStateAborted".len();
 
 /// The `$$.Map.Item` of the enclosing `Map` iteration, if the walk is inside one.
 #[derive(Debug, Clone, Default)]

@@ -3137,28 +3137,14 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
         execution.stop_date = Some(now);
         execution.error = error;
         execution.cause = cause;
-        // Every state the run had ENTERED and not left was still doing its work when the
-        // stop reached it, and now never will: each records the event its own kind writes
-        // for work a stop prevented, innermost first — the same events a state the
-        // failure of a sibling unit stops records ([`super::in_flight`]). They go in
-        // BEFORE the execution's own event, because the work stopped before the
-        // execution ended, and they are what tells a state the stop caught from one that
-        // finished — in the history, and in the trace of the run built from it.
+        // The history of a stopped execution is TRUNCATED at the state the stop caught:
+        // the state the run was inside was entered and is never left, and the stop adds
+        // no record of its own about that state ([`super::in_flight`]) — the end of the
+        // EXECUTION is the one abort the history holds. What tells a state the stop
+        // caught from one that finished is therefore the exit its history does not hold,
+        // which is also what the trace of the run reads it off
+        // ([`super::xray_tracing`]).
         //
-        // They are written into the room that is left BESIDE the execution's own event,
-        // because [`MAX_HISTORY_EVENTS`] bounds the stored history whoever appends to it:
-        // the history of a stopped execution must still END on the stop, never on a state
-        // event while the record reports a terminal status — the same invariant
-        // [`Execution::apply_pending`] keeps for an outcome the clock made due. A state
-        // no event was left room for is still reported as the unfinished work it is, by
-        // the exit its history does not hold.
-        let room = MAX_HISTORY_EVENTS.saturating_sub(execution.history.len().saturating_add(1));
-        for (event_type, state_name) in super::in_flight::states_in_flight(&execution.history)
-            .into_iter()
-            .take(room)
-        {
-            execution.push_state_event(event_type, &state_name, now, EventDetails::default());
-        }
         // The event carries the error and the cause the STOP reported, so the history
         // keeps them whatever a later attempt of this execution computes.
         execution.push_detailed_event(

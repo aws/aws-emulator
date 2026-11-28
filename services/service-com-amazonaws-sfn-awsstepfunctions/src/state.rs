@@ -808,10 +808,9 @@ pub const MAX_HISTORY_EVENTS: usize = asl::MAX_HISTORY_EVENTS;
 /// admission is the ONLY place the store grows and [`MAX_STORE_BYTES`] bounds what
 /// is retained at every instant.
 ///
-/// The events the stop writes for the states it catches IN FLIGHT are reserved beside
-/// this, against the history that holds those states' entries
-/// ([`in_flight::stop_reserve_bytes`]), because how many there are is a fact of the run
-/// rather than a constant.
+/// A stop writes nothing else: the states it catches in flight are reported by the exits
+/// its history does not hold rather than by records of their own ([`in_flight`]), so this
+/// constant is the whole of what a stop can add.
 pub const STOP_RESERVE_BYTES: usize = 2 * (asl::MAX_ERROR_BYTES + asl::MAX_CAUSE_BYTES)
     + std::mem::size_of::<HistoryEvent>()
     + EVENT_EXECUTION_ABORTED.len();
@@ -2245,16 +2244,15 @@ impl Execution {
             + self.redrive_step.as_ref().map_or(0, asl::RedriveStep::measure)
             + self.pending.as_ref().map_or(0, PendingOutcome::measure)
             // A running execution can still be stopped, and a stop writes a
-            // caller-sized `error` and `cause` plus one event of its own, and one event
-            // for every state it catches in flight. Those bytes are RESERVED here, at
-            // admission, so no later write can take the store past
-            // [`MAX_STORE_BYTES`]: once the execution is terminal the reserve is
+            // caller-sized `error` and `cause` plus one event of its own. Those bytes
+            // are RESERVED here, at admission, so no later write can take the store
+            // past [`MAX_STORE_BYTES`]: once the execution is terminal the reserve is
             // released and what the stop actually wrote is counted, which is never
             // more than the reserve.
             + if self.is_terminal() {
                 0
             } else {
-                STOP_RESERVE_BYTES + in_flight::stop_reserve_bytes(&self.history)
+                STOP_RESERVE_BYTES
             }
             // The page cursors a read of this history may hand out are RESERVED here
             // too, and in full: the list is capped at [`MAX_HISTORY_PAGE_CURSORS`],

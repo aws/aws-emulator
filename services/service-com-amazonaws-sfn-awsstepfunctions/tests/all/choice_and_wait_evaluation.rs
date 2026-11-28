@@ -475,7 +475,9 @@ async fn a_state_members_failure_names_the_member_the_definition_wrote() {
     // the definition WRITES outside the bound the language documents for it is refused
     // at the create instead (`definition_static_rules` is that rule), so no row here
     // writes one. (The member catalog is the Amazon States Language's own for each
-    // state type.)
+    // state type.) A `Map` state's concurrency that WAS read and is negative is reported
+    // under the bound itself whichever member named it, so that class is
+    // `map_concurrency_runtime_range`'s rather than this table's.
     let rows: Vec<(&str, Value, String, &str, &str)> = vec![
         (
             "SecondsPath resolving to a negative figure",
@@ -548,9 +550,9 @@ async fn a_state_members_failure_names_the_member_the_definition_wrote() {
             "TimestampPath",
         ),
         (
-            "a Map state's MaxConcurrencyPath resolving to a negative figure",
+            "a Map state's MaxConcurrencyPath resolving to a fraction",
             map_state(json!({"MaxConcurrencyPath":"$.c"})),
-            r#"{"items":[1],"c":-1}"#.to_string(),
+            r#"{"items":[1],"c":1.5}"#.to_string(),
             "MaxConcurrencyPath",
             "MaxConcurrency",
         ),
