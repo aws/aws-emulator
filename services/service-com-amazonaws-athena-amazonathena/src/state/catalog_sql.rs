@@ -380,15 +380,17 @@ impl Failure {
     /// The statement applies an operator to operands of types no such operator is defined
     /// between.
     ///
-    /// Athena's own class for a statement its TYPE ANALYSIS refuses, worded like its other
-    /// analysis failures: the `TYPE_MISMATCH: ` prefix and "Cannot apply operator: " are
-    /// fixed text, the two types are the ones the catalog and the statement's own literals
-    /// fix, the operator is the one the statement wrote, and the line and column are where it
-    /// wrote it.
+    /// Athena's own class for a statement its TYPE ANALYSIS refuses, worded the way its
+    /// engine words an operator it has no signature for: the `TYPE_MISMATCH: ` prefix, the
+    /// `line <l>:<c>: ` locator and the clause [`OPERATOR_NOT_APPLICABLE`] are fixed text,
+    /// the operator is the one the statement wrote, QUOTED, and the operand types follow it
+    /// in the order the operands were written, separated by a comma and a space — the two
+    /// types being the ones the catalog and the statement's own literals fix, and the line
+    /// and column where the statement wrote the operator.
     pub fn type_mismatch(at: Position, mismatch: &expression_types::Mismatch) -> Self {
         Self::user(format!(
-            "{TYPE_MISMATCH}: line {}:{}: Cannot apply operator: {} {} {}",
-            at.line, at.column, mismatch.left, mismatch.operator, mismatch.right
+            "{TYPE_MISMATCH}: line {}:{}: '{}' {OPERATOR_NOT_APPLICABLE} {}, {}",
+            at.line, at.column, mismatch.operator, mismatch.left, mismatch.right
         ))
     }
 
@@ -1694,6 +1696,12 @@ const COLUMN_NOT_FOUND: &str = "COLUMN_NOT_FOUND";
 /// What Athena's message for a statement its TYPE ANALYSIS refuses opens with: the class of
 /// an operator applied to operands no such operator is defined between.
 const TYPE_MISMATCH: &str = "TYPE_MISMATCH";
+
+/// What Athena's message for an operator it has no signature for says between the operator
+/// and the operand types: the clause its engine words that condition in. Fixed text, with
+/// the quoted operator in front of it and the operand types after it
+/// ([`Failure::type_mismatch`]).
+const OPERATOR_NOT_APPLICABLE: &str = "cannot be applied to";
 
 /// What Athena's message for a CAST it could not perform opens with: the class of a value
 /// that is not a value of the type the cast names. The engine itself raises the message, in

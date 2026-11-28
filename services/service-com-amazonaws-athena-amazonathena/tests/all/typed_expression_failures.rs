@@ -62,42 +62,42 @@ async fn arithmetic_across_a_number_and_character_data_fails_the_query() {
         (
             "a number column plus a character column",
             format!("SELECT id + name AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:11: Cannot apply operator: integer + varchar",
+            "TYPE_MISMATCH: line 1:11: '+' cannot be applied to integer, varchar",
         ),
         (
             "the two the other way round",
             format!("SELECT name + id AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:13: Cannot apply operator: varchar + integer",
+            "TYPE_MISMATCH: line 1:13: '+' cannot be applied to varchar, integer",
         ),
         (
             "a subtraction",
             format!("SELECT id - name AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:11: Cannot apply operator: integer - varchar",
+            "TYPE_MISMATCH: line 1:11: '-' cannot be applied to integer, varchar",
         ),
         (
             "a multiplication of an approximate number",
             format!("SELECT amount * name AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:15: Cannot apply operator: double * varchar",
+            "TYPE_MISMATCH: line 1:15: '*' cannot be applied to double, varchar",
         ),
         (
             "a division",
             format!("SELECT id / name AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:11: Cannot apply operator: integer / varchar",
+            "TYPE_MISMATCH: line 1:11: '/' cannot be applied to integer, varchar",
         ),
         (
             "a remainder",
             format!("SELECT id % name AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:11: Cannot apply operator: integer % varchar",
+            "TYPE_MISMATCH: line 1:11: '%' cannot be applied to integer, varchar",
         ),
         (
             "a character column and a number the statement wrote",
             format!("SELECT name + 1 AS bad FROM {TABLE}"),
-            "TYPE_MISMATCH: line 1:13: Cannot apply operator: varchar + integer",
+            "TYPE_MISMATCH: line 1:13: '+' cannot be applied to varchar, integer",
         ),
         (
             "the operator in a predicate rather than in the select list",
             format!("SELECT id FROM {TABLE} WHERE id + name > 2"),
-            "TYPE_MISMATCH: line 1:34: Cannot apply operator: integer + varchar",
+            "TYPE_MISMATCH: line 1:34: '+' cannot be applied to integer, varchar",
         ),
     ];
 
