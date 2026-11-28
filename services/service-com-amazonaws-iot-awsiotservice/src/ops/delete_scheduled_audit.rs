@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteScheduledAudit
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteScheduledAudit`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteScheduledAudit::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Deletes a scheduled audit.
+//!
+//! The name is the schedule's identity — the model binds it as the `@httpLabel` of
+//! `/audit/scheduledaudits/{scheduledAuditName}` and it keys the store
+//! ([`crate::state::ScheduledAudit`]) — so the delete removes that ONE record and leaves
+//! every other schedule as it was. A removed record is gone for every reader of the store
+//! rather than merely flagged, so `DescribeScheduledAudit`, `ListScheduledAudits` and the
+//! tag plane all stop reporting it, and the name is free for a later create.
+//!
+//! A `scheduledAuditName` the account holds no scheduled audit under is the modelled
+//! `ResourceNotFoundException` (HTTP 404) rather than a hollow success, stated in the one
+//! sentence every reader and writer of a single scheduled audit refuses a missing name
+//! with ([`crate::state::missing_scheduled_audit_message`]).
 //!
 //! ## Shape of an operation
 //!
@@ -102,6 +107,34 @@ impl From<DeleteScheduledAuditErrorModeled> for DeleteScheduledAuditError {
     }
 }
 
+/// Record this state-changing call for attribution: the operation, the identity the
+/// request PRESENTED (the SigV4 access key id, a public identifier and never a secret),
+/// the request target, the schedule the call named and how the call ended.
+///
+/// A delete is the one call that makes a scheduled audit stop existing, so without a
+/// record nothing about it is observable afterwards — the schedule it removed is gone.
+/// Every request-derived field goes through [`crate::state::audit_field`], which bounds it
+/// and strips the control characters that would otherwise forge a second record; the
+/// subscriber supplies the timestamp.
+fn audit(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    scheduled_audit_name: &str,
+    outcome: &'static str,
+) {
+    let parts = ctx.parts();
+    ::tracing::info!(
+        target: "emulator::audit",
+        service = ctx.identity().signing_name(),
+        operation = "DeleteScheduledAudit",
+        access_key_id = %crate::state::audit_field(&::engine::extract_akid(&parts.headers)),
+        request_target =
+            %crate::state::audit_field(&format!("{} {}", parts.method, parts.uri.path())),
+        scheduled_audit_name = %crate::state::audit_field(scheduled_audit_name),
+        outcome,
+        "state-changing operation"
+    );
+}
+
 /// The `DeleteScheduledAudit` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -138,18 +171,54 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteScheduledAudit` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteScheduledAuditErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteScheduledAudit"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeleteScheduledAuditErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        // "Deletes a scheduled audit": the name is the schedule's identity and its key in
+        // the scheduled-audit store, so deleting it is removing that one record — nothing
+        // about the request's region takes part, because the name is the key — and the
+        // record is removed outright, so every reader of the store stops reporting it.
+        let removed = state
+            .lock()
+            .scheduled_audits
+            .remove(&input.scheduled_audit_name);
+
+        // What the call DID, which is the one thing a later reader cannot recover: a
+        // removed schedule leaves nothing behind to be read.
+        audit(
+            ctx,
+            &input.scheduled_audit_name,
+            if removed.is_some() {
+                "deleted"
+            } else {
+                "no-such-scheduled-audit"
+            },
+        );
+
+        // A name the account holds no scheduled audit under is refused rather than
+        // answered with a hollow success: the operation models `ResourceNotFoundException`
+        // ("The specified resource does not exist", HTTP 404), and the message is the one
+        // sentence every reader of a single scheduled audit refuses a missing name with,
+        // with the name taken from the request.
+        if removed.is_none() {
+            return Err(
+                DeleteScheduledAuditErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::missing_scheduled_audit_message(
+                            &input.scheduled_audit_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `DeleteScheduledAuditResponse` models no members: a successful delete reports
+        // nothing, and that the schedule is gone is read back through
+        // `DescribeScheduledAudit` and `ListScheduledAudits`.
+        Ok(DeleteScheduledAuditOutput {})
     }
 }
