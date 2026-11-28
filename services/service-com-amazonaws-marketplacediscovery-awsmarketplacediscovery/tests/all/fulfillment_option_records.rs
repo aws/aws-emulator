@@ -46,7 +46,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use service_com_amazonaws_marketplacediscovery_awsmarketplacediscovery::state::category_id;
+use service_com_amazonaws_marketplacediscovery_awsmarketplacediscovery::state::{
+    category_id, saas_page_url, SaasPage,
+};
 
 use crate::catalog_drilldown::{array, ok, router, text, whole_catalog};
 
@@ -475,15 +477,15 @@ const ENDPOINT_BASES: [&str; 4] = [
 /// because nothing serves a fetch of one.
 const UNSERVED_HOSTS: [&str; 4] = ["example.com", ".amazonaws.com", ".api.aws", ".on.aws"];
 
-/// The optional URL members of a SaaS option, with the last path segment of the address each
-/// one publishes.
+/// The optional URL members of a SaaS option, with the page each one publishes the address
+/// of.
 ///
 /// Source: `smithy_query(query="shape",shape="SaasFulfillmentOption")` — `fulfillmentUrl`
 /// ("The URL of the seller's software registration landing page") and `launchUrl` ("The URL
 /// that a buyer uses to launch the seller's SaaS product"), both optional.
-const PUBLISHED_PAGES: [(&str, &str); 2] = [
-    ("fulfillmentUrl", "register"),
-    ("launchUrl", "launch"),
+const PUBLISHED_PAGES: [(&str, SaasPage); 2] = [
+    ("fulfillmentUrl", SaasPage::Registration),
+    ("launchUrl", SaasPage::Launch),
 ];
 
 /// The path prefix every address this service publishes for a fulfillment option carries:
@@ -596,8 +598,12 @@ async fn a_saas_option_publishes_each_page_its_record_names_on_this_emulators_en
         for (product_id, _, option) in &options {
             let option_id = text(option, "fulfillmentOptionId");
             let quick_launch = text(option, "quickLaunch");
-            for (member, segment) in PUBLISHED_PAGES {
-                let address = format!("{base}{PLANE_PREFIX}/{option_id}/{segment}");
+            for (member, page_kind) in PUBLISHED_PAGES {
+                // The address this service publishes for that page, composed through the
+                // service's own ONE statement of the layout — the address carries the
+                // authenticator this process minted for the option
+                // (`state::media_address`), which only that statement can produce.
+                let address = saas_page_url(base, &option_id, page_kind);
                 let Some(published) = option.get(member).and_then(Value::as_str) else {
                     // The record names no such page, so no member announces one — and the
                     // address it would have is served as nothing.
@@ -880,7 +886,7 @@ async fn a_published_address_names_the_authority_the_request_arrived_on() {
                 .unwrap_or_default();
             assert_eq!(
                 published,
-                format!("{expected_base}{PLANE_PREFIX}/{option_id}/register"),
+                saas_page_url(&expected_base, &option_id, SaasPage::Registration),
                 "case dialled {host}: expected the page announced on the authority this request \
                  arrived on, got {published:?}"
             );

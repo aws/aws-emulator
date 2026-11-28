@@ -42,6 +42,7 @@ pub struct GetListingOutput {
     pub seller_engagements: Vec<SellerEngagement>,
     pub short_description: String,
     pub use_cases: Vec<UseCaseEntry>,
+    pub purchase_indicators: Vec<PurchaseIndicator>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#ListingAssociatedEntity")]

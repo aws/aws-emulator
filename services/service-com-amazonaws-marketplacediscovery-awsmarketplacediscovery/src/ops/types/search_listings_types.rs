@@ -47,11 +47,65 @@ pub struct ListingSummary {
     pub pricing_models: Vec<PricingModel>,
     pub pricing_units: Vec<PricingUnit>,
     pub associated_entities: Vec<ListingSummaryAssociatedEntity>,
+    pub trust_center_summary: Option<TrustCenterSummary>,
+    pub case_studies_summary: Option<CaseStudiesSummary>,
+    pub use_case_summary: Option<UseCaseSummary>,
+    pub seller_engagements: Option<Vec<SellerEngagement>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#ListingSummaryAssociatedEntity")]
 #[derive(Debug, Clone, Default)]
 pub struct ListingSummaryAssociatedEntity {
     pub product: Option<ProductInformation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#TrustCenterSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustCenterSummary {
+    pub source_summaries: Vec<TrustCenterSourceSummary>,
+    pub certification_summaries: Vec<TrustCenterCertificationSummary>,
+    pub total_certification_count: i64,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#TrustCenterSourceSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustCenterSourceSummary {
+    pub content_type: String,
+    pub value: String,
+    pub display_name: Option<String>,
+    pub provider: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#TrustCenterCertificationSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustCenterCertificationSummary {
+    pub certification_type: String,
+    pub display_name: String,
+    pub logo_url: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#CaseStudiesSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct CaseStudiesSummary {
+    pub case_study_count: i64,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#UseCaseSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct UseCaseSummary {
+    pub use_cases: Vec<UseCaseSummaryEntry>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#UseCaseSummaryEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct UseCaseSummaryEntry {
+    pub use_case: UseCaseInformation,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#UseCaseInformation")]
+#[derive(Debug, Clone, Default)]
+pub struct UseCaseInformation {
+    pub display_name: String,
+    pub value: String,
 }
 

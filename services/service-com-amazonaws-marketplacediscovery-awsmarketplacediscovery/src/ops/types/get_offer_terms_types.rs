@@ -94,6 +94,7 @@ pub struct RateCardItem {
     pub dimension_labels: Option<Vec<DimensionLabel>>,
     pub unit: String,
     pub price: String,
+    pub regional_prices: Vec<RegionalPrice>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#DimensionLabel")]
@@ -102,6 +103,14 @@ pub struct DimensionLabel {
     pub label_type: String,
     pub label_value: String,
     pub display_name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#RegionalPrice")]
+#[derive(Debug, Clone, Default)]
+pub struct RegionalPrice {
+    pub region: String,
+    pub display_name: String,
+    pub price: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#FixedUpfrontPricingTerm")]

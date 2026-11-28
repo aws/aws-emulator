@@ -25,6 +25,11 @@
 //! * the listing match set `SearchListings` pages over and `SearchFacets` counts facets
 //!   from ([`ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState::search_matches`],
 //!   [`matches_every_search_filter`]);
+//! * the attributes of a listing beyond its own record — the case studies, specializations
+//!   and trust center records `ListListingAttributes` pages over, which the two summaries a
+//!   search result carries and four of the facets restate ([`listing_attributes`]);
+//! * the purchase conditions a listing or product reports, derived from the offers it is
+//!   sold through ([`purchase_indicators`]);
 //! * the member-`@pattern` check the framework's input walk cannot make for an
 //!   unanchored expression ([`validate_search_text`]).
 
@@ -57,6 +62,26 @@ mod listing_reviews;
 /// The sealed continuation token every `@paginated` read of this service hands out, and
 /// the key this store seals one under.
 mod page_cursor;
+
+/// The authenticator every address this service publishes for a client to FETCH carries, so
+/// that a path a caller assembled resolves to nothing.
+mod media_address;
+
+/// The keyword terms, filter refusals and per-listing predicate both search operations of
+/// this service share.
+mod search_filters;
+
+/// The listing attributes `ListListingAttributes` pages over — the case studies,
+/// specializations and trust center records of one listing — and the summaries of them a
+/// search result carries.
+mod listing_attributes;
+
+/// The purchase conditions a listing or product reports, derived from the purchase options
+/// it is sold through.
+mod purchase_indicators;
+
+pub use listing_attributes::{ListingAttributes, HAS_TRUST_CENTER};
+pub use search_filters::*;
 
 pub use page_cursor::{decode_page_token, encode_page_token, page, PageCursorKey};
 
@@ -95,7 +120,8 @@ use crate::ops::types::{
     ReviewSummary, SaasFulfillmentOption, SageMakerAlgorithmFulfillmentOption,
     SageMakerAlgorithmRecommendation, SageMakerModelFulfillmentOption,
     SageMakerModelRecommendation, SearchFilter, SellerEngagement, SellerInformation, SupportTerm,
-    UsageBasedPricingTerm, UsageBasedRateCardItem, UseCase, UseCaseEntry, ValidityTerm,
+    UsageBasedPricingTerm, UsageBasedRateCardItem, UseCase, UseCaseEntry, UseCaseInformation,
+    UseCaseSummary, UseCaseSummaryEntry, ValidityTerm,
 };
 
 /// The locale the service returns content in when none is requested, and the fallback for
@@ -706,6 +732,13 @@ pub struct ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {
     pub offer_sets: BTreeMap<String, OfferSet>,
     /// The terms attached to each offer, in the order `GetOfferTerms` pages over them.
     pub offer_terms: BTreeMap<String, Vec<OfferTerm>>,
+    /// The instant this catalog was seeded at, in seconds since the Unix epoch.
+    ///
+    /// The instant a stored fact of the catalog is dated from, for every date that is a fact
+    /// about the CATALOG rather than about the read: when the engagement behind a case study
+    /// ran, when a trust center published an update ([`listing_attributes`]). Read off the
+    /// store rather than off the clock, so two reads of one record report one date.
+    pub seeded_at: i64,
     /// The secret this store seals its pagination cursors under, drawn from the system's
     /// randomness when the store is created and never reported ([`PageCursorKey`], whose
     /// own `Debug` renders nothing of it, so this struct's does not either).
@@ -837,6 +870,9 @@ impl ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {
                 .as_ref()
                 .map(|reviews| reviews.announced(endpoint_base))
                 .unwrap_or_default(),
+            trust_center_summary: self
+                .listing_attributes(listing, listing.text.content_locale(preferred))
+                .trust_center_summary(),
             ..self.listing_content(listing, preferred)
         }
     }
@@ -873,6 +909,33 @@ impl ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {
                     product: Some(product),
                 })
                 .collect(),
+            // The three summaries of what a client reads in full elsewhere: the trust
+            // center and the case studies `ListListingAttributes` pages over, computed
+            // from the one projection that read reports, and the use cases `GetListing`
+            // reports with their descriptions. The trust center's own summary is filled
+            // in by [`Self::listing_summary`], which is the projection a client is served.
+            trust_center_summary: None,
+            case_studies_summary: self
+                .listing_attributes(listing, locale)
+                .case_studies_summary(),
+            use_case_summary: Some(UseCaseSummary {
+                use_cases: listing
+                    .use_cases
+                    .iter()
+                    .map(|entry| UseCaseSummaryEntry {
+                        // `UseCaseSummaryEntry` carries the name and the identifier of a
+                        // use case and no description, which is the one member
+                        // `GetListing`'s own `UseCase` adds to it.
+                        use_case: UseCaseInformation {
+                            display_name: entry.use_case.display_name.clone(),
+                            value: entry.use_case.value.clone(),
+                        },
+                    })
+                    .collect(),
+            }),
+            // "The seller engagement options available for this listing": the listing's
+            // own stored engagements, the same list `GetListing` reports.
+            seller_engagements: Some(listing.seller_engagements.clone()),
         }
     }
 
@@ -1574,203 +1637,6 @@ pub fn modelled_member_pattern(input_schema: &Schema, member: &str) -> Option<&'
 }
 
 // ---------------------------------------------------------------------------
-// Searching the catalog: what `SearchListings` and `SearchFacets` share.
-// ---------------------------------------------------------------------------
-
-/// The terms a `searchText` is matched by: its whitespace-separated words, each lowercased
-/// and stripped of the punctuation around it, de-duplicated and in the order the request
-/// wrote them.
-///
-/// `SearchListings` is "search by keyword … sort results by relevance"
-/// (`smithy_query(query="doc",shape="SearchListings")`), so its `searchText` is a query of
-/// KEYWORDS rather than one literal string to be found: a two-word query matches a listing
-/// whose content carries those words apart, and ranks one carrying both above one carrying
-/// either. Splitting on whitespace only is what keeps a hyphenated or dotted identifier-like
-/// word one term rather than silently widening it to its parts.
-pub fn search_terms(search_text: &str) -> Vec<String> {
-    let mut terms: Vec<String> = Vec::new();
-    for word in search_text.split_whitespace() {
-        let term = word
-            .trim_matches(|character: char| !character.is_alphanumeric())
-            .to_lowercase();
-        if !term.is_empty() && !terms.contains(&term) {
-            terms.push(term);
-        }
-    }
-    terms
-}
-
-/// Refuse a `filters` list the model's `SearchFilterType` enum cannot reject on its own: a
-/// filter type REPEATED across entries, an unsupported filter type, a range filter carrying
-/// more than one value or a rating outside the documented 0.0–5.0 range, or a
-/// `NUMBER_OF_PRODUCTS` value that is not a count.
-///
-/// Checked up front rather than per listing, so the refusal is a property of the REQUEST:
-/// the same malformed filter is refused whether or not any listing reaches the predicate.
-pub fn validate_search_filters(filters: &[SearchFilter]) -> Result<(), String> {
-    reject_duplicate_filter_types(filters.iter().map(|filter| filter.filter_type.as_str()))?;
-    for filter in filters {
-        let values = &filter.filter_values;
-        match filter.filter_type.as_str() {
-            // Term filters take identifiers and enum values; the values themselves name
-            // catalog records, and one no record carries simply matches nothing.
-            "CATEGORY" | "PUBLISHER" | "FULFILLMENT_OPTION_TYPE" | "PRICING_MODEL"
-            | "PRICING_UNIT" | "DEPLOYED_ON_AWS" => {}
-            "NUMBER_OF_PRODUCTS" => {
-                for value in values {
-                    product_count(value)?;
-                }
-            }
-            "MIN_AVERAGE_CUSTOMER_RATING" | "MAX_AVERAGE_CUSTOMER_RATING" => {
-                rating_bound(&filter.filter_type, values)?;
-            }
-            other => {
-                return Err(format!("filters: '{other}' is not a supported filterType"));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Refuse a `filters` list that names one `filterType` more than once, naming every type it
-/// repeats.
-///
-/// Why one entry per type is the rule: a filter entry of this service carries the values to
-/// filter that type by, and both filter shapes document those values as OR-combined —
-/// `SearchFilter$filterValues` "Term filters accept multiple values (OR logic)" and
-/// `PurchaseOptionFilter$filterValues` "OR logic combines multiple values within the same
-/// filter". So the OR of several values of ONE filter type belongs inside that entry's
-/// `filterValues`, which leaves a second entry for the same type with nothing to express —
-/// and the predicates below AND the entries, so such a list selects only what satisfies
-/// both. The rule is independent of a list's own `@length` bound (1..30 for a search,
-/// 1..10 for purchase options): two entries are well inside either.
-///
-/// The message names the offending types from the REQUEST, bracketed, and in the order the
-/// request first repeated them, so a list repeating two types names both. Taken by filter
-/// TYPE rather than by filter shape, so the one rule serves every `filters` member of this
-/// service.
-pub fn reject_duplicate_filter_types<'a>(
-    filter_types: impl IntoIterator<Item = &'a str>,
-) -> Result<(), String> {
-    let mut seen: Vec<&str> = Vec::new();
-    let mut repeated: Vec<&str> = Vec::new();
-    for filter_type in filter_types {
-        if seen.contains(&filter_type) {
-            if !repeated.contains(&filter_type) {
-                repeated.push(filter_type);
-            }
-        } else {
-            seen.push(filter_type);
-        }
-    }
-    if repeated.is_empty() {
-        return Ok(());
-    }
-    Err(format!("Duplicate filter types: [{}]", repeated.join(", ")))
-}
-
-/// Whether a listing satisfies every search filter (AND across filters, OR within one).
-///
-/// Source: `SearchListingsInput$filters` / `SearchFacetsInput$filters` — "Multiple filters
-/// are combined with AND logic. Multiple values within the same filter are combined with OR
-/// logic."
-///
-/// `Err` is the refusal message for a filter value the model's `SearchFilterType` enum
-/// cannot reject on its own — a range filter with more than one value, or a rating outside
-/// the documented 0.0–5.0 range.
-pub fn matches_every_search_filter(
-    state: &ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState,
-    listing: &Listing,
-    filters: &[SearchFilter],
-) -> Result<bool, String> {
-    for filter in filters {
-        let values = &filter.filter_values;
-        let matched = match filter.filter_type.as_str() {
-            "CATEGORY" => listing
-                .categories
-                .iter()
-                .any(|category| values.contains(&category.category_id)),
-            "PUBLISHER" => values.contains(&listing.publisher.seller_profile_id),
-            "FULFILLMENT_OPTION_TYPE" => state
-                .listing_fulfillment_option_summaries(listing)
-                .iter()
-                .any(|option| values.contains(&option.fulfillment_option_type)),
-            "PRICING_MODEL" => state
-                .listing_pricing_models(listing)
-                .iter()
-                .any(|model| values.contains(&model.pricing_model_type)),
-            "PRICING_UNIT" => state
-                .listing_pricing_units(listing)
-                .iter()
-                .any(|unit| values.contains(&unit.pricing_unit_type)),
-            "DEPLOYED_ON_AWS" => listing.product_ids.iter().any(|product_id| {
-                state
-                    .products
-                    .get(product_id)
-                    .is_some_and(|product| {
-                        values.iter().any(|value| value == product.deployed_on_aws())
-                    })
-            }),
-            "NUMBER_OF_PRODUCTS" => {
-                let products = listing.product_ids.len();
-                let mut matched = false;
-                for value in values {
-                    matched |= product_count(value)? == products;
-                }
-                matched
-            }
-            // Range filters: "accept a single value between 0.0 and 5.0"
-            // (SearchFilter$filterValues documentation).
-            "MIN_AVERAGE_CUSTOMER_RATING" => {
-                let bound = rating_bound(&filter.filter_type, values)?;
-                listing.average_customer_rating() >= bound
-            }
-            "MAX_AVERAGE_CUSTOMER_RATING" => {
-                let bound = rating_bound(&filter.filter_type, values)?;
-                listing.average_customer_rating() <= bound
-            }
-            other => {
-                return Err(format!("filters: '{other}' is not a supported filterType"));
-            }
-        };
-        if !matched {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// The product count a `NUMBER_OF_PRODUCTS` filter value names, refusing a value that is
-/// not a non-negative integer.
-fn product_count(value: &str) -> Result<usize, String> {
-    value.parse().map_err(|_| {
-        format!("filters: NUMBER_OF_PRODUCTS expects a non-negative integer, got '{value}'")
-    })
-}
-
-/// The single rating a range filter carries, refusing a value list or a rating outside the
-/// documented 0.0–5.0 range.
-///
-/// Both refusals are built from the request and follow AWS's recorded template for a range
-/// filter: they name the offending `filterType`, and the out-of-range one also carries the
-/// offending value bare after `"got: "`. A value that is not a number at all is not a
-/// rating between 0.0 and 5.0 either, so it is refused by the same message.
-fn rating_bound(filter_type: &str, values: &[String]) -> Result<f64, String> {
-    let [value] = values else {
-        return Err(format!(
-            "Range filter {filter_type} requires exactly one value"
-        ));
-    };
-    let rating: f64 = value.parse().unwrap_or(f64::NAN);
-    if !(0.0..=5.0).contains(&rating) {
-        return Err(format!(
-            "Range filter {filter_type} value must be between 0.0 and 5.0, got: {value}"
-        ));
-    }
-    Ok(rating)
-}
-
-// ---------------------------------------------------------------------------
 // The catalog's category taxonomy.
 // ---------------------------------------------------------------------------
 
@@ -2163,6 +2029,11 @@ fn saas_option(
             available_from_time: Some(datetime(available_from)),
             launch_url: None,
             quick_launch: quick_launch.to_string(),
+            // "The AWS CloudFormation deployment templates available for this SaaS
+            // product. The list is empty when no deployment templates are available" —
+            // and no SaaS option of this catalog publishes one, so every one of them
+            // reports the empty list rather than an absent member.
+            deployment_templates: Vec::new(),
         },
     ))
     .serving(pages)
@@ -2256,6 +2127,12 @@ fn cloudformation_option(
             release_notes: Some(format!("Release notes for version {version}.")),
             usage_instructions: Some(usage_instructions.to_string()),
             available_from_time: Some(datetime(available_from)),
+            // Both are addresses a buyer FETCHES — the rendered architecture diagram and
+            // the template itself — and this catalog holds neither document for its
+            // CloudFormation options, so neither member is reported rather than being
+            // published at an address nothing answers at.
+            architecture_diagram_url: None,
+            deployment_template_url: None,
             short_description: Some(short_description.to_string()),
             long_description: Some(format!(
                 "{short_description} The template provisions every resource the product \
@@ -2707,6 +2584,10 @@ fn usage_based_term(id: &str, dimension: &str, display_name: &str, unit: &str, p
                 dimension_labels: None,
                 unit: unit.to_string(),
                 price: price.to_string(),
+                // "The price overrides for the dimension in individual AWS Regions": this
+                // catalog prices every dimension the same in every Region, so the list is
+                // empty rather than absent.
+                regional_prices: Vec::new(),
             }],
         }],
     })
@@ -2746,6 +2627,7 @@ fn seed_catalog() -> ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryStat
         offers: BTreeMap::new(),
         offer_sets: BTreeMap::new(),
         offer_terms: BTreeMap::new(),
+        seeded_at: now,
         // One key per store, from the system's randomness: see `PageCursorKey`.
         page_cursors: PageCursorKey::new(),
     };

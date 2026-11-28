@@ -40,7 +40,7 @@ const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 \
 /// the `SearchFacetType` enum. `AVERAGE_CUSTOMER_RATING` is the one facet type with no
 /// same-named `SearchFilterType`: its values are minimum ratings, which
 /// `MIN_AVERAGE_CUSTOMER_RATING` takes.
-const FACET_TYPES: [(&str, &str); 8] = [
+const FACET_TYPES: [(&str, &str); 13] = [
     ("AVERAGE_CUSTOMER_RATING", "MIN_AVERAGE_CUSTOMER_RATING"),
     ("CATEGORY", "CATEGORY"),
     ("PUBLISHER", "PUBLISHER"),
@@ -49,6 +49,11 @@ const FACET_TYPES: [(&str, &str); 8] = [
     ("PRICING_UNIT", "PRICING_UNIT"),
     ("DEPLOYED_ON_AWS", "DEPLOYED_ON_AWS"),
     ("NUMBER_OF_PRODUCTS", "NUMBER_OF_PRODUCTS"),
+    ("CERTIFICATES", "CERTIFICATES"),
+    ("SELLER_ENGAGEMENT", "SELLER_ENGAGEMENT"),
+    ("SPECIALIZATION", "SPECIALIZATION"),
+    ("SPECIALIZATION_CATEGORY", "SPECIALIZATION_CATEGORY"),
+    ("TRUST_CENTER", "TRUST_CENTER"),
 ];
 
 fn router() -> MultiServiceRouter {

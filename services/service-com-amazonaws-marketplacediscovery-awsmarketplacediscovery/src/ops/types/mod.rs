@@ -20,9 +20,11 @@ pub mod get_offer_terms_types;
 pub mod get_offer_types;
 pub mod get_product_types;
 pub mod list_fulfillment_options_types;
+pub mod list_listing_attributes_types;
 pub mod list_purchase_options_types;
 pub mod search_facets_types;
 pub mod search_listings_types;
+pub mod service_error_types;
 pub mod shared_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -38,11 +40,15 @@ pub use get_product_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_fulfillment_options_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_listing_attributes_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_purchase_options_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use search_facets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use search_listings_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use service_error_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 

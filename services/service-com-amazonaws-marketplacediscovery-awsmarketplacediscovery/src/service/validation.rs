@@ -242,10 +242,15 @@ struct StatedValueSet {
 ///
 /// The `modelled` side is the model-derived constant generated from that enum, so a row
 /// cannot fall behind the model; the `stated` side is fixed text of this service's refusals.
+///
+/// Where a recorded refusal predates a value the model has since gained, the recorded order
+/// is kept for the values it covered and the values it did not follow them in the model's own
+/// declaration order — so every value the clause has to list is listed, and no recorded
+/// position is moved to make room for one.
 const STATED_VALUE_SETS: &[StatedValueSet] = &[
-    // `SearchFilterType`: the same nine values the model declares, in the order this service
-    // lists them — the model declares `MIN_AVERAGE_CUSTOMER_RATING` first and
-    // `NUMBER_OF_PRODUCTS` last.
+    // `SearchFilterType`: the nine values the recorded refusal listed, in the order it listed
+    // them — the model declares `MIN_AVERAGE_CUSTOMER_RATING` before
+    // `NUMBER_OF_PRODUCTS` — followed by the six the model has gained since.
     StatedValueSet {
         modelled: crate::ops::types::SEARCH_FILTER_TYPE_VALUES,
         stated: &[
@@ -258,6 +263,12 @@ const STATED_VALUE_SETS: &[StatedValueSet] = &[
             "PUBLISHER",
             "PRICING_UNIT",
             "CATEGORY",
+            "CERTIFICATES",
+            "PRODUCT_ID",
+            "SELLER_ENGAGEMENT",
+            "SPECIALIZATION",
+            "SPECIALIZATION_CATEGORY",
+            "TRUST_CENTER",
         ],
     },
     // `PurchaseOptionFilterType`: the same five values, in this service's own order.
@@ -271,11 +282,9 @@ const STATED_VALUE_SETS: &[StatedValueSet] = &[
             "SELLER_OF_RECORD_PROFILE_ID",
         ],
     },
-    // `SearchFacetType`: the set this service states is not the model's AT ALL — it carries
-    // a facet type (`CERTIFICATES`) the model's enum does not declare, beside the eight it
-    // does, and in an order of its own. So this one cannot be derived from the model even by
-    // reordering: it is the service's own constant, which is what a caller reads to learn
-    // which facet types exist.
+    // `SearchFacetType`: the nine values the recorded refusal listed, in an order of its own
+    // — one of them, `CERTIFICATES`, a facet type the model did not declare when that
+    // refusal was recorded and does now — followed by the four the model has gained since.
     StatedValueSet {
         modelled: crate::ops::types::SEARCH_FACET_TYPE_VALUES,
         stated: &[
@@ -288,6 +297,10 @@ const STATED_VALUE_SETS: &[StatedValueSet] = &[
             "AVERAGE_CUSTOMER_RATING",
             "PRICING_UNIT",
             "CATEGORY",
+            "SELLER_ENGAGEMENT",
+            "SPECIALIZATION",
+            "SPECIALIZATION_CATEGORY",
+            "TRUST_CENTER",
         ],
     },
 ];

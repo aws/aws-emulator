@@ -69,11 +69,10 @@
 //!   `override_routing_error`, because such an address is opened by a browser rather than
 //!   called by an SDK.
 //! * [`catalog_media`] — the same for the media a CATALOG RECORD publishes: the logo
-//!   thumbnail image a listing or product announces in `logoThumbnailUrl`, and the reviews
-//!   page a review source keeps for a listing (`ReviewSourceSummary$sourceUrl`).
-//! * [`saas_deployment_templates`] — the one member this service's wire carries that its
-//!   checked-in model declares on no shape, written into the rendered answer rather than
-//!   through a schema.
+//!   thumbnail image a listing or product announces in `logoThumbnailUrl`, the mark of a
+//!   certification its trust center names (`TrustCenterCertificationAttribute$logoUrl`), and
+//!   the reviews page a review source keeps for a listing
+//!   (`ReviewSourceSummary$sourceUrl`).
 
 /// The per-request IAM decision every operation of this service takes before it reads any
 /// catalog record: `AccessDeniedException` is a service-common error of this model.
@@ -84,9 +83,6 @@ pub mod catalog_media;
 /// The route that answers at the buyer-facing addresses a SaaS fulfillment option
 /// publishes, which no modelled operation describes.
 pub mod saas_fulfillment_page;
-/// The `deploymentTemplates` member a SaaS fulfillment option carries on the wire, which
-/// this service's checked-in model declares on no shape.
-pub mod saas_deployment_templates;
 /// The one way this service answers a fetch of an address it published itself, shared by
 /// every plane that publishes one.
 mod served_document;
@@ -142,8 +138,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         let mut stated = OperationRoutingTable::new();
-        // EVERY modelled operation (nine of them, one per file in `src/ops/`; eight through
-        // the macro and the ninth just below it), because the
+        // EVERY modelled operation (ten of them, one per file in `src/ops/`), because the
         // rule is the SERVICE's and not one operation's: an operation whose input declares
         // no constrained collection simply never has such a violation to state, which the
         // wrapper reads off that operation's own input schema. An operation added later is
@@ -157,24 +152,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             get_offer_set::GetOfferSet,
             get_offer_terms::GetOfferTerms,
             get_product::GetProduct,
+            list_fulfillment_options::ListFulfillmentOptions,
+            list_listing_attributes::ListListingAttributes,
             list_purchase_options::ListPurchaseOptions,
             search_facets::SearchFacets,
             search_listings::SearchListings,
-        );
-        // And `ListFulfillmentOptions`, served through the SAME wrapper and then through one
-        // more: its answer carries a member of the SaaS option that this service's
-        // checked-in model declares on no shape, so it is written into the rendered body
-        // rather than through a schema (see [`saas_deployment_templates`]). The key is the
-        // operation's own shape name, exactly as the macro above spells it.
-        stated.add_operation(
-            "ListFulfillmentOptions",
-            Box::new(saas_deployment_templates::DeploymentTemplatesOperation::new(
-                StatedPerOperation::new(
-                    crate::ops::list_fulfillment_options::ListFulfillmentOptions::new(
-                        Arc::clone(&engine),
-                    ),
-                ),
-            )) as Box<dyn ErasedOperation>,
         );
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
@@ -301,16 +283,20 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // registration and launch addresses this service hands back in `fulfillmentUrl` and
         // `launchUrl` are opened by whatever browser, probe or test holds them —
         // anonymously, with no credential scope naming this service, only the path this
-        // service itself minted under the plane segment that is this service's alone. See
-        // [`saas_fulfillment_page`]: without this the router answers `404 UnknownService`
-        // for an address this service published.
+        // service itself minted under the plane segment that is this service's alone. That
+        // path is a CAPABILITY rather than a shape: it carries the authenticator this
+        // process minted for the option it names (`crate::state`), checked before any
+        // record is read, so an address a caller assembled out of the plane's layout and a
+        // record id is claimed by nobody. See [`saas_fulfillment_page`]: without this the
+        // router answers `404 UnknownService` for an address this service published.
         if saas_fulfillment_page::claimed(parts) {
             return true;
         }
         // And a fetch of the media a catalog record publishes: the logo thumbnail image a
         // listing or product announces, and the reviews page a review source keeps for a
-        // listing. Both are addresses this service minted under a plane segment of its own
-        // and both are opened anonymously, exactly as the pages above are.
+        // listing. Both are addresses this service minted under a plane segment of its own,
+        // both carry the authenticator that makes the path a capability, and both are opened
+        // anonymously, exactly as the pages above are.
         catalog_media::claimed(parts)
     }
 
@@ -365,7 +351,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // — its logo thumbnail image and the reviews page of a review source. They are
         // answered here because the router consults this seam before it authenticates
         // anything, which is how AWS serves them: unauthenticated, and as an image or a web
-        // page rather than a modelled API call.
+        // page rather than a modelled API call. A fetch carries no caller identity, so what
+        // stands in for the read that handed the address out is the address itself: each path
+        // carries the authenticator this process minted for the record it names
+        // (`crate::state`), which both routes verify before they reach the store, so only an
+        // address this service published resolves to a record at all.
         saas_fulfillment_page::answer(&*self.engine, req)
             .or_else(|| catalog_media::answer(&*self.engine, req))
     }

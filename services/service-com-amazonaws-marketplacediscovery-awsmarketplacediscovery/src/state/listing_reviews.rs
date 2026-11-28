@@ -135,11 +135,16 @@ impl ReviewRecord {
 }
 
 /// The request path the reviews list `reviews_list_id` is served at.
+///
+/// The address carries the authenticator this process minted for that list
+/// ([`super::media_address`]), because a fetch of it presents no credential of its own: an
+/// address assembled from the list id alone is one this service never handed out.
 #[must_use]
 pub fn reviews_page_path(reviews_list_id: &str) -> String {
     format!(
-        "/{}/{LISTING_REVIEWS_PLANE_SEGMENT}/{REVIEWS_LIST_SEGMENT}/{reviews_list_id}",
-        ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE
+        "/{}/{LISTING_REVIEWS_PLANE_SEGMENT}/{REVIEWS_LIST_SEGMENT}/{reviews_list_id}/{}",
+        ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE,
+        super::media_address::authenticator(reviews_list_id)
     )
 }
 
@@ -158,8 +163,9 @@ pub fn reviews_page_url(endpoint_base: &str, reviews_list_id: &str) -> String {
 /// mints, and `None` for every other path.
 ///
 /// The inverse of the minting above, so a URL this service published resolves back to the
-/// record behind it. Nothing below the page's own segment is this route: a page is one
-/// document, not a path space.
+/// record behind it. The authenticator the address carries is checked here, before any store
+/// is reached, so a path a caller assembled addresses nothing. Nothing below the page's own
+/// segment is this route: a page is one document, not a path space.
 #[must_use]
 pub fn reviews_page_route(uri: &str) -> Option<&str> {
     use ::service_common::data_plane_addressing::{first_segment, EMULATOR_PATH_NAMESPACE};
@@ -175,11 +181,12 @@ pub fn reviews_page_route(uri: &str) -> Option<&str> {
     if collection != REVIEWS_LIST_SEGMENT {
         return None;
     }
-    let (reviews_list_id, below) = first_segment(rest)?;
+    let (reviews_list_id, rest) = first_segment(rest)?;
+    let (authenticator, below) = first_segment(rest)?;
     if reviews_list_id.is_empty() || below != "/" {
         return None;
     }
-    Some(reviews_list_id)
+    super::media_address::authenticates(reviews_list_id, authenticator).then_some(reviews_list_id)
 }
 
 impl ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {

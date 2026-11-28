@@ -10,12 +10,12 @@
 //!   `GetListing` and `GetProduct` report is read off that record, and two different records
 //!   state different key features rather than one list every record delivered the same way
 //!   restates.
-//! * A SaaS fulfillment option names the deployment templates it offers: AWS answers
-//!   `ListFulfillmentOptions` with a `deploymentTemplates` member inside every
-//!   `saasFulfillmentOption`, present and holding no element for an option the catalog holds
-//!   no template for, and an absent member is a different case to a typed client than a
-//!   member holding an empty list. The member belongs to the SaaS arm of the
-//!   `FulfillmentOption` union, so no option of another type carries it.
+//! * A SaaS fulfillment option names the deployment templates it offers: `ListFulfillmentOptions`
+//!   carries a `deploymentTemplates` member inside every `saasFulfillmentOption`, present and
+//!   holding no element for an option the catalog holds no template for, and an absent member
+//!   is a different case to a typed client than a member holding an empty list. The member
+//!   belongs to the SaaS arm of the `FulfillmentOption` union, so no option of another type
+//!   carries it.
 //!
 //! Every suite drives real HTTP requests through the `MultiServiceRouter`, so the protocol,
 //! the routing table and the handlers are all exercised end to end.
@@ -29,9 +29,10 @@ use crate::catalog_drilldown::{array, ok, router, text};
 
 /// The member a SaaS option names its deployment templates in.
 ///
-/// Recorded behaviour: this service's checked-in model declares the member on no shape
-/// (`smithy_query(query="shape",shape="SaasFulfillmentOption")`), while AWS's answer carries
-/// it inside every SaaS option.
+/// `SaasFulfillmentOption$deploymentTemplates` is `@required` with a default of `[]`
+/// (`smithy_query(query="shape",shape="SaasFulfillmentOption")`), and this catalog publishes
+/// no deployment template for any of its SaaS options, so the member reaches the wire as a
+/// present, empty list.
 const DEPLOYMENT_TEMPLATES: &str = "deploymentTemplates";
 
 /// The union member a SaaS option is served as

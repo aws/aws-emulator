@@ -305,6 +305,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             seller_engagements: listing.seller_engagements.clone(),
             short_description: text.short_description.clone(),
             use_cases: listing.use_cases.clone(),
+            // Derived from the offers this listing is sold through, the single record of
+            // how it is bought, so a purchase condition it reports cannot contradict the
+            // purchase options `ListPurchaseOptions` reports for the same offers.
+            purchase_indicators: state
+                .listing_purchase_indicators(listing, crate::state::now_secs()),
         })
     }
 }

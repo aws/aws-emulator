@@ -37,5 +37,6 @@ pub struct GetProductOutput {
     pub resources: Vec<Resource>,
     pub seller_engagements: Vec<SellerEngagement>,
     pub listing_id: String,
+    pub purchase_indicators: Vec<PurchaseIndicator>,
 }
 

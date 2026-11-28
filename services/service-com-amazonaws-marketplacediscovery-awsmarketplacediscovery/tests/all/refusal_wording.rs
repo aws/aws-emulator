@@ -163,10 +163,12 @@ async fn the_operations_that_refuse_an_unknown_id_resolve_a_known_one() {
 /// `SearchFilterType`'s value set as this service lists it in an enum clause — one fixed
 /// order, which is NOT the order the model declares the values in
 /// (`smithy_query(query="shape",shape="SearchFilterType")` declares
-/// `MIN_AVERAGE_CUSTOMER_RATING` first and `NUMBER_OF_PRODUCTS` last).
+/// `MIN_AVERAGE_CUSTOMER_RATING` before `NUMBER_OF_PRODUCTS`): the nine values the recorded
+/// refusal listed, in its order, then the six the model has gained since, in the model's.
 const SEARCH_FILTER_TYPE_SET: &str = "[MAX_AVERAGE_CUSTOMER_RATING, FULFILLMENT_OPTION_TYPE, \
      MIN_AVERAGE_CUSTOMER_RATING, PRICING_MODEL, NUMBER_OF_PRODUCTS, DEPLOYED_ON_AWS, \
-     PUBLISHER, PRICING_UNIT, CATEGORY]";
+     PUBLISHER, PRICING_UNIT, CATEGORY, CERTIFICATES, PRODUCT_ID, SELLER_ENGAGEMENT, \
+     SPECIALIZATION, SPECIALIZATION_CATEGORY, TRUST_CENTER]";
 
 /// A request whose `filterType` falls outside `SearchFilterType`, with the member path the
 /// clause has to name. Rows differ in the operation (both that carry `filters`), in where
@@ -207,7 +209,7 @@ fn enum_clause_cases() -> Vec<(&'static str, &'static str, Value, &'static str)>
             "SearchFacets, a value of the other filter enum",
             "searchFacets",
             json!({
-                "filters": [{ "filterType": "PRODUCT_ID", "filterValues": ["p-1"] }],
+                "filters": [{ "filterType": "PURCHASE_OPTION_TYPE", "filterValues": ["OFFER"] }],
             }),
             "filters.1.member.filterType",
         ),

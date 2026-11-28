@@ -82,7 +82,7 @@ impl SaasServedPages {
 /// The segment that names this service's SaaS fulfillment plane, behind the reserved
 /// namespace segment every plane this emulator serves at its own front door is addressed
 /// under (`service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE`):
-/// `/_aws/marketplace-discovery-saas-fulfillment/{fulfillmentOptionId}/{page}`.
+/// `/_aws/marketplace-discovery-saas-fulfillment/{fulfillmentOptionId}/{authenticator}/{page}`.
 ///
 /// Shared by the URL an option announces and by the route that answers there, so the address
 /// this service publishes is the address it serves.
@@ -93,10 +93,15 @@ pub const SAAS_FULFILLMENT_PLANE_SEGMENT: &str = "marketplace-discovery-saas-ful
 pub const SAAS_PAGE_MEDIA_TYPE: &str = "text/html; charset=utf-8";
 
 /// The request path `page` of the fulfillment option `fulfillment_option_id` is served at.
+///
+/// The address carries the authenticator this process minted for that option
+/// ([`super::media_address`]), because a buyer's browser opens it with no credential of its
+/// own: an address assembled from the option id alone is one this service never handed out.
 pub fn saas_page_path(fulfillment_option_id: &str, page: SaasPage) -> String {
     format!(
-        "/{}/{SAAS_FULFILLMENT_PLANE_SEGMENT}/{fulfillment_option_id}/{}",
+        "/{}/{SAAS_FULFILLMENT_PLANE_SEGMENT}/{fulfillment_option_id}/{}/{}",
         ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE,
+        super::media_address::authenticator(fulfillment_option_id),
         page.segment()
     )
 }
@@ -115,8 +120,10 @@ pub fn saas_page_url(endpoint_base: &str, fulfillment_option_id: &str, page: Saa
 /// [`saas_page_path`] mints, and `None` for every other path.
 ///
 /// The inverse of the minting above, read through the shared addressing module, so a URL
-/// this service published resolves back to the record behind it. Nothing below the page's own
-/// segment is this route: a page is one document, not a path space.
+/// this service published resolves back to the record behind it. The authenticator the
+/// address carries is checked here, before any store is reached, so a path a caller
+/// assembled addresses nothing. Nothing below the page's own segment is this route: a page
+/// is one document, not a path space.
 pub fn saas_page_route(uri: &str) -> Option<(&str, SaasPage)> {
     use ::service_common::data_plane_addressing::{first_segment, EMULATOR_PATH_NAMESPACE};
     let (namespace, rest) = first_segment(request_target_path(uri))?;
@@ -128,8 +135,12 @@ pub fn saas_page_route(uri: &str) -> Option<(&str, SaasPage)> {
         return None;
     }
     let (fulfillment_option_id, rest) = first_segment(rest)?;
+    let (authenticator, rest) = first_segment(rest)?;
     let (page, below) = first_segment(rest)?;
-    if fulfillment_option_id.is_empty() || below != "/" {
+    if fulfillment_option_id.is_empty()
+        || below != "/"
+        || !super::media_address::authenticates(fulfillment_option_id, authenticator)
+    {
         return None;
     }
     SaasPage::from_segment(page).map(|page| (fulfillment_option_id, page))

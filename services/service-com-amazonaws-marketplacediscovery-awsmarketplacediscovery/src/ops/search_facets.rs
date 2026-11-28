@@ -466,9 +466,46 @@ fn listing_facet_values(
                 })
                 .collect()
         }
+        // "The seller engagement options available for this listing": the engagements the
+        // listing's own record offers, which the `SELLER_ENGAGEMENT` filter selects on.
+        "SELLER_ENGAGEMENT" => listing
+            .seller_engagements
+            .iter()
+            .map(|engagement| {
+                (
+                    engagement.engagement_type.clone(),
+                    seller_engagement_display_name(&engagement.engagement_type).to_string(),
+                )
+            })
+            .collect(),
+        // The four facets over a listing's ATTRIBUTES — the certifications and the trust
+        // center its publisher maintains, and the specializations it has earned. One
+        // projection serves the facet and the filter of the same name
+        // (`crate::state::listing_attributes`), so a value counted here selects exactly the
+        // listings it was counted over when it is passed back.
+        "CERTIFICATES" | "SPECIALIZATION" | "SPECIALIZATION_CATEGORY" | "TRUST_CENTER" => {
+            state.listing_attribute_facet_values(listing, facet_type)
+        }
         // Unreachable: `requested_facet_types` refuses anything the `SearchFacetType` enum
         // does not hold, so no other facet type reaches here.
         _ => Vec::new(),
+    }
+}
+
+/// The human-readable name of a seller engagement option.
+///
+/// Source: the model's `SellerEngagementType` enum, generated as
+/// `SELLER_ENGAGEMENT_TYPE_VALUES` — `BUY_NOW`, `EXPRESS_PRIVATE_OFFER`,
+/// `REQUEST_FOR_DEMO`, `REQUEST_FOR_PRIVATE_OFFER`, `TRY_FOR_FREE`. An engagement type the
+/// enum gains later is displayed by its own value until it is named here.
+fn seller_engagement_display_name(engagement_type: &str) -> &str {
+    match engagement_type {
+        "BUY_NOW" => "Buy now",
+        "EXPRESS_PRIVATE_OFFER" => "Express private offer",
+        "REQUEST_FOR_DEMO" => "Request a demo",
+        "REQUEST_FOR_PRIVATE_OFFER" => "Request a private offer",
+        "TRY_FOR_FREE" => "Try for free",
+        other => other,
     }
 }
 

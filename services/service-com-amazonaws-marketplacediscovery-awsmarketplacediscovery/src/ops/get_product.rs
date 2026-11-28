@@ -238,6 +238,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // The listing whose `associatedEntities` name this product: stored on the
             // product as the back-pointer to it, so the two directions cannot disagree.
             listing_id: product.listing_id.clone(),
+            // Derived from the offers that cover this product, the single record of how it
+            // is bought, so a purchase condition it reports cannot contradict the purchase
+            // options `ListPurchaseOptions` reports for the same offers.
+            purchase_indicators: state
+                .product_purchase_indicators(&product.product_id, crate::state::now_secs()),
         })
     }
 }

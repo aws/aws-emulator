@@ -17,8 +17,9 @@
 //!    message is the only place the server reports the offending input back.
 //! 3. **An enum clause lists the value set as this SERVICE states it** — fixed text of the
 //!    refusal, carrying nothing of the request, stated the same way at every member that
-//!    enum constrains and on every operation. For `SearchFacetType` that set is not the
-//!    model's at all: it carries a facet type the model's enum does not declare.
+//!    enum constrains and on every operation. Where a recorded refusal predates a value the
+//!    model has since gained, the recorded order is kept for the values it covered and the
+//!    rest follow it in the model's own order.
 //!
 //! Every request goes through the `MultiServiceRouter`, so the protocol, the routing table
 //! and the framework's input walk are all exercised end to end.
@@ -28,23 +29,27 @@ use serde_json::{json, Value};
 use crate::catalog_drilldown::{call, router};
 use crate::validation_message_rules::refused;
 
-/// The value set this service STATES for `SearchFacetType`, which is NOT the model's: it
-/// carries `CERTIFICATES`, a facet type `SEARCH_FACET_TYPE_VALUES` does not declare, and its
-/// order is not the model's declaration order. Fixed text of the refusal.
+/// The value set this service STATES for `SearchFacetType`: the nine values the recorded
+/// refusal listed — among them `CERTIFICATES`, which the model did not declare when that
+/// refusal was recorded — in its own order, then the four values the model has gained since,
+/// in the model's declaration order. Fixed text of the refusal.
 const STATED_SEARCH_FACET_TYPES: &str = "FULFILLMENT_OPTION_TYPE, PRICING_MODEL, \
      NUMBER_OF_PRODUCTS, DEPLOYED_ON_AWS, CERTIFICATES, PUBLISHER, AVERAGE_CUSTOMER_RATING, \
-     PRICING_UNIT, CATEGORY";
+     PRICING_UNIT, CATEGORY, SELLER_ENGAGEMENT, SPECIALIZATION, SPECIALIZATION_CATEGORY, \
+     TRUST_CENTER";
 
 /// The value set this service STATES for `PurchaseOptionFilterType`: the five values the
 /// model declares, in this service's own order.
 const STATED_PURCHASE_OPTION_FILTER_TYPES: &str = "PURCHASE_OPTION_TYPE, VISIBILITY_SCOPE, \
      PRODUCT_ID, AVAILABILITY_STATUS, SELLER_OF_RECORD_PROFILE_ID";
 
-/// The value set this service STATES for `SearchFilterType`: the nine values the model
-/// declares, in this service's own order.
+/// The value set this service STATES for `SearchFilterType`: the nine values the recorded
+/// refusal listed, in its own order, then the six the model has gained since, in the model's
+/// declaration order.
 const STATED_SEARCH_FILTER_TYPES: &str = "MAX_AVERAGE_CUSTOMER_RATING, \
      FULFILLMENT_OPTION_TYPE, MIN_AVERAGE_CUSTOMER_RATING, PRICING_MODEL, NUMBER_OF_PRODUCTS, \
-     DEPLOYED_ON_AWS, PUBLISHER, PRICING_UNIT, CATEGORY";
+     DEPLOYED_ON_AWS, PUBLISHER, PRICING_UNIT, CATEGORY, CERTIFICATES, PRODUCT_ID, \
+     SELLER_ENGAGEMENT, SPECIALIZATION, SPECIALIZATION_CATEGORY, TRUST_CENTER";
 
 /// The one-violation envelope AWS reports a single constraint failure in.
 fn one_violation(clause: &str) -> String {
@@ -312,7 +317,7 @@ async fn an_enum_clause_lists_the_value_set_this_service_states() {
             "SearchFacets filters.filterType, the same enum on another operation",
             "searchFacets",
             json!({
-                "filters": [{ "filterType": "PRODUCT_ID", "filterValues": ["p-1"] }],
+                "filters": [{ "filterType": "PURCHASE_OPTION_TYPE", "filterValues": ["OFFER"] }],
             }),
             STATED_SEARCH_FILTER_TYPES,
         ),

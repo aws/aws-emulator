@@ -37,6 +37,10 @@ uuid = { version = "1", features = ["v5"] }
 # HTML escaping, for the stored catalog values written into the buyer-facing pages this
 # service serves at the addresses a SaaS fulfillment option publishes.
 html-escape = "0.2"
+# Hex, for the authenticator every address this service publishes for a client to fetch
+# carries: one path segment of the value this process minted over the record the address
+# names (`state::media_address`).
+hex = { workspace = true }
 # AES-256-GCM, SHA-256 and the system randomness behind the sealed pagination cursor every
 # `@paginated` read of this service hands out (`state::page_cursor`).
 ring = "0.17"
@@ -47,7 +51,6 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 automod = { workspace = true }
 sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true

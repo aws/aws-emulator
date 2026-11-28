@@ -128,15 +128,15 @@ pub struct SellerEngagement {
     pub value: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#PurchaseIndicator")]
+#[derive(Debug, Clone, Default)]
+pub struct PurchaseIndicator {
+    pub indicator_type: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#ResourceNotFoundException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceNotFoundException {
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#AccessDeniedException")]
-#[derive(Debug, Clone, Default)]
-pub struct AccessDeniedException {
     pub message: Option<String>,
 }
 
@@ -165,6 +165,10 @@ pub struct SearchFilter {
 pub const BILLING_PERIOD_TYPE_VALUES: &[&str] = &["Monthly"];
 
 
+/// The values `CaseStudyResourceType` accepts on the wire.
+pub const CASE_STUDY_RESOURCE_TYPE_VALUES: &[&str] = &["CASE_STUDY_WEBSITE"];
+
+
 /// The values `DeployedOnAwsStatus` accepts on the wire.
 pub const DEPLOYED_ON_AWS_STATUS_VALUES: &[&str] = &["DEPLOYED", "NOT_APPLICABLE", "NOT_DEPLOYED"];
 
@@ -181,6 +185,10 @@ pub const FULFILLMENT_OPTION_TYPE_VALUES: &[&str] = &["AMAZON_MACHINE_IMAGE", "A
 pub const LEGAL_DOCUMENT_TYPE_VALUES: &[&str] = &["CustomDsa", "CustomEula", "EnterpriseEula", "StandardDsa", "StandardEula"];
 
 
+/// The values `ListingAttributeType` accepts on the wire.
+pub const LISTING_ATTRIBUTE_TYPE_VALUES: &[&str] = &["CASE_STUDY", "SPECIALIZATION_DETAIL", "TRUST_CENTER_CERTIFICATION", "TRUST_CENTER_CONTROL", "TRUST_CENTER_DOCUMENT", "TRUST_CENTER_FAQ", "TRUST_CENTER_SOURCE", "TRUST_CENTER_UPDATE"];
+
+
 /// The values `ListingBadgeType` accepts on the wire.
 pub const LISTING_BADGE_TYPE_VALUES: &[&str] = &["AWS_FREE_TIER", "DEPLOYED_ON_AWS", "FREE_TRIAL", "MULTI_PRODUCT", "QUICK_LAUNCH"];
 
@@ -191,6 +199,10 @@ pub const PRICING_MODEL_TYPE_VALUES: &[&str] = &["BYOL", "CONTRACT", "FREE", "US
 
 /// The values `PricingUnitType` accepts on the wire.
 pub const PRICING_UNIT_TYPE_VALUES: &[&str] = &["BANDWIDTH", "DATA", "HOSTS", "REQUESTS", "TIERS", "UNITS", "USERS"];
+
+
+/// The values `PurchaseIndicatorType` accepts on the wire.
+pub const PURCHASE_INDICATOR_TYPE_VALUES: &[&str] = &["AVAILABLE_FOR_USE_WITHOUT_SUBSCRIPTION", "NOT_AVAILABLE_FOR_SUBSCRIPTION"];
 
 
 /// The values `PurchaseOptionBadgeType` accepts on the wire.
@@ -218,7 +230,7 @@ pub const RESOURCE_TYPE_VALUES: &[&str] = &["MANUFACTURER_INSTRUCTIONS", "MANUFA
 
 
 /// The values `ReviewSourceId` accepts on the wire.
-pub const REVIEW_SOURCE_ID_VALUES: &[&str] = &["AWS_MARKETPLACE"];
+pub const REVIEW_SOURCE_ID_VALUES: &[&str] = &["AWS_MARKETPLACE", "G2", "PEERSPOT"];
 
 
 /// The values `SaasQuickLaunchStatus` accepts on the wire.
@@ -226,11 +238,11 @@ pub const SAAS_QUICK_LAUNCH_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `SearchFacetType` accepts on the wire.
-pub const SEARCH_FACET_TYPE_VALUES: &[&str] = &["AVERAGE_CUSTOMER_RATING", "CATEGORY", "DEPLOYED_ON_AWS", "FULFILLMENT_OPTION_TYPE", "NUMBER_OF_PRODUCTS", "PRICING_MODEL", "PRICING_UNIT", "PUBLISHER"];
+pub const SEARCH_FACET_TYPE_VALUES: &[&str] = &["AVERAGE_CUSTOMER_RATING", "CATEGORY", "CERTIFICATES", "DEPLOYED_ON_AWS", "FULFILLMENT_OPTION_TYPE", "NUMBER_OF_PRODUCTS", "PRICING_MODEL", "PRICING_UNIT", "PUBLISHER", "SELLER_ENGAGEMENT", "SPECIALIZATION", "SPECIALIZATION_CATEGORY", "TRUST_CENTER"];
 
 
 /// The values `SearchFilterType` accepts on the wire.
-pub const SEARCH_FILTER_TYPE_VALUES: &[&str] = &["CATEGORY", "DEPLOYED_ON_AWS", "FULFILLMENT_OPTION_TYPE", "MAX_AVERAGE_CUSTOMER_RATING", "MIN_AVERAGE_CUSTOMER_RATING", "NUMBER_OF_PRODUCTS", "PRICING_MODEL", "PRICING_UNIT", "PUBLISHER"];
+pub const SEARCH_FILTER_TYPE_VALUES: &[&str] = &["CATEGORY", "CERTIFICATES", "DEPLOYED_ON_AWS", "FULFILLMENT_OPTION_TYPE", "MAX_AVERAGE_CUSTOMER_RATING", "MIN_AVERAGE_CUSTOMER_RATING", "NUMBER_OF_PRODUCTS", "PRICING_MODEL", "PRICING_UNIT", "PRODUCT_ID", "PUBLISHER", "SELLER_ENGAGEMENT", "SPECIALIZATION", "SPECIALIZATION_CATEGORY", "TRUST_CENTER"];
 
 
 /// The values `SearchListingsSortBy` accepts on the wire.
@@ -250,10 +262,26 @@ pub const SELLER_ENGAGEMENT_CONTENT_TYPE_VALUES: &[&str] = &["LINK"];
 
 
 /// The values `SellerEngagementType` accepts on the wire.
-pub const SELLER_ENGAGEMENT_TYPE_VALUES: &[&str] = &["REQUEST_FOR_DEMO", "REQUEST_FOR_PRIVATE_OFFER"];
+pub const SELLER_ENGAGEMENT_TYPE_VALUES: &[&str] = &["BUY_NOW", "EXPRESS_PRIVATE_OFFER", "REQUEST_FOR_DEMO", "REQUEST_FOR_PRIVATE_OFFER", "TRY_FOR_FREE"];
+
+
+/// The values `SpecializationType` accepts on the wire.
+pub const SPECIALIZATION_TYPE_VALUES: &[&str] = &["INDUSTRY", "SERVICES", "USE_CASE"];
 
 
 /// The values `TermType` accepts on the wire.
 pub const TERM_TYPE_VALUES: &[&str] = &["ByolPricingTerm", "ConfigurableUpfrontPricingTerm", "FixedUpfrontPricingTerm", "FreeTrialPricingTerm", "LegalTerm", "NetPaymentTerm", "PaymentScheduleTerm", "RecurringPaymentTerm", "RenewalTerm", "SupportTerm", "UsageBasedPricingTerm", "ValidityTerm", "VariablePaymentTerm"];
+
+
+/// The values `TrustCenterControlDomain` accepts on the wire.
+pub const TRUST_CENTER_CONTROL_DOMAIN_VALUES: &[&str] = &["AI_GOVERNANCE", "RESILIENCE", "SECURITY"];
+
+
+/// The values `TrustCenterDocumentAccessType` accepts on the wire.
+pub const TRUST_CENTER_DOCUMENT_ACCESS_TYPE_VALUES: &[&str] = &["DOWNLOAD", "REQUEST_ACCESS", "VIEW"];
+
+
+/// The values `TrustCenterProvider` accepts on the wire.
+pub const TRUST_CENTER_PROVIDER_VALUES: &[&str] = &["DRATA", "OTHER", "VANTA"];
 
 

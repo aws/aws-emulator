@@ -29,7 +29,7 @@ use super::*;
 /// The segment that names this service's listing-media plane, behind the reserved namespace
 /// segment every plane this emulator serves at its own front door is addressed under
 /// (`service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE`):
-/// `/_aws/marketplace-discovery-listing-media/{mediaId}/logo.png`.
+/// `/_aws/marketplace-discovery-listing-media/{mediaId}/{authenticator}/logo.png`.
 ///
 /// Shared by the URL a record announces and by the route that answers there, so the address
 /// this service publishes is the address it serves.
@@ -87,11 +87,16 @@ impl LogoMedia {
 }
 
 /// The request path the logo of the media record `media_id` is served at.
+///
+/// The address carries the authenticator this process minted for that media record
+/// ([`super::media_address`]), because a fetch of it presents no credential of its own: an
+/// address assembled from the media id alone is one this service never handed out.
 #[must_use]
 pub fn logo_path(media_id: &str) -> String {
     format!(
-        "/{}/{LISTING_MEDIA_PLANE_SEGMENT}/{media_id}/{LOGO_FILE_NAME}",
-        ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE
+        "/{}/{LISTING_MEDIA_PLANE_SEGMENT}/{media_id}/{}/{LOGO_FILE_NAME}",
+        ::service_common::data_plane_addressing::EMULATOR_PATH_NAMESPACE,
+        super::media_address::authenticator(media_id)
     )
 }
 
@@ -110,8 +115,10 @@ pub fn logo_url(endpoint_base: &str, media_id: &str) -> String {
 /// [`logo_path`] mints, and `None` for every other path.
 ///
 /// The inverse of the minting above, read through the shared addressing module, so a URL this
-/// service published resolves back to the record behind it. Nothing below the image's own
-/// segment is this route: an image is one document, not a path space.
+/// service published resolves back to the record behind it. The authenticator the address
+/// carries is checked here, before any store is reached, so a path a caller assembled
+/// addresses nothing. Nothing below the image's own segment is this route: an image is one
+/// document, not a path space.
 #[must_use]
 pub fn logo_route(uri: &str) -> Option<&str> {
     use ::service_common::data_plane_addressing::{first_segment, EMULATOR_PATH_NAMESPACE};
@@ -124,11 +131,12 @@ pub fn logo_route(uri: &str) -> Option<&str> {
         return None;
     }
     let (media_id, rest) = first_segment(rest)?;
+    let (authenticator, rest) = first_segment(rest)?;
     let (file, below) = first_segment(rest)?;
     if media_id.is_empty() || file != LOGO_FILE_NAME || below != "/" {
         return None;
     }
-    Some(media_id)
+    super::media_address::authenticates(media_id, authenticator).then_some(media_id)
 }
 
 impl ComAmazonawsMarketplacediscoveryAwsmarketplacediscoveryState {

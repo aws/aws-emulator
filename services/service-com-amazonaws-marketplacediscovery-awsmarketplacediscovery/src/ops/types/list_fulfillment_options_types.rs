@@ -126,6 +126,8 @@ pub struct CloudFormationFulfillmentOption {
     pub release_notes: Option<String>,
     pub usage_instructions: Option<String>,
     pub available_from_time: Option<::aws_smithy_types::DateTime>,
+    pub architecture_diagram_url: Option<String>,
+    pub deployment_template_url: Option<String>,
     pub short_description: Option<String>,
     pub long_description: Option<String>,
 }
@@ -244,6 +246,24 @@ pub struct SaasFulfillmentOption {
     pub available_from_time: Option<::aws_smithy_types::DateTime>,
     pub launch_url: Option<String>,
     pub quick_launch: String,
+    pub deployment_templates: Vec<SaasDeploymentTemplate>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.marketplacediscovery#SaasDeploymentTemplate")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SaasDeploymentTemplate {
+    cloudFormationDeploymentTemplate(SaasCloudFormationDeploymentTemplate),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#SaasCloudFormationDeploymentTemplate")]
+#[derive(Debug, Clone, Default)]
+pub struct SaasCloudFormationDeploymentTemplate {
+    pub template_name: String,
+    pub description: Option<String>,
+    pub default_stack_name: String,
+    pub template_url: String,
+    pub iam_policy: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.marketplacediscovery#SageMakerAlgorithmFulfillmentOption")]
