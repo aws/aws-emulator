@@ -18,12 +18,43 @@
 //!
 //! The modelled shape quoted here is the model's own, read with
 //! `smithy_query(query="shape",shape="RuntimeVersion",model_path="services/service-com-amazonaws-synthetics-synthetics/smithy-model/com-amazonaws-synthetics-synthetics.json")`.
+//!
+//! The last test pins the LOCAL DECLARATION the `Language` member needs: the published
+//! model snapshot declares no such member, so the shape that carries it is generated from
+//! the overlay model `smithy-model/local-additions.json` (see
+//! `smithy-model/LOCAL-ADDITIONS.md`). Everything that overlay restates of the snapshot is
+//! compared against it, shape by shape, so a refreshed snapshot that declares the member,
+//! adds one the overlay does not restate, or changes a target or constraint fails here
+//! rather than silently changing what this service reports.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::canary_lifecycle::{create_body, Answer, Synthetics};
+
+/// The published model snapshot this crate is generated from, embedded at compile time so
+/// the local declaration is checked against the model rather than against a copy of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-synthetics-synthetics.json"
+));
+
+/// The overlay model the local `RuntimeVersion` declaration is generated from, embedded for
+/// the same reason: what it restates of the snapshot must still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The member this crate declares locally, which the snapshot does not.
+const LOCAL_MEMBER: &str = "Language";
+
+/// The shape the overlay adds for that member, which the snapshot declares nowhere.
+const LOCAL_SHAPE: &str = "com.amazonaws.synthetics#RuntimeVersionLanguage";
+
+/// The shape the overlay restates in order to add [`LOCAL_MEMBER`] to it.
+const CATALOG_ENTRY_SHAPE: &str = "com.amazonaws.synthetics#RuntimeVersion";
 
 /// The two values `RuntimeVersion$Language` takes: a canary script is written either in
 /// Node.js or in Python, which is what the runtime families the service publishes are split
@@ -357,4 +388,134 @@ async fn every_reported_version_can_create_a_canary_and_an_unreported_one_cannot
              {message:?}"
         );
     }
+}
+
+/// The `shapes` object of one model document.
+fn model_shapes(model: &str) -> Value {
+    let parsed: Value = serde_json::from_str(model).expect("a model document must be JSON");
+    Value::Object(
+        parsed["shapes"]
+            .as_object()
+            .expect("a model document must carry a shapes object")
+            .clone(),
+    )
+}
+
+/// `declaration` with every documentation trait dropped, recursively — and with a traits
+/// object left empty by that dropped too, so a member the snapshot documents and nothing
+/// else compares equal to the same member restated with no traits at all.
+///
+/// Documentation is prose: the overlay restates what codegen READS — targets, types and
+/// constraint traits — so comparing declarations has to ignore the one trait that carries no
+/// behaviour.
+fn without_docs(declaration: &Value) -> Value {
+    match declaration {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(key, _)| key.as_str() != "smithy.api#documentation")
+                .map(|(key, value)| (key.clone(), without_docs(value)))
+                .filter(|(key, value)| {
+                    key.as_str() != "traits" || !value.as_object().is_some_and(Map::is_empty)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_docs).collect()),
+        other => other.clone(),
+    }
+}
+
+#[test]
+fn the_overlay_restates_the_snapshot_exactly_but_for_the_member_it_adds() {
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    for (shape_id, declared) in restated {
+        if shape_id == LOCAL_SHAPE {
+            assert!(
+                snapshot[shape_id].is_null(),
+                "case {shape_id}: the snapshot now declares this shape, so the local \
+                 declaration should give way to the modelled one"
+            );
+            continue;
+        }
+        let modelled = &snapshot[shape_id];
+        assert!(
+            !modelled.is_null(),
+            "case {shape_id}: the overlay restates a shape the snapshot no longer declares"
+        );
+        assert_eq!(
+            declared["type"], modelled["type"],
+            "case {shape_id}: expected the type the snapshot gives it ({}), got {}",
+            modelled["type"], declared["type"]
+        );
+
+        // The traits the snapshot states for the shape itself — a constraint the boundary
+        // validator enforces, the input/output marker — are what the overlay must restate
+        // as written. A declaration whose only trait was documentation carries none here.
+        let shape_traits = |declaration: &Value| -> Value {
+            match without_docs(&declaration["traits"]) {
+                Value::Object(traits) if traits.is_empty() => Value::Null,
+                other => other,
+            }
+        };
+        assert_eq!(
+            shape_traits(declared),
+            shape_traits(modelled),
+            "case {shape_id}: expected the traits the snapshot states for it ({:?}), got {:?}",
+            shape_traits(modelled),
+            shape_traits(declared)
+        );
+
+        let modelled_members = modelled["members"].as_object().cloned().unwrap_or_default();
+        let declared_members = declared["members"].as_object().cloned().unwrap_or_default();
+        for (member, modelled_member) in &modelled_members {
+            assert_eq!(
+                without_docs(&declared_members[member]),
+                without_docs(modelled_member),
+                "case {shape_id}${member}: expected the declaration the snapshot gives it \
+                 ({:?}), got {:?}",
+                without_docs(modelled_member),
+                declared_members.get(member)
+            );
+        }
+        let added: Vec<&str> = declared_members
+            .keys()
+            .filter(|member| !modelled_members.contains_key(*member))
+            .map(String::as_str)
+            .collect();
+        if shape_id == CATALOG_ENTRY_SHAPE {
+            assert_eq!(
+                added,
+                vec![LOCAL_MEMBER],
+                "case {shape_id}: expected exactly [{LOCAL_MEMBER:?}] added to the modelled \
+                 members, got {added:?}"
+            );
+        } else {
+            assert!(
+                added.is_empty(),
+                "case {shape_id}: this shape is restated only for the one above to target, so \
+                 it may add no member; got {added:?}"
+            );
+        }
+    }
+
+    // The shape the local declaration is of is restated: left out of the overlay, the entry
+    // would silently lose the member.
+    assert!(
+        restated.contains_key(CATALOG_ENTRY_SHAPE),
+        "case {CATALOG_ENTRY_SHAPE}: the overlay must restate the shape the local declaration \
+         is of, got {:?}",
+        restated.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        snapshot[CATALOG_ENTRY_SHAPE]["members"]
+            .as_object()
+            .is_some_and(|members| !members.contains_key(LOCAL_MEMBER)),
+        "case {CATALOG_ENTRY_SHAPE}: the snapshot now declares {LOCAL_MEMBER}, so the local \
+         declaration should give way to the modelled member"
+    );
 }

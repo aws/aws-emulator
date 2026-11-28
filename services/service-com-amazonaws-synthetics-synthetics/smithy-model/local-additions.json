@@ -1,0 +1,27 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.synthetics#RuntimeVersion": {
+      "type": "structure",
+      "members": {
+        "VersionName": { "target": "com.amazonaws.synthetics#String" },
+        "Description": { "target": "com.amazonaws.synthetics#String" },
+        "Language": { "target": "com.amazonaws.synthetics#RuntimeVersionLanguage" },
+        "ReleaseDate": { "target": "com.amazonaws.synthetics#Timestamp" },
+        "DeprecationDate": { "target": "com.amazonaws.synthetics#Timestamp" }
+      }
+    },
+    "com.amazonaws.synthetics#RuntimeVersionLanguage": {
+      "type": "string"
+    },
+    "com.amazonaws.synthetics#String": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1024 }
+      }
+    },
+    "com.amazonaws.synthetics#Timestamp": {
+      "type": "timestamp"
+    }
+  }
+}
