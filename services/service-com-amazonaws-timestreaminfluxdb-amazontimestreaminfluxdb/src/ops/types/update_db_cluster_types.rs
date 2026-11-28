@@ -19,6 +19,7 @@ pub struct UpdateDbClusterInput {
     pub db_parameter_group_identifier: Option<String>,
     pub port: Option<i32>,
     pub db_instance_type: Option<String>,
+    pub deployment_configuration: Option<DeploymentConfiguration>,
     pub failover_mode: Option<String>,
     pub maintenance_schedule: Option<MaintenanceSchedule>,
     pub db_backup_configurations: Option<Vec<DbBackupConfiguration>>,

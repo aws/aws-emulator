@@ -7,22 +7,26 @@
 //! ([`super::DbInstance`]), so a node a cluster reports is a node the DB-instance
 //! read paths return. This module owns the persisted cluster record plus the helpers a
 //! cluster handler shares: minting the service-generated `id`, formatting the `arn` and
-//! the two endpoints, deriving the engine, the default port and the node composition
-//! from the DB parameter group the create named, building each node's DB instance
-//! record, and settling the clock-owed statuses of a cluster and its nodes.
+//! the two endpoints, deriving the engine and the default port from the DB parameter
+//! group the create named, resolving the cluster's COMPUTE TOPOLOGY — the node groups the
+//! create defined, else the ones the group's deprecated node-count parameters describe —
+//! building each node's DB instance record, and settling the clock-owed statuses of a
+//! cluster and its nodes.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    ClusterConfiguration, DbBackupConfiguration, DbClusterSummary, GetDbClusterOutput,
-    LogDeliveryConfiguration, MaintenanceSchedule, Parameters,
+    ClusterConfiguration, DbBackupConfiguration, DbClusterSummary, DeploymentConfiguration,
+    GetDbClusterOutput, InfluxDBv3EnterpriseDeploymentConfiguration, LogDeliveryConfiguration,
+    MaintenanceSchedule, NodeGroup, Parameters, ValidationException,
 };
 
 use super::{
     availability_zones, backup_configurations_output, db_instance_arn, db_instance_endpoint,
     ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState, DbInstance, DbInstanceClusterRole,
     ARN_NAMESPACE, STATUS_CREATING, TRANSITION_SPAN,
+    VALIDATION_EXCEPTION_REASON_FIELD_VALIDATION_FAILED,
 };
 
 /// `ClusterStatus` values this service's cluster records use, each one a member of
@@ -112,10 +116,31 @@ const INGEST_QUERY_NODE_RANGE: (i32, i32) = (1, 4);
 /// at all.
 const QUERY_ONLY_NODE_RANGE: (i32, i32) = (0, 10);
 
+/// The nodes that both ingest and query a group of the InfluxDB v3 Enterprise family
+/// configures when it sets none: the `default` the model gives
+/// `InfluxDBv3EnterpriseParameters$ingestQueryInstances` (1).
+const MODELLED_DEFAULT_INGEST_QUERY_NODES: i32 = 1;
+
+/// The query-only nodes such a group configures when it sets none: the `default` the
+/// model gives `InfluxDBv3EnterpriseParameters$queryOnlyInstances` (0).
+const MODELLED_DEFAULT_QUERY_ONLY_NODES: i32 = 0;
+
+/// Whether such a group puts compaction on a standalone node when it sets nothing: the
+/// `default` the model gives `InfluxDBv3EnterpriseParameters$dedicatedCompactor` (false).
+const MODELLED_DEFAULT_DEDICATED_COMPACTOR: bool = false;
+
 /// The query-only nodes a read-replicas cluster gets when the group applied to it
 /// carries no node parameters: one read replica beside the node that ingests, the
 /// smallest composition the deployment type describes.
 const DEFAULT_QUERY_ONLY_NODES: i32 = 1;
+
+/// How many nodes one node group holds: the range the model gives `NodeGroup$count`
+/// (1..13).
+const NODE_GROUP_COUNT_RANGE: (i32, i32) = (1, 13);
+
+/// How many node groups one topology holds: the maximum of the modelled `NodeGroupList`
+/// length (1..10).
+const NODE_GROUP_LIST_MAX: usize = 10;
 
 /// The longest a DB instance name may be: the maximum of the modelled `DbInstanceName`
 /// length (3..40), which the service-generated name of a cluster's node also obeys.
@@ -141,6 +166,11 @@ pub struct DbCluster {
     pub reader_endpoint: String,
     pub port: i32,
     pub deployment_type: String,
+    /// The one instance type this cluster reports for itself: the create's own
+    /// `dbInstanceType` where it named one, and otherwise the type its node groups run
+    /// (see [`node_groups_instance_type`]) — a topology sizes each group on its own, so
+    /// the cluster-level member is that projection of it. Every NODE runs its own group's
+    /// type, which is what [`DbCluster::node_instance`] gives it.
     pub db_instance_type: String,
     pub network_type: Option<String>,
     pub db_storage_type: Option<String>,
@@ -162,10 +192,12 @@ pub struct DbCluster {
     pub vpc_subnet_ids: Vec<String>,
     pub vpc_security_group_ids: Vec<String>,
     pub failover_mode: String,
-    /// The node composition this cluster was provisioned with (see
-    /// [`cluster_configuration`]); the nodes in [`DbCluster::db_instance_ids`] are what
-    /// it describes.
-    pub cluster_configuration: ClusterConfiguration,
+    /// The compute topology this cluster was provisioned with: the node groups the create
+    /// defined, else the ones the node-count parameters of the applied DB parameter group
+    /// describe (see [`deployment_node_groups`] and [`configuration_node_groups`]). The
+    /// nodes in [`DbCluster::db_instance_ids`] are what it describes, one per node of
+    /// every group, so it is never empty.
+    pub node_groups: Vec<NodeGroup>,
     pub db_backup_configurations: Option<Vec<DbBackupConfiguration>>,
     pub kms_key_id: Option<String>,
     /// Stored because `CreateDbCluster` accepts them for the initial InfluxDB admin
@@ -197,6 +229,33 @@ impl DbCluster {
             self.status = CLUSTER_STATUS_AVAILABLE.to_string();
             self.settles_at = None;
         }
+    }
+
+    /// The compute topology of this cluster as `deploymentConfiguration` reports it: the
+    /// node groups it actually provisioned, under the union member that expresses a
+    /// topology.
+    ///
+    /// Every cluster of this service is composed of node groups, whichever way its create
+    /// described them, and the modelled `DeploymentConfiguration` union declares one
+    /// member per engine topology this API expresses — today exactly one
+    /// (`smithy_query(query="shape", shape="DeploymentConfiguration")`), the member whose
+    /// node groups are the shape every topology here is expressed in — so the topology is
+    /// reported under it, as the member documents ("The returned topology reflects the
+    /// cluster's actual provisioned nodes").
+    pub fn deployment_configuration(&self) -> Option<DeploymentConfiguration> {
+        (!self.node_groups.is_empty()).then(|| {
+            DeploymentConfiguration::InfluxDBv3Enterprise(
+                InfluxDBv3EnterpriseDeploymentConfiguration {
+                    node_groups: self.node_groups.clone(),
+                },
+            )
+        })
+    }
+
+    /// The same topology as the deprecated `clusterConfiguration` reports it: the node
+    /// counts [`node_groups_cluster_configuration`] reads off this cluster's node groups.
+    pub fn cluster_configuration(&self) -> ClusterConfiguration {
+        node_groups_cluster_configuration(&self.node_groups)
     }
 
     /// Project this stored record into `GetDbCluster`'s output shape. Every member comes
@@ -232,7 +291,8 @@ impl DbCluster {
             vpc_subnet_ids: Some(self.vpc_subnet_ids.clone()),
             vpc_security_group_ids: Some(self.vpc_security_group_ids.clone()),
             failover_mode: Some(self.failover_mode.clone()),
-            cluster_configuration: Some(self.cluster_configuration.clone()),
+            cluster_configuration: Some(self.cluster_configuration()),
+            deployment_configuration: self.deployment_configuration(),
             db_backup_configurations: backup_configurations_output(&self.db_backup_configurations),
             kms_key_id: self.kms_key_id.clone(),
         }
@@ -263,11 +323,12 @@ impl DbCluster {
 
     /// The DB instance record one of this cluster's nodes is.
     ///
-    /// Every member comes from the cluster: a node runs the cluster's instance type,
-    /// storage, network type and VPC placement, on the cluster's port, under the
-    /// parameter group applied to the cluster and with the cluster's initial InfluxDB
-    /// credentials. It is provisioning, so the clock owes it the settle to `AVAILABLE`
-    /// every new DB instance gets, and the cluster settles only after that.
+    /// Every member comes from the cluster or from the NODE GROUP the node belongs to: a
+    /// node runs its group's instance type and the cluster's storage, network type and
+    /// VPC placement, on the cluster's port, under the parameter group applied to the
+    /// cluster and with the cluster's initial InfluxDB credentials. It is provisioning, so
+    /// the clock owes it the settle to `AVAILABLE` every new DB instance gets, and the
+    /// cluster settles only after that.
     pub fn node_instance(
         &self,
         node: &ClusterNode,
@@ -290,7 +351,7 @@ impl DbCluster {
             served_endpoint: None,
             served_port: None,
             network_type: self.network_type.clone(),
-            db_instance_type: self.db_instance_type.clone(),
+            db_instance_type: node.instance_type.clone(),
             db_storage_type: self.db_storage_type.clone(),
             allocated_storage: self.allocated_storage,
             deployment_type: Some(DEPLOYMENT_TYPE_SINGLE_AZ.to_string()),
@@ -322,55 +383,40 @@ impl DbCluster {
 }
 
 /// One node of a DB cluster: the service-generated name of the DB instance the cluster
-/// provisions for it, and the roles that instance takes in the cluster.
+/// provisions for it, the roles that instance takes in the cluster, and the instance type
+/// it runs.
 #[derive(Debug, Clone)]
 pub struct ClusterNode {
     pub name: String,
     /// The roles this node takes, the first of them the role `instanceMode` reports.
     /// Never empty.
     pub instance_modes: Vec<String>,
+    /// The Timestream for InfluxDB instance type this node runs: the one its node group
+    /// names, since `NodeGroup$instanceType` is what sizes the nodes of a group.
+    pub instance_type: String,
 }
 
-/// The nodes a cluster named `cluster_name` with id `cluster_id` and composed as
-/// `configuration` provisions, in creation order: the nodes that both ingest and query,
-/// then the query-only read replicas, then the standalone compactor when the
-/// configuration asks for one.
+/// The nodes a cluster named `cluster_name` with id `cluster_id` whose topology is
+/// `node_groups` provisions, in creation order: every node of the first group, then of
+/// the next, so a node's ordinal follows the order the topology lists its groups in.
 ///
-/// The node count is bounded here as well as where the composition is derived, so the
-/// number of DB instances one create provisions can never leave the ranges the model
-/// gives those two members.
+/// One node per unit of `NodeGroup$count`, each taking that group's roles and instance
+/// type: the DB instances a cluster is composed of ARE its node groups' nodes.
 pub fn cluster_nodes(
     cluster_name: &str,
     cluster_id: &str,
-    configuration: &ClusterConfiguration,
+    node_groups: &[NodeGroup],
 ) -> Vec<ClusterNode> {
-    let ingest_query = configuration
-        .ingest_query_instances
-        .unwrap_or(INGEST_QUERY_NODE_RANGE.0)
-        .clamp(INGEST_QUERY_NODE_RANGE.0, INGEST_QUERY_NODE_RANGE.1);
-    let query_only = configuration
-        .query_only_instances
-        .unwrap_or(DEFAULT_QUERY_ONLY_NODES)
-        .clamp(QUERY_ONLY_NODE_RANGE.0, QUERY_ONLY_NODE_RANGE.1);
-    let mut modes: Vec<Vec<String>> = Vec::new();
-    for _ in 0..ingest_query {
-        modes.push(vec![
-            INSTANCE_MODE_INGEST.to_string(),
-            INSTANCE_MODE_QUERY.to_string(),
-        ]);
-    }
-    for _ in 0..query_only {
-        modes.push(vec![INSTANCE_MODE_QUERY.to_string()]);
-    }
-    if configuration.dedicated_compactor.unwrap_or_default() {
-        modes.push(vec![INSTANCE_MODE_COMPACT.to_string()]);
-    }
-    modes
-        .into_iter()
+    node_groups
+        .iter()
+        .flat_map(|group| {
+            (0..group.count.max(0)).map(|_| (group.instance_modes.clone(), group.instance_type.clone()))
+        })
         .enumerate()
-        .map(|(position, instance_modes)| ClusterNode {
+        .map(|(position, (instance_modes, instance_type))| ClusterNode {
             name: node_name(cluster_name, cluster_id, position + 1),
             instance_modes,
+            instance_type,
         })
         .collect()
 }
@@ -394,23 +440,34 @@ fn node_name(cluster_name: &str, cluster_id: &str, ordinal: usize) -> String {
 }
 
 /// The node composition of a read-replicas cluster whose applied DB parameter group
-/// configures `parameters`.
+/// configures `parameters`, as the DEPRECATED `ClusterConfiguration` expresses it.
 ///
 /// `ClusterConfiguration`'s three members are exactly the three node parameters the
 /// InfluxDB v3 Enterprise family carries (`ingestQueryInstances`, `queryOnlyInstances`,
 /// `dedicatedCompactor`), so a cluster whose parameter group configures that family is
-/// composed from them, each count clamped into the range the model gives that member.
-/// Any other family carries no node parameters, so such a cluster — and one whose create
-/// named no group at all — gets the smallest read-replicas composition: one node that
-/// ingests and queries, one that only queries, and no standalone compactor.
-pub fn cluster_configuration(parameters: Option<&Parameters>) -> ClusterConfiguration {
+/// composed from them — each one defaulted to the `default` the model gives that member
+/// and clamped into its range. Any other family carries no node parameters, so such a
+/// cluster — and one whose create named no group at all — gets the smallest read-replicas
+/// composition: one node that ingests and queries, one that only queries, and no
+/// standalone compactor.
+pub fn parameter_cluster_configuration(parameters: Option<&Parameters>) -> ClusterConfiguration {
     let (ingest_query, query_only, dedicated_compactor) = match parameters {
         Some(Parameters::InfluxDBv3Enterprise(enterprise)) => (
-            enterprise.ingest_query_instances,
-            enterprise.query_only_instances,
-            enterprise.dedicated_compactor,
+            enterprise
+                .ingest_query_instances
+                .unwrap_or(MODELLED_DEFAULT_INGEST_QUERY_NODES),
+            enterprise
+                .query_only_instances
+                .unwrap_or(MODELLED_DEFAULT_QUERY_ONLY_NODES),
+            enterprise
+                .dedicated_compactor
+                .unwrap_or(MODELLED_DEFAULT_DEDICATED_COMPACTOR),
         ),
-        _ => (INGEST_QUERY_NODE_RANGE.0, DEFAULT_QUERY_ONLY_NODES, false),
+        _ => (
+            INGEST_QUERY_NODE_RANGE.0,
+            DEFAULT_QUERY_ONLY_NODES,
+            MODELLED_DEFAULT_DEDICATED_COMPACTOR,
+        ),
     };
     ClusterConfiguration {
         ingest_query_instances: Some(
@@ -420,6 +477,192 @@ pub fn cluster_configuration(parameters: Option<&Parameters>) -> ClusterConfigur
             query_only.clamp(QUERY_ONLY_NODE_RANGE.0, QUERY_ONLY_NODE_RANGE.1),
         ),
         dedicated_compactor: Some(dedicated_compactor),
+    }
+}
+
+/// The node groups a `deploymentConfiguration` defines, the topology a request that
+/// carries one asks for.
+///
+/// It is the SOURCE OF TRUTH for the cluster's topology, as the member documents ("A
+/// deployment configuration becomes the source of truth for the cluster's topology.
+/// Timestream for InfluxDB then ignores any node-count parameters in the associated DB
+/// parameter group"), so nothing here consults the applied parameter group.
+///
+/// The topology is held to the size the model gives it — at most `NodeGroupList`'s ten
+/// groups, each of at most `NodeGroup$count`'s thirteen nodes. The framework's boundary
+/// walk refuses a request outside those declared bounds before this runs, so that is
+/// unreachable for a request that crossed the wire; the bound here keeps the node set ONE
+/// call can provision inside the model for an in-crate caller too (a restore rebuilding a
+/// captured topology).
+pub fn deployment_node_groups(configuration: &DeploymentConfiguration) -> Vec<NodeGroup> {
+    let groups = match configuration {
+        DeploymentConfiguration::InfluxDBv3Enterprise(enterprise) => &enterprise.node_groups,
+    };
+    groups
+        .iter()
+        .take(NODE_GROUP_LIST_MAX)
+        .map(|group| NodeGroup {
+            count: group
+                .count
+                .clamp(NODE_GROUP_COUNT_RANGE.0, NODE_GROUP_COUNT_RANGE.1),
+            ..group.clone()
+        })
+        .collect()
+}
+
+/// The node groups a cluster composed as the deprecated `configuration` says is
+/// provisioned with, every node of them running `db_instance_type`: one group of the
+/// nodes that both ingest and query, one of the query-only read replicas where the
+/// composition asks for any, and one of the standalone compactor where it asks for one.
+///
+/// This is the deprecated node-count view expressed as the topology that replaces it, so
+/// one cluster has ONE stored topology whichever way its create described it.
+pub fn configuration_node_groups(
+    configuration: &ClusterConfiguration,
+    db_instance_type: &str,
+) -> Vec<NodeGroup> {
+    let group = |modes: &[&str], count: i32| NodeGroup {
+        instance_modes: modes.iter().map(|mode| (*mode).to_string()).collect(),
+        instance_type: db_instance_type.to_string(),
+        count,
+    };
+    let ingest_query = configuration
+        .ingest_query_instances
+        .unwrap_or(MODELLED_DEFAULT_INGEST_QUERY_NODES)
+        // Held to the maxima the model gives those two members, so the node set one
+        // request provisions is bounded here as well as where a composition is derived.
+        .min(INGEST_QUERY_NODE_RANGE.1);
+    let query_only = configuration
+        .query_only_instances
+        .unwrap_or(MODELLED_DEFAULT_QUERY_ONLY_NODES)
+        .min(QUERY_ONLY_NODE_RANGE.1);
+    let mut node_groups = Vec::new();
+    if ingest_query > 0 {
+        node_groups.push(group(
+            &[INSTANCE_MODE_INGEST, INSTANCE_MODE_QUERY],
+            ingest_query,
+        ));
+    }
+    if query_only > 0 {
+        node_groups.push(group(&[INSTANCE_MODE_QUERY], query_only));
+    }
+    if configuration.dedicated_compactor.unwrap_or_default() {
+        node_groups.push(group(&[INSTANCE_MODE_COMPACT], 1));
+    }
+    node_groups
+}
+
+/// The node groups a cluster whose applied DB parameter group configures `parameters` is
+/// provisioned with when its create defined no topology of its own: the deprecated
+/// node-count composition those parameters describe, as node groups running
+/// `db_instance_type`.
+pub fn parameter_node_groups(
+    parameters: Option<&Parameters>,
+    db_instance_type: &str,
+) -> Vec<NodeGroup> {
+    configuration_node_groups(
+        &parameter_cluster_configuration(parameters),
+        db_instance_type,
+    )
+}
+
+/// The deprecated `ClusterConfiguration` view of a topology: how many of its nodes both
+/// ingest and query, how many only query, and whether compaction has a standalone node.
+///
+/// Those three members are the whole of that shape, so a role combination they cannot
+/// express — a node that only ingests, or one that runs the processing engine — is
+/// counted by none of them: that is what a view the topology outgrew can report. The
+/// topology itself is reported in full by `deploymentConfiguration`.
+///
+/// The counts are the topology's own, NOT clamped: `ClusterConfiguration`'s three members
+/// each target the plain `Integer` and declare no `@range`
+/// (`smithy_query(query="shape", shape="ClusterConfiguration")`), unlike the deprecated
+/// node-count PARAMETERS [`parameter_cluster_configuration`] reads, which do declare one
+/// and are held to it there. So a topology with no node that both ingests and queries
+/// reports zero of them, and one with thirteen read replicas reports thirteen: the number
+/// of nodes the cluster actually has, which is what this shape reports about it.
+pub fn node_groups_cluster_configuration(node_groups: &[NodeGroup]) -> ClusterConfiguration {
+    let nodes_with = |wanted: &[&str], without: &[&str]| -> i32 {
+        node_groups
+            .iter()
+            .filter(|group| {
+                wanted
+                    .iter()
+                    .all(|mode| group.instance_modes.iter().any(|held| held == mode))
+                    && !without
+                        .iter()
+                        .any(|mode| group.instance_modes.iter().any(|held| held == mode))
+            })
+            .map(|group| group.count.max(0))
+            .sum()
+    };
+    ClusterConfiguration {
+        ingest_query_instances: Some(nodes_with(
+            &[INSTANCE_MODE_INGEST, INSTANCE_MODE_QUERY],
+            &[],
+        )),
+        query_only_instances: Some(nodes_with(
+            &[INSTANCE_MODE_QUERY],
+            &[INSTANCE_MODE_INGEST],
+        )),
+        dedicated_compactor: Some(node_groups.iter().any(|group| {
+            group.instance_modes.len() == 1 && group.instance_modes[0] == INSTANCE_MODE_COMPACT
+        })),
+    }
+}
+
+/// The one instance type a cluster whose topology is `node_groups` reports as its own
+/// `dbInstanceType`: the type every group runs where they all run the same one, and
+/// otherwise the type of the first group whose nodes INGEST — the cluster's write path.
+///
+/// A cluster reports a single `dbInstanceType` while a topology sizes each node group on
+/// its own (`CreateDbClusterInput$dbInstanceType`: "Optional when you define the cluster
+/// topology with deploymentConfiguration, because the instance type is then specified per
+/// node group"), so the cluster-level member is this projection of the topology. WHICH
+/// type a topology running several projects to is this emulator's own choice — neither the
+/// model nor the documentation states one — so it takes the write path's, the type the
+/// nodes that ingest run.
+/// `None` only for an empty topology, which no cluster has: the modelled `nodeGroups` is
+/// required and holds 1..10 groups.
+pub fn node_groups_instance_type(node_groups: &[NodeGroup]) -> Option<String> {
+    let first = node_groups.first()?;
+    if node_groups
+        .iter()
+        .all(|group| group.instance_type == first.instance_type)
+    {
+        return Some(first.instance_type.clone());
+    }
+    node_groups
+        .iter()
+        .find(|group| {
+            group
+                .instance_modes
+                .iter()
+                .any(|mode| mode == INSTANCE_MODE_INGEST)
+        })
+        .map(|group| group.instance_type.clone())
+        .or_else(|| Some(first.instance_type.clone()))
+}
+
+/// The refusal a `CreateDbCluster` gets that names neither the instance type its nodes
+/// run nor a topology that names one per node group.
+///
+/// `dbInstanceType` is modelled optional, but only conditionally so, as it documents
+/// ("Optional when you define the cluster topology with deploymentConfiguration, because
+/// the instance type is then specified per node group") — so the framework's boundary
+/// walk admits a request that sizes nothing, and the rule is stated here. A field of the
+/// request is what is missing, so the `reason` the model marks required is the
+/// field-validation member rather than the catch-all. The RULE is the model's; the
+/// sentence that states it is this emulator's own, restating the condition the member
+/// documents rather than reproducing a wording observed on the wire.
+#[must_use]
+pub fn db_instance_type_required() -> ValidationException {
+    ValidationException {
+        message: "One of dbInstanceType or deploymentConfiguration must be specified. The \
+                  instance type is specified per node group when a deployment \
+                  configuration defines the cluster topology"
+            .to_string(),
+        reason: VALIDATION_EXCEPTION_REASON_FIELD_VALIDATION_FAILED.to_string(),
     }
 }
 

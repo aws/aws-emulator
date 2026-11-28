@@ -14,7 +14,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use crate::ops::types::{ClusterConfiguration, LogDeliveryConfiguration, MaintenanceSchedule};
+use crate::ops::types::{
+    ClusterConfiguration, DeploymentConfiguration, LogDeliveryConfiguration, MaintenanceSchedule,
+};
 
 use super::influx_data_plane::TimeSeriesSnapshot;
 use super::{
@@ -98,6 +100,11 @@ pub struct DbBackupSnapshot {
     /// The node composition of the source, reported only for a DB cluster: a DB instance
     /// has no node set, so `ClusterConfiguration` describes nothing about one.
     pub cluster_configuration: Option<ClusterConfiguration>,
+    /// The compute topology of the source as `deploymentConfiguration` reports it,
+    /// captured under the same rule as the deprecated view beside it: only a DB cluster
+    /// has a node set, so only a cluster's backup carries one (see
+    /// [`DbCluster::deployment_configuration`]).
+    pub deployment_configuration: Option<DeploymentConfiguration>,
     /// The source's failover mode, reported only for a DB cluster: `FailoverMode` is a
     /// member of the cluster shapes only, so a DB instance has none to capture.
     pub failover_mode: Option<String>,
@@ -139,6 +146,7 @@ impl DbBackupSnapshot {
             allocated_storage: instance.allocated_storage,
             db_parameter_group_id: instance.db_parameter_group_identifier.clone(),
             cluster_configuration: None,
+            deployment_configuration: None,
             failover_mode: None,
             log_delivery_configuration: instance.log_delivery_configuration.clone(),
             maintenance_schedule: instance.maintenance_schedule.clone(),
@@ -167,7 +175,8 @@ impl DbBackupSnapshot {
             db_storage_type: cluster.db_storage_type.clone(),
             allocated_storage: cluster.allocated_storage,
             db_parameter_group_id: cluster.effective_db_parameter_group_identifier.clone(),
-            cluster_configuration: Some(cluster.cluster_configuration.clone()),
+            cluster_configuration: Some(cluster.cluster_configuration()),
+            deployment_configuration: cluster.deployment_configuration(),
             failover_mode: Some(cluster.failover_mode.clone()),
             log_delivery_configuration: cluster.log_delivery_configuration.clone(),
             maintenance_schedule: cluster.maintenance_schedule.clone(),
@@ -274,6 +283,10 @@ macro_rules! db_backup_record_projections {
                         deployment_type: self.snapshot.deployment_type.clone(),
                         kms_key_id: self.snapshot.kms_key_id.clone(),
                         cluster_configuration: self.snapshot.cluster_configuration.clone(),
+                        deployment_configuration: self
+                            .snapshot
+                            .deployment_configuration
+                            .clone(),
                         db_parameter_group_id: self.snapshot.db_parameter_group_id.clone(),
                         db_instance_type: Some(self.snapshot.db_instance_type.clone()),
                         log_delivery_configuration: self

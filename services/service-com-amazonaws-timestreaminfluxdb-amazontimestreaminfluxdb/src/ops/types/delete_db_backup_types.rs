@@ -32,6 +32,7 @@ pub struct DeleteDbBackupOutput {
     pub deployment_type: Option<String>,
     pub kms_key_id: Option<String>,
     pub cluster_configuration: Option<ClusterConfiguration>,
+    pub deployment_configuration: Option<DeploymentConfiguration>,
     pub db_parameter_group_id: Option<String>,
     pub db_instance_type: Option<String>,
     pub log_delivery_configuration: Option<LogDeliveryConfiguration>,

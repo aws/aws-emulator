@@ -36,15 +36,16 @@ use crate::ops::types::{
 
 use super::influx_data_plane::TimeSeriesSnapshot;
 use super::{
-    availability_zones, cluster_configuration, cluster_nodes, db_cluster_arn,
-    db_cluster_endpoints, db_instance_arn, db_instance_endpoint, influx_auth_parameters_secret_arn,
-    marketplace_offering_for_deployment_type, name_already_exists,
-    service_managed_db_parameter_group, ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState,
-    DbBackup, DbCluster, DbInstance, NamedResource, ARN_SEGMENT_DB_CLUSTER,
-    ARN_SEGMENT_DB_INSTANCE, CLUSTER_DEPLOYMENT_TYPE_READ_REPLICAS, CLUSTER_STATUS_RESTORING,
-    CLUSTER_TRANSITION_SPAN, DB_CLUSTER_QUOTA, DB_INSTANCE_QUOTA, DEPLOYMENT_TYPE_SINGLE_AZ,
-    FAILOVER_MODE_AUTOMATIC, NAMED_DB_CLUSTER, NAMED_DB_INSTANCE, RESOURCE_TYPE_DB_CLUSTER,
-    STATUS_RESTORING, TRANSITION_SPAN, VALIDATION_EXCEPTION_REASON_OTHER,
+    availability_zones, cluster_nodes, configuration_node_groups, db_cluster_arn,
+    db_cluster_endpoints, db_instance_arn, db_instance_endpoint, deployment_node_groups,
+    influx_auth_parameters_secret_arn, marketplace_offering_for_deployment_type,
+    name_already_exists, parameter_cluster_configuration, service_managed_db_parameter_group,
+    ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState, DbBackup, DbCluster, DbInstance,
+    NamedResource, ARN_SEGMENT_DB_CLUSTER, ARN_SEGMENT_DB_INSTANCE,
+    CLUSTER_DEPLOYMENT_TYPE_READ_REPLICAS, CLUSTER_STATUS_RESTORING, CLUSTER_TRANSITION_SPAN,
+    DB_CLUSTER_QUOTA, DB_INSTANCE_QUOTA, DEPLOYMENT_TYPE_SINGLE_AZ, FAILOVER_MODE_AUTOMATIC,
+    NAMED_DB_CLUSTER, NAMED_DB_INSTANCE, RESOURCE_TYPE_DB_CLUSTER, STATUS_RESTORING,
+    TRANSITION_SPAN, VALIDATION_EXCEPTION_REASON_OTHER,
 };
 
 /// The two modes a restore runs in, the members of the modelled `RestoreMode` enum
@@ -327,12 +328,21 @@ impl ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState {
         replace_existing: bool,
         now: SystemTime,
     ) -> Result<Restored, RestoreRefusal> {
-        // The node composition is the one the backup captured — a cluster's backup carries
-        // it — and otherwise the one the DB parameter group applied to the source
-        // configures, which is how a create derives it.
-        let configuration = match backup.snapshot.cluster_configuration.clone() {
-            Some(captured) => captured,
-            None => cluster_configuration(self.captured_parameters(backup).as_ref()),
+        // The topology is the one the backup captured — a cluster's backup carries it —
+        // and otherwise the node composition the backup captured, or the one the DB
+        // parameter group applied to the source configures, expressed as node groups
+        // running the captured instance type: exactly how a create derives one.
+        let node_groups = match backup.snapshot.deployment_configuration.as_ref() {
+            Some(captured) => deployment_node_groups(captured),
+            None => {
+                let configuration = match backup.snapshot.cluster_configuration.clone() {
+                    Some(captured) => captured,
+                    None => {
+                        parameter_cluster_configuration(self.captured_parameters(backup).as_ref())
+                    }
+                };
+                configuration_node_groups(&configuration, &backup.snapshot.db_instance_type)
+            }
         };
 
         let held = self.db_cluster_id_for_name(region, name).cloned();
@@ -375,7 +385,7 @@ impl ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState {
             backup,
             overrides,
             deployment_type,
-            configuration,
+            node_groups,
             now,
             replaced.as_ref(),
         );
@@ -384,7 +394,7 @@ impl ComAmazonawsTimestreaminfluxdbAmazontimestreaminfluxdbState {
         // the cluster exactly as a create names one. The nodes a replaced cluster already
         // has are the ones restored into, so their ids and names stand; a cluster restored
         // as a new resource provisions a node set of its own.
-        let nodes = cluster_nodes(name, &id, &cluster.cluster_configuration);
+        let nodes = cluster_nodes(name, &id, &cluster.node_groups);
         let reused: Vec<String> = replaced
             .as_ref()
             .map(|record| record.db_instance_ids.clone())
@@ -592,7 +602,7 @@ fn restored_db_cluster(
     backup: &DbBackup,
     overrides: &RestoreOverrides,
     deployment_type: &str,
-    configuration: crate::ops::types::ClusterConfiguration,
+    node_groups: Vec<crate::ops::types::NodeGroup>,
     now: SystemTime,
     replaced: Option<&DbCluster>,
 ) -> DbCluster {
@@ -656,7 +666,7 @@ fn restored_db_cluster(
             .failover_mode
             .clone()
             .unwrap_or_else(|| FAILOVER_MODE_AUTOMATIC.to_string()),
-        cluster_configuration: configuration,
+        node_groups,
         db_backup_configurations: overrides.db_backup_configurations.clone(),
         kms_key_id: overrides
             .kms_key_id

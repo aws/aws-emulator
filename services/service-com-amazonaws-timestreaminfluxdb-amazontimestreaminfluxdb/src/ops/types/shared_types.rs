@@ -33,6 +33,27 @@ pub struct ClusterConfiguration {
     pub dedicated_compactor: Option<bool>,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.timestreaminfluxdb#DeploymentConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum DeploymentConfiguration {
+    InfluxDBv3Enterprise(InfluxDBv3EnterpriseDeploymentConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.timestreaminfluxdb#InfluxDBv3EnterpriseDeploymentConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct InfluxDBv3EnterpriseDeploymentConfiguration {
+    pub node_groups: Vec<NodeGroup>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.timestreaminfluxdb#NodeGroup")]
+#[derive(Debug, Clone, Default)]
+pub struct NodeGroup {
+    pub instance_modes: Vec<String>,
+    pub instance_type: String,
+    pub count: i32,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.timestreaminfluxdb#LogDeliveryConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct LogDeliveryConfiguration {
@@ -259,9 +280,9 @@ pub struct InfluxDBv3EnterpriseParameters {
     pub hard_delete_default_duration: Option<Duration>,
     pub plugin_repository_url: Option<String>,
     pub plugin_repository_secret_arn: Option<String>,
-    pub ingest_query_instances: i32,
-    pub query_only_instances: i32,
-    pub dedicated_compactor: bool,
+    pub ingest_query_instances: Option<i32>,
+    pub query_only_instances: Option<i32>,
+    pub dedicated_compactor: Option<bool>,
     pub compaction_row_limit: Option<i32>,
     pub compaction_max_num_files_per_plan: Option<i32>,
     pub compaction_gen2_duration: Option<Duration>,

@@ -45,6 +45,7 @@ pub struct GetDbClusterOutput {
     pub vpc_security_group_ids: Option<Vec<String>>,
     pub failover_mode: Option<String>,
     pub cluster_configuration: Option<ClusterConfiguration>,
+    pub deployment_configuration: Option<DeploymentConfiguration>,
     pub db_backup_configurations: Option<Vec<DbBackupConfigurationOutput>>,
     pub kms_key_id: Option<String>,
 }

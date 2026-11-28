@@ -133,8 +133,10 @@ impl ClusterCase {
     }
 }
 
-/// The minimum a `CreateDbCluster` request must carry, per the model's `@required`
-/// members (`name`, `dbInstanceType`, `vpcSubnetIds`, `vpcSecurityGroupIds`).
+/// The minimum a `CreateDbCluster` request must carry: the model's `@required` members
+/// (`name`, `vpcSubnetIds`, `vpcSecurityGroupIds`) plus the `dbInstanceType` its nodes
+/// run, which is optional only for a request that defines the cluster topology with
+/// `deploymentConfiguration`.
 fn minimal_create(name: &str) -> Value {
     json!({
         "name": name,
@@ -1152,7 +1154,11 @@ async fn a_value_outside_a_modelled_constraint_is_refused_and_stores_nothing() {
             body
         }),
         (
-            "a request missing the required dbInstanceType",
+            // `dbInstanceType` is modelled optional, but only conditionally so: it is
+            // optional when `deploymentConfiguration` defines the topology, "because the
+            // instance type is then specified per node group". A request that names
+            // neither sizes nothing.
+            "a request naming neither dbInstanceType nor deploymentConfiguration",
             json!({
                 "name": "no-instance-type",
                 "vpcSubnetIds": ["subnet-aaa"],
@@ -1387,5 +1393,449 @@ fn every_cluster_value_this_service_reports_is_a_modelled_value() {
         2 * st::TRANSITION_SPAN,
         "case \"cluster transition span\": expected two node spans, got {:?}",
         st::CLUSTER_TRANSITION_SPAN
+    );
+}
+
+/// One node group of a `deploymentConfiguration`, as the wire carries it.
+fn node_group(instance_modes: &[&str], instance_type: &str, count: i64) -> Value {
+    json!({
+        "instanceModes": instance_modes,
+        "instanceType": instance_type,
+        "count": count,
+    })
+}
+
+/// `groups` as a whole `DeploymentConfiguration`: the modelled union's member for the
+/// engine topology this API expresses, from
+/// `smithy_query(query="shape", shape="DeploymentConfiguration")`.
+fn topology(groups: Vec<Value>) -> Value {
+    json!({ "InfluxDBv3Enterprise": { "nodeGroups": groups } })
+}
+
+/// One row of the topology table: a create request, and what the cluster and the DB
+/// instances it provisions must report for the topology that create describes.
+struct TopologyCase {
+    label: &'static str,
+    body: Value,
+    /// The whole `deploymentConfiguration` the cluster must report: the groups the
+    /// request defined, else the ones the applied group's node-count parameters describe.
+    expected_topology: Value,
+    /// The one instance type the CLUSTER reports: the request's `dbInstanceType` where it
+    /// named one, else the type every node group runs, else — where they run several —
+    /// the type of the group whose nodes ingest.
+    expected_instance_type: &'static str,
+    /// `(ingestQueryInstances, queryOnlyInstances, dedicatedCompactor)`: the deprecated
+    /// `clusterConfiguration` view of that same topology.
+    expected_configuration: (i64, i64, bool),
+    /// The roles and the instance type of every DB instance the cluster provisions, in
+    /// any order: one per unit of every group's `count`.
+    expected_nodes: Vec<(&'static [&'static str], &'static str)>,
+}
+
+/// The rows the topology rule is asserted over. They vary the number of node groups, the
+/// roles in a group, the instance types across groups (shared and differing), the node
+/// counts at the published bounds of `NodeGroup$count` (1 and 13), the size of the mode
+/// list at its published maximum (4), whether the request also names a `dbInstanceType`,
+/// and whether the request defines a topology at all.
+fn topology_cases() -> Vec<TopologyCase> {
+    /// A node group's `count` range and its mode list's length, from
+    /// `smithy_query(query="shape", shape="NodeGroup,InstanceModeList")`.
+    const COUNT_MAX: i64 = 13;
+
+    let subnets = json!(["subnet-aaa", "subnet-bbb"]);
+    let groups = json!(["sg-aaa"]);
+    let create = |name: &str, extra: Vec<(&str, Value)>| {
+        let mut body = json!({
+            "name": name,
+            "vpcSubnetIds": subnets.clone(),
+            "vpcSecurityGroupIds": groups.clone(),
+        });
+        for (member, value) in extra {
+            body[member] = value;
+        }
+        body
+    };
+
+    vec![
+        TopologyCase {
+            label: "one node group, no dbInstanceType: the group sizes the cluster",
+            body: create(
+                "topology-one",
+                vec![(
+                    "deploymentConfiguration",
+                    topology(vec![node_group(INGEST_QUERY_MODES, "db.influx.large", 2)]),
+                )],
+            ),
+            expected_topology: topology(vec![node_group(
+                INGEST_QUERY_MODES,
+                "db.influx.large",
+                2,
+            )]),
+            expected_instance_type: "db.influx.large",
+            expected_configuration: (2, 0, false),
+            expected_nodes: vec![
+                (INGEST_QUERY_MODES, "db.influx.large"),
+                (INGEST_QUERY_MODES, "db.influx.large"),
+            ],
+        },
+        TopologyCase {
+            label: "three node groups, each running a different instance type",
+            body: create(
+                "topology-mixed",
+                vec![(
+                    "deploymentConfiguration",
+                    topology(vec![
+                        node_group(INGEST_QUERY_MODES, "db.influx.large", 1),
+                        node_group(QUERY_ONLY_MODES, "db.influx.medium", 3),
+                        node_group(COMPACTOR_MODES, "db.influx.2xlarge", 1),
+                    ]),
+                )],
+            ),
+            expected_topology: topology(vec![
+                node_group(INGEST_QUERY_MODES, "db.influx.large", 1),
+                node_group(QUERY_ONLY_MODES, "db.influx.medium", 3),
+                node_group(COMPACTOR_MODES, "db.influx.2xlarge", 1),
+            ]),
+            expected_instance_type: "db.influx.large",
+            expected_configuration: (1, 3, true),
+            expected_nodes: vec![
+                (INGEST_QUERY_MODES, "db.influx.large"),
+                (QUERY_ONLY_MODES, "db.influx.medium"),
+                (QUERY_ONLY_MODES, "db.influx.medium"),
+                (QUERY_ONLY_MODES, "db.influx.medium"),
+                (COMPACTOR_MODES, "db.influx.2xlarge"),
+            ],
+        },
+        TopologyCase {
+            // `ClusterConfiguration` counts the nodes that both ingest and query and the
+            // ones that only query, so a group whose nodes ONLY ingest is counted by
+            // neither of its members — the whole topology is reported by
+            // `deploymentConfiguration` instead.
+            label: "a node group whose nodes only ingest, which the deprecated view \
+                    cannot count",
+            body: create(
+                "topology-ingest-only",
+                vec![(
+                    "deploymentConfiguration",
+                    topology(vec![
+                        node_group(&["INGEST"], "db.influx.xlarge", 2),
+                        node_group(QUERY_ONLY_MODES, "db.influx.xlarge", 1),
+                        node_group(COMPACTOR_MODES, "db.influx.xlarge", 1),
+                    ]),
+                )],
+            ),
+            expected_topology: topology(vec![
+                node_group(&["INGEST"], "db.influx.xlarge", 2),
+                node_group(QUERY_ONLY_MODES, "db.influx.xlarge", 1),
+                node_group(COMPACTOR_MODES, "db.influx.xlarge", 1),
+            ]),
+            expected_instance_type: "db.influx.xlarge",
+            expected_configuration: (0, 1, true),
+            expected_nodes: vec![
+                (&["INGEST"], "db.influx.xlarge"),
+                (&["INGEST"], "db.influx.xlarge"),
+                (QUERY_ONLY_MODES, "db.influx.xlarge"),
+                (COMPACTOR_MODES, "db.influx.xlarge"),
+            ],
+        },
+        TopologyCase {
+            // The published maximum of `instanceModes` (4 unique modes) on a group of
+            // one node, beside the published maximum of `count` (13) on another: the
+            // compaction mode is held by a node that does other work too, so the
+            // deprecated view reports no standalone compactor.
+            label: "the published bounds of a node group: 4 modes, 1 node and 13 nodes",
+            body: create(
+                "topology-bounds",
+                vec![(
+                    "deploymentConfiguration",
+                    topology(vec![
+                        node_group(
+                            &["INGEST", "QUERY", "COMPACT", "PROCESS"],
+                            "db.influx.8xlarge",
+                            1,
+                        ),
+                        node_group(QUERY_ONLY_MODES, "db.influx.medium", COUNT_MAX),
+                    ]),
+                )],
+            ),
+            expected_topology: topology(vec![
+                node_group(
+                    &["INGEST", "QUERY", "COMPACT", "PROCESS"],
+                    "db.influx.8xlarge",
+                    1,
+                ),
+                node_group(QUERY_ONLY_MODES, "db.influx.medium", COUNT_MAX),
+            ]),
+            expected_instance_type: "db.influx.8xlarge",
+            expected_configuration: (1, COUNT_MAX, false),
+            expected_nodes: {
+                let mut nodes: Vec<(&'static [&'static str], &'static str)> = vec![(
+                    &["INGEST", "QUERY", "COMPACT", "PROCESS"],
+                    "db.influx.8xlarge",
+                )];
+                nodes.extend(
+                    (0..COUNT_MAX).map(|_| (QUERY_ONLY_MODES, "db.influx.medium")),
+                );
+                nodes
+            },
+        },
+        TopologyCase {
+            label: "a dbInstanceType beside a topology: the type is the cluster's and \
+                    the groups size its nodes",
+            body: create(
+                "topology-both",
+                vec![
+                    ("dbInstanceType", json!("db.influx.medium")),
+                    (
+                        "deploymentConfiguration",
+                        topology(vec![node_group(
+                            INGEST_QUERY_MODES,
+                            "db.influx.8xlarge",
+                            1,
+                        )]),
+                    ),
+                ],
+            ),
+            expected_topology: topology(vec![node_group(
+                INGEST_QUERY_MODES,
+                "db.influx.8xlarge",
+                1,
+            )]),
+            expected_instance_type: "db.influx.medium",
+            expected_configuration: (1, 0, false),
+            expected_nodes: vec![(INGEST_QUERY_MODES, "db.influx.8xlarge")],
+        },
+        TopologyCase {
+            // No topology defined: the node-count parameters of the applied DB parameter
+            // group still describe one, and that is the topology the cluster reports.
+            label: "no topology: the applied parameter group's node counts describe one",
+            body: create(
+                "topology-from-parameters",
+                vec![("dbInstanceType", json!("db.influx.medium"))],
+            ),
+            expected_topology: topology(vec![
+                node_group(INGEST_QUERY_MODES, "db.influx.medium", 1),
+                node_group(QUERY_ONLY_MODES, "db.influx.medium", 1),
+            ]),
+            expected_instance_type: "db.influx.medium",
+            expected_configuration: (1, 1, false),
+            expected_nodes: vec![
+                (INGEST_QUERY_MODES, "db.influx.medium"),
+                (QUERY_ONLY_MODES, "db.influx.medium"),
+            ],
+        },
+    ]
+}
+
+/// The roles and instance type of every DB instance the DB-instance read path returns for
+/// the cluster `cluster_id` — a node a cluster reports exists only if the store it lives
+/// in hands it back.
+async fn cluster_node_shapes(
+    router: &MultiServiceRouter,
+    cluster_id: &str,
+    case: &str,
+) -> Vec<(Vec<String>, String)> {
+    let listed = ok(case, call(router, "ListDbInstances", json!({ "maxResults": 100 })).await);
+    let mut shapes = Vec::new();
+    for item in listed["items"].as_array().cloned().unwrap_or_default() {
+        let node_id = id_of(case, &item);
+        let node = ok(
+            case,
+            call(router, "GetDbInstance", json!({ "identifier": &node_id })).await,
+        );
+        if node["dbClusterId"].as_str() != Some(cluster_id) {
+            continue;
+        }
+        shapes.push((
+            strings(&node, "instanceModes"),
+            node["dbInstanceType"].as_str().unwrap_or_default().to_string(),
+        ));
+    }
+    shapes.sort();
+    shapes
+}
+
+/// The expected node shapes of a row, in the same comparable form.
+fn expected_node_shapes(case: &TopologyCase) -> Vec<(Vec<String>, String)> {
+    let mut shapes: Vec<(Vec<String>, String)> = case
+        .expected_nodes
+        .iter()
+        .map(|(modes, instance_type)| {
+            (
+                modes.iter().map(|mode| (*mode).to_string()).collect(),
+                (*instance_type).to_string(),
+            )
+        })
+        .collect();
+    shapes.sort();
+    shapes
+}
+
+#[tokio::test]
+async fn a_clusters_topology_is_the_node_groups_it_provisioned() {
+    for case in topology_cases() {
+        // One store per row: the row reads every DB instance of the store back, so the
+        // nodes it asserts over are its own cluster's.
+        let router = router();
+        let label = case.label;
+        let created = ok(label, call(&router, "CreateDbCluster", case.body.clone()).await);
+        let id = cluster_id_of(label, &created);
+        let fetched = ok(
+            label,
+            call(&router, "GetDbCluster", json!({ "dbClusterId": &id })).await,
+        );
+
+        assert_eq!(
+            fetched["deploymentConfiguration"], case.expected_topology,
+            "case {label:?}: expected the topology {}, got {:?}",
+            case.expected_topology, fetched["deploymentConfiguration"]
+        );
+        let (ingest_query, query_only, compactor) = case.expected_configuration;
+        assert_eq!(
+            fetched["clusterConfiguration"],
+            json!({
+                "ingestQueryInstances": ingest_query,
+                "queryOnlyInstances": query_only,
+                "dedicatedCompactor": compactor,
+            }),
+            "case {label:?}: unexpected clusterConfiguration {:?}",
+            fetched["clusterConfiguration"]
+        );
+        assert_eq!(
+            fetched["dbInstanceType"].as_str(),
+            Some(case.expected_instance_type),
+            "case {label:?}: expected dbInstanceType {:?}, got {:?}",
+            case.expected_instance_type,
+            fetched["dbInstanceType"]
+        );
+
+        // The topology is backed by real DB instances: one per unit of every group's
+        // count, each taking that group's roles and running its instance type.
+        let actual = cluster_node_shapes(&router, &id, label).await;
+        let expected = expected_node_shapes(&case);
+        assert_eq!(
+            actual, expected,
+            "case {label:?}: expected the nodes {expected:?}, got {actual:?}"
+        );
+
+        // A read changes nothing a later caller sees.
+        let again = ok(
+            label,
+            call(&router, "GetDbCluster", json!({ "dbClusterId": &id })).await,
+        );
+        assert_eq!(
+            again["deploymentConfiguration"], fetched["deploymentConfiguration"],
+            "case {label:?}: a second read must report the same topology, got {again}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_backup_captures_the_topology_of_the_cluster_it_was_taken_from() {
+    let router = router();
+    let case = "a backup of a cluster with three node groups";
+    let defined = topology(vec![
+        node_group(INGEST_QUERY_MODES, "db.influx.large", 1),
+        node_group(QUERY_ONLY_MODES, "db.influx.medium", 2),
+        node_group(COMPACTOR_MODES, "db.influx.xlarge", 1),
+    ]);
+    let created = ok(
+        case,
+        call(
+            &router,
+            "CreateDbCluster",
+            json!({
+                "name": "backed-up-cluster",
+                "deploymentConfiguration": defined,
+                "vpcSubnetIds": ["subnet-aaa", "subnet-bbb"],
+                "vpcSecurityGroupIds": ["sg-aaa"],
+            }),
+        )
+        .await,
+    );
+    let cluster_id = cluster_id_of(case, &created);
+    let cluster = ok(
+        case,
+        call(&router, "GetDbCluster", json!({ "dbClusterId": &cluster_id })).await,
+    );
+
+    let backup = ok(
+        case,
+        call(
+            &router,
+            "CreateDbBackup",
+            json!({ "name": "topology-backup", "dbResourceId": &cluster_id }),
+        )
+        .await,
+    );
+    let backup_id = id_of(case, &backup);
+    let read_back = ok(
+        case,
+        call(&router, "GetDbBackup", json!({ "identifier": &backup_id })).await,
+    );
+
+    // A backup reports the source "at the time of backup", so both the create's own
+    // answer and a later read report the topology the cluster had.
+    for (what, body) in [("the create's answer", &backup), ("a read", &read_back)] {
+        for member in [
+            "deploymentConfiguration",
+            "clusterConfiguration",
+            "dbInstanceType",
+        ] {
+            assert_eq!(
+                &body[member], &cluster[member],
+                "case {case:?}: {what} must report the source's {member:?}, got {:?}",
+                body[member]
+            );
+        }
+    }
+    assert_eq!(
+        read_back["deploymentConfiguration"], defined,
+        "case {case:?}: expected the defined topology {defined}, got {:?}",
+        read_back["deploymentConfiguration"]
+    );
+
+    // Restoring that backup provisions the captured topology again, down to every node.
+    let restored = ok(
+        case,
+        call(
+            &router,
+            "RestoreFromDbBackup",
+            json!({ "name": "restored-cluster", "dbBackupId": &backup_id }),
+        )
+        .await,
+    );
+    let restored_id = restored["restoredDbResourceId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: expected a restored id, got {restored}"))
+        .to_string();
+    let restored_cluster = ok(
+        case,
+        call(&router, "GetDbCluster", json!({ "dbClusterId": &restored_id })).await,
+    );
+    assert_eq!(
+        restored_cluster["deploymentConfiguration"], defined,
+        "case {case:?}: a restored cluster runs the captured topology, got {:?}",
+        restored_cluster["deploymentConfiguration"]
+    );
+    let restored_nodes = cluster_node_shapes(&router, &restored_id, case).await;
+    let mut expected_nodes: Vec<(Vec<String>, String)> = vec![
+        (INGEST_QUERY_MODES, "db.influx.large"),
+        (QUERY_ONLY_MODES, "db.influx.medium"),
+        (QUERY_ONLY_MODES, "db.influx.medium"),
+        (COMPACTOR_MODES, "db.influx.xlarge"),
+    ]
+    .into_iter()
+    .map(|(modes, instance_type): (&[&str], &str)| {
+        (
+            modes.iter().map(|mode| (*mode).to_string()).collect(),
+            instance_type.to_string(),
+        )
+    })
+    .collect();
+    expected_nodes.sort();
+    assert_eq!(
+        restored_nodes, expected_nodes,
+        "case {case:?}: expected the restored nodes {expected_nodes:?}, got {restored_nodes:?}"
     );
 }

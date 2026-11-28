@@ -60,8 +60,10 @@
 //!   configurations to enable automated backups for the DB cluster.
 //! * `dbInstanceType` (DbInstanceType, one of: db.influx.12xlarge | db.influx.16xlarge |
 //!   db.influx.24xlarge | db.influx.2xlarge | db.influx.4xlarge | db.influx.8xlarge |
-//!   db.influx.large | db.influx.medium | db.influx.xlarge) **required** — The Timestream for
-//!   InfluxDB DB instance type to run InfluxDB on.
+//!   db.influx.large | db.influx.medium | db.influx.xlarge) — The Timestream for
+//!   InfluxDB DB instance type to run InfluxDB on. Optional when you define the cluster
+//!   topology with deploymentConfiguration, because the instance type is then specified per
+//!   node group.
 //! * `dbParameterGroupIdentifier` (DbParameterGroupIdentifier, len 3..64, pattern
 //!   ^[a-zA-Z0-9]+$) — The ID of the DB parameter group to assign to your DB cluster. DB
 //!   parameter groups specify how the database is configured. For example, DB parameter
@@ -73,6 +75,11 @@
 //!   Influx I/O Included 12000 IOPS Influx I/O Included 16000 IOPS
 //! * `deploymentType` (ClusterDeploymentType, one of: MULTI_NODE_READ_REPLICAS) — Specifies
 //!   the type of cluster to create.
+//! * `deploymentConfiguration` (DeploymentConfiguration) — The compute topology for the
+//!   cluster, defined as a set of node groups. Use deploymentConfiguration to allocate compute
+//!   per function: ingest, query, compaction, and processing. A deployment configuration
+//!   becomes the source of truth for the cluster's topology. Timestream for InfluxDB then
+//!   ignores any node-count parameters in the associated DB parameter group.
 //! * `failoverMode` (FailoverMode, one of: AUTOMATIC | NO_FAILOVER) — Specifies the behavior
 //!   of failure recovery when the primary node of the cluster fails.
 //! * `kmsKeyId` (KmsKeyId, len 1..2048, pattern ^[a-zA-Z0-9:/_\-]+$) — The Amazon Web
@@ -319,14 +326,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }),
         };
 
-        // The engine, the default port and the node composition all follow from the
-        // parameters of the group applied to the cluster. The id is minted before the
-        // node set because each node's service-generated name carries it; a create
-        // refused below stores nothing, it only leaves the id sequence advanced.
+        // The engine and the default port follow from the parameters of the group applied
+        // to the cluster; the TOPOLOGY follows from the request when it defines one, and
+        // from that group's deprecated node-count parameters when it does not. The id is
+        // minted before the node set because each node's service-generated name carries
+        // it; a create refused below stores nothing, it only leaves the id sequence
+        // advanced.
         let engine_type = st::engine_type(parameters.as_ref());
-        let cluster_configuration = st::cluster_configuration(parameters.as_ref());
+        // A deployment configuration is the source of truth for the topology, so the node
+        // groups it defines are taken as they are and the group's node-count parameters
+        // are ignored.
+        let defined_node_groups = input
+            .deployment_configuration
+            .as_ref()
+            .map(st::deployment_node_groups)
+            .unwrap_or_default();
+        // The instance type the CLUSTER reports: the request's, else the one its node
+        // groups run. A request that names neither sizes nothing, which is the one case
+        // `dbInstanceType` is not optional in.
+        let Some(db_instance_type) = input
+            .db_instance_type
+            .clone()
+            .or_else(|| st::node_groups_instance_type(&defined_node_groups))
+        else {
+            return Err(
+                CreateDbClusterErrorModeled::ValidationException(st::db_instance_type_required())
+                    .into(),
+            );
+        };
+        let node_groups = if defined_node_groups.is_empty() {
+            st::parameter_node_groups(parameters.as_ref(), &db_instance_type)
+        } else {
+            defined_node_groups
+        };
         let id = state.mint_db_cluster_id(&input.name, &region);
-        let nodes = st::cluster_nodes(&input.name, &id, &cluster_configuration);
+        let nodes = st::cluster_nodes(&input.name, &id, &node_groups);
 
         // A cluster's nodes are DB instances in the same bounded store, so the same
         // bound refuses a cluster the store has no room for.
@@ -371,7 +405,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             region: region.clone(),
             // Absent a choice the cluster is of the only type the model declares.
             deployment_type,
-            db_instance_type: input.db_instance_type,
+            db_instance_type,
             network_type: input.network_type,
             db_storage_type: input.db_storage_type,
             allocated_storage: input
@@ -388,7 +422,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             failover_mode: input
                 .failover_mode
                 .unwrap_or_else(|| st::FAILOVER_MODE_AUTOMATIC.to_string()),
-            cluster_configuration,
+            node_groups,
             log_delivery_configuration: input.log_delivery_configuration,
             maintenance_schedule: input.maintenance_schedule,
             db_backup_configurations: input.db_backup_configurations,

@@ -695,7 +695,7 @@ pub fn service_managed_db_parameter_groups() -> &'static [DbParameterGroup] {
                 Parameters::InfluxDBv3Enterprise(InfluxDBv3EnterpriseParameters {
                     // This group's own description is "with 1 node": a single instance
                     // taking both the ingest and the query role.
-                    ingest_query_instances: 1,
+                    ingest_query_instances: Some(1),
                     ..InfluxDBv3EnterpriseParameters::default()
                 }),
             ),
