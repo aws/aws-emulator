@@ -17,9 +17,27 @@ pub struct AccessDeniedException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#InternalFailureException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalFailureException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesis#InvalidArgumentException")]
 #[derive(Debug, Clone, Default)]
 pub struct InvalidArgumentException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#ResourceNotFoundException")]
+#[derive(Debug, Clone, Default)]
+pub struct ResourceNotFoundException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#ThrottlingException")]
+#[derive(Debug, Clone, Default)]
+pub struct ThrottlingException {
     pub message: Option<String>,
 }
 
@@ -32,12 +50,6 @@ pub struct LimitExceededException {
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesis#ResourceInUseException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceInUseException {
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#ResourceNotFoundException")]
-#[derive(Debug, Clone, Default)]
-pub struct ResourceNotFoundException {
     pub message: Option<String>,
 }
 
@@ -193,6 +205,45 @@ pub struct ValidationException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#QueueStreamConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct QueueStreamConfiguration {
+    pub stream_arn: String,
+    pub starting_position: Option<QueueStartingPosition>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#QueueStartingPosition")]
+#[derive(Debug, Clone, Default)]
+pub struct QueueStartingPosition {
+    pub r#type: String,
+    pub timestamp: Option<::aws_smithy_types::DateTime>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#QueueAttributes")]
+#[derive(Debug, Clone, Default)]
+pub struct QueueAttributes {
+    pub visibility_timeout_seconds: Option<i32>,
+    pub dead_letter_configuration: Option<DeadLetterConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#DeadLetterConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct DeadLetterConfiguration {
+    pub target_type: String,
+    pub max_receive_count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#QueueDescription")]
+#[derive(Debug, Clone)]
+pub struct QueueDescription {
+    pub queue_name: String,
+    pub queue_arn: String,
+    pub queue_status: String,
+    pub queue_creation_timestamp: ::aws_smithy_types::DateTime,
+    pub stream_configuration_list: Vec<QueueStreamConfiguration>,
+    pub queue_attributes: Option<QueueAttributes>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesis#StreamModeDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct StreamModeDetails {
@@ -260,12 +311,6 @@ pub struct DryRunOperationException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#InternalFailureException")]
-#[derive(Debug, Clone, Default)]
-pub struct InternalFailureException {
-    pub message: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.kinesis#ProvisionedThroughputExceededException")]
 #[derive(Debug, Clone, Default)]
 pub struct ProvisionedThroughputExceededException {
@@ -292,6 +337,18 @@ pub struct Consumer {
 pub struct Tag {
     pub key: String,
     pub value: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.kinesis#QueueRecord")]
+#[derive(Debug, Clone)]
+pub struct QueueRecord {
+    pub receipt_handle: String,
+    pub record_id: String,
+    pub partition_key: Option<String>,
+    pub data: Vec<u8>,
+    pub approximate_arrival_timestamp: ::aws_smithy_types::DateTime,
+    pub first_receive_timestamp: ::aws_smithy_types::DateTime,
+    pub receive_count: i32,
 }
 
 /// The values `ChannelDestinationType` accepts on the wire.
@@ -328,6 +385,14 @@ pub const MINIMUM_THROUGHPUT_BILLING_COMMITMENT_OUTPUT_STATUS_VALUES: &[&str] = 
 
 /// The values `PartitionTransform` accepts on the wire.
 pub const PARTITION_TRANSFORM_VALUES: &[&str] = &["TIME_HOUR"];
+
+
+/// The values `QueueStartingPositionType` accepts on the wire.
+pub const QUEUE_STARTING_POSITION_TYPE_VALUES: &[&str] = &["AT_TIMESTAMP", "LATEST", "TRIM_HORIZON"];
+
+
+/// The values `QueueStatus` accepts on the wire.
+pub const QUEUE_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATING", "DELETING", "UPDATING"];
 
 
 /// The values `RecordDistributionStrategy` accepts on the wire.
@@ -368,5 +433,9 @@ pub const STREAM_MODE_VALUES: &[&str] = &["ON_DEMAND", "PROVISIONED"];
 
 /// The values `StreamStatus` accepts on the wire.
 pub const STREAM_STATUS_VALUES: &[&str] = &["ACTIVE", "CREATING", "DELETING", "UPDATING"];
+
+
+/// The values `TargetType` accepts on the wire.
+pub const TARGET_TYPE_VALUES: &[&str] = &["BUILT_IN", "NONE"];
 
 

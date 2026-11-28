@@ -4,14 +4,16 @@
 //!
 //! Reports the tags the Kinesis resource the request's `ResourceARN` names carries in
 //! `crate::state`'s stores — what `CreateStream`, `AddTagsToStream`, `TagResource`,
-//! `CreateChannel` and `RegisterStreamConsumer` wrote — as the modelled `Tags` list ordered
+//! `CreateChannel`, `CreateQueue` and `RegisterStreamConsumer` wrote — as the modelled `Tags`
+//! list ordered
 //! by key. A pure read: nothing
 //! it does changes what a later caller sees, and a resource carrying no tags is reported as
 //! the empty list rather than refused.
 //!
 //! A `ResourceARN` addresses a resource of EVERY kind this service holds (its pattern is
-//! `^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$`, which the ARN of a consumer
-//! registered with a stream satisfies too), and a stream, a channel and a stream consumer
+//! `^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$`, which the ARN of a consumer
+//! registered with a stream satisfies too), and a stream, a channel, a queue and a stream
+//! consumer
 //! each carry ONE stored tag set, so the ARN is resolved across every kind through the one
 //! lookup that spans them
 //! ([`crate::state::ComAmazonawsKinesisKinesis20131202State::resource_tags_by_arn`]): the
@@ -119,6 +121,7 @@ pub enum ListTagsForResourceErrorModeled {
     ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
     InternalFailureException(InternalFailureException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it

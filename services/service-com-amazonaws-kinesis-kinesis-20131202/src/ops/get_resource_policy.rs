@@ -124,6 +124,7 @@ pub enum GetResourcePolicyErrorModeled {
     ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
     InternalFailureException(InternalFailureException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it

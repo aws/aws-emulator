@@ -34,6 +34,12 @@
 //! itself ([`stream_metrics`]), and the resolution every instant it reports and every
 //! instant a request hands it are taken at ([`reported_instants`]), and the data-freshness
 //! window every channel destination delivers on ([`data_freshness`]).
+//!
+//! It owns the queue records the same way ([`queues`]): the stream a queue delivers from, the
+//! position delivery begins at, the visibility timeout and dead-letter configuration every
+//! documented default is resolved into, the delivery state of each record the queue is
+//! tracking, and the `CREATING` -> `ACTIVE`, `UPDATING` -> `ACTIVE` and `DELETING` -> gone
+//! transitions the clock owes it ([`Queue::status`], [`Queue::is_held`]).
 
 pub mod channel_delivery;
 mod channel_key_access;
@@ -41,6 +47,7 @@ mod channels;
 mod data_freshness;
 mod expiry_instant;
 mod kms_key;
+mod queues;
 mod reported_instants;
 mod reserved_tag_keys;
 mod service_execution_role;
@@ -56,6 +63,7 @@ pub use channels::*;
 pub use data_freshness::*;
 pub use expiry_instant::*;
 pub use kms_key::*;
+pub use queues::*;
 pub use reported_instants::*;
 pub use reserved_tag_keys::*;
 pub use service_execution_role::*;
@@ -70,11 +78,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::ops::types::{
     ChannelDescription, ChannelEncryptionConfiguration, ChannelLoggingConfiguration,
     ChannelStreamDescription, ChannelStreamIdentifier, ChannelSummary, ChildShard, CloudWatchLogs,
-    Consumer, ConsumerDescription, EnhancedMetrics, HashKeyRange,
-    MinimumThroughputBillingCommitmentOutput, Record, S3DestinationDescription,
-    S3TablesDestinationDescription, SequenceNumberRange, Shard, StreamDescription,
-    StreamDescriptionSummary, StreamModeDetails, StreamSummary, Tag, WarmThroughputObject,
-    METRICS_NAME_VALUES,
+    Consumer, ConsumerDescription, DeadLetterConfiguration, EnhancedMetrics, HashKeyRange,
+    MinimumThroughputBillingCommitmentOutput, QueueAttributes, QueueDescription, QueueRecord,
+    QueueStartingPosition, QueueStreamConfiguration, QueueStreamIdentifier, QueueSummary, Record,
+    S3DestinationDescription, S3TablesDestinationDescription, SequenceNumberRange, Shard,
+    StreamDescription, StreamDescriptionSummary, StreamModeDetails, StreamSummary, Tag,
+    WarmThroughputObject, METRICS_NAME_VALUES,
 };
 
 /// The region a stream is created in when the request carries no SigV4 credential scope
@@ -1801,8 +1810,11 @@ impl Stream {
         }
     }
 
-    /// This record as the modelled `StreamDescriptionSummary`.
-    pub fn to_summary(&self, now: SystemTime) -> StreamDescriptionSummary {
+    /// This record as the modelled `StreamDescriptionSummary`. `queues` is how many queues
+    /// this account holds on the stream, which the QUEUE store answers
+    /// ([`ComAmazonawsKinesisKinesis20131202State::queues_on`]) because a queue is its own
+    /// record rather than part of the stream.
+    pub fn to_summary(&self, now: SystemTime, queues: usize) -> StreamDescriptionSummary {
         StreamDescriptionSummary {
             stream_name: self.name.clone(),
             stream_arn: self.arn.clone(),
@@ -1826,6 +1838,11 @@ impl Stream {
             // stream fell back to.
             max_record_size_in_ki_b: Some(self.max_record_size_in_ki_b),
             channel_count: Some(0),
+            // "The number of queues created on the data stream"
+            // (`StreamDescriptionSummary$QueueCount`), counted over the queues this account
+            // holds on it rather than stored on the stream, so a create and a delete of a
+            // queue are both reported here without touching the stream record.
+            queue_count: Some(i32::try_from(queues).unwrap_or(i32::MAX)),
             // "This field is only present for streams that use the on-demand capacity mode"
             // (`StreamDescriptionSummary$RecordDistributionStrategy`).
             record_distribution_strategy: self.reported_record_distribution(),
@@ -1935,6 +1952,11 @@ pub struct ComAmazonawsKinesisKinesis20131202State {
     /// within your Amazon Web Services account and Amazon Web Services Region"
     /// (`CreateChannelInput$ChannelName`).
     pub channels: HashMap<RegionalName, Channel>,
+    /// Every queue this emulator holds, keyed by region and name: "The name is scoped to the
+    /// Amazon Web Services account and Region used by the request, so two queues in different
+    /// accounts, or in the same account and different Regions, can have the same name"
+    /// (`CreateQueueInput$QueueName`).
+    pub queues: HashMap<RegionalName, Queue>,
     /// The minimum throughput billing commitment this account holds, `None` while it has
     /// never asked for one. ONE record, not one per region: what `UpdateAccountSettings`
     /// writes is "your account's updated settings" and what `DescribeAccountSettings` reports
@@ -2372,11 +2394,11 @@ impl ComAmazonawsKinesisKinesis20131202State {
     /// when this account and region hold no resource under that ARN.
     ///
     /// A `ResourceARN` addresses "the Kinesis resource" rather than one kind of it
-    /// (`^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$`, which the ARN of a consumer
-    /// registered with a stream satisfies too), and a stream, a channel and a stream consumer
-    /// each carry ONE stored tag set, so ONE lookup spans every kind this service holds:
-    /// whichever kind the ARN names, the tags answered are the stored set every tag write of
-    /// that resource wrote.
+    /// (`^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$`, which the ARN of a
+    /// consumer registered with a stream satisfies too), and a stream, a channel, a queue and
+    /// a stream consumer each carry ONE stored tag set, so ONE lookup spans every kind this
+    /// service holds: whichever kind the ARN names, the tags answered are the stored set every
+    /// tag write of that resource wrote.
     pub fn resource_tags_by_arn(
         &self,
         now: SystemTime,
@@ -2385,6 +2407,12 @@ impl ComAmazonawsKinesisKinesis20131202State {
     ) -> Option<Vec<Tag>> {
         if let Some(channel) = self.channel_by_arn(region, arn) {
             return Some(channel.tags_ordered());
+        }
+        // A queue carries the tags its create assigned, which "you can also add, change, and
+        // remove... after the queue is created with TagResource and UntagResource"
+        // (`CreateQueueInput$Tags`).
+        if let Some(queue) = self.queue_by_arn(now, region, arn) {
+            return Some(queue.tags_ordered());
         }
         // A consumer's ARN is its stream's ARN extended, so the stream holding the resource
         // is resolved first and the kind decided from which record inside it the ARN names —
@@ -2516,9 +2544,9 @@ impl ComAmazonawsKinesisKinesis20131202State {
     /// [`Self::resource_tags_by_arn`] for a caller that WRITES the set it finds: one rule,
     /// one lookup, so the stored set a tag write changes is the very set a read reports.
     ///
-    /// It spans exactly the resource kinds that read spans, because a stream, a channel and a
-    /// stream consumer each carry ONE stored tag set: whichever kind the ARN names, an
-    /// assignment and an unassignment reach that very set.
+    /// It spans exactly the resource kinds that read spans, because a stream, a channel, a
+    /// queue and a stream consumer each carry ONE stored tag set: whichever kind the ARN
+    /// names, an assignment and an unassignment reach that very set.
     pub fn resource_tags_by_arn_mut(
         &mut self,
         now: SystemTime,
@@ -2532,6 +2560,11 @@ impl ComAmazonawsKinesisKinesis20131202State {
             return self
                 .channel_by_arn_mut(region, arn)
                 .map(|channel| &mut channel.tags);
+        }
+        if self.queue_by_arn(now, region, arn).is_some() {
+            return self
+                .queue_by_arn_mut(now, region, arn)
+                .map(|queue| &mut queue.tags);
         }
         self.streams
             .values_mut()
@@ -3327,12 +3360,14 @@ pub fn channel_not_found_message(identifier: &str) -> String {
 
 /// How a read states that this account and region hold no Kinesis resource under the ARN
 /// the request named, for an operation whose `ResourceARN` addresses a resource of ANY kind
-/// it may name (`^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$`, which a `ConsumerARN`
-/// satisfies too): the sentence this service already states for the kind that ARN names, so
-/// one ARN is refused in one wording whatever operation it reached.
+/// it may name (`^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$`, which a
+/// `ConsumerARN` satisfies too): the sentence this service already states for the kind that
+/// ARN names, so one ARN is refused in one wording whatever operation it reached.
 pub fn resource_not_found_message(arn: &str) -> String {
     if arn_names_channel(arn) {
         channel_not_found_message(arn)
+    } else if arn_names_queue(arn) {
+        queue_not_found_message(arn)
     } else if arn_names_consumer(arn) {
         // A consumer's ARN is its stream's ARN extended (`…stream/<name>/consumer/<name>:<ts>`),
         // so the thing not found is the CONSUMER that ARN names, under the stream it extends.
@@ -3406,13 +3441,25 @@ pub fn resource_policy_not_found_message(arn: &str) -> String {
     format!("No resource policy found for resource ARN {arn}.")
 }
 
-/// Whether `arn`'s resource segment names a CHANNEL, which is the other resource kind a
-/// `ResourceARN` may address. An ARN carries its resource kind in the segment after the last
+/// Whether `arn`'s resource segment names a CHANNEL, which is one of the other resource kinds
+/// a `ResourceARN` may address. An ARN carries its resource kind in the segment after the last
 /// `:` ([`channel_arn`] builds it as `channel/<name>`).
 fn arn_names_channel(arn: &str) -> bool {
     arn.rsplit(':')
         .next()
         .is_some_and(|resource| resource.starts_with("channel/"))
+}
+
+/// Whether `arn`'s resource segment names a QUEUE, the resource kind the `ResourceARN`
+/// expression admits beside a stream and a channel
+/// (`^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$`): a queue carries tags, which
+/// "you can also add, change, and remove... after the queue is created with TagResource and
+/// UntagResource" (`CreateQueueInput$Tags`). Read the same way a channel's kind is
+/// ([`queue_arn`] builds it as `queue/<generated id>`).
+fn arn_names_queue(arn: &str) -> bool {
+    arn.rsplit(':')
+        .next()
+        .is_some_and(|resource| resource.starts_with("queue/"))
 }
 
 /// How a create states that this account and region already hold a channel under the name
@@ -4427,6 +4474,8 @@ pub enum RegionalListing {
     Streams,
     /// `ListChannels`, whose cursor names the channel its next page starts at.
     Channels,
+    /// `ListQueues`, whose cursor names the queue its next page starts at.
+    Queues,
 }
 
 impl RegionalListing {
@@ -4435,6 +4484,7 @@ impl RegionalListing {
         match self {
             Self::Streams => "listStreams",
             Self::Channels => "listChannels",
+            Self::Queues => "listQueues",
         }
     }
 }
@@ -4445,7 +4495,8 @@ impl RegionalListing {
 /// one region addresses, so ONE cursor serves them: the listing it was minted for, the
 /// region the page was served for, the resource the next page starts at, and the instant it
 /// was minted, since it expires. All of it travels INSIDE the token: a read mints one
-/// without writing anything a later caller could see.
+/// without writing anything a later caller could see. `ListQueues` pages the same way, and so
+/// reads the same cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionalPageToken {
     /// The listing this cursor was minted for.

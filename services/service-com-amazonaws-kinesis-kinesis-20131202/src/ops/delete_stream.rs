@@ -297,6 +297,21 @@ fn delete_stream(
         .into());
     }
 
+    // "You must delete every queue on a data stream before you can delete the stream"
+    // (`DeleteQueue`): a queue on this stream DEPENDS on it the same way a channel that
+    // sources it does, so the stream is not available for its removal while the queue is
+    // there — the same `ResourceInUseException` rule, decided BEFORE anything is mutated, so
+    // the stream survives the refusal and the identical call is served once the queues are
+    // deleted.
+    if store.queues_on(now, &stream_arn) > 0 {
+        return Err(DeleteStreamErrorModeled::ResourceInUseException(
+            ResourceInUseException {
+                message: Some(crate::state::stream_has_queues_message(&stream_name)),
+            },
+        )
+        .into());
+    }
+
     // "If this parameter is unset (null) or if you set it to false, and the stream has
     // registered consumers, the call to DeleteStream fails with a ResourceInUseException"
     // (`DeleteStreamInput$EnforceConsumerDeletion`): the consumers registered with the

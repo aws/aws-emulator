@@ -223,8 +223,10 @@ fn update_stream_mode(
 
     // How many streams of the on-demand capacity mode this region already holds, read
     // BEFORE the stored stream is borrowed to be written: the quota the change below is
-    // counted against.
+    // counted against. The queues held on the stream are read here for the same reason — no
+    // borrow of one stream reaches the records beside it.
     let on_demand_in_region = store.on_demand_streams_held_in(now, region);
+    let queues_on_stream = store.queues_on(now, &input.stream_arn);
 
     // `StreamARN` is the only identifier this operation takes (`@required`), and `StreamId`
     // is documented "Not Implemented. Reserved for future use".
@@ -264,6 +266,27 @@ fn update_stream_mode(
             LimitExceededException {
                 message: Some(crate::state::on_demand_stream_ceiling_exceeded_message(
                     on_demand_in_region,
+                )),
+            },
+        )
+        .into());
+    }
+
+    // "You must delete every queue on a data stream before you can... switch it from
+    // on-demand to provisioned capacity mode" (`DeleteQueue`), because queues "are supported
+    // only on data streams in on-demand capacity mode" (`CreateQueue`): a queue on the stream
+    // DEPENDS on the mode it was created under, so the stream is not available for that change
+    // while the queue is there — the same `ResourceInUseException` rule, decided BEFORE
+    // anything is mutated, so the stored mode survives the refusal and the identical call is
+    // served once the queues are deleted.
+    if stream_mode == crate::state::STREAM_MODE_PROVISIONED
+        && stream.stream_mode != crate::state::STREAM_MODE_PROVISIONED
+        && queues_on_stream > 0
+    {
+        return Err(UpdateStreamModeErrorModeled::ResourceInUseException(
+            ResourceInUseException {
+                message: Some(crate::state::stream_has_queues_for_mode_change_message(
+                    &stream.name,
                 )),
             },
         )

@@ -230,16 +230,14 @@ fn withholds_value(path: &str) -> bool {
 /// keyed by the expression the model declares (anchors already dropped, see
 /// [`stated_expression`]).
 ///
-/// A row exists only where the two differ. The resource-ARN expression is the one such: the
-/// classes of Kinesis resource a tagging call may name are a stream, a channel and a queue,
-/// while this model's copy of the expression lists the first two — so a client told the
-/// expression would read a valid resource class as invalid. Only the expression REPORTED
-/// comes from here; which values are ACCEPTED is the model's `@pattern`, which is what the
-/// framework's walk checks.
-const STATED_EXPRESSIONS: &[(&str, &str)] = &[(
-    r"arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+",
-    r"arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+",
-)];
+/// A row exists only where the two differ, and this model declares none that do: its
+/// resource-ARN expression lists every class of Kinesis resource a tagging call may name
+/// (stream, channel and queue), so a clause quotes the model's own expression. The table stays
+/// because the rule it serves is the front door's — a client told an expression must be able to
+/// read a valid value as valid — and the next model update is where a divergence would
+/// reappear. Only the expression REPORTED comes from here; which values are ACCEPTED is the
+/// model's `@pattern`, which is what the framework's walk checks.
+const STATED_EXPRESSIONS: &[(&str, &str)] = &[];
 
 /// The expression a clause quotes for the modelled `pattern`: without the `^`/`$` pair a
 /// model writes around a whole-value match, and as the front door publishes it where the two
@@ -318,7 +316,8 @@ mod tests {
     }
 
     /// The resource-ARN expression is reported with every resource class the front door
-    /// admits, and the row is keyed by an expression this model really declares.
+    /// admits, and every row of the override table is keyed by an expression this model really
+    /// declares.
     #[test]
     fn the_stated_resource_arn_expression_names_every_resource_class() {
         let model = std::fs::read_to_string(MODEL_PATH)
@@ -334,8 +333,17 @@ mod tests {
                 "case {modelled:?}: expected it reported as {stated:?}"
             );
         }
+        // The expression itself, whatever the table holds: the classes of Kinesis resource a
+        // tagging call may name are a stream, a channel and a queue, which is what the model
+        // declares (`smithy_query(query="shape",shape="ResourceARN")`) and so what a clause
+        // quotes.
+        let modelled = r"^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$";
+        assert!(
+            model.contains(&modelled.replace('\\', "\\\\")),
+            "case the resource-ARN expression: expected the model to declare {modelled:?}"
+        );
         assert_eq!(
-            stated_expression(r"^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$"),
+            stated_expression(modelled),
             r"arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+",
             "the resource-ARN expression names the stream, channel and queue classes"
         );

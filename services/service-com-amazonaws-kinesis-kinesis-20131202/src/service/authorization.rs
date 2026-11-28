@@ -176,6 +176,10 @@ fn resource_policy<Eng: Send + Sync + 'static>(
 /// * `ResourceARN` — the tagging and resource-policy operations, which address a stream or a
 ///   channel by ARN;
 /// * `ChannelARN`, else `ChannelName` — a channel, which a create addresses by name;
+/// * `QueueARN` — a queue, which is its own resource type: "the resource identifier in the ARN
+///   is generated when the queue is created and is not derived from QueueName"
+///   (`QueueDescription$QueueARN`), so a create of one addresses no queue ARN at all and is
+///   decided on the weaker question below, the way every other create of a named resource is;
 /// * `ConsumerARN` — a registered consumer, which is its own resource type;
 /// * `StreamARN`, else `StreamName` — the data stream, "It is recommended that you use the
 ///   StreamARN input parameter when you invoke this API" (`PutRecord`), so the ARN the
@@ -205,6 +209,7 @@ pub fn addressed_resource(
     };
     if let Some(arn) = text("ResourceARN")
         .or_else(|| text("ChannelARN"))
+        .or_else(|| text("QueueARN"))
         .or_else(|| text("ConsumerARN"))
         .or_else(|| text("StreamARN"))
     {

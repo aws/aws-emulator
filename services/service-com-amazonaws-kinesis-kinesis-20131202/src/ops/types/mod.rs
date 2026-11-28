@@ -14,17 +14,22 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod acknowledge_dead_letter_queue_records_types;
+pub mod acknowledge_queue_records_types;
 pub mod add_tags_to_stream_types;
 pub mod create_channel_types;
+pub mod create_queue_types;
 pub mod create_stream_types;
 pub mod decrease_stream_retention_period_types;
 pub mod delete_channel_types;
+pub mod delete_queue_types;
 pub mod delete_resource_policy_types;
 pub mod delete_stream_types;
 pub mod deregister_stream_consumer_types;
 pub mod describe_account_settings_types;
 pub mod describe_channel_types;
 pub mod describe_limits_types;
+pub mod describe_queue_types;
 pub mod describe_stream_consumer_types;
 pub mod describe_stream_summary_types;
 pub mod describe_stream_types;
@@ -35,6 +40,7 @@ pub mod get_resource_policy_types;
 pub mod get_shard_iterator_types;
 pub mod increase_stream_retention_period_types;
 pub mod list_channels_types;
+pub mod list_queues_types;
 pub mod list_shards_types;
 pub mod list_stream_consumers_types;
 pub mod list_streams_types;
@@ -44,33 +50,51 @@ pub mod merge_shards_types;
 pub mod put_record_types;
 pub mod put_records_types;
 pub mod put_resource_policy_types;
+pub mod receive_dead_letter_queue_records_types;
+pub mod receive_queue_records_types;
 pub mod register_stream_consumer_types;
 pub mod remove_tags_from_stream_types;
+pub mod restore_dead_letter_queue_records_types;
 pub mod shared_types;
 pub mod split_shard_types;
 pub mod start_stream_encryption_types;
 pub mod stop_stream_encryption_types;
+// Hand-authored beside the generated modules, and declared here by hand: the op-stub
+// generator emits neither `SubscribeToShard` nor its shapes (its output member targets a
+// `@streaming` union), so this module is the one in `types/` it did not write and therefore
+// does not list. Without this line that operation's own file does not compile.
 pub mod subscribe_to_shard_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_account_settings_types;
 pub mod update_channel_types;
+pub mod update_dead_letter_queue_records_visibility_types;
 pub mod update_max_record_size_types;
+pub mod update_queue_records_visibility_types;
+pub mod update_queue_types;
 pub mod update_shard_count_types;
 pub mod update_stream_mode_types;
 pub mod update_stream_record_distribution_strategy_types;
 pub mod update_stream_warm_throughput_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use acknowledge_dead_letter_queue_records_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use acknowledge_queue_records_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use add_tags_to_stream_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_channel_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_queue_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_stream_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use decrease_stream_retention_period_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_channel_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_queue_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -83,6 +107,8 @@ pub use describe_account_settings_types::*;
 pub use describe_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_limits_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use describe_queue_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_stream_consumer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -104,6 +130,8 @@ pub use increase_stream_retention_period_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_channels_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_queues_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_shards_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_stream_consumers_types::*;
@@ -122,9 +150,15 @@ pub use put_records_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use receive_dead_letter_queue_records_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use receive_queue_records_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use register_stream_consumer_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use remove_tags_from_stream_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use restore_dead_letter_queue_records_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -144,7 +178,13 @@ pub use update_account_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_channel_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_dead_letter_queue_records_visibility_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_max_record_size_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_queue_records_visibility_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_queue_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_shard_count_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

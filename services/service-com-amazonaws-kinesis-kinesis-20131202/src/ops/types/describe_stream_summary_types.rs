@@ -44,5 +44,6 @@ pub struct StreamDescriptionSummary {
     pub max_record_size_in_ki_b: Option<i32>,
     pub channel_count: Option<i32>,
     pub record_distribution_strategy: Option<String>,
+    pub queue_count: Option<i32>,
 }
 

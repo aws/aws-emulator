@@ -138,6 +138,7 @@ pub enum TagResourceErrorModeled {
     ResourceInUseException(ResourceInUseException),
     ResourceNotFoundException(ResourceNotFoundException),
     InternalFailureException(InternalFailureException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -220,7 +221,8 @@ fn apply_assignment(
     }
 
     // `ResourceARN` addresses "the Kinesis resource" rather than one kind of it — it is
-    // modelled `^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$`, so a channel and a
+    // modelled `^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel|queue)/\S+$`, so a channel, a
+    // queue and a
     // consumer registered with a stream (whose ARN continues its stream's resource segment)
     // are first-class tagging targets too — and each kind carries ONE stored tag set, so the
     // write goes through the lookup that spans every kind this service holds, the very lookup

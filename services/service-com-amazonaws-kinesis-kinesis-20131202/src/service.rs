@@ -73,7 +73,7 @@
 //! resolved, the documents in force on it are evaluated against
 //! `kinesis:<OperationName>` on the resource the request addresses, and a call they do not
 //! allow is refused with `AccessDeniedException` instead of reaching the handler. The gate
-//! is one wrapper rather than a call in each of the 45 handlers because the rule is the
+//! is one wrapper rather than a call in each of the 57 handlers because the rule is the
 //! SERVICE's and not one operation's.
 //!
 //! ## This service's third edited seam: the operation whose output is an event stream
@@ -208,17 +208,22 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             stated,
             engine,
             in_cbor,
+            acknowledge_dead_letter_queue_records::AcknowledgeDeadLetterQueueRecords,
+            acknowledge_queue_records::AcknowledgeQueueRecords,
             add_tags_to_stream::AddTagsToStream,
             create_channel::CreateChannel,
+            create_queue::CreateQueue,
             create_stream::CreateStream,
             decrease_stream_retention_period::DecreaseStreamRetentionPeriod,
             delete_channel::DeleteChannel,
+            delete_queue::DeleteQueue,
             delete_resource_policy::DeleteResourcePolicy,
             delete_stream::DeleteStream,
             deregister_stream_consumer::DeregisterStreamConsumer,
             describe_account_settings::DescribeAccountSettings,
             describe_channel::DescribeChannel,
             describe_limits::DescribeLimits,
+            describe_queue::DescribeQueue,
             describe_stream::DescribeStream,
             describe_stream_consumer::DescribeStreamConsumer,
             describe_stream_summary::DescribeStreamSummary,
@@ -229,6 +234,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             get_shard_iterator::GetShardIterator,
             increase_stream_retention_period::IncreaseStreamRetentionPeriod,
             list_channels::ListChannels,
+            list_queues::ListQueues,
             list_shards::ListShards,
             list_stream_consumers::ListStreamConsumers,
             list_streams::ListStreams,
@@ -238,8 +244,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             put_record::PutRecord,
             put_records::PutRecords,
             put_resource_policy::PutResourcePolicy,
+            receive_dead_letter_queue_records::ReceiveDeadLetterQueueRecords,
+            receive_queue_records::ReceiveQueueRecords,
             register_stream_consumer::RegisterStreamConsumer,
             remove_tags_from_stream::RemoveTagsFromStream,
+            restore_dead_letter_queue_records::RestoreDeadLetterQueueRecords,
             split_shard::SplitShard,
             start_stream_encryption::StartStreamEncryption,
             stop_stream_encryption::StopStreamEncryption,
@@ -247,7 +256,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             untag_resource::UntagResource,
             update_account_settings::UpdateAccountSettings,
             update_channel::UpdateChannel,
+            update_dead_letter_queue_records_visibility::UpdateDeadLetterQueueRecordsVisibility,
             update_max_record_size::UpdateMaxRecordSize,
+            update_queue::UpdateQueue,
+            update_queue_records_visibility::UpdateQueueRecordsVisibility,
             update_shard_count::UpdateShardCount,
             update_stream_mode::UpdateStreamMode,
             update_stream_record_distribution_strategy::UpdateStreamRecordDistributionStrategy,
@@ -543,7 +555,7 @@ mod tests {
             .filter_map(|(id, _)| id.rsplit('#').next().map(str::to_string))
             .collect();
         assert!(
-            operations.len() >= 45,
+            operations.len() >= 57,
             "case the model's surface: expected this service's operations, got {operations:?}"
         );
         operations
@@ -587,9 +599,63 @@ mod tests {
             );
         }
         assert_eq!(
-            served, 45,
-            "case the served surface: expected the 45 operations this crate has a handler \
+            served, 57,
+            "case the served surface: expected the 57 operations this crate has a handler \
              for, got {served}"
         );
+    }
+
+    /// RULE applied to the whole QUEUE surface this crate serves: a queue's delivery is a PULL
+    /// out of this service's own in-memory store, so no file of it dials a socket, reads the
+    /// host's environment or files, or spawns a process.
+    ///
+    /// Checked over the SOURCE of the state this service holds rather than asserted in prose,
+    /// because the rule is about what the code may name at all: a delivery path that grew a
+    /// destination of its own would have to name one of these primitives, and this test fails
+    /// the moment it does. The queue's data plane has no destination to dial — `CreateQueue`
+    /// takes a queue name, one stream ARN with a starting position, attributes and tags, and no
+    /// endpoint, URL or callback member — and what a receive answers comes from the records the
+    /// stream already holds in the same store.
+    #[test]
+    fn the_queue_module_names_no_socket_no_host_read_and_no_process() {
+        // The primitives an outbound dial, a host read or a process spawn would have to name.
+        const PROHIBITED: &[&str] = &[
+            "TcpStream",
+            "UdpSocket",
+            "TcpListener",
+            "reqwest",
+            "ureq",
+            "to_socket_addrs",
+            "std::fs",
+            "File::open",
+            "File::create",
+            "env::var",
+            "env::vars",
+            "std::env",
+            "Command",
+            "std::process",
+        ];
+        // Every file of the queue state module and the module root that declares it, named here
+        // so a file added to it without being listed is a failure rather than an unchecked gap.
+        let files = [
+            "src/state.rs",
+            "src/state/queues.rs",
+            "src/state/queues/delivery.rs",
+            "src/state/queues/refusals.rs",
+            "src/state/queues/store.rs",
+            "src/state/queues/tests.rs",
+        ];
+        for file in files {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("case {file}: expected to read it, got {error}"));
+            for prohibited in PROHIBITED {
+                assert!(
+                    !source.contains(prohibited),
+                    "case {file}: a queue's delivery is a pull out of this service's own store, \
+                     so this file must not name {prohibited}"
+                );
+            }
+        }
     }
 }

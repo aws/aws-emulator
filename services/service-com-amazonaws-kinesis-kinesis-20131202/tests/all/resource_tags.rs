@@ -12,13 +12,16 @@
 //! what a read reports, and re-assigning what is already there changes nothing.
 //!
 //! A `ResourceARN` names a resource of EVERY kind this service holds — a data stream, a
-//! channel, and a consumer registered with a stream, whose ARN continues its stream's
-//! resource segment with `/consumer/<name>:<registration instant>` — and each such resource
+//! channel, a queue created on a stream, and a consumer registered with a stream, whose ARN
+//! continues its stream's resource segment with `/consumer/<name>:<registration instant>` —
+//! and each such resource
 //! carries ONE stored tag set OF ITS OWN, so the whole family (`TagResource`,
 //! `ListTagsForResource`, `UntagResource`) addresses a consumer exactly the way it addresses
 //! a stream: the tags a registration carried and the tags a later assignment carried are one
 //! set, that set is the consumer's and not its stream's, and it lives for as long as the
-//! consumer does.
+//! consumer does. A QUEUE is reached the same way, by the ARN its own create minted: "You can
+//! also add, change, and remove tags after the queue is created with TagResource and
+//! UntagResource" (`CreateQueueInput$Tags`).
 //!
 //! The refusals are the ones that rule implies and the operation models: an ARN this
 //! account and region hold no resource under is `ResourceNotFoundException` (including an
@@ -42,6 +45,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
     consumer_not_found_message, resource_not_found_message, tag_ceiling_exceeded_message,
     MAX_CONSUMER_TAGS, MAX_STREAM_TAGS, STREAM_ACTIVE, STREAM_CREATING, STREAM_DELETING,
+    STREAM_MODE_ON_DEMAND,
 };
 
 use crate::stream_tags::{
@@ -968,4 +972,175 @@ async fn a_consumer_carrying_no_tags_reports_the_empty_list() {
         Some(0),
         "case an untagged consumer: expected the empty Tags list, got {read}"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// A QUEUE created on a stream is a resource of its own, addressed by the ARN its create
+// minted: "You can also add, change, and remove tags after the queue is created with
+// TagResource and UntagResource" (`CreateQueueInput$Tags`).
+// ---------------------------------------------------------------------------------------
+
+/// Create one queue on the stream `stream_arn` names, optionally carrying `tags`, and answer
+/// the `QueueARN` the create minted — the identifier every call below addresses the queue by,
+/// taken from the response rather than rebuilt here, because "the resource identifier in the
+/// ARN is generated when the queue is created and is not derived from QueueName"
+/// (`QueueDescription$QueueARN`).
+async fn create_queue(
+    emulator: &Emulator,
+    case: &str,
+    stream_arn: &str,
+    queue: &str,
+    tags: &[(String, String)],
+) -> String {
+    let mut body = json!({
+        "QueueName": queue,
+        "StreamConfigurationList": [{ "StreamARN": stream_arn }],
+    });
+    if !tags.is_empty() {
+        body["Tags"] = tag_map(tags);
+    }
+    let answered = emulator.ok(case, "CreateQueue", &body).await;
+    answered["QueueDescription"]["QueueARN"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("case {case}: a create must answer QueueDescription.QueueARN, got {answered}")
+        })
+        .to_string()
+}
+
+/// RULE applied to the resource kind the model added: a queue carries ONE stored tag set of
+/// its own — the tags its create assigned — and the resource-tag family reaches that set
+/// through the queue's ARN exactly as it reaches a stream's and a consumer's: an assignment
+/// overwrites the keys it names and leaves the rest, an unassignment deletes the keys it names
+/// and ignores a key the queue does not carry, and the set is the QUEUE's rather than its
+/// stream's.
+///
+/// The rows differ along what the create carried and what the later calls do to it: a queue
+/// created with no tags at all and one created with tags, then an assignment that both
+/// overwrites and adds, then an unassignment naming a key the queue carries beside one it does
+/// not.
+#[tokio::test]
+async fn the_resource_tag_family_addresses_a_queue_by_the_arn_its_create_minted() {
+    let emulator = Emulator::new();
+    let stream = "queue-tag-resource";
+    emulator
+        .ok(
+            stream,
+            "CreateStream",
+            &json!({
+                "StreamName": stream,
+                // Queues "are supported only on data streams in on-demand capacity mode"
+                // (`CreateQueue`).
+                "StreamModeDetails": { "StreamMode": STREAM_MODE_ON_DEMAND },
+            }),
+        )
+        .await;
+    poll_until_active(&emulator, stream, stream).await;
+    let arn = stream_arn(REGION, stream);
+
+    // (case, the tags the create carries, the set the queue must then report).
+    let created_with: [(&str, Vec<(String, String)>); 2] = [
+        ("a queue created with no tags", Vec::new()),
+        (
+            "a queue created with tags",
+            vec![pair("Owner", "payments"), pair("Environment", "test")],
+        ),
+    ];
+    for (index, (case, tags)) in created_with.into_iter().enumerate() {
+        let queue_arn = create_queue(
+            &emulator,
+            case,
+            &arn,
+            &format!("tagged-queue-{index}"),
+            &tags,
+        )
+        .await;
+        assert_eq!(
+            tags_by_arn(&emulator, case, &queue_arn).await,
+            in_key_order(&tags),
+            "case {case}: expected the queue to report the tags its create assigned"
+        );
+
+        // An assignment overwrites the keys it names and leaves every other tag alone — the
+        // same rule the stream and the consumer rows above pin.
+        emulator
+            .ok(
+                case,
+                "TagResource",
+                &json!({
+                    "ResourceARN": &queue_arn,
+                    "Tags": tag_map(&[pair("Owner", "billing"), pair("Team", "stream")]),
+                }),
+            )
+            .await;
+        let mut expected: Vec<(String, String)> = tags
+            .iter()
+            .filter(|(key, _)| key != "Owner")
+            .cloned()
+            .collect();
+        expected.push(pair("Owner", "billing"));
+        expected.push(pair("Team", "stream"));
+        assert_eq!(
+            tags_by_arn(&emulator, case, &queue_arn).await,
+            in_key_order(&expected),
+            "case {case}: expected the assignment to overwrite the key it named and leave the \
+             rest"
+        );
+
+        // An unassignment deletes the key it names and ignores one the queue does not carry.
+        emulator
+            .ok(
+                case,
+                "UntagResource",
+                &json!({
+                    "ResourceARN": &queue_arn,
+                    "TagKeys": ["Owner", "a-key-this-queue-does-not-carry"],
+                }),
+            )
+            .await;
+        let remaining: Vec<(String, String)> = expected
+            .into_iter()
+            .filter(|(key, _)| key != "Owner")
+            .collect();
+        assert_eq!(
+            tags_by_arn(&emulator, case, &queue_arn).await,
+            in_key_order(&remaining),
+            "case {case}: expected the named key deleted and the unknown key ignored"
+        );
+
+        // The set is the QUEUE's: its stream carries none of it.
+        assert_eq!(
+            tags_by_arn(&emulator, case, &arn).await,
+            Vec::new(),
+            "case {case}: expected the queue's tags to be the queue's rather than its stream's"
+        );
+    }
+
+    // An ARN of this resource KIND that no create minted is the not-found refusal, worded for
+    // the kind the ARN names.
+    let absent = format!(
+        "arn:aws:kinesis:{REGION}:{}:queue/0123456789abcdef0123456789abcdef",
+        engine::EMULATOR_ACCOUNT_ID
+    );
+    for operation in ["ListTagsForResource", "TagResource", "UntagResource"] {
+        let mut body = json!({ "ResourceARN": &absent });
+        match operation {
+            "TagResource" => body["Tags"] = tag_map(&[pair("k", "v")]),
+            "UntagResource" => body["TagKeys"] = json!(["k"]),
+            _ => {}
+        }
+        let (status, response) = emulator.call(operation, &body).await;
+        assert_eq!(
+            (status, error_code(&response)),
+            (400, "ResourceNotFoundException".to_string()),
+            "case a queue ARN no create minted: expected {operation} refused, got {status} \
+             with {response}"
+        );
+        assert_eq!(
+            error_message(&response),
+            resource_not_found_message(&absent),
+            "case a queue ARN no create minted: expected the sentence this service states for \
+             the kind the ARN names, got {response}"
+        );
+    }
 }

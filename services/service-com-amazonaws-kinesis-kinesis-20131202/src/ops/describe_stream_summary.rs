@@ -219,9 +219,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.stream_arn.as_deref(),
             )
             .map_err(|failure| lookup_refusal(failure, &input))?;
+        // "The number of queues created on the data stream"
+        // (`StreamDescriptionSummary$QueueCount`): a queue is its own record, so the count
+        // comes from the queue store rather than from the stream's own fields.
+        let queues = store.queues_on(now, &stream.arn);
 
         Ok(DescribeStreamSummaryOutput {
-            stream_description_summary: stream.to_summary(now),
+            stream_description_summary: stream.to_summary(now, queues),
         })
     }
 }
