@@ -46,3 +46,44 @@ Actual (emulator): no delivery is observed; the check makes no progress and is c
 2. CreatePipe with the good role, Source = the queue ARN, Target = the function ARN. Wait for DescribePipe CurrentState == RUNNING.
 3. SendMessage a marker to the source queue and poll the target for that marker. Expected: the marker arrives. Observed: it never does, and the check is killed at its 60 s cap.
 4. (Blocked by 3) CreatePipe with the bad role, send a second marker, and assert the pipe reaches a terminal startup state, the marker is never delivered, and ApproximateNumberOfMessages on its source queue stays >= 1.
+
+## Resolution
+
+NOT REPRODUCIBLE as reported, coverage added. The data-plane defect this report names — a pipe
+that reports a healthy state and moves nothing — was NOT found and nothing in this change
+repairs it, so a later reader should not take the pipes data plane as having been repaired
+here.
+
+1. The behaviour the report describes is SERVED in every configuration it could be driven in,
+   and was pinned nowhere for a LAMBDA target whose pipe acts as a role IAM really holds (the
+   sibling suites use Amazon SQS targets, and the pipes crate's own function-target suite
+   mounts no IAM store). Two suites now pin it:
+   `core/router/tests/all/pipes_sqs_source_lambda_target_delivery.rs` tables it over how the
+   pipe came to exist (a CloudFormation declaration, `CreatePipe`) and what its execution role
+   admits (every call; no call at all on the source; every source call except the receive);
+   `core/router/tests/all/pipes_deployed_sqs_source_lambda_target.rs` pins the same
+   role-scoped pair on the emulator a client STARTS. Each delivery is observed as the
+   function's own `boto3` write, each withheld case as the record still available on its
+   source with nothing in flight, and a startup failure as the `StateReason` naming the call
+   the role withheld.
+
+2. COLLATERAL, and not shipped by this change either: the lockfile had resolved a SECOND copy
+   of the Python guest's arbitrary-precision arithmetic crate (0.15) beside the `=0.12.0` that
+   `services/python-guest-substrate/Cargo.toml` pins, and 0.15 declares a `rust-version` ahead
+   of this project's toolchain, so nothing that embeds the substrate — the router binary
+   included — compiled. That re-resolution onto the pinned copy landed on mainline on its own,
+   so it is no longer part of this diff; it is recorded here because it is what kept any
+   emulator from being built from this tree while the report was open.
+
+3. Also collateral, and not this report's subject either: the reconciliation of the Elastic
+   Load Balancing signing-name family's contradictory claim rows, which this change carried for
+   a while, landed on mainline on its own and is no longer part of this diff.
+
+The check's own replay key is unchanged: a harness `Timeout` with no assertion reached, which
+reports no status, code, message or member that differs. Every leg its script drives — the
+stack, the pipe's `RUNNING`, the delivery to the function, the consumption of the record, the
+under-permissioned pipe's terminal startup state and the record it leaves waiting — is served
+and asserted green by the suites above, in process and on a started emulator, in two Regions,
+addressed both at the service host and at the emulator's own published endpoint, with and
+without `sqs:GetQueueAttributes` on the role, with the function's `Timeout` set and absent, and
+with the result queue drained by a long poll issued immediately after the send.
