@@ -159,8 +159,24 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // Elastic Load Balancing request `500 AmbiguousService` — a code no AWS model
         // carries, in a JSON body an awsQuery client cannot parse. The claim table is
         // `core/router/tests/all/elb_classic_and_v2_signing_name_routing.rs`.
+        //
+        // The claim is still bounded by this endpoint's own wire surface: both Elastic
+        // Load Balancing APIs are `awsQuery`, which posts EVERY action to the root path
+        // and names the API in the envelope, so a request on a path this endpoint does
+        // not serve is not its traffic. That is what leaves room for a peer that shares
+        // the signing name and addresses a path of its own — an `rpcv2Cbor` service posts
+        // to `/service/<Service>/operation/<Operation>` — to be reached at all: it names
+        // itself there, and one request keeps one claimant.
         match smithy_server_runtime::resolve_route_key(parts) {
-            Some(key) if key == self.entry.identity().signing_name() => true,
+            Some(key)
+                if key == self.entry.identity().signing_name()
+                    && service_common::claims_modeled_path(
+                        parts,
+                        &[::emulator_server::ROOT_PATH_SEGMENT],
+                    ) =>
+            {
+                true
+            }
             // And a LOAD BALANCER's own traffic: a request addressed to the name a load
             // balancer of this service published ([`data_plane::claims_parts`]). Such a
             // request names no modelled operation and carries no credential scope naming

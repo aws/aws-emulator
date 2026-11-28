@@ -3444,7 +3444,10 @@ async fn a_cancel_with_no_cancellable_change_is_a_validation_failure() {
 /// AWS's fixed sentence for a `CancelSubscriptionChange` against a subscription that
 /// carries no scheduled change: the whole string is the requirement, with no part of it
 /// taken from the request or from state.
-const NO_CANCELLABLE_CHANGE: &str = "No scheduled updates found for this subscription.";
+///
+/// Visible to the sibling suites of this test crate, so the sentence this class is asserted
+/// against is written once.
+pub(crate) const NO_CANCELLABLE_CHANGE: &str = "No scheduled updates found for this subscription.";
 
 /// Move the instants of the change pending on `arn` to `instant`, as a change the billing
 /// system has already confirmed, and report how the wire renders it.
