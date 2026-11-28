@@ -2328,6 +2328,10 @@ fn diagnose_state<'a>(
     } else {
         diagnose_jsonpath_state(name, state, state_type, &here, into);
     }
+    // The members a `Task` state's own API cannot be called without, judged against the
+    // payload template that state builds its request in — which is the one its own query
+    // language declares.
+    diagnose_task_parameters(state, state_type, language, &here, into);
     // A variable the state ASSIGNS is one the definition declares AT this state, so a
     // read of it here names nothing the definition leaves undeclared: a field that reads
     // it before the assignment that writes it has been made fails when the state RUNS
@@ -2649,6 +2653,81 @@ fn diagnose_task_resource(
     ));
 }
 
+/// The REQUIRED-PARAMETER rule of one `Task` state: the request its payload template
+/// builds must carry every member the API its `Resource` names cannot be called without.
+///
+/// A service integration's unit of work is one API call whose request IS the document the
+/// state's payload template builds ([`crate::state::integration`]), so a template that
+/// omits a member the invoked operation's model marks `required` describes a request that
+/// service could never serve — for any execution's data, since what the template does not
+/// write no input can supply. That is a defect in the DEFINITION, and it is reported here,
+/// where the document is submitted, rather than left to fail once per execution. Which
+/// members those are is the invoked model's own fact, stated per integration
+/// ([`crate::state::integration::REQUIRED_PARAMETERS`]); an integration no entry is stated
+/// for is judged on nothing, so its definition is created exactly as before.
+///
+/// Only a state that DECLARES a payload template is judged: a `Task` with none passes its
+/// effective input on as the request, and what that input carries is an execution's own
+/// data rather than anything the document says. A member written for evaluation (`"<name>
+/// .$"`) counts as carried — what it holds is judged by the reference-field rule
+/// ([`diagnose_reference_fields`]) — and the template read is the one the state's OWN
+/// query language builds a request in: `Parameters` for a JSONPath state, `Arguments` for
+/// a JSONata one. The other language's member is no request at all there, and that it was
+/// written is reported as the field it is. A template that is
+/// not an object at all builds no request to judge: that it is not one is already reported
+/// as the field it is.
+///
+/// Reported under the code every defect of the language's SCHEMA is reported under
+/// ([`SCHEMA_VALIDATION_FAILED`]), ONE diagnostic per member the request owes
+/// ([`missing_parameter_message`]) in the order the invoked model declares them, each
+/// located at the template node that owes it.
+fn diagnose_task_parameters(
+    state: &Map<String, Value>,
+    state_type: &str,
+    language: &str,
+    here: &str,
+    into: &mut Diagnosis,
+) {
+    if state_type != "Task" {
+        return;
+    }
+    let Some(resource) = state.get(RESOURCE_MEMBER).and_then(Value::as_str) else {
+        return;
+    };
+    let Some(required) = crate::state::integration::required_parameters(resource) else {
+        return;
+    };
+    let member = match language {
+        JSONATA => ARGUMENTS_MEMBER,
+        _ => PARAMETERS_MEMBER,
+    };
+    let Some(template) = state.get(member).and_then(Value::as_object) else {
+        return;
+    };
+    for name in required.members {
+        let read = format!("{name}.$");
+        if template.contains_key(*name) || template.contains_key(&read) {
+            continue;
+        }
+        into.push(error(
+            SCHEMA_VALIDATION_FAILED,
+            at(here, &format!("/{member}")),
+            missing_parameter_message(name),
+        ));
+    }
+}
+
+/// What a schema diagnostic says about a member the invoked API requires and the request
+/// does not carry: the field, quoted, and that it is owed.
+///
+/// RECORDED text — the sentence the refusal states about such a field, word for word. It
+/// is told from the one a schema OBJECT's own required fields are reported with
+/// ([`required_fields_message`], which lists them together): this is one field of a
+/// REQUEST, and the service names each of them on its own.
+fn missing_parameter_message(field: &str) -> String {
+    format!("The field '{field}' is required but was missing")
+}
+
 /// The ALTERNATIVE-field rule of one state: of a group of fields the language declares
 /// as alternatives ([`EXCLUSIVE_FIELD_GROUPS`]), a state carries at most one.
 ///
@@ -2884,6 +2963,9 @@ pub(super) const OUTPUT_MEMBER: &str = "Output";
 /// The member a JSONata `Task`, `Map` or `Parallel` state builds the document it hands
 /// its work in: "Arguments".
 pub(super) const ARGUMENTS_MEMBER: &str = "Arguments";
+
+/// The member a JSONPath state builds the document it hands its work in: "Parameters".
+pub(super) const PARAMETERS_MEMBER: &str = "Parameters";
 
 /// The member a `Map` state projects each of its items through: "ItemSelector".
 pub(super) const ITEM_SELECTOR_MEMBER: &str = "ItemSelector";
@@ -4167,10 +4249,18 @@ fn looks_like_a_path(text: &str) -> bool {
 /// not: there the field is used as the literal it is, here there is nothing to use.
 ///
 /// The whole object is walked, so a reference field nested inside a payload template is
-/// judged exactly as a top-level one is, with its own position reported; the walk is
+/// judged exactly as a top-level one is; the walk is
 /// ITERATIVE and drains its queue from the FRONT, so the fields are judged in the order
 /// the definition writes them, and every path is built through [`nested_at`], like every
 /// other walk here.
+///
+/// WHERE such a diagnostic sits is the object being validated — the payload template or
+/// the assignment block `at_object` names — and not the member inside it: the field whose
+/// value could not be read is named by the MESSAGE, and the place is the node of the state
+/// whose schema failed, which is what the refusal RECORDS for a reference field nested
+/// several members deep. A client that resolves the location against the document it
+/// submitted therefore reaches that node, and the field it names says which member of it
+/// to correct.
 fn diagnose_reference_fields(declared: &Value, at_object: &str, into: &mut Diagnosis) {
     let mut pending: ::std::collections::VecDeque<(String, &Value)> =
         ::std::collections::VecDeque::from([(at_object.to_string(), declared)]);
@@ -4183,7 +4273,7 @@ fn diagnose_reference_fields(declared: &Value, at_object: &str, into: &mut Diagn
                     if reads_a_path && !value.as_str().is_some_and(reads_as_an_expression) {
                         into.push(error(
                             SCHEMA_VALIDATION_FAILED,
-                            at(&here, ""),
+                            at(at_object, ""),
                             reference_field_message(member),
                         ));
                         continue;
@@ -4206,11 +4296,13 @@ fn diagnose_reference_fields(declared: &Value, at_object: &str, into: &mut Diagn
 /// What a schema diagnostic says about such a field: the field, and the two things its
 /// value may be.
 ///
-/// RECORDED text. The field is the caller's own JSON key, so it is clipped by
-/// [`echoed`] like every other caller value a diagnostic quotes.
+/// RECORDED text — the sentence the refusal states around the field, word for word. The
+/// field is the caller's own JSON key, so it is clipped by [`echoed`] like every other
+/// caller value a diagnostic quotes.
 fn reference_field_message(field: &str) -> String {
     format!(
-        "The value for the field '{}' must be a valid JSONPath or intrinsic function expression",
+        "The value for the field '{}' must be a valid JSONPath or a valid intrinsic function \
+         call",
         echoed(field)
     )
 }

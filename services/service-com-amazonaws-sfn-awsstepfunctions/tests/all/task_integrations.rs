@@ -188,6 +188,15 @@ impl Chain {
         read.get("Item").cloned()
     }
 
+    /// Write `item` into `table` through DynamoDB's own `PutItem`.
+    ///
+    /// `pub(crate)`, not private: a sibling suite that needs a table a task READS from
+    /// seeds it through this one rather than standing up a second call path to it.
+    pub(crate) async fn put_item(&self, table: &str, item: &Value) {
+        self.ddb("PutItem", &json!({ "TableName": table, "Item": item }))
+            .await;
+    }
+
     /// Create a state machine and start one execution of it, and report what the
     /// execution ended as once the clock has made the outcome due.
     pub(crate) async fn run(&self, name: &str, definition: &Value, input: &Value) -> Value {

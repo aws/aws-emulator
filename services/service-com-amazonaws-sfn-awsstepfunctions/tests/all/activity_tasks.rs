@@ -393,9 +393,10 @@ async fn a_poll_with_nothing_scheduled_answers_an_empty_token() {
     );
 }
 
-/// A task scheduled after every `Wait` the definition declares is not available
-/// before the clock reaches it: the walk accumulates those waits instead of sleeping
-/// for them.
+/// A task behind a `Wait` the definition declares is not available to a worker before
+/// the clock reaches it: the state that schedules it runs when that span has run out, so
+/// until then the store holds no task for the activity at all and the execution is
+/// running inside the wait.
 #[tokio::test]
 async fn a_task_behind_a_wait_state_is_not_available_yet() {
     let emulator = Emulator::new();
@@ -416,9 +417,9 @@ async fn a_task_behind_a_wait_state_is_not_available_yet() {
     let (held, claimable) = queued_tasks(&emulator, &activity);
     assert_eq!(
         (held, claimable),
-        (1, 0),
-        "expected the task to be queued but not yet available, got {held} held and {claimable} \
-         claimable"
+        (0, 0),
+        "expected no task to be scheduled while the wait in front of it is still running, \
+         got {held} held and {claimable} claimable"
     );
     let described = describe_execution(&emulator, &execution).await;
     assert_eq!(

@@ -973,13 +973,36 @@ async fn a_start_the_key_refuses_the_caller_starts_nothing() {
     );
 }
 
+/// Poll the execution `metadata` names until it has left `RUNNING`, through the
+/// projection that needs no key at all.
+///
+/// The wait is for the CONDITION and not for a span: the `Wait` state in the definition
+/// below holds the run until its own span runs out, and the states after it then reach the
+/// outcome the clock owes, so what this looks for is that outcome being there. The
+/// deadline is generous next to every span those rows declare, because it bounds only a
+/// failure.
+async fn left_running(chain: &Chain, case: &str, metadata: &Value) {
+    let deadline = ::tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let described = chain.sfn("DescribeExecution", metadata).await;
+        if string(&described, "status") != "RUNNING" {
+            return;
+        }
+        assert!(
+            ::tokio::time::Instant::now() < deadline,
+            "case {case:?}: expected the execution to leave RUNNING, got {described:?}"
+        );
+        ::tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// An execution does its remaining work under its state machine's key, so the outcome
 /// the clock makes due depends on that key at the instant it is owed: one that comes due
 /// while the key admits no cryptographic use of it, or while the authorities in force no
 /// longer let the EXECUTION ROLE use it, is a failure carrying the language's own runtime
 /// error — and nothing is latched, so a redrive with the key answering again finishes the
 /// run.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_execution_whose_key_stops_answering_when_its_outcome_is_due_fails() {
     // Each row: what stops the key answering for the execution's own work before the
     // outcome comes due, and the status the clock then makes due.
@@ -1033,9 +1056,13 @@ async fn an_execution_whose_key_stops_answering_when_its_outcome_is_due_fails() 
         if withdraw {
             chain.put_policy(&key, &withdrawn_policy()).await;
         }
-        std::thread::sleep(PAST_THE_WAIT);
-
         let metadata = json!({ "executionArn": execution, "includedData": "METADATA_ONLY" });
+        // The outcome is WAITED for rather than timed: the `Wait` state this definition
+        // declares holds the run until its span runs out, and the outcome the states
+        // after it reach is owed one settle after that
+        // ([`crate::state::wait_clock`]), so what this looks for is the execution having
+        // left `RUNNING` — read through the projection that needs no key at all.
+        left_running(&chain, case, &metadata).await;
         let all_data = json!({ "executionArn": execution, "includedData": "ALL_DATA" });
         // The FIRST read of the execution is one the key refuses, and the outcome the
         // clock owed is materialised all the same: it was owed at that instant whether
@@ -1086,7 +1113,7 @@ async fn an_execution_whose_key_stops_answering_when_its_outcome_is_due_fails() 
         chain
             .sfn("RedriveExecution", &json!({ "executionArn": execution }))
             .await;
-        std::thread::sleep(PAST_THE_WAIT);
+        left_running(&chain, case, &metadata).await;
         let redriven = chain.sfn("DescribeExecution", &metadata).await;
         assert_eq!(
             string(&redriven, "status"),

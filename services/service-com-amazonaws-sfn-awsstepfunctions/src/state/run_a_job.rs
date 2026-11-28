@@ -408,15 +408,18 @@ async fn resolve<Eng: Send + Sync + 'static>(
     // Phase 3, under the lock again: record it. Everything is re-read, because the
     // execution could have been stopped while the walk ran. The lock is held for THIS
     // block alone, because the publication below must not hold the store.
+    let held_at;
     {
         let mut store = state.lock();
         store.settle(now);
         let waiting = planned.waiting;
         let parked = planned.parked;
+        let parked_wait = planned.parked_wait;
         let extra_bytes = waiting
             .as_ref()
             .map_or(0, super::PlannedActivityTask::measure)
             + parked.as_ref().map_or(0, super::PlannedJob::measure)
+            + parked_wait.as_ref().map_or(0, super::PlannedWait::measure)
             + super::planned_map_run_bytes(&planned.map_runs);
         // The attempt STOPPED at the state that started the job when that job failed and
         // no `Catch` of the state carried the execution on, which is the step a later
@@ -449,6 +452,19 @@ async fn resolve<Eng: Send + Sync + 'static>(
             store.park_job(execution_arn, parked, &region);
         }
         store.append_map_runs(execution_arn, &machine_arn, planned.map_runs);
+        held_at = parked_wait;
+    }
+    // The continuation parked at a `Wait` state: the states after it run when its span
+    // runs out, held by a task of its own exactly as this job's poll is
+    // ([`super::wait_clock`]).
+    if let Some(parked_wait) = held_at {
+        super::wait_clock::watch(
+            Arc::clone(engine),
+            callback.clone(),
+            depth,
+            execution_arn.to_string(),
+            parked_wait,
+        );
     }
     // The job's outcome may have carried the execution to its terminal status, which
     // is a status change this service publishes onto the account's default event bus.

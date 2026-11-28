@@ -216,6 +216,10 @@ mod walk;
 mod variables;
 mod work_events;
 mod work_meter;
+// The `Parallel` state's own walk — how one state runs the branches it declares, and
+// what their outcomes make of the state — in a file of its own. It adds members to the
+// interpreter declared here, so nothing of it is imported.
+mod frame;
 mod retriers;
 pub use retriers::*;
 use members::*;
@@ -1502,6 +1506,11 @@ pub struct Run {
     /// that carries this reached no terminal status either: what the execution is
     /// waiting for is that job finishing.
     pub parked: Option<ParkedJob>,
+    /// The `Wait` state the walk SUSPENDED at, for a wait that is still ahead of the
+    /// clock. A run that carries this reached no terminal status either: what happens
+    /// next is the wait running out, and the states after it run THEN
+    /// ([`ParkedWait`]).
+    pub parked_wait: Option<ParkedWait>,
     /// The jobs this walk started and then ABANDONED: a job a `Parallel` branch
     /// started that the state around it failed before the job could finish, so no
     /// task is waiting at it any more. The caller STOPS each one through its own
@@ -1540,6 +1549,31 @@ impl Run {
         self.map_runs = map_runs;
         self
     }
+}
+
+/// The `Wait` state a walk SUSPENDED at, because the span it waits is still ahead.
+///
+/// "A `Wait` state delays the state machine from continuing for a specified time": the
+/// states AFTER it run when that span has run out and not before, so a walk that reaches
+/// one stops there and the execution carries on from that state when the clock reaches it
+/// ([`super::wait_clock`]). That is what makes a state after a `Wait` act on the world as
+/// it is THEN — a `Task` state's integration call is made at that instant, so it observes
+/// every change committed during the wait — and what lets a definition whose control flow
+/// waits for such a change reach it at all.
+///
+/// The offset is into the RUN (the total of every span the walk passed, this wait
+/// included), so the caller that records this turns it into an instant against the walk's
+/// own start exactly as it turns a terminal outcome's into one — the walk never sleeps.
+#[derive(Debug, Clone)]
+pub struct ParkedWait {
+    /// The `Wait` state the walk stopped at, which the continuation picks up at.
+    pub state_name: String,
+    /// The RAW input that state was entered with, which the continuation enters it with
+    /// again: the wait is behind it then, so what the state puts out is this document
+    /// through its own data flow.
+    pub raw_input: Value,
+    /// How far into the run the wait RUNS OUT, which is when the continuation happens.
+    pub at: Duration,
 }
 
 /// The task a `Task` state scheduled and SUSPENDED at, as the walk computed it:
@@ -2582,6 +2616,10 @@ fn scan_expression(expression: &str, into: &mut BTreeSet<String>) {
 /// synchronous start): the walk never sleeps for it, and what it needs it for is the
 /// instant a child workflow execution of a Distributed Map STOPS at, which the results
 /// that run writes report ([`Interpreter::settle`]).
+///
+/// `parks_at_waits` is whether a `Wait` state whose span is still ahead suspends the walk
+/// ([`ParkedWait`]).
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     definition: &str,
     input: &str,
@@ -2589,6 +2627,7 @@ pub fn run(
     context: &Context,
     first_event_id: i64,
     settle: Duration,
+    parks_at_waits: bool,
     tasks: &dyn Tasks,
 ) -> Run {
     interpret(
@@ -2600,6 +2639,7 @@ pub fn run(
         Duration::ZERO,
         first_event_id,
         settle,
+        parks_at_waits,
         tasks,
     )
     .0
@@ -2648,9 +2688,69 @@ pub fn redrive(
         Duration::ZERO,
         first_event_id,
         settle,
+        // A redrive answers while the execution it re-ran is running, exactly as a start
+        // does, so what is still ahead of the walk happens later.
+        true,
         tasks,
     )
     .0
+}
+
+/// Walk `definition` on from the `Wait` state whose span has RUN OUT, and report what
+/// happened.
+///
+/// "A `Wait` state delays the state machine from continuing for a specified time": the
+/// walk that reached the state stopped there ([`ParkedWait`]), and this is the walk that
+/// carries the execution on — from that same state, with the raw input it was entered
+/// with, its span now behind the execution, so it is left at once and the states after it
+/// run NOW. Their own work is therefore done at this instant: a `Task` state after a
+/// `Wait` makes its integration call here, and what that call observes is the world as the
+/// wait left it.
+///
+/// `input` is the EXECUTION's own input, which the context object (`$$`) reports; it is
+/// not the document the walk starts from. `elapsed` is how long the execution has already
+/// been running, which a definition-level `TimeoutSeconds` bounds: a span spent waiting is
+/// part of the execution's own run.
+///
+/// `entered_at` is the id of the event the preserved history holds the state's entry at,
+/// which this walk does not record again ([`ContinuedEntry`]).
+///
+/// `None` when the definition declares no such state any more, so there is nothing to
+/// continue from.
+#[allow(clippy::too_many_arguments)]
+pub fn resume_wait(
+    definition: &str,
+    input: &str,
+    start: SystemTime,
+    context: &Context,
+    from: &RedriveStep,
+    entered_at: Option<i64>,
+    elapsed: Duration,
+    first_event_id: i64,
+    settle: Duration,
+    tasks: &dyn Tasks,
+) -> Option<Run> {
+    let state_input: Value = serde_json::from_str(&from.state_input).ok()?;
+    let declares_it = serde_json::from_str::<Value>(definition)
+        .ok()?
+        .get("States")?
+        .get(&from.state_name)
+        .is_some();
+    declares_it.then(|| {
+        interpret(
+            definition,
+            input,
+            start,
+            context,
+            Entry::AfterWait(from.state_name.clone(), state_input, entered_at),
+            elapsed,
+            first_event_id,
+            settle,
+            true,
+            tasks,
+        )
+        .0
+    })
 }
 
 /// Walk `definition` on from the activity task `reply` answers, and report what
@@ -2698,6 +2798,7 @@ pub fn resume(
         elapsed,
         first_event_id,
         settle,
+        true,
         tasks,
     );
     applied.then_some(run)
@@ -2744,6 +2845,7 @@ pub fn resume_job(
         elapsed,
         first_event_id,
         settle,
+        true,
         tasks,
     );
     applied.then_some(run)
@@ -2788,6 +2890,7 @@ pub fn resume_callback(
         elapsed,
         first_event_id,
         settle,
+        true,
         tasks,
     );
     applied.then_some(run)
@@ -2816,6 +2919,11 @@ enum Entry {
     /// stopped at. The id is the event the PRESERVED history holds that state's entry
     /// at, which this walk does not record again ([`ContinuedEntry`]).
     At(String, Value, Option<i64>),
+    /// At the `Wait` state whose wait has now RUN OUT, with the raw input that state was
+    /// entered with: the state runs exactly as [`Entry::At`] runs one, with the one
+    /// difference that its wait is behind the execution rather than ahead of it, so the
+    /// walk leaves it at once and carries on from its `Next`.
+    AfterWait(String, Value, Option<i64>),
 }
 
 /// How a walk that CONTINUES an execution is placed in the history it appends to: the
@@ -2885,6 +2993,12 @@ pub(super) fn definition_timeout(document: &Value) -> Option<Duration> {
 ///
 /// `first_event_id` is the id the first event this walk records carries
 /// ([`Interpreter::first_event_id`]).
+///
+/// `parks_at_waits` is whether a `Wait` state whose span is still ahead SUSPENDS this
+/// walk ([`ParkedWait`]): an asynchronous run reports an execution that is running, so
+/// what is still ahead of it happens later, while a SYNCHRONOUS one answers the whole
+/// outcome in its own call and waits the spans out there
+/// ([`super::MAX_SYNCHRONOUS_RUN_DURATION`]).
 #[allow(clippy::too_many_arguments)]
 fn interpret(
     definition: &str,
@@ -2895,8 +3009,15 @@ fn interpret(
     elapsed: Duration,
     first_event_id: i64,
     settle: Duration,
+    parks_at_waits: bool,
     tasks: &dyn Tasks,
 ) -> (Run, bool) {
+    // The `Wait` state this walk is CONTINUING from, whose own span is behind the
+    // execution rather than ahead of it ([`Entry::AfterWait`]).
+    let elapsed_wait = match &entry {
+        Entry::AfterWait(state_name, ..) => Some(state_name.clone()),
+        _ => None,
+    };
     // The work this walk may do, installed for the thread it runs on and restored when
     // it ends: every primitive the walk reaches charges what it spends to this, and
     // what runs on this thread afterwards is metered by its own allowance
@@ -3062,9 +3183,24 @@ fn interpret(
                 state_input,
                 entered.map(ContinuedEntry::rerun),
             ),
+            // The `Wait` state whose wait has run out is entered again exactly as the
+            // step above is; that its wait is spent is carried by `elapsed_wait` below.
+            Entry::AfterWait(state_name, state_input, entered)
+                if states.contains_key(&state_name) =>
+            {
+                (
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    state_name,
+                    state_input,
+                    entered.map(ContinuedEntry::rerun),
+                )
+            }
             // A walk that begins at `StartAt` enters that state itself, whatever record
             // sent it here: there is no preserved entry of it to name.
-            Entry::At(..) | Entry::Start => (
+            Entry::At(..) | Entry::AfterWait(..) | Entry::Start => (
                 None,
                 None,
                 None,
@@ -3107,7 +3243,11 @@ fn interpret(
         // Where the walk's clock stands before any state is reached: the offset every
         // instant it reports is measured from ([`Interpreter::clock_offset`]) is the one
         // the states themselves carry, which begins at none.
-        clock_offset: Duration::ZERO,
+        clock_offset: elapsed,
+        // And what those offsets stand ON: the span the execution had already been
+        // charged when this walk's first state was reached, which is none for an attempt
+        // of its own and the span already spent for a walk that CONTINUES an execution.
+        clock_base: elapsed,
         steps: Vec::new(),
         first_event_id,
         start,
@@ -3116,6 +3256,9 @@ fn interpret(
         tasks,
         waiting: None,
         parked: None,
+        parked_wait: None,
+        parks_at_waits,
+        elapsed_wait,
         abandoned: Vec::new(),
         aborted_task: None,
         // Nothing has failed beside this walk: it is the execution's own, not a branch
@@ -3177,6 +3320,7 @@ fn interpret(
     );
     let mut waiting = interpreter.waiting.take();
     let mut parked = interpreter.parked.take();
+    let mut parked_wait = interpreter.parked_wait.take();
     let mut aborted_task = interpreter.aborted_task.take();
     let abandoned = std::mem::take(&mut interpreter.abandoned);
     // Whether the walk STOPPED at the definition's own timeout rather than reaching an
@@ -3218,6 +3362,9 @@ fn interpret(
         }
         if let Some(parked) = parked.as_mut() {
             parked.at = parked.at.saturating_sub(resumed.at);
+        }
+        if let Some(parked_wait) = parked_wait.as_mut() {
+            parked_wait.at = parked_wait.at.saturating_sub(resumed.at);
         }
         if let Some(aborted) = aborted_task.as_mut() {
             aborted.at = aborted.at.saturating_sub(resumed.at);
@@ -3283,14 +3430,15 @@ fn interpret(
     }
 
     // An execution that SUSPENDED reached no outcome: the walk stopped at an activity
-    // task, and what happens next is a worker's reply, or it parked at the job a
-    // run-a-job integration started, and what happens next is that job finishing. So
+    // task, and what happens next is a worker's reply, it parked at the job a
+    // run-a-job integration started, and what happens next is that job finishing, or it
+    // parked at a `Wait` state, and what happens next is that wait running out. So
     // the run reports what it is waiting for and no terminal event is written. Two
     // checks come FIRST, so a run that cannot reach it is not reported as waiting for
     // it: the definition-level timeout above, which a run's own `Wait` states can
     // already have spent, and the branch's outcome, which is a FAILURE where the
     // document the task would carry outgrew what a state may produce.
-    if branch.outcome.is_ok() && (waiting.is_some() || parked.is_some()) {
+    if branch.outcome.is_ok() && (waiting.is_some() || parked.is_some() || parked_wait.is_some()) {
         return (
             Run {
                 status: super::EXECUTION_STATUS_RUNNING,
@@ -3301,13 +3449,14 @@ fn interpret(
                 elapsed: end,
                 waiting,
                 parked,
+                parked_wait,
                 abandoned,
                 // A run still waiting at its task has nothing to report as aborted:
                 // nothing has failed around it.
                 aborted_task: None,
                 map_runs,
                 // A run that is WAITING failed at nothing: what happens next is a
-                // worker's reply or the job finishing.
+                // worker's reply, the job finishing or the wait running out.
                 stopped_at: None,
             },
             applied,
@@ -3485,6 +3634,7 @@ fn terminal(
         // A run that reached a terminal event is waiting for nothing.
         waiting: None,
         parked: None,
+        parked_wait: None,
         // Set by `interpret`, which is where the walk's own frame is in scope — as
         // `stopped_at` and the Map Runs are.
         abandoned: Vec::new(),
@@ -3681,6 +3831,15 @@ struct Interpreter<'tasks> {
     /// definition that measures a span against the instant its run started measures the
     /// spans that run was charged.
     clock_offset: Duration,
+    /// The span the execution had ALREADY been charged before this walk's first state,
+    /// which every offset of this walk stands on top of.
+    ///
+    /// Zero for a walk that IS an attempt — its first state is reached where the
+    /// execution's own clock begins — and the span already spent for one that CONTINUES
+    /// an execution: a state the clock reached one `Wait` after the start stands one
+    /// `Wait` into the run, so what its expressions read is that instant rather than the
+    /// one the run began at.
+    clock_base: Duration,
     steps: Vec<Step>,
     /// The id the FIRST history event this walk records carries: the events of one
     /// execution are numbered in order, and a walk that continues an execution
@@ -3725,6 +3884,20 @@ struct Interpreter<'tasks> {
     /// the task a worker may still be handed is scheduled rather than unmade. Set at
     /// most once, because one walk suspends at one task.
     aborted_task: Option<ScheduledActivity>,
+    /// The `Wait` state whose span is still ahead, which SUSPENDED the walk: the
+    /// execution waits at that state until the span runs out, and the states after it
+    /// run then ([`ParkedWait`]). Set at most once, because the walk stops at the state
+    /// that set it.
+    parked_wait: Option<ParkedWait>,
+    /// Whether a `Wait` state whose span is still ahead suspends this walk at all: an
+    /// asynchronous run answers while the execution is still running, so it does, while
+    /// a synchronous one answers the whole outcome in its own call ([`interpret`]).
+    parks_at_waits: bool,
+    /// The `Wait` state this walk CONTINUES from, whose own span has already run out, so
+    /// it waits for nothing and the walk carries straight on from it. Taken by that
+    /// state as it is reached, so a definition that comes back round to the same `Wait`
+    /// waits for it again.
+    elapsed_wait: Option<String>,
     /// The instant a branch of the `Parallel` state the walk is currently inside
     /// FAILED, for the branches of it that are still to be walked.
     ///
@@ -3891,341 +4064,6 @@ struct MapTally {
     /// The child execution each item of a DISTRIBUTED attempt ran as, in the order
     /// the iterations were started; empty for an inline `Map`, which starts none.
     children: Vec<StartedChildExecution>,
-}
-
-impl Interpreter<'_> {
-    /// Whether this walk has SUSPENDED at work one of its states handed over: the job a
-    /// run-a-job task started, or the task a worker's reply or an answered token
-    /// finishes.
-    ///
-    /// The ONE statement of it, because a `Parallel` state answers for either the same
-    /// way: a branch that suspended leaves the state with no result, and the frame the
-    /// suspension records is what the continuation re-enters the state through.
-    fn suspended_in_a_branch(&self) -> bool {
-        self.parked.is_some() || self.waiting.is_some()
-    }
-
-    // -----------------------------------------------------------------------
-    // Parallel
-    // -----------------------------------------------------------------------
-
-    #[allow(clippy::too_many_arguments)]
-    fn parallel_state(
-        &mut self,
-        name: &str,
-        state: &Map<String, Value>,
-        language: &'static str,
-        raw: Value,
-        effective: Value,
-        context: &Value,
-        at: Duration,
-    ) -> Result<StateStep, Fault> {
-        self.push_entered("ParallelStateEntered", name, at, &raw);
-        let branches = state
-            .get("Branches")
-            .and_then(Value::as_array)
-            .filter(|branches| !branches.is_empty())
-            .ok_or_else(|| {
-                runtime(format!(
-                    "the 'Parallel' state '{name}' must carry a non-empty 'Branches' array"
-                ))
-                .at(at)
-            })?;
-        // Every branch is run on every visit to this state, so the branch count
-        // multiplies that visit's work exactly as a `Choice`'s rule count does.
-        if branches.len() > MAX_CHOICE_RULES {
-            return Err(runtime(format!(
-                "the 'Parallel' state '{name}' declares {} branches, more than the \
-                 {MAX_CHOICE_RULES} this service runs",
-                branches.len()
-            ))
-            .at(at));
-        }
-        let mut plan = ParallelPlan {
-            branches: Vec::with_capacity(branches.len()),
-        };
-        for (index, branch) in branches.iter().enumerate() {
-            let label = format!("branch {index} of the 'Parallel' state '{name}'");
-            plan.branches
-                .push(states_of(branch, &label).map_err(|failure| failure.at(at))?);
-        }
-        // The frame of the parked record this state's own name: a walk CONTINUING an
-        // execution whose job has ended re-enters the `Parallel` the task was parked
-        // inside, and this is where it picks up what that record kept. It is taken
-        // once, by the first attempt: a later RETRY of this state starts its branches
-        // again, exactly as the service re-runs every branch of a retried `Parallel`.
-        let mut resume = match self.resume_frames.first() {
-            Some(frame) if frame.state_name == name => Some(self.resume_frames.remove(0)),
-            _ => None,
-        };
-        let (outcome, end) = self.with_retries(state, at, &mut |me, at| {
-            // "Parameters ... The effective input each branch receives" —
-            // `Arguments` in JSONata. The branches are handed that document, so it is
-            // built BEFORE they start: a state whose own members could not be
-            // evaluated starts no branch, and records no event for having started
-            // any. It is re-evaluated per attempt, because this attempt's own members
-            // read `$$.State.RetryCount`.
-            let context = with_retry_count(context, me.retry_count);
-            let branch_input = match me.task_request(state, language, &effective, &context) {
-                Ok(value) => value,
-                Err(failure) => {
-                    me.push(super::EVENT_PARALLEL_STATE_FAILED, name, at);
-                    return (Err(failure), at);
-                }
-            };
-            // Every attempt at this state starts its branches, so every attempt
-            // writes its own `ParallelStateStarted` and the event of the outcome
-            // those branches reached.
-            me.push(super::EVENT_PARALLEL_STATE_STARTED, name, at);
-            let (outcome, end) =
-                me.run_branches(&plan, name, &raw, &branch_input, at, resume.take());
-            // A branch that SUSPENDED leaves the state with no outcome at all, so the
-            // state records neither of the events an outcome is reported by: what
-            // happens next is the job finishing, or the task being answered.
-            if me.suspended_in_a_branch() {
-                return (outcome, end);
-            }
-            let event = if outcome.is_ok() {
-                super::EVENT_PARALLEL_STATE_SUCCEEDED
-            } else {
-                super::EVENT_PARALLEL_STATE_FAILED
-            };
-            me.push(event, name, end);
-            (outcome, end)
-        });
-        match outcome {
-            // One of the branches is suspended at the work one of its own states handed
-            // over — the job a run-a-job task started, or the task a worker or a token
-            // answers: the walk stops here and the execution waits for it, exactly as it
-            // does for a task at the top level of the definition.
-            Ok(value) if self.suspended_in_a_branch() => Ok(StateStep {
-                value,
-                at: end,
-                next: Next::Suspended,
-            }),
-            Ok(results) => {
-                let value = self
-                    .produced(state, language, &raw, &effective, Some(results), context, true)
-                    .map_err(|failure| failure.at(end))?;
-                self.push_exited("ParallelStateExited", name, end, &value);
-                Ok(StateStep {
-                    value,
-                    at: end,
-                    next: self.next_of(state).map_err(|failure| failure.at(end))?,
-                })
-            }
-            Err(failure) => self.catch_or_fail(
-                (name, "ParallelStateExited"),
-                state,
-                language,
-                &raw,
-                &effective,
-                failure,
-                context,
-                end,
-            ),
-        }
-    }
-
-    /// Run every branch of a `Parallel` state with the same input, and collect their
-    /// outputs in branch order. The branches run concurrently on the real service, so
-    /// the state's span is the longest branch's.
-    ///
-    /// The array the branches are building is a document this state will put out, so
-    /// it is bounded as it GROWS rather than only once it is whole: a definition that
-    /// declares many branches cannot hold more than a state's output may carry while
-    /// it runs.
-    ///
-    /// "If any branch fails ... the entire Parallel state is considered to have
-    /// failed", and it failed at the instant that branch did: the branches that were
-    /// still running are STOPPED there, so no state of a surviving branch is ENTERED
-    /// from that instant on ([`Interpreter::stopped_by_a_sibling`]) — a call such a
-    /// state would have made is not made, and the events of what a stopped branch had
-    /// already run are cut back to that instant ([`Interpreter::abort_units`]). A
-    /// branch that had PARKED at a job when that happened is stopped too, which is
-    /// what [`Interpreter::abandoned`] carries.
-    ///
-    /// The branches run CONCURRENTLY, so where the failing one sits in the `Branches`
-    /// list does not decide the outcome; this walk runs them one after another, in the
-    /// order the definition lists them.
-    ///
-    /// One branch may SUSPEND, at the job a run-a-job task of it started: the state
-    /// has no result then, so the walk reports the suspension by way of
-    /// [`Interpreter::parked`] and records the frame that lets the continuation
-    /// re-enter this state ([`ParkedFrame`]). `resume` is that frame, for the walk
-    /// that is continuing: the branches it names as finished are not walked again.
-    #[allow(clippy::too_many_arguments)]
-    fn run_branches(
-        &mut self,
-        plan: &ParallelPlan<'_>,
-        state_name: &str,
-        state_input: &Value,
-        input: &Value,
-        at: Duration,
-        resume: Option<ParkedFrame>,
-    ) -> Attempt {
-        let count = plan.branches.len();
-        // What each branch produced, in branch order: a continuation starts from the
-        // results the parked record carries, so a branch that had already finished is
-        // not walked a second time and nothing it did happens twice.
-        let mut done: Vec<Option<Value>> = match &resume {
-            Some(frame) if frame.done.len() == count => frame.done.clone(),
-            _ => vec![None; count],
-        };
-        // The array the branches are building is bounded as it GROWS, so a
-        // continuation starts the count at what the branches it is NOT walking again
-        // already produced: the ceiling then covers the whole of this state's result
-        // and not only the branch that resumed.
-        let mut results_bytes = 0usize;
-        for value in done.iter().flatten() {
-            match measure_payload(value, UNNAMED_PRODUCER) {
-                Ok(bytes) => results_bytes = results_bytes.saturating_add(bytes),
-                Err(failure) => return (Err(failure), at),
-            }
-        }
-        let mut end = at;
-        // Where each branch's own events begin in this walk's list, so a branch the
-        // state's failure aborted can be cut back to the instant it failed.
-        let mut units: Vec<Unit> = Vec::with_capacity(count);
-        let mut failed: Option<(Failure, Duration)> = None;
-        let mut suspended: Option<usize> = None;
-        // What stops the branches still to be walked, for the branches of a state
-        // ENCLOSING this one that has already failed: this state's own branches are
-        // stopped by its own failure below, and the enclosing bound is put back once
-        // they have run.
-        let enclosing_cancel = self.cancel_after;
-        for (index, (states, start_at)) in plan.branches.iter().enumerate() {
-            if done.get(index).is_some_and(Option::is_some) {
-                continue;
-            }
-            // The branch that PARKED carries on from the state that parked it, with
-            // the data that state was entered with: the states before it already ran,
-            // and their events are already in the execution's history.
-            let resumed = resume
-                .as_ref()
-                .filter(|frame| frame.branch == index)
-                .and_then(|_| self.resume_entry());
-            let (start_state, branch_input) = match resumed {
-                Some((state, state_input)) => (state, state_input),
-                None => ((*start_at).to_string(), input.clone()),
-            };
-            let from = self.steps.len();
-            let map_runs_from = self.map_runs.len();
-            let branch = self.nested_walk(
-                states,
-                &start_state,
-                branch_input,
-                at,
-                &Scope::default(),
-                false,
-            );
-            units.push(Unit {
-                steps: (from..self.steps.len()).collect(),
-                map_runs_from,
-                aborted: None,
-            });
-            if branch.suspended {
-                // The branch is parked at a job: it has produced nothing yet, and the
-                // state cannot have a result until it does.
-                end = end.max(branch.end);
-                suspended = Some(index);
-                continue;
-            }
-            match branch.outcome {
-                Ok(value) => {
-                    match measure_payload(&value, UNNAMED_PRODUCER) {
-                        Ok(bytes) => results_bytes = results_bytes.saturating_add(bytes),
-                        Err(failure) => {
-                            // Leaving by any path puts back the bound the state was
-                            // entered under: what stops a branch belongs to the state
-                            // whose branch failed, not to the walk that goes on after
-                            // it.
-                            self.cancel_after = enclosing_cancel;
-                            return (Err(failure), end.max(branch.end));
-                        }
-                    }
-                    if results_bytes > MAX_PAYLOAD_BYTES {
-                        self.cancel_after = enclosing_cancel;
-                        return (
-                            Err(named(DATA_LIMIT_ERROR, result_too_large(UNNAMED_PRODUCER))),
-                            end.max(branch.end),
-                        );
-                    }
-                    end = end.max(branch.end);
-                    if let Some(slot) = done.get_mut(index) {
-                        *slot = Some(value);
-                    }
-                }
-                // The state failed with the error of the branch that failed FIRST,
-                // which is the one whose failure stopped the others.
-                Err(failure) => {
-                    if failed.as_ref().is_none_or(|(_, when)| branch.end < *when) {
-                        failed = Some((failure, branch.end));
-                    }
-                    // "If any branch fails … all the branches are stopped": from this
-                    // instant on the state has failed, so the branches still to be
-                    // walked do not enter a state that begins at or after it — and no
-                    // call such a state would have made is made
-                    // ([`Interpreter::stopped_by_a_sibling`]).
-                    let stop = failed.as_ref().map_or(branch.end, |(_, when)| *when);
-                    self.cancel_after = Some(match enclosing_cancel {
-                        Some(enclosing) => enclosing.min(stop),
-                        None => stop,
-                    });
-                }
-            }
-        }
-        self.cancel_after = enclosing_cancel;
-        if let Some((failure, when)) = failed {
-            // A branch of this state failed, so the state has failed — and a sibling
-            // suspended at work of its own is not waited for any longer: the job it
-            // started is ABANDONED, which is what stops it.
-            if let Some(parked) = self.parked.take() {
-                self.abandoned.push(parked);
-            }
-            self.abort_units(when, &units);
-            // A task a sibling branch had already SCHEDULED is work this execution
-            // really handed over: it is queued under its activity from the instant the
-            // state was entered, so a worker polling that activity is handed it. The
-            // state is therefore ABORTED rather than never scheduled, and stopping work
-            // somebody else is holding takes a span ([`super::HANDOVER_STOP_DELAY`]) —
-            // so the state's failure is dated at the instant that work was stopped, and
-            // the task stays claimable until then.
-            let Some(aborted) = self.waiting.take() else {
-                return (Err(failure), when);
-            };
-            let stopped = when.max(aborted.at.saturating_add(super::HANDOVER_STOP_DELAY));
-            if let Some(event_type) = aborted_event(TASK_STATE_TYPE) {
-                self.push(event_type, &aborted.state_name, stopped);
-            }
-            self.aborted_task = Some(aborted);
-            return (Err(failure), stopped);
-        }
-        if let Some(branch) = suspended {
-            // The frame this state contributes to the suspended record: which branch is
-            // waiting, and what the others produced, so the continuation re-enters
-            // this state without re-running any of them. One of the two records is set
-            // — a job the branch parked at, or a task it is waiting at — and the frame
-            // is the same either way.
-            let frame = ParkedFrame {
-                state_name: state_name.to_string(),
-                state_input: state_input.clone(),
-                branch,
-                done,
-            };
-            if let Some(parked) = self.parked.as_mut() {
-                parked.frames.insert(0, frame.clone());
-            }
-            if let Some(waiting) = self.waiting.as_mut() {
-                waiting.frames.insert(0, frame);
-            }
-            // The state has no result: `parallel_state` reads the suspended record and
-            // suspends there, so this value is never placed.
-            return (Ok(Value::Null), end);
-        }
-        let results: Vec<Value> = done.into_iter().map(Option::unwrap_or_default).collect();
-        (Ok(Value::Array(results)), end)
-    }
 }
 
 /// The members every event of a `Task` state's own work reports: "the service name of

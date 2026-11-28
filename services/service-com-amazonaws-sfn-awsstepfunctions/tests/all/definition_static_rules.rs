@@ -779,6 +779,11 @@ async fn an_unsupported_field_names_the_field_it_is_a_near_miss_of() {
 /// The rows differ along the member the reference is written in (a payload template, an
 /// assignment block, a template nested inside one), along what it holds (a literal
 /// string, a number, an object) and along the two ways a variable is read.
+///
+/// Such a refusal names the offending FIELD in its sentence and is located at the node
+/// whose schema failed — the payload template or the assignment block, whatever depth the
+/// field sits at inside it — so the location of a nested row is that node and not the path
+/// down to the member.
 #[tokio::test]
 async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
     // (case, the definition, the location, the field the refusal names)
@@ -789,7 +794,7 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
                 "P",
                 json!({ "Type": "Pass", "Parameters": { "x.$": "plain" }, "End": true }),
             ),
-            "/States/P/Parameters/x.$",
+            "/States/P/Parameters",
             "x.$",
         ),
         (
@@ -798,7 +803,7 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
                 "P",
                 json!({ "Type": "Pass", "Parameters": { "x.$": 1 }, "End": true }),
             ),
-            "/States/P/Parameters/x.$",
+            "/States/P/Parameters",
             "x.$",
         ),
         (
@@ -811,7 +816,7 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
                     "End": true,
                 }),
             ),
-            "/States/P/Parameters/outer/inner.$",
+            "/States/P/Parameters",
             "inner.$",
         ),
         (
@@ -820,7 +825,7 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
                 "P",
                 json!({ "Type": "Pass", "Assign": { "total.$": "total" }, "End": true }),
             ),
-            "/States/P/Assign/total.$",
+            "/States/P/Assign",
             "total.$",
         ),
     ];
@@ -828,8 +833,8 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
     let emulator = Emulator::new();
     for (index, (case, definition, location, field)) in rows.iter().enumerate() {
         let detail = format!(
-            "The value for the field '{field}' must be a valid JSONPath or intrinsic function \
-             expression"
+            "The value for the field '{field}' must be a valid JSONPath or a valid intrinsic \
+             function call"
         );
         let expected = refusal(&subject(SCHEMA_VALIDATION_FAILED, &detail, location));
         let (status, code, message) = created(
@@ -873,11 +878,11 @@ async fn a_reference_field_holds_a_path_and_a_variable_in_scope() {
     assert_eq!(
         located,
         vec![
-            "/States/P/Parameters/first.$".to_string(),
-            "/States/P/Parameters/nested/second.$".to_string(),
+            "/States/P/Parameters".to_string(),
+            "/States/P/Parameters".to_string(),
         ],
         "case \"two reference fields of one payload template\": expected one diagnostic per \
-         field, in the order the template writes them, got {validated:?}"
+         field, each at the template node, got {validated:?}"
     );
 
     // What such a member MAY hold: the state's own data, the context object, a

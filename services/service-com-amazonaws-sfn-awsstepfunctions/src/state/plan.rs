@@ -51,7 +51,7 @@ pub fn plan_run(
     attempt: &RunAttempt<'_>,
     tasks: &dyn integration::Tasks,
 ) -> Planned {
-    plan_run_settling_after(attempt, EXECUTION_SETTLE_DELAY, tasks)
+    plan_run_settling_after(attempt, EXECUTION_SETTLE_DELAY, true, tasks)
 }
 
 /// Plan the attempt a `RedriveExecution` begins.
@@ -165,6 +165,10 @@ pub struct Planned {
     pub waiting: Option<PlannedActivityTask>,
     /// The job of a run-a-job integration the walk parked at.
     pub parked: Option<PlannedJob>,
+    /// The `Wait` state the walk parked at, with the offset the walk reported turned
+    /// into the instant its span runs out at: what the clock continues the execution
+    /// from then ([`super::wait_clock`]).
+    pub parked_wait: Option<PlannedWait>,
     /// The jobs the walk STARTED and then abandoned, which the operation that planned
     /// the run stops through each one's own integration
     /// ([`integration::stop_abandoned`]): the task that started one will never
@@ -314,6 +318,7 @@ pub fn planned_map_run_bytes(planned: &[PlannedMapRun]) -> usize {
 pub fn plan_run_settling_after(
     attempt: &RunAttempt<'_>,
     settle: Duration,
+    parks_at_waits: bool,
     tasks: &dyn integration::Tasks,
 ) -> Planned {
     let RunAttempt {
@@ -331,6 +336,7 @@ pub fn plan_run_settling_after(
         context,
         first_walked_event_id(previous_event_id, true),
         settle,
+        parks_at_waits,
         tasks,
     );
     plan_from_run(run, start, settle, Some(opening), previous_event_id)
@@ -505,6 +511,57 @@ pub fn plan_job_reply(
     ))
 }
 
+/// Plan the CONTINUATION of an execution whose parked `Wait` has RUN OUT.
+///
+/// The definition is walked on FROM that `Wait` state, with the raw input it was entered
+/// with and its span behind the execution (see [`asl::resume_wait`]), so what this reports
+/// is what the execution does from the end of the wait onward: the events it produces
+/// there and the terminal outcome it reaches, owed to the clock one
+/// [`EXECUTION_SETTLE_DELAY`] after that instant exactly as a worker's reply's outcome is
+/// owed after the reply — and the next `Wait` it parks at, when the definition declares
+/// one.
+///
+/// `start` is the execution's own start, which the context object (`$$`) reports; `now` is
+/// the instant the wait ran out, which the continuation's own events are stamped from.
+///
+/// `None` when the definition no longer declares that state, so there is no continuation
+/// to record.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_wait_reply(
+    definition: &str,
+    input: &str,
+    start: SystemTime,
+    now: SystemTime,
+    context: &asl::Context,
+    from: &asl::RedriveStep,
+    entered_at: Option<i64>,
+    previous_event_id: i64,
+    tasks: &dyn integration::Tasks,
+) -> Option<Planned> {
+    // What the execution has already spent, which a definition-level `TimeoutSeconds`
+    // counts: the span a `Wait` state held it is part of this execution's run.
+    let elapsed = now.duration_since(start).unwrap_or_default();
+    let run = asl::resume_wait(
+        definition,
+        input,
+        start,
+        context,
+        from,
+        entered_at,
+        elapsed,
+        first_walked_event_id(previous_event_id, false),
+        EXECUTION_SETTLE_DELAY,
+        tasks,
+    )?;
+    Some(plan_from_run(
+        run,
+        now,
+        EXECUTION_SETTLE_DELAY,
+        None,
+        previous_event_id,
+    ))
+}
+
 /// What a worker's reply that reports its activity task FAILED leaves for the store
 /// to record, once no `Retry` of the scheduling state answers for the error.
 ///
@@ -559,8 +616,9 @@ pub fn plan_task_failure(
         }),
         waiting: None,
         parked: None,
-        // Nothing was walked here, so no job was started and none abandoned: this
-        // plan is the closure of a task the clock closed.
+        parked_wait: None,
+        // Nothing was walked here, so no job was started and none abandoned, and no
+        // `Wait` state was reached: this plan is the closure of a task the clock closed.
         abandoned: Vec::new(),
         map_runs: Vec::new(),
         // The attempt stopped at the state that scheduled the task, which the caller
@@ -622,6 +680,7 @@ pub fn plan_attempt_that_cannot_run(
         }),
         waiting: None,
         parked: None,
+        parked_wait: None,
         // Nothing was walked, so no job was started and none abandoned, and no Map state
         // was entered.
         abandoned: Vec::new(),
@@ -832,6 +891,7 @@ fn plan_from_run(
             pending: None,
             waiting: Some(scheduled),
             parked: None,
+            parked_wait: None,
             abandoned,
             map_runs,
             stopped_at,
@@ -849,6 +909,33 @@ fn plan_from_run(
             pending: None,
             waiting: None,
             parked: Some(planned_job(parked, start)),
+            parked_wait: None,
+            abandoned,
+            map_runs,
+            stopped_at,
+        };
+    }
+    // A walk that parked at a `WAIT` state computed no outcome either: what happens next
+    // is that wait running out, and the states after it run then. The events of the
+    // states it walked — the entry of the `Wait` state included — are history, so they
+    // are recorded now rather than parked.
+    if let Some(parked) = run.parked_wait {
+        let mut history = opened;
+        history.extend(events);
+        let waits = PlannedWait {
+            state_name: parked.state_name,
+            state_input: parked.raw_input.to_string(),
+            // The offset the walk reported is where the wait RUNS OUT, so this is the
+            // instant the continuation happens at — measured from this walk's own start,
+            // exactly as the instant a terminal outcome comes due is.
+            resumes_at: after(start, parked.at),
+        };
+        return Planned {
+            opening: history,
+            pending: None,
+            waiting: None,
+            parked: None,
+            parked_wait: Some(waits),
             abandoned,
             map_runs,
             stopped_at,
@@ -892,6 +979,7 @@ fn plan_from_run(
         }),
         waiting: aborted,
         parked: None,
+        parked_wait: None,
         abandoned,
         map_runs,
         stopped_at,
@@ -948,6 +1036,29 @@ fn record_what_was_scheduled(events: &mut [HistoryEvent], scheduled: &PlannedAct
         heartbeat_seconds: scheduled.heartbeat_seconds,
         ..EventDetails::default()
     };
+}
+
+/// One `Wait` state a walk parked at, ready for the clock to continue the execution
+/// from: [`asl::ParkedWait`] with the walk's offset turned into the instant its span
+/// runs out at.
+#[derive(Debug, Clone)]
+pub struct PlannedWait {
+    /// The `Wait` state the walk stopped at.
+    pub state_name: String,
+    /// The RAW input that state was entered with, as its text: what the continuation
+    /// enters it with again.
+    pub state_input: String,
+    /// The instant the wait runs out at, which is when the continuation happens.
+    pub resumes_at: SystemTime,
+}
+
+impl PlannedWait {
+    /// The bytes the record this will become retains, so a start is admitted against
+    /// everything it writes ([`PlannedJob::measure`] is the same count for a parked
+    /// job).
+    pub fn measure(&self) -> usize {
+        std::mem::size_of::<Self>() + self.state_name.len() + self.state_input.len()
+    }
 }
 
 /// One job a walk started, ready for the store to record or for the caller to stop:

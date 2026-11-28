@@ -438,7 +438,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the walk ran. The lock is held for THIS block alone, because the publication
         // below must not hold the store while it is in flight; the block answers the
         // `redriveDate` the redrive reached and whether the re-run parked at a job.
-        let (redrive_date, watching) = {
+        let (redrive_date, watching, parked_wait) = {
             let mut store = state.lock();
             store.settle(now);
             let Some(execution) = store.executions.get(&input.execution_arn) else {
@@ -475,10 +475,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let waiting = planned.waiting;
             let parked = planned.parked;
+            let parked_wait = planned.parked_wait;
             let task_bytes = waiting
                 .as_ref()
                 .map_or(0, crate::state::PlannedActivityTask::measure)
-                + parked.as_ref().map_or(0, crate::state::PlannedJob::measure);
+                + parked.as_ref().map_or(0, crate::state::PlannedJob::measure)
+                + parked_wait
+                    .as_ref()
+                    .map_or(0, crate::state::PlannedWait::measure);
             let map_runs = planned.map_runs;
             let map_run_bytes = crate::state::planned_map_run_bytes(&map_runs);
             let redriven = store.redrive_execution(
@@ -512,7 +516,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         let region = crate::state::arn_region(&machine_arn);
                         store.park_job(&input.execution_arn, parked, &region);
                     }
-                    (redrive_date, watching)
+                    (redrive_date, watching, parked_wait)
                 }
                 Err(crate::state::RedriveRejection::NotFound) => {
                     return Err(RedriveExecutionErrorModeled::ExecutionDoesNotExist(
@@ -549,6 +553,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ctx.callback().clone(),
                 crate::state::integration::chain_depth(ctx),
                 input.execution_arn.clone(),
+            );
+        }
+        // The re-run parked at a `Wait` state: the states after it run when its span runs
+        // out, held by a task that outlives this call (`crate::state::wait_clock`),
+        // exactly as a start's own parked wait is.
+        if let Some(parked_wait) = parked_wait {
+            crate::state::wait_clock::watch(
+                std::sync::Arc::clone(&self.engine),
+                ctx.callback().clone(),
+                crate::state::integration::chain_depth(ctx),
+                input.execution_arn.clone(),
+                parked_wait,
             );
         }
         // The redrive moved the execution back into `RUNNING`, carrying the redrive

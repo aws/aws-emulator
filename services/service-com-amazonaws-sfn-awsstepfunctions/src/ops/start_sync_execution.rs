@@ -474,6 +474,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         previous_event_id: 0,
                     },
                     std::time::Duration::ZERO,
+                    // A synchronous start answers the whole outcome in this call, so the
+                    // spans the definition's `Wait` states declare are waited out HERE
+                    // rather than suspending the run at each of them.
+                    false,
                     tasks,
                 )
             })

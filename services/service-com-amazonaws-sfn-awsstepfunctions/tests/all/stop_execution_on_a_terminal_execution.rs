@@ -240,7 +240,10 @@ async fn poll_until_terminal(emulator: &Emulator, case: &str, execution: &str) -
             Instant::now() < deadline,
             "case {case:?}: expected the execution to reach a terminal status, got {described:?}"
         );
-        std::thread::sleep(POLL_INTERVAL);
+        // Awaited, not blocked: what carries a run past a `Wait` state is work of this
+        // emulator's own ([`crate::state::wait_clock`]), so a poll that held this thread
+        // would be waiting for work it is keeping from running.
+        ::tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 

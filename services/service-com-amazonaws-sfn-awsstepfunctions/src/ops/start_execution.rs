@@ -636,7 +636,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // taken while the walk ran. The lock is held for THIS block alone, because the
         // publication below must not hold the store while it is in flight; the block
         // answers whether the walk parked at a job of its own.
-        let watching = {
+        let (watching, parked_wait) = {
             let mut store = state.lock();
             store.settle(started);
             let Some(machine) = store.state_machines.get(&machine_arn) else {
@@ -691,10 +691,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // grow the store past what was admitted.
             let waiting = planned.waiting;
             let parked = planned.parked;
+            let parked_wait = planned.parked_wait;
             let task_bytes = waiting
                 .as_ref()
                 .map_or(0, crate::state::PlannedActivityTask::measure)
-                + parked.as_ref().map_or(0, crate::state::PlannedJob::measure);
+                + parked.as_ref().map_or(0, crate::state::PlannedJob::measure)
+                + parked_wait
+                    .as_ref()
+                    .map_or(0, crate::state::PlannedWait::measure);
             let map_run_bytes = crate::state::planned_map_run_bytes(&planned.map_runs);
             if let Some(why) = store.execution_rejection(
                 &machine_arn,
@@ -733,7 +737,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(parked) = parked {
                 store.park_job(&arn, parked, &region);
             }
-            watching
+            (watching, parked_wait)
         };
         // Every guard on this service's store is released with the block above, which
         // is what lets the writes below reach another service's store.
@@ -743,6 +747,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ctx.callback().clone(),
                 crate::state::integration::chain_depth(ctx),
                 arn.clone(),
+            );
+        }
+        // The walk parked at a `Wait` state: the states after it run when its span runs
+        // out, which is work of its own held by a task that outlives this call
+        // (`crate::state::wait_clock`). This call answers now, with the execution
+        // RUNNING, exactly as the service answers while a run is inside a `Wait`.
+        if let Some(parked_wait) = parked_wait {
+            crate::state::wait_clock::watch(
+                std::sync::Arc::clone(&self.engine),
+                ctx.callback().clone(),
+                crate::state::integration::chain_depth(ctx),
+                arn.clone(),
+                parked_wait,
             );
         }
         // The execution is now RUNNING, which is a status it has MOVED INTO, and this

@@ -316,13 +316,15 @@ async fn continue_one<Eng: Send + Sync + 'static>(
     // execution could have been stopped while the walk ran. The lock is held for THIS
     // block alone, because the job a continuation parked at is watched with no store of
     // this service locked.
-    let parked_a_job = {
+    let (parked_a_job, held_at) = {
         let mut store = state.lock();
         let waiting = planned.waiting;
         let parked = planned.parked;
+        let parked_wait = planned.parked_wait;
         let map_runs = planned.map_runs;
         let extra_bytes = waiting.as_ref().map_or(0, super::PlannedActivityTask::measure)
             + parked.as_ref().map_or(0, super::PlannedJob::measure)
+            + parked_wait.as_ref().map_or(0, super::PlannedWait::measure)
             + super::planned_map_run_bytes(&map_runs);
         if store
             .continue_execution(
@@ -348,7 +350,7 @@ async fn continue_one<Eng: Send + Sync + 'static>(
             store.park_job(&execution_arn, parked, &region);
         }
         store.append_map_runs(&execution_arn, &machine_arn, map_runs);
-        parked_a_job
+        (parked_a_job, parked_wait)
     };
     // A job this continuation parked at is polled until it ends, exactly as the job a
     // request's own walk parks at is.
@@ -358,6 +360,17 @@ async fn continue_one<Eng: Send + Sync + 'static>(
             callback.clone(),
             0,
             execution_arn.clone(),
+        );
+    }
+    // And a `Wait` state it parked at is held until its span runs out, exactly as the
+    // wait a request's own walk parks at is ([`super::wait_clock`]).
+    if let Some(parked_wait) = held_at {
+        super::wait_clock::watch(
+            Arc::clone(engine),
+            callback.clone(),
+            0,
+            execution_arn.clone(),
+            parked_wait,
         );
     }
     true

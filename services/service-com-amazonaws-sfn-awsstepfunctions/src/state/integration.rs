@@ -4473,3 +4473,8 @@ pub(crate) use wire_request::*;
 /// request over it the execution role is judged by.
 mod target_resources;
 pub use target_resources::*;
+
+/// Which members of its request an integration's own API requires, which a definition
+/// building that request is judged against at create time.
+mod required_parameters;
+pub use required_parameters::*;

@@ -675,8 +675,10 @@ impl Interpreter<'_> {
         let context = self.context_for(scope, name, state_type, at);
         // Where the execution's own clock stands for this state's turn: the instant every
         // expression of it that reads the current time reads ([`Interpreter::clock_offset`]),
-        // which is the same offset the context object reports this state as entered at.
-        self.clock_offset = at;
+        // which is the same offset the context object reports this state as entered at —
+        // on top of the span the execution had already been charged before this walk
+        // ([`Interpreter::clock_base`]).
+        self.clock_offset = self.clock_base.saturating_add(at);
         // The variables in scope for THIS state, installed on the thread for its turn:
         // a JSONPath reference reads one as the first term of a path, and the paths of
         // this state are evaluated by plain functions the walk reaches through several
@@ -720,9 +722,28 @@ impl Interpreter<'_> {
             }
             "Wait" => {
                 self.push_entered("WaitStateEntered", name, at, &raw);
-                let waited = self
+                let declared = self
                     .wait_duration(state, language, &effective, &context, at)
                     .map_err(|failure| wait_failure(name, failure).at(at))?;
+                // What this state still DELAYS the execution by: the span it declares,
+                // and none at all for the one this walk is continuing from, whose span
+                // has already run out ([`Interpreter::elapsed_wait`]).
+                let waited = self.span_still_ahead(name, declared);
+                // "A Wait state delays the state machine from continuing for a specified
+                // time": a span still AHEAD of the execution suspends the walk here, and
+                // the states after this one run when it has run out
+                // ([`super::ParkedWait`]) — so what they do is done at that instant
+                // rather than at the one the run was planned at, and a state after a
+                // `Wait` acts on the world the wait left. A span of NO time delays
+                // nothing, so such a state is left where it is reached.
+                if let Some(parked) = self.park_at_wait(name, &raw, at, waited) {
+                    self.parked_wait = Some(parked);
+                    return Ok(StateStep {
+                        value: raw,
+                        at,
+                        next: Next::Suspended,
+                    });
+                }
                 // The span this state waits is the caller's definition's, which the model
                 // bounds only in BYTES, so a chain of them is accumulated WITHOUT the
                 // panic `Duration`'s own `Add` carries: an offset no duration can
@@ -2203,6 +2224,61 @@ impl Interpreter<'_> {
     // -----------------------------------------------------------------------
     // Wait
     // -----------------------------------------------------------------------
+
+    /// What the `Wait` state `name` still delays the execution by, out of the `declared`
+    /// span it asks for: NONE for the one this walk is continuing from, whose span has
+    /// already run out, and the whole of it for every other.
+    ///
+    /// The continued state is taken as it is reached, so a definition that comes back
+    /// round to the same `Wait` delays the execution by it again. What makes the span zero
+    /// for that one state is what keeps the run's clock where the wait left it: the state
+    /// is left at the instant it ran out, and the states after it — and the outcome they
+    /// reach — are stamped from there.
+    fn span_still_ahead(&mut self, name: &str, declared: Duration) -> Duration {
+        if self.elapsed_wait.as_deref() == Some(name) {
+            self.elapsed_wait = None;
+            return Duration::ZERO;
+        }
+        declared
+    }
+
+    /// The suspension a `Wait` state of `waited` at the offset `at` makes of this walk,
+    /// and `None` for a wait this walk runs through.
+    ///
+    /// A walk suspends at a wait that has any span left to run, so the states after it
+    /// are run by the continuation the clock starts ([`super::ParkedWait`]) rather than
+    /// here. Four things keep a wait from suspending one:
+    ///
+    /// * a span of NO time, which delays nothing — the state this walk CONTINUES from
+    ///   has one ([`Interpreter::span_still_ahead`]), which is what it was started for;
+    /// * a SYNCHRONOUS run, which answers the whole outcome in its own call and waits
+    ///   the spans out there ([`Interpreter::parks_at_waits`]);
+    /// * this walk being a CONCURRENT unit's — one `Map` iteration's or one `Parallel`
+    ///   branch's, or a Distributed Map child's own run — whose states share the
+    ///   enclosing run's clock, so a span inside one is accumulated as before;
+    /// * a definition-level `TimeoutSeconds` that runs out before the wait does, which
+    ///   ENDS the execution at that instant: the run is the timeout's and there is
+    ///   nothing after the wait to run.
+    fn park_at_wait(
+        &mut self,
+        name: &str,
+        raw: &Value,
+        at: Duration,
+        waited: Duration,
+    ) -> Option<super::ParkedWait> {
+        let ends_at = at.saturating_add(waited);
+        let parks = waited > Duration::ZERO
+            && self.parks_at_waits
+            && self.depth == 0
+            && self.unheld.is_none()
+            && self.parked_wait.is_none()
+            && self.timeout_left.is_none_or(|left| ends_at <= left);
+        parks.then(|| super::ParkedWait {
+            state_name: name.to_string(),
+            raw_input: raw.clone(),
+            at: ends_at,
+        })
+    }
 
     /// How long a `Wait` state waits.
     ///

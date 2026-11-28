@@ -150,6 +150,9 @@ pub fn test_state(test: &StateTest<'_>) -> Trial {
         // The state is tested at the instant the request is answered at, so the clock it
         // reads stands where this walk begins.
         clock_offset: Duration::ZERO,
+        // `TestState` tests one state at the instant the request is answered at, so
+        // nothing of an execution's clock stands under it.
+        clock_base: Duration::ZERO,
         steps: Vec::new(),
         // `TestState` keeps no history: the state under test is the first thing this
         // walk would record, so a diagnosis it raises names the id the first event of
@@ -168,6 +171,12 @@ pub fn test_state(test: &StateTest<'_>) -> Trial {
         tasks: test.tasks,
         waiting: None,
         parked: None,
+        // `TestState` tests ONE state and reports what it computed in the call that
+        // asked, so a `Wait` state under test waits for nothing here: there is no
+        // execution for a span to suspend and nothing after the state to run later.
+        parked_wait: None,
+        parks_at_waits: false,
+        elapsed_wait: None,
         // `TestState` tests one state, so there is no concurrent state around it to
         // park inside, no job of its own to abandon and no sibling branch whose
         // failure could stop it.

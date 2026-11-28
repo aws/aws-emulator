@@ -4832,6 +4832,9 @@ pub use store::{
 pub mod task_authorization;
 pub mod target_addressing;
 pub mod target_resource_policy;
+/// The second half of a `Wait` state: the span it delays an execution for, and the states
+/// after it, which run when that span has run out.
+pub mod wait_clock;
 pub mod xml_answer;
 pub mod xray_tracing;
 mod pagination;
