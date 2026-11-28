@@ -292,7 +292,17 @@ async fn ecs(router: &MultiServiceRouter, case: &str, operation: &str, body: &Va
 }
 
 /// One Amazon SQS call (`awsJson1_0`, `AmazonSQS.<Operation>`).
-async fn sqs(router: &MultiServiceRouter, case: &str, operation: &str, body: &Value) -> Value {
+///
+/// `pub(crate)` with the queue helpers below, so the sibling suite that drives this same
+/// granted/withheld fan-out over SEVERAL rounds
+/// (`alarm_transition_rounds_reach_only_the_granted_queues.rs`) reaches one copy of each
+/// rather than keeping a second.
+pub(crate) async fn sqs(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: &Value,
+) -> Value {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -443,8 +453,12 @@ async fn wait_for_published(router: &MultiServiceRouter, row: &Row) {
     }
 }
 
-/// A queue called `name`, answered as its `(url, arn)`.
-async fn given_queue(router: &MultiServiceRouter, case: &str, name: &str) -> (String, String) {
+/// A queue called `name`, answered as its `(url, arn)`. It carries no policy at all.
+pub(crate) async fn given_queue(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+) -> (String, String) {
     let created = sqs(router, case, "CreateQueue", &json!({"QueueName": name})).await;
     let url = created["QueueUrl"]
         .as_str()
@@ -466,7 +480,7 @@ async fn given_queue(router: &MultiServiceRouter, case: &str, name: &str) -> (St
 
 /// Grant Amazon SNS the send on the queue at `url`, scoped by `aws:SourceArn` to the publishing
 /// topic — the statement AWS documents for a queue subscribed to a topic.
-async fn grant_sns_delivery(
+pub(crate) async fn grant_sns_delivery(
     router: &MultiServiceRouter,
     case: &str,
     url: &str,
@@ -591,7 +605,7 @@ fn measured_values(case: &str, reported: &Value) -> Vec<f64> {
 
 /// Look at the queue at `url` several times over and answer what arrived — nothing, for a queue no
 /// delivery was authorized into.
-async fn what_arrived_over_several_looks(
+pub(crate) async fn what_arrived_over_several_looks(
     router: &MultiServiceRouter,
     case: &str,
     url: &str,
@@ -610,7 +624,11 @@ async fn what_arrived_over_several_looks(
 /// The wait is the condition's: a delivery is asynchronous ("delivery is asynchronous in AWS and is
 /// not part of any operation's answer"), so the look is repeated until the message is there or the
 /// deadline passes, and nothing is asserted about how long it took.
-async fn delivered_to(router: &MultiServiceRouter, case: &str, url: &str) -> Vec<Value> {
+pub(crate) async fn delivered_to(
+    router: &MultiServiceRouter,
+    case: &str,
+    url: &str,
+) -> Vec<Value> {
     let deadline = Instant::now() + DELIVERY_DEADLINE;
     loop {
         let arrived = drain(router, case, REGION, url).await;
