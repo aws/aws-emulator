@@ -2,9 +2,11 @@
 
 //! @op AssociateEnvironmentOperationsRole
 //! Implemented: stores the operations role on the named environment, so every later
-//! read of that environment reports it. An environment whose termination has
-//! completed is no environment this operation acts on, so naming one is refused as
-//! naming no environment is. The role itself has to be one this service can act
+//! read of that environment reports it. The environment the request names is
+//! RESOLVED FIRST — an environment whose termination has completed is no
+//! environment this operation acts on, so naming one is refused as naming no
+//! environment is, before any value of the request is checked against another
+//! service's state. The role itself then has to be one this service can act
 //! under — an existing IAM role of this account whose trust policy admits it — and a
 //! value naming none is refused with the environment left as it was
 //! (`crate::state::operations_role`). Whether the caller may change the environment at
@@ -182,8 +184,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // acting on this environment": handing that role over is the CALLER's
         // act, so IAM decides whether this caller may pass it — and a caller
         // that may not lacks the privileges this feature needs, which is the
-        // error this operation models for it. Asked before the store is locked,
-        // since it asks IAM.
+        // error this operation models for it. An IAM decision, so it is taken
+        // with the authorization above, before anything is read or written.
         if !crate::service::authorization::may_pass_role(
             &*self.engine,
             ctx,
@@ -201,6 +203,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            AssociateEnvironmentOperationsRoleError::internal_failure(
+                "the Elastic Beanstalk store is unavailable",
+            )
+        })?;
+
+        // The ENVIRONMENT this call acts on is resolved FIRST: a request naming
+        // one this account does not hold is refused for that, whatever else it
+        // carried, so a caller is told the target is gone rather than being sent
+        // to repair a role on an environment that would not have been there to
+        // associate it with. The store is given back before the role is asked
+        // about, since that question goes to IAM over the in-process hop.
+        resolved_environment_id(&state, &input.environment_name)?;
+
         // And the role has to EXIST: a value IAM holds no role under names
         // nothing that can be associated, so the request is refused and the
         // environment keeps the role it carried. Whether this service can act
@@ -213,55 +229,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 AssociateEnvironmentOperationsRoleError::invalid_parameter_value(message),
             );
         }
-        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
-            AssociateEnvironmentOperationsRoleError::internal_failure(
-                "the Elastic Beanstalk store is unavailable",
-            )
-        })?;
+
+        // The store was given back while IAM answered, so the environment is
+        // resolved again before it is written: whatever the clock settled in
+        // between is settled for this call too, and a name that has stopped
+        // naming a running environment is refused as it would have been above.
+        let environment_id = resolved_environment_id(&state, &input.environment_name)?;
         let mut store = state.lock();
-        store.materialize_due_transitions();
-
-        // `EnvironmentName` is @required, so the boundary validator has already
-        // refused a request without one: only a name no environment answers to
-        // can reach here. An environment whose termination has COMPLETED is
-        // ABSENT to this call — a role is associated with a RUNNING environment
-        // — so it is refused exactly as one naming an environment that was never
-        // created is, with the shared not-found wording naming the member the
-        // caller used; see `crate::state::running_environment`.
-        // `DisassociateEnvironmentOperationsRole` resolves the same name the
-        // same way, so the pair agrees about which environments it can see.
-        let environment_id = store
-            .running_environment_id_for(None, Some(input.environment_name.as_str()))
-            .map_err(|refusal| match refusal {
-                crate::state::EnvironmentRefusal::NoIdentifier => {
-                    AssociateEnvironmentOperationsRoleError::missing_required_parameter(
-                        "Must specify an EnvironmentName.",
-                    )
-                }
-                crate::state::EnvironmentRefusal::NotFound(message) => {
-                    AssociateEnvironmentOperationsRoleError::invalid_parameter_value(message)
-                }
-            })?;
-
         let environment = store.environments.get_mut(&environment_id).ok_or_else(|| {
             AssociateEnvironmentOperationsRoleError::invalid_parameter_value(
-                crate::state::missing_environment_message(Some(environment_id.as_str()), None),
+                crate::state::missing_environment_message(None, Some(&input.environment_name)),
             )
         })?;
-        // One still shutting down DOES exist — the reads report it, and
-        // `DescribeEnvironments` lists it — but it is not in the status an
-        // action on a running environment requires, which is the service's
-        // invalid-state refusal rather than a not-found.
-        if environment.status == crate::state::STATUS_TERMINATING {
-            return Err(
-                AssociateEnvironmentOperationsRoleError::invalid_parameter_value(
-                    crate::state::environment_invalid_state_message(
-                        &environment.environment_name,
-                        crate::state::STATUS_READY,
-                    ),
-                ),
-            );
-        }
 
         // "Add or change the operations role used by an environment. After this
         // call is made, Elastic Beanstalk uses the associated operations role
@@ -272,4 +251,64 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         environment.date_updated = crate::state::now();
         Ok(AssociateEnvironmentOperationsRoleOutput)
     }
+}
+
+/// The id of the RUNNING environment `environment_name` names, or the refusal the
+/// name earns — the whole of what this operation resolves about its target, in one
+/// place, so the resolution the call takes before it asks IAM about the role and
+/// the one it takes before it writes cannot differ.
+///
+/// `EnvironmentName` is @required, so the boundary validator has already refused a
+/// request without one: only a name no environment answers to can reach the
+/// not-found refusal. An environment whose termination has COMPLETED is ABSENT to
+/// this call — a role is associated with a RUNNING environment — so it is refused
+/// exactly as one naming an environment that was never created is, with the shared
+/// not-found wording naming the member the caller used; see
+/// `crate::state::running_environment`. `DisassociateEnvironmentOperationsRole`
+/// resolves the same name the same way, so the pair agrees about which
+/// environments it can see.
+///
+/// Takes and GIVES BACK the store, so the caller holds no guard across an await.
+fn resolved_environment_id(
+    state: &::engine::ServiceState<
+        crate::state::ComAmazonawsElasticbeanstalkAwselasticbeanstalkserviceState,
+    >,
+    environment_name: &str,
+) -> Result<String, AssociateEnvironmentOperationsRoleError> {
+    let mut store = state.lock();
+    // A status change the clock has already made due is settled before this
+    // environment is looked for at all.
+    store.materialize_due_transitions();
+    let environment_id = store
+        .running_environment_id_for(None, Some(environment_name))
+        .map_err(|refusal| match refusal {
+            crate::state::EnvironmentRefusal::NoIdentifier => {
+                AssociateEnvironmentOperationsRoleError::missing_required_parameter(
+                    "Must specify an EnvironmentName.",
+                )
+            }
+            crate::state::EnvironmentRefusal::NotFound(message) => {
+                AssociateEnvironmentOperationsRoleError::invalid_parameter_value(message)
+            }
+        })?;
+    let environment = store.environments.get(&environment_id).ok_or_else(|| {
+        AssociateEnvironmentOperationsRoleError::invalid_parameter_value(
+            crate::state::missing_environment_message(None, Some(environment_name)),
+        )
+    })?;
+    // One still shutting down DOES exist — the reads report it, and
+    // `DescribeEnvironments` lists it — but it is not in the status an action on a
+    // running environment requires, which is the service's invalid-state refusal
+    // rather than a not-found.
+    if environment.status == crate::state::STATUS_TERMINATING {
+        return Err(
+            AssociateEnvironmentOperationsRoleError::invalid_parameter_value(
+                crate::state::environment_invalid_state_message(
+                    &environment.environment_name,
+                    crate::state::STATUS_READY,
+                ),
+            ),
+        );
+    }
+    Ok(environment_id)
 }

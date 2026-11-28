@@ -51,11 +51,11 @@ const SESSION: &str = "ops-session";
 /// The service principal an operations role has to admit, as a trust policy
 /// spells this service — written out here rather than read off the crate, so the
 /// suite holds the service to the published principal.
-const ELASTIC_BEANSTALK_PRINCIPAL: &str = "elasticbeanstalk.amazonaws.com";
+pub(crate) const ELASTIC_BEANSTALK_PRINCIPAL: &str = "elasticbeanstalk.amazonaws.com";
 
 /// A trust policy admitting `principal` to assume the role, in the form
 /// `iam:CreateRole` takes one.
-fn trust(principal: &str) -> String {
+pub(crate) fn trust(principal: &str) -> String {
     format!(
         r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"Service":"{principal}"}},"Action":"sts:AssumeRole"}}]}}"#
     )
@@ -63,7 +63,11 @@ fn trust(principal: &str) -> String {
 
 /// Record the IAM role `name` with the trust policy `trust_document`, as
 /// `iam:CreateRole` records one, and answer its ARN.
-fn given_role(emulator: &Emulator, name: &str, trust_document: Option<String>) -> String {
+pub(crate) fn given_role(
+    emulator: &Emulator,
+    name: &str,
+    trust_document: Option<String>,
+) -> String {
     let arn = format!("arn:aws:iam::{}:role/{name}", account());
     let store = iam::service_state(&**emulator.engine()).expect("the IAM store");
     let mut store = store.lock();
