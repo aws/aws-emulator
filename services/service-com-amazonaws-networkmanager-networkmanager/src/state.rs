@@ -381,9 +381,12 @@ pub const RESOURCE_NOT_FOUND_MESSAGE: &str = "Resource not found.";
 /// `kind` is one of the ARN resource types this service mints ([`GLOBAL_NETWORK_KIND`],
 /// [`SITE_KIND`], [`LINK_KIND`]), which is also the `ResourceType` AWS reports.
 ///
-/// `id` is the identifying detail the operation reports: the value the request addressed
-/// the resource by, except where AWS reports the NAME of the member that addressed it
-/// instead, which is what `ops/get_core_network.rs` passes [`FIELD_CORE_NETWORK_ID`] for.
+/// `id` is the identifying detail the operation reports — which is NOT one kind of value
+/// across this service's surface: it is the value the request addressed the resource by,
+/// except where the recordings show AWS reporting the diagnostic of the lookup that failed
+/// instead, which is what `ops/get_core_network.rs` passes [`FIELD_CORE_NETWORK_ID`] (the
+/// NAME of the member that addressed the core network) and
+/// `ops/execute_core_network_change_set.rs` passes its own fixed prose for.
 pub fn resource_not_found(kind: &str, id: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: RESOURCE_NOT_FOUND_MESSAGE.to_string(),

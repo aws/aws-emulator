@@ -12,7 +12,9 @@
 //! differences from a document no longer in force — so it reports `OUT_OF_DATE`. Only a
 //! change set that is `READY_TO_EXECUTE` can be executed: any other state is a terminal
 //! validation failure that leaves the policy in force where it was, and an unknown core
-//! network or a version the core network does not hold is a not-found. Nothing here reaches
+//! network or a version the core network does not hold is a not-found whose `ResourceId`
+//! names the lookup that failed in fixed prose rather than echoing an id from the request.
+//! Nothing here reaches
 //! into `crate::state`: every effect is read back through an operation.
 //!
 //! The table below spans that class: documents differing in what the execution puts in
@@ -50,6 +52,18 @@ const CORE_NETWORK_POLICY: &str = "core-network-policy";
 /// `pub(crate)` because `crate::refusal_wording` tables the same refusal, so one rule keeps
 /// one expected string.
 pub(crate) const CHANGE_SET_STATE_INVALID: &str = "Change set state for policy is invalid.";
+
+/// The identifying detail this operation's not-found refusal reports in its required
+/// `ResourceId` when the CORE NETWORK the path addresses cannot be resolved: the fixed
+/// prose of that lookup, from the recorded refusal of `ExecuteCoreNetworkChangeSet` against
+/// a core network that does not exist (trace
+/// `networkmanager-error-execute-change-set-unknown-core-network`, step `task#1`).
+const CORE_NETWORK_NOT_FOUND: &str = "Core Network not found.";
+
+/// See [`CORE_NETWORK_NOT_FOUND`]: the same for the operation's OTHER lookup, from the
+/// recorded refusal against a policy version the core network does not hold (trace
+/// `networkmanager.execute-change-set-unknown-policy-version-not-found`).
+const POLICY_VERSION_NOT_FOUND: &str = "Policy version not found";
 
 /// A policy document configuring one edge in each entry of `edges` — each naming its own
 /// `asn`, so no edge takes one from `asn-ranges` — with the inside CIDR blocks the entry
@@ -824,7 +838,7 @@ async fn executing_a_change_set_the_core_network_does_not_hold_is_not_found() {
             "POST",
             &execute_uri(&core_network_id, version_id),
             Some(json!({})),
-            &format!("{core_network_id}/{version_id}"),
+            POLICY_VERSION_NOT_FOUND,
             CORE_NETWORK_POLICY,
         )
         .await;
@@ -859,7 +873,7 @@ async fn executing_a_change_set_the_core_network_does_not_hold_is_not_found() {
         "POST",
         &execute_uri(&core_network_id, deleted),
         Some(json!({})),
-        &format!("{core_network_id}/{deleted}"),
+        POLICY_VERSION_NOT_FOUND,
         CORE_NETWORK_POLICY,
     )
     .await;
@@ -874,8 +888,173 @@ async fn executing_a_change_set_the_core_network_does_not_hold_is_not_found() {
         "POST",
         &execute_uri(unknown, 1),
         Some(json!({})),
-        unknown,
+        CORE_NETWORK_NOT_FOUND,
         "core-network",
     )
     .await;
+}
+
+/// Refuse one `ExecuteCoreNetworkChangeSet` and answer the `ResourceId` it reported, having
+/// asserted the rest of the refusal (404, the modelled code, the service's constant message
+/// and the `ResourceType` of the kind addressed).
+async fn refused_resource_id(
+    emulator: &Emulator,
+    case: &str,
+    core_network_id: &str,
+    version_id: i64,
+    resource_type: &str,
+    expected_resource_id: &str,
+) -> String {
+    let answer = assert_not_found_answer(
+        emulator,
+        case,
+        "POST",
+        &execute_uri(core_network_id, version_id),
+        Some(json!({})),
+        expected_resource_id,
+        resource_type,
+    )
+    .await;
+    answer["ResourceId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("case {case:?}: no ResourceId in {answer}"))
+        .to_string()
+}
+
+/// The `ResourceId` rule of this operation's CORE-NETWORK lookup: one fixed string for
+/// every id it cannot resolve.
+///
+/// The rows differ in the FORM of the unresolvable id — a never-minted id at each end of
+/// the modelled `^core-network-([0-9a-f]{8,17})$` length range (`smithy_query
+/// shape=CoreNetworkId`), and a store-minted id that was then deleted — and in the version
+/// number asked for, so a `ResourceId` built from the request would differ between rows.
+#[tokio::test]
+async fn an_unresolvable_core_network_is_named_by_the_fixed_lookup_prose() {
+    let emulator = Emulator::new();
+
+    // A core network created and then deleted, so its id is store-minted, well-formed and
+    // names nothing.
+    let case = "a deleted core network";
+    let gone = core_network_with_policy(
+        &emulator,
+        case,
+        &document(&[("us-west-2", 64512, None)], &[("shared", None)], &[]).to_string(),
+    )
+    .await;
+    let (status, removed) = emulator.delete(&format!("/core-networks/{gone}")).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: DeleteCoreNetwork expected 200, got {status} with {removed}"
+    );
+
+    let rows: Vec<(&str, String, i64)> = vec![
+        (
+            "a core network that never existed, shortest admitted id",
+            "core-network-0123abcd".to_string(),
+            1,
+        ),
+        (
+            "a core network that never existed, longest admitted id",
+            "core-network-0fedcba9876543210".to_string(),
+            7,
+        ),
+        (
+            "a core network that never existed, asked for version 0",
+            "core-network-00000000000000099".to_string(),
+            0,
+        ),
+        (case, gone, 1),
+    ];
+
+    let mut reported = BTreeSet::new();
+    for (row, core_network_id, version_id) in &rows {
+        reported.insert(
+            refused_resource_id(
+                &emulator,
+                row,
+                core_network_id,
+                *version_id,
+                "core-network",
+                CORE_NETWORK_NOT_FOUND,
+            )
+            .await,
+        );
+    }
+
+    // One string over the whole table: no row's id or version number reached the member.
+    assert_eq!(
+        reported,
+        BTreeSet::from([CORE_NETWORK_NOT_FOUND.to_string()]),
+        "case {:?}: every unresolvable core network is named by one fixed string, got {reported:?}",
+        "the core-network lookup over every row"
+    );
+}
+
+/// The same rule for this operation's POLICY-VERSION lookup, over the version numbers a
+/// core network holding one version does not hold: below its history, just past it, far
+/// past it, and one minted and then deleted.
+#[tokio::test]
+async fn an_unresolvable_policy_version_is_named_by_the_fixed_lookup_prose() {
+    let emulator = Emulator::new();
+    let case = "a core network holding one version";
+    let core_network_id = core_network_with_policy(
+        &emulator,
+        case,
+        &document(&[("us-west-2", 64512, None)], &[("shared", None)], &[]).to_string(),
+    )
+    .await;
+
+    // A version minted on top of version 1 and then deleted, so the core network held it
+    // and holds it no longer.
+    let deleted = put_policy_version(
+        &emulator,
+        case,
+        &core_network_id,
+        &document(
+            &[("us-west-2", 64512, None), ("eu-west-1", 64513, None)],
+            &[("shared", None)],
+            &[],
+        ),
+    )
+    .await;
+    let (status, removed) = emulator
+        .delete(&format!(
+            "/core-networks/{core_network_id}/core-network-policy-versions/{deleted}"
+        ))
+        .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: DeleteCoreNetworkPolicyVersion expected 200, got {status} with {removed}"
+    );
+
+    let rows: Vec<(&str, i64)> = vec![
+        ("a version below the history", 0),
+        ("the version just past the history", deleted + 1),
+        ("a version far past the history", 97),
+        ("a version minted and then deleted", deleted),
+    ];
+
+    let mut reported = BTreeSet::new();
+    for (row, version_id) in &rows {
+        reported.insert(
+            refused_resource_id(
+                &emulator,
+                row,
+                &core_network_id,
+                *version_id,
+                CORE_NETWORK_POLICY,
+                POLICY_VERSION_NOT_FOUND,
+            )
+            .await,
+        );
+    }
+
+    // One string over the whole table: neither the core network id nor any version number
+    // reached the member.
+    assert_eq!(
+        reported,
+        BTreeSet::from([POLICY_VERSION_NOT_FOUND.to_string()]),
+        "case {:?}: every unresolvable policy version is named by one fixed string, got {reported:?}",
+        "the policy-version lookup over every row"
+    );
 }

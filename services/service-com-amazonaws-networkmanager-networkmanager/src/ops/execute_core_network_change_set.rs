@@ -12,7 +12,9 @@
 //! OTHER change set of this core network still waiting to be executed was generated against
 //! the document this one replaces, so each is superseded and reports `OUT_OF_DATE`. An
 //! unknown core network, and a policy version the core network does not hold, are both
-//! 404s; a change set that is not `READY_TO_EXECUTE` — one still being generated, one being
+//! 404s, each naming the lookup that failed in the refusal's `ResourceId` rather than
+//! echoing an id from the request; a change set that is not `READY_TO_EXECUTE` — one still
+//! being generated, one being
 //! executed or already executed, one superseded — is a request invalid against the state of
 //! the policy it addresses that no retry can make valid, so it is the modelled
 //! `ValidationException` (HTTP 400) with the catch-all `Reason` and no `Fields` entry,
@@ -63,6 +65,35 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+
+/// The identifying detail THIS operation's `ResourceNotFoundException` carries in its
+/// required `ResourceId` when the CORE NETWORK the path addresses cannot be resolved.
+///
+/// Network Manager does not report one kind of value for `ResourceId` across its whole
+/// surface: the model says only "The ID of the resource" and leaves the content to the
+/// service, and the recordings show the value is the diagnostic of the lookup that failed
+/// rather than the identifier the request carried — `GetCoreNetwork` answers the NAME of
+/// the member its core network was addressed through
+/// ([`crate::state::FIELD_CORE_NETWORK_ID`]), while a recorded
+/// `ExecuteCoreNetworkChangeSet` against a core network that does not exist (trace
+/// `networkmanager-error-execute-change-set-unknown-core-network`, step `task#1`) answers
+/// this fixed prose beside the constant [`crate::state::RESOURCE_NOT_FOUND_MESSAGE`] and
+/// the `core-network` `ResourceType`. The whole value is fixed: it holds no id, version
+/// number or other value from the request, so every unresolvable core network asked to
+/// execute a change set is answered identically.
+const CORE_NETWORK_NOT_FOUND_DETAIL: &str = "Core Network not found.";
+
+/// See [`CORE_NETWORK_NOT_FOUND_DETAIL`]: the same rule for the OTHER lookup this
+/// operation makes — the policy version whose change set the call executes.
+///
+/// A second, independent recording of this operation against a version the core network
+/// does not hold (trace
+/// `networkmanager.execute-change-set-unknown-policy-version-not-found`) answers this prose
+/// rather than the `<CoreNetworkId>/<PolicyVersionId>` pair
+/// ([`crate::state::policy_version_resource_id`]) that the READS of one policy of a core
+/// network report, which is what makes the fixed-prose `ResourceId` the rule of this
+/// operation rather than of one of its branches.
+const POLICY_VERSION_NOT_FOUND_DETAIL: &str = "Policy version not found";
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -152,7 +183,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A change set belongs to one policy version of one core network, so an unknown
         // core network is answered as not found before any version of it is looked for —
         // the same order the two reads of a change set (`GetCoreNetworkChangeSet`,
-        // `GetCoreNetworkChangeEvents`) refuse one request in.
+        // `GetCoreNetworkChangeEvents`) refuse one request in. The identifying detail that
+        // refusal reports is the fixed diagnostic of the lookup that failed
+        // ([`CORE_NETWORK_NOT_FOUND_DETAIL`]), never the id the request carried, so the
+        // answer is the same for every core network this store cannot resolve.
         let core_network = store
             .core_networks
             .get_mut(&input.core_network_id)
@@ -160,16 +194,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ExecuteCoreNetworkChangeSetErrorModeled::ResourceNotFoundException(
                     crate::state::resource_not_found(
                         crate::state::CORE_NETWORK_KIND,
-                        &input.core_network_id,
+                        CORE_NETWORK_NOT_FOUND_DETAIL,
                     ),
                 )
             })?;
 
         // The change set this call executes is the one generated with the version the
         // request names, so a version this core network holds none for — never minted, or
-        // since deleted — is the modelled 404 naming that policy by the same
-        // `<CoreNetworkId>/<PolicyVersionId>` pair every other refusal about one policy of a
-        // core network names it by, and nothing is put in force.
+        // since deleted — is the modelled 404, and nothing is put in force. Its identifying
+        // detail is this operation's fixed diagnostic for that lookup
+        // ([`POLICY_VERSION_NOT_FOUND_DETAIL`]) rather than the
+        // `<CoreNetworkId>/<PolicyVersionId>` pair a read of one policy reports, beside the
+        // `core-network-policy` `ResourceType` that names the kind addressed.
         let change_set_state = core_network
             .policy_versions
             .get(&input.policy_version_id)
@@ -177,10 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ExecuteCoreNetworkChangeSetErrorModeled::ResourceNotFoundException(
                     crate::state::resource_not_found(
                         crate::state::CORE_NETWORK_POLICY_KIND,
-                        &crate::state::policy_version_resource_id(
-                            &input.core_network_id,
-                            input.policy_version_id,
-                        ),
+                        POLICY_VERSION_NOT_FOUND_DETAIL,
                     ),
                 )
             })?
