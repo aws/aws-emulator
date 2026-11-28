@@ -66,7 +66,7 @@ const POLL_ATTEMPTS: usize = 2_000;
 /// A `FieldMap` entry: `ObjectTypeField`'s three members, with a `ContentType` out of the
 /// modelled `FieldContentType` enum (STRING | NUMBER | PHONE_NUMBER | EMAIL_ADDRESS |
 /// NAME).
-fn field(column: &str, content_type: &str, target: &str) -> Value {
+pub(crate) fn field(column: &str, content_type: &str, target: &str) -> Value {
     json!({ "ContentType": content_type, "Source": format!("_source.{column}"), "Target": target })
 }
 
@@ -94,7 +94,7 @@ fn upload_headers(client_token: &str) -> Vec<(String, String)> {
 }
 
 /// `CreateUploadJob`, asserting it succeeded, and returning the minted `JobId`.
-async fn create_job(emulator: &Emulator, domain: &str, body: Value) -> String {
+pub(crate) async fn create_job(emulator: &Emulator, domain: &str, body: Value) -> String {
     let (status, created) = emulator.create_upload_job(domain, body.clone()).await;
     assert_eq!(
         status, 200,
@@ -109,7 +109,7 @@ async fn create_job(emulator: &Emulator, domain: &str, body: Value) -> String {
 
 /// Write `file` to the upload target `GetUploadJobPath` publishes for one job — the write
 /// the operation documents, performed exactly as a client performs it.
-async fn upload_file(emulator: &Emulator, domain: &str, job_id: &str, file: &str) {
+pub(crate) async fn upload_file(emulator: &Emulator, domain: &str, job_id: &str, file: &str) {
     let (status, path) = emulator.get_upload_job_path(domain, job_id).await;
     assert_eq!(
         status, 200,
@@ -140,7 +140,7 @@ async fn upload_file(emulator: &Emulator, domain: &str, job_id: &str, file: &str
 }
 
 /// `StartUploadJob`: `PUT /domains/{DomainName}/upload-jobs/{JobId}`.
-async fn start_job(emulator: &Emulator, domain: &str, job_id: &str) -> (u16, Value) {
+pub(crate) async fn start_job(emulator: &Emulator, domain: &str, job_id: &str) -> (u16, Value) {
     emulator
         .send("PUT", &format!("/domains/{domain}/upload-jobs/{job_id}"), None)
         .await
@@ -148,7 +148,7 @@ async fn start_job(emulator: &Emulator, domain: &str, job_id: &str) -> (u16, Val
 
 /// The job once its processing has fallen due: looked at again until it reports something
 /// other than `IN_PROGRESS`, which is the condition the test waits on.
-async fn settled_job(emulator: &Emulator, domain: &str, job_id: &str) -> Value {
+pub(crate) async fn settled_job(emulator: &Emulator, domain: &str, job_id: &str) -> Value {
     let mut last = Value::Null;
     for _ in 0..POLL_ATTEMPTS {
         let (status, body) = emulator.get_upload_job(domain, job_id).await;
@@ -166,7 +166,7 @@ async fn settled_job(emulator: &Emulator, domain: &str, job_id: &str) -> Value {
 }
 
 /// The `Status`, `StatusReason` and the three `ResultsSummary` counters of one read.
-fn reported(body: &Value) -> (&str, Option<&str>, Option<i64>, Option<i64>, Option<i64>) {
+pub(crate) fn reported(body: &Value) -> (&str, Option<&str>, Option<i64>, Option<i64>, Option<i64>) {
     (
         body.get("Status").and_then(Value::as_str).unwrap_or(""),
         body.get("StatusReason").and_then(Value::as_str),

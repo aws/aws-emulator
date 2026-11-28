@@ -43,7 +43,8 @@ pub mod upload_job_run;
 pub use upload_job_run::{
     ReportedUploadJob, UploadJobCounters, UploadJobOutcome, UploadJobRun, MAX_UPLOAD_JOB_RECORDS,
     UPLOAD_JOB_FAILED, UPLOAD_JOB_IN_PROGRESS, UPLOAD_JOB_PARTIALLY_SUCCEEDED,
-    UPLOAD_JOB_PROCESSING_SPAN, UPLOAD_JOB_SUCCEEDED, UPLOAD_JOB_VALIDATION_FAILURE,
+    UPLOAD_JOB_PROCESSING_SPAN, UPLOAD_JOB_STOPPED, UPLOAD_JOB_SUCCEEDED,
+    UPLOAD_JOB_VALIDATION_FAILURE,
 };
 
 pub use upload_job_file::{
@@ -2596,6 +2597,15 @@ pub fn upload_job_not_found(job_id: &str, domain_name: &str) -> String {
 /// nothing — neither the job the request named nor the status that job is actually in.
 pub fn upload_job_not_startable() -> String {
     format!("Job status is not in {UPLOAD_JOB_CREATED} status and cannot be started")
+}
+
+/// The `BadRequestException` message for a `StopUploadJob` call naming a job whose
+/// processing is not under way, worded the way this service words the same refusal of a
+/// start ([`upload_job_not_startable`]): one fixed sentence naming the status the call
+/// requires ([`UPLOAD_JOB_IN_PROGRESS`]) and the action it refuses, interpolating neither
+/// the job the request named nor the status that job is actually in.
+pub fn upload_job_not_stoppable() -> String {
+    format!("Job status is not in {UPLOAD_JOB_IN_PROGRESS} status and cannot be stopped")
 }
 
 /// The `ResourceNotFoundException` message for a profile a domain does not hold, as the

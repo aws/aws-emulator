@@ -19,6 +19,10 @@
 //! back immediately still observes the processing state the start call put it in. The
 //! outcome is computed once, by the start call, and the instant it falls due is stored, so
 //! no handler ever sleeps and two reads of the same job at the same instant agree.
+//!
+//! A CALL can end a run before the clock does: `StopUploadJob` "stops the processing of an
+//! upload job", which ends the run at the instant of the stop — the job reports `STOPPED`
+//! from then on and the completion that run was owed never falls due.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime};
@@ -46,6 +50,10 @@ pub const UPLOAD_JOB_PARTIALLY_SUCCEEDED: &str = "PARTIALLY_SUCCEEDED";
 /// The `UploadJobStatus` of a job that ingested nothing: "FAILED: The upload job has
 /// failed to complete."
 pub const UPLOAD_JOB_FAILED: &str = "FAILED";
+
+/// The `UploadJobStatus` of a job whose processing a caller ended: "STOPPED: The upload
+/// job has been manually stopped or terminated before completion."
+pub const UPLOAD_JOB_STOPPED: &str = "STOPPED";
 
 /// The `StatusReason` of a job whose data could not be ingested: "VALIDATION_FAILURE: The
 /// upload job has encountered an error or issue and was unable to complete the profile
@@ -232,6 +240,41 @@ impl Domain {
             started_at: now,
             due_at: now + UPLOAD_JOB_PROCESSING_SPAN,
             outcome,
+        });
+    }
+
+    /// Stop the processing of the upload job `job_id`: the run it is performing ends at
+    /// `now`, so the job reports `STOPPED` from this call on and the completion the clock
+    /// owed that run never falls due.
+    ///
+    /// The caller has already established that the job is stored and that its processing is
+    /// under way; `now` is the instant of the call. What the interrupted run had already
+    /// accounted for is kept — those profiles are in this domain — so the stopped job
+    /// reports the records it processed before it was stopped.
+    pub fn stop_upload_job(&mut self, job_id: &str, now: SystemTime) {
+        let Some(job) = self.upload_jobs.get_mut(job_id) else {
+            return;
+        };
+        let run = job.run.as_ref();
+        let counters = run.and_then(|run| run.outcome.counters);
+        let started_at = run.map_or(now, |run| run.started_at);
+        job.status = UPLOAD_JOB_STOPPED.to_string();
+        // No modelled `StatusReason` describes a stop: the two the model defines are the
+        // failures (`VALIDATION_FAILURE`, `INTERNAL_FAILURE`).
+        job.status_reason = None;
+        job.completed_at = Some(now);
+        // The run is kept, due as of this instant, so the job's answer comes from the one
+        // reporting path every upload-job read uses and two reads of it agree. Both sides of
+        // `StoredUploadJob::reported` therefore carry the same stopped state, and the run
+        // carries one thing the stored members cannot: the counters of what it processed.
+        job.run = Some(UploadJobRun {
+            started_at,
+            due_at: now,
+            outcome: UploadJobOutcome {
+                status: UPLOAD_JOB_STOPPED.to_string(),
+                status_reason: None,
+                counters,
+            },
         });
     }
 
