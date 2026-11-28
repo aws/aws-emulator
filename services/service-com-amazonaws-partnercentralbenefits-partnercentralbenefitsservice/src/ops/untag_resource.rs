@@ -203,16 +203,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut store = state.lock();
-        let Some(resource) = store.taggable_resource_mut(&input.resource_arn) else {
-            return Err(UntagResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    // This operation binds no `Catalog` member, so the lookup reports
-                    // the catalog the request named: none.
-                    message: crate::state::catalog_not_found_message(None),
-                },
-            )
-            .into());
-        };
+        // The lookup and its refusal are one step, the same one every tagging operation of
+        // this service takes.
+        let resource = store
+            .require_taggable_resource_mut(&input.resource_arn)
+            .map_err(UntagResourceErrorModeled::ResourceNotFoundException)?;
 
         // A set difference: every named key is dropped, a key the resource never carried
         // leaves the set unchanged rather than failing the call, and the keys this request

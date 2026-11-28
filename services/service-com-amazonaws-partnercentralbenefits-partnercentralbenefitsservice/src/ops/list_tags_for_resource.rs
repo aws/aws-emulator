@@ -187,20 +187,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let store = state.lock();
-        let Some(resource) = store.taggable_resource(&input.resource_arn) else {
-            return Err(ListTagsForResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    // This operation binds no `Catalog` member, so the lookup reports
-                    // the catalog the request named: none. That absent catalog is what
-                    // the service itself reports on this path — see
-                    // [`crate::state::catalog_not_found_message`] for the recorded
-                    // tagging answers it is built from — so the tagging operations word
-                    // a failed lookup identically.
-                    message: crate::state::catalog_not_found_message(None),
-                },
-            )
-            .into());
-        };
+        // The lookup and its refusal are one step, the same one every tagging operation of
+        // this service takes, so all three word a failed lookup identically.
+        let resource = store
+            .require_taggable_resource(&input.resource_arn)
+            .map_err(ListTagsForResourceErrorModeled::ResourceNotFoundException)?;
 
         Ok(ListTagsForResourceOutput {
             tags: Some(crate::state::tag_list(&resource.tags)),

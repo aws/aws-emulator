@@ -2143,6 +2143,34 @@ impl ComAmazonawsPartnercentralbenefitsPartnercentralbenefitsserviceState {
         self.catalogs.get_mut(&catalog)?.applications.get_mut(&id)
     }
 
+    /// The resource a tagging operation's `resourceArn` names, or the refusal a call
+    /// naming one this store does not hold is answered with — the rule [`Self::catalog`]
+    /// states, for the tagging operations' resource.
+    ///
+    /// ONE resolution for every reporting tagging operation: the lookup
+    /// ([`Self::taggable_resource`]) and the refusal it fails with are the same step,
+    /// through the single construction [`taggable_resource_not_found`], so no tagging
+    /// operation can word a failed lookup differently than its siblings.
+    pub fn require_taggable_resource(
+        &self,
+        resource_arn: &str,
+    ) -> Result<&BenefitApplication, crate::ops::types::ResourceNotFoundException> {
+        self.taggable_resource(resource_arn)
+            .ok_or_else(taggable_resource_not_found)
+    }
+
+    /// The resource a tagging operation's `resourceArn` names, for a call that changes its
+    /// tag set, or the refusal a call naming one this store does not hold is answered
+    /// with: what [`Self::require_taggable_resource`] is for a reporting operation, over
+    /// the writing handle [`Self::taggable_resource_mut`] hands out.
+    pub fn require_taggable_resource_mut(
+        &mut self,
+        resource_arn: &str,
+    ) -> Result<&mut BenefitApplication, crate::ops::types::ResourceNotFoundException> {
+        self.taggable_resource_mut(resource_arn)
+            .ok_or_else(taggable_resource_not_found)
+    }
+
     /// A `benappl-[0-9a-z]{14}` id no stored application is using.
     pub fn mint_application_id(&mut self, now_millis: i64) -> String {
         self.mint_id(
@@ -3354,6 +3382,22 @@ pub fn not_found_message(resource: &str, identifier: &str) -> String {
 fn application_not_found(identifier: &str) -> crate::ops::types::ResourceNotFoundException {
     crate::ops::types::ResourceNotFoundException {
         message: not_found_message(APPLICATION_KIND, identifier),
+    }
+}
+
+/// The refusal a tagging operation's resource lookup fails with.
+///
+/// One construction for every tagging operation (`TagResource`, `UntagResource`,
+/// `ListTagsForResource`), reached through
+/// [`ComAmazonawsPartnercentralbenefitsPartnercentralbenefitsserviceState::require_taggable_resource`]
+/// and its writing counterpart, so a `resourceArn` resolving to no resource is answered in
+/// the same words whichever of them was called. These operations bind no `Catalog` member,
+/// so the lookup reports the catalog the request named: none — see
+/// [`catalog_not_found_message`] for the recorded tagging answers that wording is built
+/// from.
+fn taggable_resource_not_found() -> crate::ops::types::ResourceNotFoundException {
+    crate::ops::types::ResourceNotFoundException {
+        message: catalog_not_found_message(None),
     }
 }
 

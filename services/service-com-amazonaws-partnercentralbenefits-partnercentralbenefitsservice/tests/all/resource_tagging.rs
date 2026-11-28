@@ -32,6 +32,14 @@
 
 use std::collections::BTreeMap;
 
+// That a failed resource lookup is ONE construction, answered identically by all three
+// tagging operations, is its own suite in the submodule below. `tests/all/resource_tagging.rs`
+// is itself loaded by `#[path]` from `tests/all.rs`, so a submodule of it is looked up
+// beside it rather than in a directory named after it: the `#[path]` here is what points at
+// `tests/all/resource_tagging/`.
+#[path = "resource_tagging/tagging_refusal_one_construction.rs"]
+mod tagging_refusal_one_construction;
+
 use serde_json::{json, Value};
 use service_com_amazonaws_partnercentralbenefits_partnercentralbenefitsservice::state::{
     catalog_not_found_message, APPLICATION_RESOURCE, BENEFIT_RESOURCE, MAX_TAGS_PER_RESOURCE,
