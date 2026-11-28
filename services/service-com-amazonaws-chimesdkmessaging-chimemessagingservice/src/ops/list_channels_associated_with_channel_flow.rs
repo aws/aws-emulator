@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListChannelsAssociatedWithChannelFlow
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListChannelsAssociatedWithChannelFlow`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListChannelsAssociatedWithChannelFlow::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the channels [`crate::state`] holds that the channel flow the request names is
+//! associated with, ordered by their `ChannelArn` so successive pages agree, paginated the
+//! way `ListChannelFlows` paginates channel flows. Reporting only — it writes nothing.
+//!
+//! No ROLE gate, and none to apply: this is a developer API whose request carries no
+//! caller identity at all — its input is the `ChannelFlowArn`, `MaxResults` and `NextToken`
+//! and nothing else (`smithy_query(query="operation",
+//! operation="ListChannelsAssociatedWithChannelFlow")`), unlike the two operations that
+//! write the association, which both carry the mandatory `x-amz-chime-bearer` header the
+//! model reserves their action for. The only gate is the one the ARN itself decides:
+//! whether this service can resolve the channel flow for the caller.
 //!
 //! ## Shape of an operation
 //!
@@ -155,20 +158,101 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListChannelsAssociatedWithChannelFlow` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListChannelsAssociatedWithChannelFlowErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListChannelsAssociatedWithChannelFlow"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListChannelsAssociatedWithChannelFlowErrorModeled::ServiceFailureException(
+                ServiceFailureException {
+                    code: Some("ServiceFailure".to_string()),
+                    message: Some("the channel store is unavailable".to_string()),
+                },
+            )
+        })?;
+
+        // `MaxResults` is modelled `range 1..50`; an omitted page size takes that
+        // maximum, so a caller that asks for no size still gets a bounded page.
+        let requested = input.max_results.unwrap_or(MAX_RESULTS_MAX);
+        if !(1..=MAX_RESULTS_MAX).contains(&requested) {
+            return Err(bad_request(format!(
+                "MaxResults must be between 1 and {MAX_RESULTS_MAX}; got {requested}"
+            )));
+        }
+        let page_size = usize::try_from(requested).unwrap_or(0);
+
+        let store = state.lock();
+        // A `ChannelFlowArn` this service holds no channel flow for names an app instance
+        // scope it cannot resolve for the caller, which is this service's one answer for
+        // such an ARN — and the only terminal client error this operation declares for a
+        // channel flow it cannot read.
+        if !store.channel_flows.contains_key(&input.channel_flow_arn) {
+            return Err(forbidden(crate::state::UNRESOLVABLE_APP_INSTANCE));
+        }
+        // One stable ordered view of the channels that carry this channel flow: a
+        // `HashMap` has no order of its own, so the ARN — unique per channel — is what
+        // makes successive pages agree, and what makes every channel appear on exactly one
+        // page.
+        let mut view: Vec<&crate::state::ChannelRecord> =
+            store.channels_with_flow(&input.channel_flow_arn).collect();
+        view.sort_by(|left, right| left.arn.cmp(&right.arn));
+
+        // A `NextToken` names the last channel of the previous page, so this page resumes
+        // at the one after it in THIS ordered view.
+        let start = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => {
+                let cursor = crate::state::decode_next_token(token)
+                    .ok_or_else(|| unresolvable_next_token(Self::NAME))?;
+                view.iter()
+                    .position(|channel| channel.arn == cursor)
+                    .ok_or_else(|| unresolvable_next_token(Self::NAME))?
+                    + 1
+            }
+        };
+
+        let page: Vec<&crate::state::ChannelRecord> =
+            view.iter().skip(start).take(page_size).copied().collect();
+        let next_token = (start + page.len() < view.len())
+            .then(|| {
+                page.last()
+                    .map(|channel| crate::state::encode_next_token(&channel.arn))
+            })
+            .flatten();
+
+        Ok(ListChannelsAssociatedWithChannelFlowOutput {
+            channels: Some(
+                page.iter()
+                    .map(|channel| channel.to_associated_with_flow_summary())
+                    .collect(),
+            ),
+            next_token,
+        })
     }
+}
+
+/// `MaxResults`'s modelled upper bound for this operation (`range 1..50`).
+const MAX_RESULTS_MAX: i32 = 50;
+
+/// Refuse the request with this service's own client-input error, HTTP 400.
+fn bad_request(message: String) -> ListChannelsAssociatedWithChannelFlowError {
+    ListChannelsAssociatedWithChannelFlowErrorModeled::BadRequestException(BadRequestException {
+        code: Some("BadRequest".to_string()),
+        message: Some(message),
+    })
+    .into()
+}
+
+/// Refuse a `NextToken` this service cannot read a cursor out of — one it did not issue, or
+/// one that no longer names a position in the view it was issued for
+/// ([`crate::state::pagination_token_exception`]).
+fn unresolvable_next_token(operation: &str) -> ListChannelsAssociatedWithChannelFlowError {
+    crate::scaffolded::Scaffolded::validation(crate::state::pagination_token_exception(operation))
+}
+
+/// Refuse the read with the modelled 403 and the sentence the refusal owes.
+fn forbidden(message: &str) -> ListChannelsAssociatedWithChannelFlowError {
+    ListChannelsAssociatedWithChannelFlowErrorModeled::ForbiddenException(ForbiddenException {
+        code: Some("Forbidden".to_string()),
+        message: Some(message.to_string()),
+    })
+    .into()
 }

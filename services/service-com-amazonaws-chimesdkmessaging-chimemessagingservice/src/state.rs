@@ -5,7 +5,9 @@
 //! The channel-messaging slice keeps every channel this service minted, keyed by its
 //! ARN, and the messages sent to each one inside that channel's record — so deleting a
 //! channel drops its messages with it and no second map can disagree about either. The
-//! channel FLOWS this service minted are kept the same way, keyed by their own ARN.
+//! channel FLOWS this service minted are kept the same way, keyed by their own ARN, and
+//! the channel flow a channel is ASSOCIATED with is held on the channel's own record,
+//! because a channel carries at most one of them.
 //!
 //! Timestamps are held as epoch MILLISECONDS rather than as
 //! [`aws_smithy_types::DateTime`], because the list operations have to order and range
@@ -30,10 +32,11 @@ use std::collections::{HashMap, VecDeque};
 use ::aws_smithy_types::DateTime;
 
 use crate::ops::types::{
-    Channel, ChannelBan, ChannelBanSummary, ChannelFlow, ChannelFlowSummary, ChannelMembership,
-    ChannelMembershipSummary, ChannelMessage, ChannelMessageStatusStructure, ChannelMessageSummary,
-    ChannelModerator, ChannelModeratorSummary, ChannelSummary, ElasticChannelConfiguration,
-    ExpirationSettings, Identity, MessageAttributeValue, Processor, Target,
+    Channel, ChannelAssociatedWithFlowSummary, ChannelBan, ChannelBanSummary, ChannelFlow,
+    ChannelFlowSummary, ChannelMembership, ChannelMembershipSummary, ChannelMessage,
+    ChannelMessageStatusStructure, ChannelMessageSummary, ChannelModerator,
+    ChannelModeratorSummary, ChannelSummary, ElasticChannelConfiguration, ExpirationSettings,
+    Identity, MessageAttributeValue, Processor, Target,
 };
 
 /// How many `CreateChannel` idempotency records this emulator keeps.
@@ -420,6 +423,23 @@ impl ComAmazonawsChimesdkmessagingChimemessagingserviceState {
         }
     }
 
+    /// Every channel this service holds that `channel_flow_arn`'s channel flow is
+    /// associated with.
+    ///
+    /// One reader for the whole association view, so the operation that LISTS those
+    /// channels and the one that refuses to delete a channel flow still associated with
+    /// any of them cannot disagree about which channels those are. The channels come out
+    /// in no particular order, because a `HashMap` has none: a caller that needs a stable
+    /// order imposes it (the listing orders by `ChannelArn`).
+    pub fn channels_with_flow<'a>(
+        &'a self,
+        channel_flow_arn: &'a str,
+    ) -> impl Iterator<Item = &'a ChannelRecord> {
+        self.channels
+            .values()
+            .filter(move |channel| channel.channel_flow_arn.as_deref() == Some(channel_flow_arn))
+    }
+
     /// True when `arn` still names a live resource of this service.
     pub fn resource_exists(&self, arn: &str) -> bool {
         self.channels.contains_key(arn) || self.channel_flows.contains_key(arn)
@@ -521,6 +541,16 @@ pub struct ChannelRecord {
     pub last_message_millis: Option<i64>,
     pub elastic_channel_configuration: Option<ElasticChannelConfiguration>,
     pub expiration_settings: Option<ExpirationSettings>,
+    /// The `ChannelFlowArn` of the channel flow `AssociateChannelFlow` associated with
+    /// this channel, and `None` while no flow is associated.
+    ///
+    /// The association is held HERE, on the channel, rather than as a list on the channel
+    /// flow: a channel carries at most one channel flow — the wire `Channel` has a single
+    /// `ChannelFlowArn` and the association is addressed as one sub-resource of the
+    /// channel (`PUT /channels/{ChannelArn}/channel-flow`) — so one owner of the fact
+    /// means `DescribeChannel` and `ListChannelsAssociatedWithChannelFlow` can never
+    /// disagree about it, and deleting the channel takes its association with it.
+    pub channel_flow_arn: Option<String>,
     /// Messages in the order they were accepted, which is ASCENDING `CreatedTimestamp`.
     pub messages: Vec<ChannelMessageRecord>,
     /// `ClientRequestToken -> MessageId` for this channel's `SendChannelMessage` calls.
@@ -604,8 +634,7 @@ impl ChannelRecord {
             created_timestamp: Some(date_time(self.created_millis)),
             last_message_timestamp: self.last_message_millis.map(date_time),
             last_updated_timestamp: Some(date_time(self.last_updated_millis)),
-            // No channel flow is associated until `AssociateChannelFlow` is implemented.
-            channel_flow_arn: None,
+            channel_flow_arn: self.channel_flow_arn.clone(),
             elastic_channel_configuration: self.elastic_channel_configuration.clone(),
             expiration_settings: self.expiration_settings.clone(),
         }
@@ -620,6 +649,19 @@ impl ChannelRecord {
             privacy: Some(self.privacy.clone()),
             metadata: self.metadata.clone(),
             last_message_timestamp: self.last_message_millis.map(date_time),
+        }
+    }
+
+    /// The modelled `ChannelAssociatedWithFlowSummary` this record describes, as
+    /// `ListChannelsAssociatedWithChannelFlow` returns it: the channel's own name, ARN,
+    /// mode, privacy and metadata, which is every member that shape carries.
+    pub fn to_associated_with_flow_summary(&self) -> ChannelAssociatedWithFlowSummary {
+        ChannelAssociatedWithFlowSummary {
+            name: Some(self.name.clone()),
+            channel_arn: Some(self.arn.clone()),
+            mode: Some(self.mode.clone()),
+            privacy: Some(self.privacy.clone()),
+            metadata: self.metadata.clone(),
         }
     }
 
@@ -940,6 +982,47 @@ pub const NOT_BANNED_MESSAGE: &str = "App instance user is not banned from the s
 /// names neither the user nor the channel, so it is the same sentence for every caller.
 pub const NOT_A_MODERATOR_MESSAGE: &str =
     "App instance user is not a moderator of the specified Channel.";
+
+/// The `Message` a `DeleteChannelFlow` naming a channel flow that is still associated
+/// with a channel is refused with, beside the modelled `ForbiddenException` (HTTP 403,
+/// `Code` `Forbidden`) rather than the `ConflictException` that operation also declares.
+///
+/// The model states the rule on the operation itself: deleting a channel flow "works only
+/// when the channel flow is not associated with any channel". The status, code and
+/// sentence are the ones Amazon Chime SDK Messaging itself answers for that refusal
+/// (observed in the AWS wire recording this behaviour was implemented against). The
+/// sentence names no channel, so it is the same sentence however many channels carry the
+/// flow and whichever they are — the listing the model points at is what reports those.
+pub const CHANNEL_FLOW_STILL_ASSOCIATED_MESSAGE: &str =
+    "Channel flow associated with a channel cannot be deleted.";
+
+/// The `Message` a `DisassociateChannelFlow` naming a channel flow the channel is not
+/// associated with is refused with, beside the modelled `BadRequestException`.
+///
+/// The association is the sub-resource the request addresses, so a channel that carries no
+/// association, or carries a DIFFERENT channel flow's, holds nothing for this request to
+/// remove: the request names a channel flow that is not this channel's, which is what the
+/// sentence states.
+pub const CHANNEL_FLOW_NOT_ASSOCIATED_MESSAGE: &str =
+    "Channel flow provided in the request is not associated with the channel.";
+
+/// The `Message` a `NextToken` this service cannot resolve is refused with, beside HTTP 400
+/// `ValidationException`.
+///
+/// Amazon Chime SDK Messaging words this refusal "Pagination token exception in operation
+/// '<OperationName>': <reason>" — the error is framework-level and in no operation's
+/// modelled error set, so the form is the one the AWS wire recordings this was implemented
+/// against carry. The operation is named because the same token means nothing to another
+/// one, and the reason says HOW the token failed to yield a cursor.
+///
+/// A `NextToken` of this service is its own opaque cursor ([`encode_next_token`]) rather
+/// than AWS's wrapped ciphertext, so the one failure it can report is the one AWS reports
+/// for a token whose payload does not come back out of it: a token this service did not
+/// issue, and one that no longer names a position in the view it was issued for, are that
+/// same failure.
+pub fn pagination_token_exception(operation: &str) -> String {
+    format!("Pagination token exception in operation '{operation}': decryption error")
+}
 
 /// The `Message` a request whose `@idempotencyToken` was already used for a DIFFERENT
 /// request is refused with, beside the modelled `ConflictException`.

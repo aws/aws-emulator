@@ -378,6 +378,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 last_message_millis: None,
                 elastic_channel_configuration: input.elastic_channel_configuration,
                 expiration_settings: input.expiration_settings,
+                // A channel is created with no channel flow associated;
+                // `AssociateChannelFlow` is what associates one.
+                channel_flow_arn: None,
                 messages: Vec::new(),
                 message_idempotency: std::collections::HashMap::new(),
                 memberships,

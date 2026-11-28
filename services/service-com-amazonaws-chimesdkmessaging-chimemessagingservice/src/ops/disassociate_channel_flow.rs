@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DisassociateChannelFlow
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DisassociateChannelFlow`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DisassociateChannelFlow::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Removes the association the request addresses: the channel flow the channel named by
+//! `ChannelArn` carries stops processing that channel's messages, which is written by
+//! clearing the `ChannelFlowArn` on that channel's record in [`crate::state`]. The channel
+//! flow itself is untouched — it stays in the store and can be associated again.
 //!
 //! ## Shape of an operation
 //!
@@ -183,20 +179,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DisassociateChannelFlow` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DisassociateChannelFlowErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DisassociateChannelFlow"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DisassociateChannelFlowErrorModeled::ServiceFailureException(ServiceFailureException {
+                code: Some("ServiceFailure".to_string()),
+                message: Some("the channel store is unavailable".to_string()),
+            })
+        })?;
+        // The model reserves this action for "administrators or channel moderators", the
+        // same roles that may associate a channel flow, and an `AppInstanceAdmin` is the
+        // Chime SDK Identity service's resource: it is read from the family's shared
+        // directory, never from a copy of this service's own.
+        let directory = crate::state::app_instance_admins(&*self.engine).ok_or_else(|| {
+            DisassociateChannelFlowErrorModeled::ServiceFailureException(ServiceFailureException {
+                code: Some("ServiceFailure".to_string()),
+                message: Some("the AppInstanceAdmin directory is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+        // A channel ARN this service cannot resolve names a channel scope the caller
+        // cannot reach, which is this service's one answer for such an ARN.
+        let channel = store
+            .resolve_channel_mut(&input.channel_arn)
+            .map_err(forbidden)?;
+        let administers = directory
+            .lock()
+            .administers(&channel.app_instance_arn, &input.chime_bearer);
+        if !administers && !channel.is_moderator(&input.chime_bearer) {
+            return Err(forbidden(crate::state::INSUFFICIENT_ACCESS_MESSAGE));
+        }
+        // The association is the sub-resource this request addresses, so a channel that
+        // carries none — or carries a DIFFERENT channel flow's — holds nothing for it to
+        // remove: the request names a channel flow that is not this channel's, which is
+        // the modelled client-input error.
+        if channel.channel_flow_arn.as_deref() != Some(input.channel_flow_arn.as_str()) {
+            return Err(bad_request(
+                crate::state::CHANNEL_FLOW_NOT_ASSOCIATED_MESSAGE,
+            ));
+        }
+        channel.channel_flow_arn = None;
+
+        Ok(DisassociateChannelFlowOutput)
     }
+}
+
+/// Refuse the request with this service's own client-input error, HTTP 400: the channel
+/// flow the request names is not the one this channel is associated with, so there is no
+/// association for it to remove.
+fn bad_request(message: &str) -> DisassociateChannelFlowError {
+    DisassociateChannelFlowErrorModeled::BadRequestException(BadRequestException {
+        code: Some("BadRequest".to_string()),
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// Refuse the request with the modelled 403 and the sentence the refusal owes: a channel
+/// ARN this service cannot resolve for the caller, and a caller without the role the
+/// action needs, are one terminal client error.
+fn forbidden(message: &str) -> DisassociateChannelFlowError {
+    DisassociateChannelFlowErrorModeled::ForbiddenException(ForbiddenException {
+        code: Some("Forbidden".to_string()),
+        message: Some(message.to_string()),
+    })
+    .into()
 }

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateChannelFlow
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssociateChannelFlow`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssociateChannelFlow::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Associates the channel flow the request names with the channel it names, by writing the
+//! `ChannelFlowArn` onto that channel's record in [`crate::state`]. A channel carries at
+//! most ONE channel flow — the wire `Channel` has a single `ChannelFlowArn` and this
+//! operation addresses the association as one sub-resource of the channel (`PUT
+//! /channels/{ChannelArn}/channel-flow`) — so associating a second flow REPLACES the
+//! first, and associating the same one again changes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -183,20 +181,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssociateChannelFlow` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssociateChannelFlowErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssociateChannelFlow"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            AssociateChannelFlowErrorModeled::ServiceFailureException(ServiceFailureException {
+                code: Some("ServiceFailure".to_string()),
+                message: Some("the channel store is unavailable".to_string()),
+            })
+        })?;
+        // The model reserves this action for "administrators or channel moderators", and an
+        // `AppInstanceAdmin` is the Chime SDK Identity service's resource: it is read from
+        // the family's shared directory, never from a copy of this service's own.
+        let directory = crate::state::app_instance_admins(&*self.engine).ok_or_else(|| {
+            AssociateChannelFlowErrorModeled::ServiceFailureException(ServiceFailureException {
+                code: Some("ServiceFailure".to_string()),
+                message: Some("the AppInstanceAdmin directory is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+        // The channel flow's own app instance, read before the channel is taken for
+        // writing so one lookup of each resource serves the whole handler.
+        let flow_app_instance = store
+            .channel_flows
+            .get(&input.channel_flow_arn)
+            .map(|flow| flow.app_instance_arn.clone());
+        // A channel ARN this service cannot resolve names a channel scope the caller
+        // cannot reach, which is this service's one answer for such an ARN.
+        let channel = store
+            .resolve_channel_mut(&input.channel_arn)
+            .map_err(forbidden)?;
+        // Only a moderator of the channel or an administrator of its app instance
+        // associates a channel flow: the flow rewrites how every message to the channel is
+        // processed, which is not a plain member's action.
+        let administers = directory
+            .lock()
+            .administers(&channel.app_instance_arn, &input.chime_bearer);
+        if !administers && !channel.is_moderator(&input.chime_bearer) {
+            return Err(forbidden(crate::state::INSUFFICIENT_ACCESS_MESSAGE));
+        }
+        // The channel flow has to be one this service holds UNDER THE CHANNEL'S APP
+        // INSTANCE: a channel flow processes the messages of channels in its own app
+        // instance, so an ARN naming a flow held elsewhere — or none at all — names a
+        // scope this request cannot resolve, which is what this service answers for an
+        // unresolvable `ChannelFlowArn`.
+        if flow_app_instance.as_deref() != Some(channel.app_instance_arn.as_str()) {
+            return Err(forbidden(crate::state::UNRESOLVABLE_APP_INSTANCE));
+        }
+
+        // One channel, one channel flow: the stored association is REPLACED, so a second
+        // `AssociateChannelFlow` leaves the channel associated with the flow it named and
+        // with no trace of the one before it.
+        channel.channel_flow_arn = Some(input.channel_flow_arn);
+
+        Ok(AssociateChannelFlowOutput)
     }
+}
+
+/// Refuse the request with the modelled 403 and the sentence the refusal owes: this
+/// service answers an ARN it cannot resolve for the caller — a channel's or a channel
+/// flow's — and a caller without the role the action needs with one terminal client error.
+fn forbidden(message: &str) -> AssociateChannelFlowError {
+    AssociateChannelFlowErrorModeled::ForbiddenException(ForbiddenException {
+        code: Some("Forbidden".to_string()),
+        message: Some(message.to_string()),
+    })
+    .into()
 }

@@ -11,6 +11,13 @@
 //! `NotFoundException` either, so that is the terminal client error the service states
 //! for an ARN it cannot resolve for the caller.
 //!
+//! A channel flow a channel is still ASSOCIATED with is not deleted at all: it is refused
+//! with the modelled `ForbiddenException` (HTTP 403, `Code` `Forbidden`) carrying the
+//! sentence Amazon Chime SDK Messaging itself returns for it (observed in the AWS wire
+//! recording this behaviour was implemented against) — not the `ConflictException` this
+//! operation also models. Refusing it is the rule the model states here: this works "only
+//! when the channel flow is not associated with any channel".
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -193,11 +200,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let mut store = state.lock();
-        // The model documents that this works only while the channel flow is associated
-        // with no channel. `AssociateChannelFlow` is still a 501 in this emulator, so no
-        // stored channel can carry an association and that conflict is unreachable — when
-        // associations are served, the `ConflictException` this operation models belongs
-        // here.
+        // The model states this works only while the channel flow is associated with no
+        // channel: a flow any channel still carries is refused rather than deleted, so no
+        // channel is left pointing at a channel flow that is gone. The refusal is the
+        // modelled 403 rather than the `ConflictException` this operation also declares,
+        // because 403 with this sentence is what the service answers for it.
+        if store
+            .channels_with_flow(&input.channel_flow_arn)
+            .next()
+            .is_some()
+        {
+            return Err(DeleteChannelFlowErrorModeled::ForbiddenException(ForbiddenException {
+                code: Some("Forbidden".to_string()),
+                message: Some(crate::state::CHANNEL_FLOW_STILL_ASSOCIATED_MESSAGE.to_string()),
+            })
+            .into());
+        }
         if store.channel_flows.remove(&input.channel_flow_arn).is_none() {
             return Err(DeleteChannelFlowErrorModeled::ForbiddenException(ForbiddenException {
                 code: Some("Forbidden".to_string()),
