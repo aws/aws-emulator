@@ -18,30 +18,32 @@ pub struct GetFunctionCodeSigningConfigInput {
 }
 
 /// `GetFunctionCodeSigningConfigResponse`: the code signing configuration a function is
-/// associated with, and the function holding it — the PAIR that describes one attachment, or
-/// neither member when there is no attachment to describe.
+/// associated with, and the function holding it — the PAIR that describes one attachment, both
+/// members rendered on every answer and both carrying JSON `null` when there is no attachment
+/// to describe.
 ///
-/// Written out rather than generated from the shape because both members carry `@required`,
-/// which the shape derive renders as bare `String`s written on every response, while neither
-/// of them is a fact about a function that holds no association. The two members describe one
-/// attachment together: `CodeSigningConfigArn` is "The Amazon Resource Name (ARN) of the code
-/// signing configuration" and `FunctionName` is the function it covers, and the ARN's own
-/// pattern (`^arn:…:code-signing-config:csc-[a-z0-9]{17}$`, from
-/// `smithy_query(query="shape", shape="CodeSigningConfigArn")`) admits no string that stands
-/// for "none" — the empty string least of all, since it satisfies the pattern no better than
-/// any other non-ARN.
+/// Written out rather than generated from the shape because the derive emits one serialization
+/// arm per member and SKIPS an `Option` that is `None`, which collapses the answer for a
+/// function holding no association to an object with no members at all. This read REPORTS the
+/// association whether or not the function holds one, so each member is present either way and
+/// what says "no association" is its null value — the same way the reserved-concurrency read
+/// beside it answers an unset setting (`GetFunctionConcurrencyOutput`). Everything else about
+/// the shape — the member names, their indices and their JSON types — is what the derive would
+/// have emitted (`smithy_query(query="shape", shape="GetFunctionCodeSigningConfigResponse",
+/// model_path="services/service-com-amazonaws-lambda-awsgirapiservice/smithy-model/com-amazonaws-lambda-awsgirapiservice.json")`).
 ///
-/// So a function that holds an association is reported as that pair, and a function that holds
-/// none is reported with NEITHER member: the absence of the pair is what tells a caller the
-/// function is covered by no code signing at all, which is what AWS answers for such a read.
-/// Reporting the function's name alone would read as "an attachment exists" while withholding
-/// the ARN that attachment is, which is neither answer.
+/// A value is never invented to stand for "none": `CodeSigningConfigArn`'s own pattern
+/// (`^arn:…:code-signing-config:csc-[a-z0-9]{17}$`, from
+/// `smithy_query(query="shape", shape="CodeSigningConfigArn")`) admits no such string — the
+/// empty string least of all — and the `FunctionName` beside it names the function that
+/// configuration covers, so the two are valued together and nulled together.
 #[derive(Debug, Clone, Default)]
 pub struct GetFunctionCodeSigningConfigOutput {
-    /// The configuration the function is associated with, or `None` when it holds none.
+    /// The configuration the function is associated with, rendered as `null` when it holds
+    /// none.
     pub code_signing_config_arn: Option<String>,
-    /// The function the association above covers, or `None` when there is no association to
-    /// report — the two are written together or not at all.
+    /// The function the association above covers, rendered as `null` when there is no
+    /// association to report — the two are valued together or nulled together.
     pub function_name: Option<String>,
 }
 
@@ -93,14 +95,24 @@ impl ::aws_smithy_schema::serde::SerializableStruct for GetFunctionCodeSigningCo
         &self,
         serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
     ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        // The two members describe ONE attachment, so each is written exactly when the
-        // function holds one and the body of a function that holds none carries neither (see
-        // the struct's own documentation).
-        if let Some(arn) = self.code_signing_config_arn.as_ref() {
-            serializer.write_string(&Self::M_CODE_SIGNING_CONFIG_ARN, arn.as_str())?;
+        // Both members are written on every answer: this read reports the association the
+        // function holds, so a function holding none reports it by the members being present
+        // and null rather than by their absence (see the struct's own documentation).
+        match self.code_signing_config_arn.as_ref() {
+            ::std::option::Option::Some(arn) => {
+                serializer.write_string(&Self::M_CODE_SIGNING_CONFIG_ARN, arn.as_str())?;
+            }
+            ::std::option::Option::None => {
+                serializer.write_null(&Self::M_CODE_SIGNING_CONFIG_ARN)?;
+            }
         }
-        if let Some(function_name) = self.function_name.as_ref() {
-            serializer.write_string(&Self::M_FUNCTION_NAME, function_name.as_str())?;
+        match self.function_name.as_ref() {
+            ::std::option::Option::Some(function_name) => {
+                serializer.write_string(&Self::M_FUNCTION_NAME, function_name.as_str())?;
+            }
+            ::std::option::Option::None => {
+                serializer.write_null(&Self::M_FUNCTION_NAME)?;
+            }
         }
         Ok(())
     }

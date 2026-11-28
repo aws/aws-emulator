@@ -29,9 +29,10 @@
 //!    `ListCodeSigningConfigs` alike — while `CreateCodeSigningConfig` ECHOES the
 //!    configuration it was asked for and carries the member only for a request that stated
 //!    one.
-//! 3. `GetFunctionCodeSigningConfig` reports the ATTACHMENT a function holds: the
-//!    configuration ARN beside the name of the function it covers for a function that holds
-//!    an association, and neither of the two members for a function that holds none.
+//! 3. `GetFunctionCodeSigningConfig` reports the ATTACHMENT a function holds: both members
+//!    are rendered on every answer — the configuration ARN beside the name of the function it
+//!    covers for a function that holds an association, and a null each for a function that
+//!    holds none.
 //!
 //! Every row drives real HTTP requests through the router and reads the function or the
 //! configuration back, so a refusal that nevertheless changed the store, or a deployment that
@@ -1005,7 +1006,8 @@ async fn every_code_signing_config_reader_renders_description() {
 }
 
 /// RULE 3: `GetFunctionCodeSigningConfig` reports the ATTACHMENT a function holds as the pair
-/// of members that describes it, and carries neither of them for a function that holds none.
+/// of members that describes it, both members rendered on every answer and both null for a
+/// function that holds none.
 #[tokio::test]
 async fn get_function_code_signing_config_reports_the_association_as_a_whole() {
     let engine = Arc::new(engine::InMemoryEngine::new());
@@ -1031,19 +1033,15 @@ async fn get_function_code_signing_config_reports_the_association_as_a_whole() {
     )
     .await;
 
-    // Each row: the function, and the members its body must carry — the configuration ARN
-    // and the function it covers for a function that holds an attachment, and nothing at all
-    // for one that holds none.
-    let rows: Vec<(&str, &str, Vec<&str>)> = vec![
-        (
-            "a function holding an association",
-            "csc-members-held",
-            vec!["CodeSigningConfigArn", "FunctionName"],
-        ),
-        ("a function holding none", "csc-members-none", Vec::new()),
+    // Each row: the function, and whether the members its body carries are VALUED — the
+    // configuration ARN and the function it covers for a function that holds an attachment,
+    // and a null each for one that holds none. The member set itself is the same either way.
+    let rows: Vec<(&str, &str, bool)> = vec![
+        ("a function holding an association", "csc-members-held", true),
+        ("a function holding none", "csc-members-none", false),
     ];
 
-    for (label, function, expected_members) in rows {
+    for (label, function, attached) in rows {
         let answer = get_association(&router, function).await;
         assert_eq!(
             answer.status,
@@ -1058,18 +1056,17 @@ async fn get_function_code_signing_config_reports_the_association_as_a_whole() {
             .map(|body| body.keys().cloned().collect())
             .unwrap_or_default();
         members.sort();
-        let mut expected: Vec<String> = expected_members
-            .iter()
-            .map(|member| (*member).to_string())
-            .collect();
-        expected.sort();
         assert_eq!(
-            members, expected,
-            "case {label:?}: expected the body to carry exactly {expected:?}, got {}",
+            members,
+            vec![
+                "CodeSigningConfigArn".to_string(),
+                "FunctionName".to_string()
+            ],
+            "case {label:?}: expected the body to carry both modelled members, got {}",
             answer.text()
         );
-        // A 200 carries a JSON object either way: "no attachment" is an object with no
-        // members at all, never a value standing in for one.
+        // A 200 carries a JSON object either way: "no attachment" is the pair of members
+        // rendered null, never a value standing in for one and never an empty object.
         assert!(
             answer.json().is_object(),
             "case {label:?}: expected a JSON object body, got {:?}",
@@ -1079,19 +1076,17 @@ async fn get_function_code_signing_config_reports_the_association_as_a_whole() {
         // reported beside the ARN is the function's own.
         assert_eq!(
             answer.string("FunctionName"),
-            (!expected.is_empty()).then(|| function.to_string()),
+            attached.then(|| function.to_string()),
             "case {label:?}: expected the body to name the function exactly while it \
              reports an attachment covering it, got {}",
             answer.text()
         );
-        if !expected.is_empty() {
-            assert_eq!(
-                answer.string("CodeSigningConfigArn"),
-                Some(config.clone()),
-                "case {label:?}: expected the stored association, got {}",
-                answer.text()
-            );
-        }
+        assert_eq!(
+            answer.string("CodeSigningConfigArn"),
+            attached.then(|| config.clone()),
+            "case {label:?}: expected the stored association, got {}",
+            answer.text()
+        );
     }
 }
 

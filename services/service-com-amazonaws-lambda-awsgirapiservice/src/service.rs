@@ -108,7 +108,8 @@ use smithy_server_runtime::{
 use std::sync::Arc;
 
 /// WHY a read of a function's code-signing association that finds none still answers a
-/// 200, and why that answer carries no member at all; see the module's own header.
+/// 200, and why that answer still carries both of the read's members; see the module's own
+/// header.
 mod absent_association;
 
 /// The DATA leg of this front door: which of this service's calls CloudTrail records as data

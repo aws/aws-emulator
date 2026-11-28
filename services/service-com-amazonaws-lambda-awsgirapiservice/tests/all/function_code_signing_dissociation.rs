@@ -207,8 +207,9 @@ async fn associate(case: &str, router: &MultiServiceRouter, reference: &str, con
 ///
 /// The function existing is what the call reports on, so every answer is a 200; and what the
 /// body carries is the PAIR of members that describes the attachment the function holds — the
-/// configuration's ARN and the function it covers — or neither of them for a function that
-/// holds none, never an empty or otherwise non-conforming value standing in for "none".
+/// configuration's ARN and the function it covers — both members rendered on every answer and
+/// both null for a function that holds none, never an empty or otherwise non-conforming value
+/// standing in for "none".
 async fn reported(
     case: &str,
     router: &MultiServiceRouter,
@@ -226,15 +227,25 @@ async fn reported(
     let arn = answer.string("CodeSigningConfigArn");
     assert!(
         !arn.as_deref().is_some_and(str::is_empty),
-        "case {case:?}: GetFunctionCodeSigningConfig on {reference:?} must omit \
+        "case {case:?}: GetFunctionCodeSigningConfig on {reference:?} must render a null \
          CodeSigningConfigArn rather than report a value its own pattern does not admit, \
          got {}",
         answer.text()
     );
-    assert_eq!(
+    assert!(
         answer.has("CodeSigningConfigArn"),
-        arn.is_some(),
-        "case {case:?}: a CodeSigningConfigArn that is present must be a string, got {}",
+        "case {case:?}: the CodeSigningConfigArn member is rendered whether or not an \
+         attachment is held, got {}",
+        answer.text()
+    );
+    // Rendered either as the ARN string or as JSON null — never as another JSON type
+    // standing in for "none".
+    assert!(
+        answer
+            .json()
+            .get("CodeSigningConfigArn")
+            .is_some_and(|member| member.is_string() || member.is_null()),
+        "case {case:?}: a rendered CodeSigningConfigArn is a string or null, got {}",
         answer.text()
     );
     assert_eq!(
@@ -583,10 +594,11 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
              dissociation, got {after:?}"
         );
         let raw = get_association(&router, &reference).await;
-        assert!(
-            !raw.has("CodeSigningConfigArn"),
-            "case {label:?}: the body must carry no CodeSigningConfigArn member after the \
-             dissociation, got {}",
+        assert_eq!(
+            raw.json().get("CodeSigningConfigArn"),
+            Some(&Value::Null),
+            "case {label:?}: the body must carry a null CodeSigningConfigArn member after \
+             the dissociation, got {}",
             raw.text()
         );
         let expected_after: Vec<String> = expected_before
@@ -688,19 +700,21 @@ async fn a_function_holding_no_config_reports_none_however_it_came_to_hold_none(
              {held:?}"
         );
         let answer = get_association(&router, function).await;
-        assert!(
-            !answer.has("CodeSigningConfigArn"),
-            "case {function:?}: the body must carry no CodeSigningConfigArn member, got {}",
+        assert_eq!(
+            answer.json().get("CodeSigningConfigArn"),
+            Some(&Value::Null),
+            "case {function:?}: the body must carry a null CodeSigningConfigArn member, got \
+             {}",
             answer.text()
         );
         // It is a REPORT of the function, not a refusal: the status is the operation's own
-        // 200, and with no attachment to describe the body carries neither member of the
-        // pair that would describe one.
+        // 200, and with no attachment to describe both members of the pair that would
+        // describe one are rendered null.
         assert_eq!(
-            (answer.status, answer.string("FunctionName")),
-            (200, None),
-            "case {function:?}: expected a 200 carrying neither member of the attachment \
-             pair, got {} {}",
+            (answer.status, answer.json().get("FunctionName")),
+            (200, Some(&Value::Null)),
+            "case {function:?}: expected a 200 carrying both members of the attachment \
+             pair as nulls, got {} {}",
             answer.status,
             answer.text()
         );
