@@ -681,13 +681,22 @@ impl Session {
     /// The `originatingRequestId` is the SESSION's, not one turn's: it is minted
     /// with the conversation and reported for as long as it lives, so a request
     /// that carries none leaves the one the session already holds in place.
+    ///
+    /// `activeContexts` is the session's too, and the member says what an
+    /// omitted one means: "If you don't specify a list of contexts, Amazon Lex
+    /// V2 will use the current list of contexts for the session. If you specify
+    /// an empty list, all contexts for the session are cleared." An absent
+    /// member and an empty list are therefore two different instructions — keep
+    /// what the conversation holds, with the time and turn budgets it has spent
+    /// so far, versus clear it — and only a request that carries the member
+    /// touches the contexts at all.
     pub fn replace_session_state(
         &mut self,
         supplied: SessionState,
         now: SystemTime,
         locale: &bot_model::BotLocaleModel,
     ) {
-        let active_contexts = supplied.active_contexts.clone().unwrap_or_default();
+        let active_contexts = supplied.active_contexts.clone();
         if let Some(originating_request_id) = supplied.originating_request_id.clone() {
             self.originating_request_id = originating_request_id;
         }
@@ -701,7 +710,9 @@ impl Session {
         // an earlier turn of it produced: what the session is interpreted as is
         // the dialog it now holds.
         self.interpretations = interpretations;
-        self.set_active_contexts(active_contexts, now);
+        if let Some(active_contexts) = active_contexts {
+            self.set_active_contexts(active_contexts, now);
+        }
     }
 
     /// Merge a dialog state a caller supplied alongside an utterance, as
