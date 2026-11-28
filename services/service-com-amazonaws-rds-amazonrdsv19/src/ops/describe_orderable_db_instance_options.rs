@@ -1761,29 +1761,6 @@ fn to_wire(
             },
             |capabilities| capabilities.http_endpoint,
         )),
-        // Optimized reads, optimized writes and the custom-processor-feature requirement are
-        // members AWS reports on EVERY orderable option (each one's own documentation on
-        // `OrderableDBInstanceOption` says so), so they are answered for this door's own
-        // engines too rather than left absent:
-        //
-        // * Optimized Reads places temporary objects on the instance's LOCAL NVMe SSD
-        //   storage, so it is offered on the general-purpose and memory-optimized classes
-        //   that have one ([`offers_optimized_reads`]);
-        // * Optimized Writes is the MySQL-compatible RDS engines' atomic-write capability
-        //   ([`offers_optimized_writes`]); and
-        // * no class this door publishes has to have its processor features named at order
-        //   time, so the requirement is reported false.
-        supports_optimized_reads: Some(docdb.map_or_else(
-            || offers_optimized_reads(engine, &class.name),
-            |capabilities| capabilities.optimized_reads,
-        )),
-        supports_optimized_writes: Some(docdb.map_or_else(
-            || offers_optimized_writes(engine, class),
-            |capabilities| capabilities.optimized_writes,
-        )),
-        requires_custom_processor_features: Some(
-            docdb.is_some_and(|capabilities| capabilities.requires_custom_processor_features),
-        ),
         ..Default::default()
     }
 }
@@ -1829,10 +1806,10 @@ fn class_family_purpose(name: &str) -> &str {
 /// compute-intensive capabilities on: GENERAL PURPOSE (`m`) and MEMORY OPTIMIZED (`r`, `x`,
 /// `z`).
 ///
-/// Those capabilities — Multi-AZ DB clusters, Optimized Reads and Optimized Writes — publish
-/// their supported classes as whole FAMILIES of those two purposes and never as a burstable
-/// (`t`) or compute-optimized (`c`) family, whose shared or compute-weighted hosts they are
-/// not offered on.
+/// Those capabilities — Multi-AZ DB clusters and the storage features published the same
+/// way — publish their supported classes as whole FAMILIES of those two purposes and never
+/// as a burstable (`t`) or compute-optimized (`c`) family, whose shared or compute-weighted
+/// hosts they are not offered on.
 const CAPABLE_CLASS_FAMILY_PURPOSES: [&str; 4] = ["m", "r", "x", "z"];
 
 /// Whether `name` is a general-purpose or memory-optimized class
@@ -1857,40 +1834,6 @@ fn offers_multi_az_db_clusters(engine: &str, class_name: &str) -> bool {
     matches!(engine, "mysql" | "postgres")
         && class_is_general_purpose_or_memory_optimized(class_name)
         && class_has_local_nvme_storage(class_name)
-}
-
-/// Whether an option of `engine` on `class` reports Optimized Reads.
-///
-/// The feature places a query's temporary objects on the instance's LOCAL NVMe SSD storage
-/// ([`class_has_local_nvme_storage`]), so it is offered on a class that HAS one, for an
-/// engine whose DB INSTANCE owns its storage. Which classes those are is published as the
-/// general-purpose and memory-optimized families with that storage
-/// ([`class_is_general_purpose_or_memory_optimized`]) — the `d` generations of the `m`, `r`
-/// and `x` families — and not the compute-optimized ones, whose local storage the feature is
-/// not published on. An engine whose CLUSTER manages the storage offers it on no class at all
-/// — a cluster member's temporary objects are not placed on the host it happens to run on —
-/// which is what the recorded options of the two cluster control planes this door serves
-/// report for every class they publish, the local-NVMe classes of the graph engine's own
-/// class list included.
-fn offers_optimized_reads(engine: &str, class_name: &str) -> bool {
-    !is_cluster_engine(engine)
-        && class_is_general_purpose_or_memory_optimized(class_name)
-        && class_has_local_nvme_storage(class_name)
-}
-
-/// Whether an option of `engine` on `class` reports Optimized Writes.
-///
-/// Amazon RDS Optimized Writes is the MySQL-compatible engines' atomic-write capability: it
-/// is published for Amazon RDS for MySQL and Amazon RDS for MariaDB — the engines that run
-/// the storage engine whose double-write buffer it replaces — on the general-purpose and
-/// memory-optimized classes, whose hosts carry the torn-write protection it is built on, and
-/// on neither the burstable classes nor the compute-optimized ones
-/// ([`class_is_general_purpose_or_memory_optimized`]). No other engine of this door publishes
-/// it.
-fn offers_optimized_writes(engine: &str, class: &InstanceClass) -> bool {
-    matches!(engine, "mysql" | "mariadb")
-        && !class.burstable
-        && class_is_general_purpose_or_memory_optimized(&class.name)
 }
 
 /// `SupportedNetworkTypes` of an option of this door's own engines: the value list

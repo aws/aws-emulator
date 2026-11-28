@@ -324,7 +324,6 @@ const ALWAYS_PROJECTED: &[&str] = &[
     "UpgradeRolloutOrder",
     "PendingModifiedValues",
     "VPCNetworkingEnabled",
-    "HttpEndpointEnabled",
     "MultiAZ",
     "EngineVersion",
     "AutoMinorVersionUpgrade",
@@ -384,10 +383,8 @@ const DEFAULTS: &[(&str, &str)] = &[
     // provisioned none.
     ("StorageType", "gp2"),
     ("StorageThroughput", "0"),
-    // Every DB instance runs inside a virtual private cloud, and none of them has an HTTP
-    // endpoint: that endpoint is a DB CLUSTER's.
+    // Every DB instance runs inside a virtual private cloud.
     ("VPCNetworkingEnabled", "true"),
-    ("HttpEndpointEnabled", "false"),
     // An instance that belongs to no DB cluster has no cluster-member port.
     ("DbInstancePort", "0"),
 ];

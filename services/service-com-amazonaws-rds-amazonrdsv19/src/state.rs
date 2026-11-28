@@ -1534,15 +1534,6 @@ impl ComAmazonawsRdsAmazonrdsv19State {
                         .map(|instance| instance.identifier.clone()),
                 )
                 .collect(),
-            // The global database cluster the cluster belongs to, read from that global
-            // cluster's own record: the cluster stores only its identifier, and the
-            // immutable id the envelope reports beside it is the one that record carries,
-            // so the two cannot name different global clusters.
-            global_cluster_resource_id: record
-                .global_cluster_identifier
-                .as_ref()
-                .and_then(|identifier| self.global_clusters.get(identifier))
-                .map(|global| global.resource_id.clone()),
             // "backing-up — the DB cluster is currently being backed up": a backup of this
             // cluster is in flight exactly while a snapshot OF it is still being taken, so
             // it is read off those snapshot records — as the members above are read off the
@@ -4057,15 +4048,6 @@ pub const GP3_BASELINE_STORAGE_THROUGHPUT: i32 = 125;
 /// stream on reports, and the one a stream whose stop has come due leaves behind
 /// ([`ActivityStream`]).
 pub const ACTIVITY_STREAM_STOPPED: &str = "stopped";
-
-/// `DocdbAnalyticsEnabled` for a cluster created without the Amazon DocumentDB analytics
-/// capability: no member of any `CreateDBCluster` this front door serves turns it on, so a
-/// cluster this service holds never has it.
-pub const DEFAULT_DOCDB_ANALYTICS_ENABLED: bool = false;
-
-/// `CustomDataGroupPresent` for a cluster created without a custom data group: no member of
-/// any `CreateDBCluster` this front door serves supplies one.
-pub const DEFAULT_CUSTOM_DATA_GROUP_PRESENT: bool = false;
 
 /// `AutoMinorVersionUpgrade` for a cluster whose request named nothing, for the engines the
 /// member applies to: `CreateDBClusterMessage$AutoMinorVersionUpgrade` — "By default, minor

@@ -436,11 +436,6 @@ async fn each_resource_kind_starts_its_stream_reads_it_back_and_stops_it() {
             "ActivityStreamKinesisStreamName",
             &expected_kinesis,
         );
-        if row.kind == Kind::Cluster {
-            // The cluster envelope of this front door carries the status under a member name
-            // of its own as well, and the two always agree.
-            assert_member(case, &running, "DBActivityStreamStatus", STARTED);
-        }
         let reported_audit = optional_text(
             &running,
             "ActivityStreamEngineNativeAuditFieldsIncluded",

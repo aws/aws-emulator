@@ -18,11 +18,6 @@ pub struct ClusterMembership {
     pub read_replica_identifiers: Vec<String>,
     /// `MultiAZ`: whether the member instances sit in more than one Availability Zone.
     pub multi_az: bool,
-    /// The immutable resource id of the global database cluster the cluster belongs to,
-    /// read from that global cluster's own record — `None` for a cluster that belongs to
-    /// none. Read rather than copied onto the cluster, for the same reason its members are:
-    /// a copy would still name a global cluster the cluster was removed from.
-    pub global_cluster_resource_id: Option<String>,
     /// Whether a backup of the cluster is in flight — a snapshot OF it is still being taken
     /// — which is the `backing-up` status the cluster reports while it lasts; see
     /// [`DbClusterRecord::reported_status`].
@@ -1110,11 +1105,6 @@ impl DbClusterRecord {
                     .collect(),
             ),
             global_cluster_identifier: self.global_cluster_identifier.clone(),
-            // `GlobalClusterResourceId`: the immutable id of the global database cluster
-            // this one is a member of, resolved through that membership
-            // ([`ClusterMembership::global_cluster_resource_id`]) so the name and the id
-            // the envelope carries always describe the same global cluster.
-            global_cluster_resource_id: membership.global_cluster_resource_id.clone(),
             global_write_forwarding_requested: Some(self.global_write_forwarding_requested),
             local_write_forwarding_status: Some(
                 if self.local_write_forwarding_enabled {
@@ -1148,7 +1138,6 @@ impl DbClusterRecord {
             // under a member name of its own as well, for a cluster of EVERY engine it
             // serves, so the one status is reported under both names.
             activity_stream_status: Some(self.activity_stream_status().to_string()),
-            db_activity_stream_status: Some(self.activity_stream_status().to_string()),
             activity_stream_mode: activity_stream.as_ref().map(|stream| stream.mode.clone()),
             activity_stream_kms_key_id: activity_stream
                 .as_ref()
@@ -1159,8 +1148,6 @@ impl DbClusterRecord {
             // The two capability flags the recorded envelope carries on every cluster this
             // front door reports, whatever its engine: neither capability is turned on for
             // a cluster created here, which is what reporting them `false` says.
-            docdb_analytics_enabled: Some(DEFAULT_DOCDB_ANALYTICS_ENABLED),
-            custom_data_group_present: Some(DEFAULT_CUSTOM_DATA_GROUP_PRESENT),
             // "Indicates whether the DB cluster is a clone of a DB cluster owned by a
             // different Amazon Web Services account": nothing here clones one.
             cross_account_clone: Some(false),

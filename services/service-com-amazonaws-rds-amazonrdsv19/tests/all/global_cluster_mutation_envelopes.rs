@@ -260,7 +260,7 @@ async fn drive_mutation(router: &MultiServiceRouter, row: &EnvelopeCase) -> Vec<
             vec![upgrading, settled]
         }
         Mutation::MemberJoinedThenRemoved(cluster) => {
-            let joined = expect_ok(
+            expect_ok(
                 case,
                 call(
                     router,
@@ -274,6 +274,10 @@ async fn drive_mutation(router: &MultiServiceRouter, row: &EnvelopeCase) -> Vec<
                 )
                 .await,
             );
+            // The global database's own envelope once the member has joined it: the
+            // membership is the global database's, so its envelope is the one that reports
+            // the join.
+            let joined = poll_until_available(router, case, row.stored_as).await;
             let member_arn = db_cluster_arn(cluster);
             let detached = expect_ok(
                 case,

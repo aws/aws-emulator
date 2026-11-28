@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! End-to-end tests for the global-database membership a `DBCluster` envelope reports: the
-//! IDENTIFIER of the global database a cluster belongs to and the immutable RESOURCE ID of
-//! that same global database, reported side by side.
+//! IDENTIFIER of the global database a cluster belongs to, beside the immutable RESOURCE ID
+//! that same global database publishes for itself.
 //!
 //! Every call goes over the wire through `db_instances::emulator`, the one mounting helper
 //! this test target has, as a real awsQuery form POST carrying the SigV4 credential scope
 //! the router keys on, so every assertion reads the XML the emulator itself produced.
 //!
-//! The rule under test: a cluster that belongs to a global database reports that global
-//! database's own immutable resource id, read from the global database's record, wherever a
-//! cluster envelope is reported — the create that minted the cluster and every later read —
-//! and a cluster that belongs to none reports no such member at all. So the id a cluster
-//! reports is always the one `DescribeGlobalClusters` reports for the global database it
-//! names, it does not move between reads, and it appears and disappears exactly as the
-//! membership itself does.
+//! The rule under test: a cluster that belongs to a global database names that global
+//! database wherever a cluster envelope is reported — the create that minted the cluster and
+//! every later read — and a cluster that belongs to none names none at all. The membership
+//! is read from the global database's own record, so it does not move between reads and it
+//! appears and disappears exactly as the membership itself does, while the global database
+//! keeps the immutable resource id it publishes for itself throughout.
 //!
 //! The table spans what the rule generalises over: both ways a cluster becomes a member (a
 //! create that names the global database, and a later `CreateGlobalCluster` that adopts a
@@ -131,12 +130,9 @@ async fn global_resource_id(
     optional_text(&body, "GlobalClusterResourceId")
 }
 
-/// The `GlobalClusterIdentifier` and `GlobalClusterResourceId` one cluster envelope carries.
-fn membership(cluster: &str) -> (Option<String>, Option<String>) {
-    (
-        optional_text(cluster, "GlobalClusterIdentifier"),
-        optional_text(cluster, "GlobalClusterResourceId"),
-    )
+/// The `GlobalClusterIdentifier` one cluster envelope carries.
+fn membership(cluster: &str) -> Option<String> {
+    optional_text(cluster, "GlobalClusterIdentifier")
 }
 
 /// The cluster of one row, created and joined as the row says, with the envelope the create
@@ -200,9 +196,9 @@ async fn provision(
     (created, expected)
 }
 
-/// A cluster reports the resource id of the global database it belongs to — the id that
-/// global database reports for itself — and a cluster that belongs to none reports no such
-/// member. The create's envelope and every later read answer the same.
+/// A cluster names the global database it belongs to, and a cluster that belongs to none
+/// names nothing. The create's envelope and every later read answer the same, while the
+/// global database publishes an immutable resource id of its own.
 #[tokio::test]
 async fn a_member_cluster_reports_its_global_databases_resource_id() {
     let router = emulator();
@@ -215,8 +211,8 @@ async fn a_member_cluster_reports_its_global_databases_resource_id() {
         if member {
             assert!(
                 published.as_ref().is_some_and(|id| !id.is_empty()),
-                "case {case:?}: the global database must report a resource id of its own for \
-                 a member cluster to report, got {published:?}"
+                "case {case:?}: the global database a cluster joined must publish a resource \
+                 id of its own, got {published:?}"
             );
         }
 
@@ -224,12 +220,7 @@ async fn a_member_cluster_reports_its_global_databases_resource_id() {
         // reports it from the adoption onwards, so the create's own envelope is asserted
         // only where the create itself carried the membership.
         if matches!(row.joined, Joined::ByCreate) {
-            let (identifier, resource_id) = membership(&created);
-            assert_eq!(
-                resource_id, published,
-                "case {case:?}: the create's envelope must report the global database's own \
-                 resource id, got {resource_id:?}"
-            );
+            let identifier = membership(&created);
             assert_eq!(
                 identifier.as_deref(),
                 row.global,
@@ -238,16 +229,11 @@ async fn a_member_cluster_reports_its_global_databases_resource_id() {
             );
         }
 
-        // And every read of the cluster reports the same pair, twice over: the id is a fact
-        // about the membership, not something a read mints.
+        // And every read of the cluster reports the same membership, twice over: it is a
+        // fact about the global database's record, not something a read mints.
         for attempt in 1..=2 {
             let read = describe_one(&router, case, row.cluster).await;
-            let (identifier, resource_id) = membership(&read);
-            assert_eq!(
-                resource_id, published,
-                "case {case:?} read {attempt}: expected the global database's own resource \
-                 id {published:?}, got {resource_id:?}"
-            );
+            let identifier = membership(&read);
             assert_eq!(
                 identifier.as_deref(),
                 row.global.filter(|_| member),
@@ -259,9 +245,8 @@ async fn a_member_cluster_reports_its_global_databases_resource_id() {
     }
 }
 
-/// The member a detach removes stops reporting the global database AND its resource id: the
-/// pair follows the membership itself rather than being copied onto the cluster when it was
-/// created.
+/// The member a detach removes stops naming the global database: the membership is read from
+/// the global database's own record rather than copied onto the cluster when it was created.
 #[tokio::test]
 async fn a_detached_cluster_reports_neither_half_of_the_membership() {
     let router = emulator();
@@ -298,11 +283,16 @@ async fn a_detached_cluster_reports_neither_half_of_the_membership() {
     );
 
     let published = global_resource_id(&router, case, global).await;
+    assert!(
+        published.as_ref().is_some_and(|id| !id.is_empty()),
+        "case {case:?}: the global database publishes a resource id of its own, got \
+         {published:?}"
+    );
     let joined = membership(&describe_one(&router, case, cluster).await);
     assert_eq!(
-        joined,
-        (Some(global.to_string()), published.clone()),
-        "case {case:?}: a member reports both halves of the membership, got {joined:?}"
+        joined.as_deref(),
+        Some(global),
+        "case {case:?}: a member names the global database it belongs to, got {joined:?}"
     );
 
     expect_ok(
@@ -320,10 +310,9 @@ async fn a_detached_cluster_reports_neither_half_of_the_membership() {
 
     let detached = membership(&describe_one(&router, case, cluster).await);
     assert_eq!(
-        detached,
-        (None, None),
-        "case {case:?}: a detached cluster belongs to no global database, so it reports \
-         neither its identifier nor its resource id, got {detached:?}"
+        detached, None,
+        "case {case:?}: a detached cluster belongs to no global database, so it names none, \
+         got {detached:?}"
     );
 
     // The global database itself still carries the id it always had: the detach changed the
@@ -335,8 +324,8 @@ async fn a_detached_cluster_reports_neither_half_of_the_membership() {
     );
 }
 
-/// Two clusters in the SAME global database report one and the same resource id, and a
-/// cluster in another global database reports that other global database's id: the id
+/// Two clusters in the SAME global database name one and the same global database, and a
+/// cluster in another one names that other: the resource id each global database publishes
 /// identifies the global database, not the cluster.
 #[tokio::test]
 async fn the_reported_id_identifies_the_global_database_and_not_the_cluster() {
@@ -383,26 +372,28 @@ async fn the_reported_id_identifies_the_global_database_and_not_the_cluster() {
                 .await,
             ),
         );
-        reported.push((cluster, global, text(&created, "GlobalClusterResourceId")));
+        assert_eq!(
+            text(&created, "GlobalClusterIdentifier"),
+            global,
+            "case {case:?}: {cluster} must name the global database it was created into, got \
+             {created}"
+        );
+        let published = global_resource_id(&router, case, global)
+            .await
+            .unwrap_or_else(|| {
+                panic!("case {case:?}: {global} must publish a resource id of its own")
+            });
+        reported.push((cluster, global, published));
     }
 
     assert_eq!(
         reported[0].2, reported[1].2,
-        "case {case:?}: two members of one global database report one id, got {:?} and {:?}",
+        "case {case:?}: two members of one global database read one id, got {:?} and {:?}",
         reported[0], reported[1]
     );
     assert_ne!(
         reported[1].2, reported[2].2,
-        "case {case:?}: members of two global databases report two ids, got {:?} and {:?}",
+        "case {case:?}: members of two global databases read two ids, got {:?} and {:?}",
         reported[1], reported[2]
     );
-    for (cluster, global, id) in &reported {
-        let published = global_resource_id(&router, case, global).await;
-        assert_eq!(
-            published.as_deref(),
-            Some(id.as_str()),
-            "case {case:?}: {cluster} must report the id {global} publishes for itself, got \
-             {id:?} against {published:?}"
-        );
-    }
 }

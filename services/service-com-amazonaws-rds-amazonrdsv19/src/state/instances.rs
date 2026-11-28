@@ -1052,17 +1052,6 @@ impl DbInstanceRecord {
         db_cluster.is_none_or(|cluster| cluster.vpc_networking_enabled)
     }
 
-    /// `HttpEndpointEnabled`: whether an HTTP endpoint answers for the instance.
-    ///
-    /// The HTTP endpoint is the RDS Data API, and `EnableHttpEndpoint` is a DB CLUSTER
-    /// setting (`ModifyDBCluster$EnableHttpEndpoint`, `EnableHttpEndpoint`/
-    /// `DisableHttpEndpoint`): no operation enables one for a DB instance. So a member of a
-    /// cluster reports whether that cluster's endpoint answers, and an instance that belongs
-    /// to no cluster has no HTTP endpoint at all.
-    pub fn http_endpoint_enabled(&self, db_cluster: Option<&DbClusterRecord>) -> bool {
-        db_cluster.is_some_and(|cluster| cluster.http_endpoint_enabled)
-    }
-
     /// `StorageEncryptionType`: how the data at rest of this instance is protected, or
     /// `None` for an instance whose data at rest is not encrypted, which reports no type.
     ///
@@ -1272,12 +1261,10 @@ impl DbInstanceRecord {
                 || self.allocated_storage,
                 |managed| managed.allocated_storage.or(self.allocated_storage),
             ),
-            // Whether the instance runs in a virtual private cloud, and whether an HTTP
-            // endpoint answers for it: reported for every instance, each read off the
-            // network and the endpoint the instance actually has
-            // ([`Self::vpc_networking_enabled`], [`Self::http_endpoint_enabled`]).
+            // Whether the instance runs in a virtual private cloud: reported for every
+            // instance, read off the network the instance actually has
+            // ([`Self::vpc_networking_enabled`]).
             vpc_networking_enabled: Some(self.vpc_networking_enabled(db_cluster)),
-            http_endpoint_enabled: Some(self.http_endpoint_enabled(db_cluster)),
             instance_create_time: Some(self.instance_create_time),
             preferred_backup_window: self.preferred_backup_window.clone(),
             backup_retention_period: Some(self.backup_retention_period),

@@ -18,6 +18,7 @@ pub struct DeleteDBClusterInput {
     pub skip_final_snapshot: Option<bool>,
     pub final_db_snapshot_identifier: Option<String>,
     pub delete_automated_backups: Option<bool>,
+    pub delete_db_instances: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DeleteDBClusterResult")]

@@ -486,8 +486,7 @@ pub async fn capture_instance_storage(
 }
 
 /// The full size of the data a captured copy holds, summed OFF the runtime's worker
-/// threads and before the caller takes the store lock — `FullSnapshotSizeInBytes` for the
-/// snapshot that copy belongs to ([`snapshot_data_bytes`]).
+/// threads and before the caller takes the store lock ([`snapshot_data_bytes`]).
 ///
 /// Summed exactly once, where the copy is taken: the copy never changes afterwards, so the
 /// snapshot's record keeps the answer and no later read of that snapshot re-reads its data.

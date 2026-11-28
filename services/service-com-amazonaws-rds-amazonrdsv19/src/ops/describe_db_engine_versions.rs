@@ -24,17 +24,13 @@
 //! family whose versions are ONLY ever CEVs and which the catalogue operations list no
 //! valid value for.
 //!
-//! An engine-version entry carries every member Amazon RDS reports for that version, which
-//! is MORE than the shipped `DBEngineVersion` shape declared: RDS also reports a version's
-//! `MinorEngineVersion` and the `SupportsRDSProxy`, `SupportsCluster` and
-//! `SupportsDataGroups` capability flags on every entry, and `SupportsEnhancedBinlog` and
-//! `SupportsChangeDataCaptureStreams` on an Aurora entry. The framework serializes the
-//! members this service's model declares, so those six are declared on
-//! `com.amazonaws.rds#DBEngineVersion` in `smithy-model/` — additively, leaving every
-//! member and trait the model already carried untouched — and projected from the same
-//! per-version catalogue every other capability member is read from. They are reported by
-//! every operation that answers with a `DBEngineVersion`, this one and the three custom
-//! engine version operations, because one projection serves all four.
+//! An engine-version entry carries every member the service's model declares on
+//! `com.amazonaws.rds#DBEngineVersion`, and only those: the framework serializes the
+//! modelled member set, so a capability the model does not declare is not part of this
+//! report. Each declared member is projected from the same per-version catalogue, by one
+//! projection shared by every operation that answers with a `DBEngineVersion` — this one
+//! and the three custom engine version operations — so the four cannot disagree about a
+//! version.
 //!
 //! ## Shape of an operation
 //!
@@ -487,32 +483,6 @@ pub(crate) struct VersionProfile {
     pub(crate) supports_integrations: bool,
     /// `SupportsCertificateRotationWithoutRestart`.
     pub(crate) supports_certificate_rotation_without_restart: bool,
-    /// `SupportsRDSProxy` — whether a DB proxy can front a DB instance or cluster of this
-    /// version. The engines a proxy serves are the ones "Using Amazon RDS Proxy" (Amazon
-    /// RDS User Guide) names: RDS for MariaDB, Microsoft SQL Server, MySQL and PostgreSQL,
-    /// and Aurora MySQL and Aurora PostgreSQL. Reported on every entry, because a client
-    /// reads it before `CreateDBProxy` against a version.
-    pub(crate) supports_rds_proxy: bool,
-    /// `SupportsCluster`.
-    ///
-    /// No published source names a version this is offered on — it is not the Multi-AZ DB
-    /// cluster capability, which an orderable DB instance option reports through its own
-    /// `SupportsClusters` member and which the recorded wire reports as absent here even
-    /// for the MySQL 8.0 versions that do offer it — so no profile below claims it and
-    /// every entry reports it unsupported rather than omitting the member. A version that
-    /// gains it claims it in its own profile, exactly like every other flag here.
-    pub(crate) supports_cluster: bool,
-    /// `SupportsDataGroups`. Claimed for no version, for the same reason as
-    /// [`VersionProfile::supports_cluster`]: nothing AWS publishes names a version that
-    /// offers it.
-    pub(crate) supports_data_groups: bool,
-    /// `SupportsEnhancedBinlog` — enhanced binary log replication, which "Setting up
-    /// Aurora MySQL enhanced binary log" (Amazon Aurora User Guide) offers from Aurora
-    /// MySQL version 3.03.1 on. An engine with no binary log reports it unsupported.
-    pub(crate) supports_enhanced_binlog: bool,
-    /// `SupportsChangeDataCaptureStreams`. Claimed for no version, for the same reason as
-    /// [`VersionProfile::supports_cluster`].
-    pub(crate) supports_change_data_capture_streams: bool,
 }
 
 impl VersionProfile {
@@ -534,11 +504,6 @@ impl VersionProfile {
             supports_local_write_forwarding: false,
             supports_integrations: false,
             supports_certificate_rotation_without_restart: false,
-            supports_rds_proxy: false,
-            supports_cluster: false,
-            supports_data_groups: false,
-            supports_enhanced_binlog: false,
-            supports_change_data_capture_streams: false,
         }
     }
 
@@ -624,18 +589,6 @@ impl VersionProfile {
         self.supports_integrations = true;
         self
     }
-
-    /// A DB proxy can front a DB instance or cluster of this version.
-    const fn rds_proxy(mut self) -> Self {
-        self.supports_rds_proxy = true;
-        self
-    }
-
-    /// This version runs enhanced binary log replication.
-    const fn enhanced_binlog(mut self) -> Self {
-        self.supports_enhanced_binlog = true;
-        self
-    }
 }
 
 /// The `SupportedFeatureNames` of an RDS for MySQL or MariaDB version: NONE.
@@ -691,7 +644,7 @@ const SQLSERVER_FEATURE_NAMES: &[&str] = &["S3_INTEGRATION", "SQLSERVER_BACKUP_R
 // The version profiles: one per (engine family, capability generation)
 // ---------------------------------------------------------------------------
 
-/// RDS for MySQL 5.7: read replicas and a DB proxy, and no S3 integration feature.
+/// RDS for MySQL 5.7: read replicas, and no S3 integration feature.
 ///
 /// The zero-ETL integration members arrived with 8.0, so a 5.7 version reports none — and
 /// so did rotating the server certificate without rebooting the DB instance, which this
@@ -699,7 +652,6 @@ const SQLSERVER_FEATURE_NAMES: &[&str] = &["S3_INTEGRATION", "SQLSERVER_BACKUP_R
 /// instance cannot take without a restart.
 const MYSQL_5_7: VersionProfile = VersionProfile::provisioned()
     .read_replica()
-    .rds_proxy()
     .features(NO_FEATURE_NAMES);
 
 /// RDS for MySQL 8.0 builds from BEFORE the generation that added the zero-ETL
@@ -721,14 +673,12 @@ const MYSQL_8: VersionProfile = MYSQL_5_7
 /// RDS for MariaDB: read replicas, and no S3 or Lambda integration feature.
 const MARIADB: VersionProfile = VersionProfile::provisioned()
     .read_replica()
-    .certificate_rotation_without_restart()
-    .rds_proxy();
+    .certificate_rotation_without_restart();
 
 /// RDS for PostgreSQL: read replicas and the S3 and Lambda features.
 const POSTGRES: VersionProfile = VersionProfile::provisioned()
     .read_replica()
     .certificate_rotation_without_restart()
-    .rds_proxy()
     .features(POSTGRESQL_FEATURE_NAMES);
 
 /// RDS for Oracle Enterprise Edition, which serves a read replica. Oracle and SQL Server
@@ -744,12 +694,11 @@ const ORACLE_SE2: VersionProfile = VersionProfile::provisioned().features(ORACLE
 /// A Microsoft SQL Server edition that serves a read replica (Enterprise and Standard).
 const SQLSERVER_WITH_REPLICA: VersionProfile = VersionProfile::provisioned()
     .read_replica()
-    .rds_proxy()
     .features(SQLSERVER_FEATURE_NAMES);
 
 /// A Microsoft SQL Server edition that serves none (Express, Web and Developer).
 const SQLSERVER: VersionProfile =
-    VersionProfile::provisioned().rds_proxy().features(SQLSERVER_FEATURE_NAMES);
+    VersionProfile::provisioned().features(SQLSERVER_FEATURE_NAMES);
 
 /// An RDS Custom for SQL Server engine version — an AWS-provided custom engine version.
 ///
@@ -888,7 +837,6 @@ const AURORA_MYSQL_5_7: VersionProfile = VersionProfile::provisioned()
     .global_databases()
     .parallel_query()
     .certificate_rotation_without_restart()
-    .rds_proxy()
     .features(AURORA_MYSQL_FEATURE_NAMES);
 
 /// An Aurora MySQL 2 version that also runs Aurora Serverless v1. A Serverless v1 cluster
@@ -896,12 +844,10 @@ const AURORA_MYSQL_5_7: VersionProfile = VersionProfile::provisioned()
 const AURORA_MYSQL_5_7_SERVERLESS_V1: VersionProfile = VersionProfile::provisioned()
     .serverless_v1()
     .certificate_rotation_without_restart()
-    .rds_proxy()
     .features(AURORA_MYSQL_FEATURE_NAMES);
 
-/// Aurora MySQL 3 (MySQL 8.0 compatible): Serverless v2, local write forwarding, a
-/// zero-ETL integration and enhanced binary log replication, beside the Aurora MySQL 2
-/// capabilities.
+/// Aurora MySQL 3 (MySQL 8.0 compatible): Serverless v2, local write forwarding and a
+/// zero-ETL integration, beside the Aurora MySQL 2 capabilities.
 ///
 /// The Serverless v2 limits are the EARLIER ones: the 256-ACU maximum and the scale-to-
 /// zero minimum each arrived in a later 3.x minor version, so the rows below pick the
@@ -909,7 +855,6 @@ const AURORA_MYSQL_5_7_SERVERLESS_V1: VersionProfile = VersionProfile::provision
 const AURORA_MYSQL_8: VersionProfile = AURORA_MYSQL_5_7
     .serverless_v2(SERVERLESS_V2_MIN_CAPACITY, SERVERLESS_V2_EARLIER_MAX_CAPACITY)
     .local_write_forwarding()
-    .enhanced_binlog()
     .integrations();
 
 /// An Aurora MySQL 3 version whose Serverless v2 capacity reaches the current maximum.
@@ -926,7 +871,6 @@ const AURORA_MYSQL_8_PAUSE: VersionProfile = AURORA_MYSQL_8
 const AURORA_POSTGRESQL_11: VersionProfile = VersionProfile::provisioned()
     .global_databases()
     .certificate_rotation_without_restart()
-    .rds_proxy()
     .features(AURORA_POSTGRESQL_FEATURE_NAMES);
 
 /// An Aurora PostgreSQL 11 version that also runs Aurora Serverless v1, which is
@@ -934,7 +878,6 @@ const AURORA_POSTGRESQL_11: VersionProfile = VersionProfile::provisioned()
 const AURORA_POSTGRESQL_11_SERVERLESS_V1: VersionProfile = VersionProfile::provisioned()
     .serverless_v1()
     .certificate_rotation_without_restart()
-    .rds_proxy()
     .features(AURORA_POSTGRESQL_FEATURE_NAMES);
 
 /// Aurora PostgreSQL 13 and later: Babelfish and Serverless v2, which on these versions
@@ -3693,27 +3636,11 @@ fn valid_upgrade_targets(
             UpgradeTarget {
                 engine: Some(target.engine.to_string()),
                 engine_version: Some(target.engine_version.to_string()),
-                // The target's own version split, reported for the same reason the entry
-                // reports its own: a client compares the minor version it runs with the
-                // one an upgrade would move it to.
-                major_engine_version: Some(target.major_engine_version.to_string()),
-                minor_engine_version: Some(minor_engine_version(
-                    target.engine_version,
-                    target.major_engine_version,
-                )),
                 description: Some(version_description(facts, target.engine_version)),
                 // An automatic MINOR upgrade only ever moves within one major version,
                 // and only onto that major version's default.
                 auto_upgrade: Some(within_one_major && target.default_level.is_major_default()),
                 is_major_version_upgrade: Some(!within_one_major),
-                // `SupportsSnapshotUpgrade` — whether a DB SNAPSHOT of this entry's
-                // version can be upgraded straight to the target rather than having to be
-                // restored and then upgraded. What "Upgrading a DB snapshot engine
-                // version" (Amazon RDS User Guide) documents being able to do to a
-                // snapshot is a MAJOR version upgrade, so that is the target kind this
-                // reports it for; restoring a snapshot into a later minor version of its
-                // own family needs no such upgrade at all.
-                supports_snapshot_upgrade: Some(!within_one_major),
                 supported_engine_modes: Some(strings(target.profile.engine_modes)),
                 supports_parallel_query: Some(target.profile.supports_parallel_query),
                 supports_global_databases: Some(target.profile.supports_global_databases),
@@ -3723,10 +3650,6 @@ fn valid_upgrade_targets(
                     target.profile.supports_local_write_forwarding,
                 ),
                 supports_integrations: Some(target.profile.supports_integrations),
-                // Reported beside the engine version's own `SupportsDataGroups`, for the
-                // same reason every other capability of a target is: a caller decides
-                // whether to take an upgrade by what it would be running afterwards.
-                supports_data_groups: Some(target.profile.supports_data_groups),
             }
         })
         .collect()
@@ -3749,25 +3672,6 @@ fn upgrades_in_place(entry: &CatalogVersion, target: &CatalogVersion) -> bool {
         .any(|reachable| reachable.version == target.engine_version)
 }
 
-/// `MinorEngineVersion` — the part of `engine_version` that follows its
-/// `MajorEngineVersion`.
-///
-/// A version string of every engine this service publishes begins with the major version
-/// whose family it belongs to, so what follows that prefix is this release's minor version
-/// within the family: `44-rds.20250213` of MySQL `5.7.44-rds.20250213`, `4` of Aurora
-/// PostgreSQL `16.4`, `4385.2.v1` of SQL Server `15.00.4385.2.v1`. A version string that
-/// does NOT carry its major version as a prefix ([`release_is_in_line`]) reports the whole
-/// string: there is no major part of it to take away.
-fn minor_engine_version(engine_version: &str, major_engine_version: &str) -> String {
-    if !release_is_in_line(engine_version, major_engine_version) {
-        return engine_version.to_string();
-    }
-    engine_version
-        .get(major_engine_version.len() + 1..)
-        .unwrap_or(engine_version)
-        .to_string()
-}
-
 /// Whether the engine version `engine_version` is a release of the major version LINE
 /// `major_engine_version`.
 ///
@@ -3778,9 +3682,8 @@ fn minor_engine_version(engine_version: &str, major_engine_version: &str) -> Str
 /// while `8.40.1` is of neither `8.4` nor `8`, and the line itself is no release of itself.
 ///
 /// Stated once here, where the catalogue that publishes both halves lives: this is the
-/// relation [`minor_engine_version`] takes the major part off by, and the one
-/// `DescribeOrderableDBInstanceOptions` reads to answer whether a version a request names is
-/// a release of a line this catalogue publishes.
+/// relation `DescribeOrderableDBInstanceOptions` reads to answer whether a version a request
+/// names is a release of a line this catalogue publishes.
 pub(crate) fn release_is_in_line(engine_version: &str, major_engine_version: &str) -> bool {
     engine_version
         .get(..major_engine_version.len())
@@ -3788,17 +3691,6 @@ pub(crate) fn release_is_in_line(engine_version: &str, major_engine_version: &st
         && engine_version
             .get(major_engine_version.len()..)
             .is_some_and(|rest| rest.starts_with('.'))
-}
-
-/// Whether a version of `engine` reports the two replication-log capability members,
-/// `SupportsEnhancedBinlog` and `SupportsChangeDataCaptureStreams`.
-///
-/// Both answer what can be done with the log a DB CLUSTER replicates from — enhanced
-/// binary log replication, and a change-data-capture stream read off it — so they are
-/// reported for an Aurora engine version, whose cluster owns that log, and for no version
-/// of an engine whose DB instance keeps its own storage.
-fn reports_replication_log_capabilities(engine: &str) -> bool {
-    crate::state::is_aurora(engine)
 }
 
 /// `DBEngineVersionDescription` — "The description of the database engine version."
@@ -4011,23 +3903,6 @@ fn to_wire(
         engine: Some(entry.engine.to_string()),
         engine_version: Some(entry.engine_version.to_string()),
         major_engine_version: Some(entry.major_engine_version.to_string()),
-        // The minor version of this release within its major-version family, and the
-        // capability members this service reports beside the ones the model declares: a
-        // client gates a DB proxy, a cluster deployment, a data group and — on an Aurora
-        // version — enhanced binary logging and a change-data-capture stream on them, so
-        // each is reported for every entry whose engine reports it rather than left for
-        // the client to assume. Each value is the VERSION's own, read from its profile.
-        minor_engine_version: Some(minor_engine_version(
-            entry.engine_version,
-            entry.major_engine_version,
-        )),
-        supports_rds_proxy: Some(profile.supports_rds_proxy),
-        supports_cluster: Some(profile.supports_cluster),
-        supports_data_groups: Some(profile.supports_data_groups),
-        supports_enhanced_binlog: reports_replication_log_capabilities(entry.engine)
-            .then_some(profile.supports_enhanced_binlog),
-        supports_change_data_capture_streams: reports_replication_log_capabilities(entry.engine)
-            .then_some(profile.supports_change_data_capture_streams),
         db_parameter_group_family: Some(entry.parameter_group_family.to_string()),
         db_engine_description: Some(facts.description.to_string()),
         db_engine_version_description: Some(version_description(facts, entry.engine_version)),
@@ -4224,20 +4099,6 @@ pub(crate) fn custom_version_to_wire(
         engine: Some(record.engine.clone()),
         engine_version: Some(record.engine_version.clone()),
         major_engine_version: Some(record.major_engine_version.clone()),
-        // The same member set a catalogue row carries, computed the same way: the minor
-        // version from this record's own name, and each capability from the profile of the
-        // engine version the CEV is built on.
-        minor_engine_version: Some(minor_engine_version(
-            &record.engine_version,
-            &record.major_engine_version,
-        )),
-        supports_rds_proxy: Some(profile.supports_rds_proxy),
-        supports_cluster: Some(profile.supports_cluster),
-        supports_data_groups: Some(profile.supports_data_groups),
-        supports_enhanced_binlog: reports_replication_log_capabilities(&record.engine)
-            .then_some(profile.supports_enhanced_binlog),
-        supports_change_data_capture_streams: reports_replication_log_capabilities(&record.engine)
-            .then_some(profile.supports_change_data_capture_streams),
         db_parameter_group_family: Some(record.parameter_group_family.clone()),
         db_engine_description: facts.map(|facts| facts.description.to_string()),
         // `DBEngineVersionDescription` is "the description of the database engine version",

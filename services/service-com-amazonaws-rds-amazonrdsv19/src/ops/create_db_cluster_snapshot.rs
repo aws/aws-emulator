@@ -208,8 +208,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .map_err(CreateDBClusterSnapshotError::internal_failure)?;
         // The SIZE of that copy, measured in the same place and under the same contract as
         // the copy itself — once, off this worker thread and before the store is locked —
-        // because the copy never changes afterwards: it is what the snapshot reports as
-        // `FullSnapshotSizeInBytes` for the rest of its life.
+        // because the copy never changes afterwards: the snapshot keeps that one measurement
+        // for the rest of its life.
         let data_bytes = crate::state::captured_data_bytes(storage.as_ref())
             .await
             .map_err(CreateDBClusterSnapshotError::internal_failure)?;

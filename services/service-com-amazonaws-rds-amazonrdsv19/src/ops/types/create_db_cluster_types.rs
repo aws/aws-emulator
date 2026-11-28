@@ -72,7 +72,9 @@ pub struct CreateDBClusterInput {
     pub engine_lifecycle_support: Option<String>,
     pub tag_specifications: Option<Vec<TagSpecification>>,
     pub master_user_authentication_type: Option<String>,
+    pub enable_vpc_networking: Option<bool>,
     pub with_express_configuration: Option<bool>,
+    pub enable_internet_access_gateway: Option<bool>,
     pub associated_roles: Option<Vec<DBClusterAssociatedRole>>,
 }
 

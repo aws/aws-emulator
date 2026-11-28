@@ -564,14 +564,12 @@ async fn the_graph_engine_publishes_a_default_release() {
             );
         }
         // The release's own numbering: its major version prefixes it, and the rest of the
-        // string is the minor version within that family.
-        let expected_minor = engine_version
-            .strip_prefix(&format!("{major_engine_version}."))
-            .unwrap_or(&engine_version);
-        assert_eq!(
-            text(version, "MinorEngineVersion"),
-            expected_minor,
-            "case {case:?}: expected the minor version within {major_engine_version}, got \
+        // string is the build within that family.
+        assert!(
+            engine_version
+                .strip_prefix(&major_engine_version)
+                .is_some_and(|rest| rest.starts_with('.')),
+            "case {case:?}: expected a release of the {major_engine_version} family, got \
              {version}"
         );
         assert_eq!(

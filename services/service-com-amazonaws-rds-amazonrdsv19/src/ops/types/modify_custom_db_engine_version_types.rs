@@ -25,13 +25,7 @@ pub struct ModifyCustomDBEngineVersionInput {
 pub struct ModifyCustomDBEngineVersionOutput {
     pub engine: Option<String>,
     pub major_engine_version: Option<String>,
-    pub minor_engine_version: Option<String>,
     pub engine_version: Option<String>,
-    pub supports_rds_proxy: Option<bool>,
-    pub supports_cluster: Option<bool>,
-    pub supports_data_groups: Option<bool>,
-    pub supports_enhanced_binlog: Option<bool>,
-    pub supports_change_data_capture_streams: Option<bool>,
     pub database_installation_files_s3_bucket_name: Option<String>,
     pub database_installation_files_s3_prefix: Option<String>,
     pub database_installation_files: Option<Vec<String>>,

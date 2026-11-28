@@ -652,39 +652,20 @@ async fn an_upgrade_target_reports_the_target_versions_own_members() {
                     .iter()
                     .find(|candidate| candidate.engine_version == version)
                     .unwrap_or_else(|| panic!("case {case:?}: the target's own entry"));
-                for (member, expected) in [
-                    ("MajorEngineVersion", own.major_engine_version.clone()),
-                    (
-                        "MinorEngineVersion",
-                        text(&own.scalars, "MinorEngineVersion"),
-                    ),
-                    (
-                        "Description",
-                        text(&own.scalars, "DBEngineVersionDescription"),
-                    ),
-                ] {
-                    assert_eq!(
-                        text(&target, member),
-                        expected,
-                        "case {case:?}: {member} must be the target version's own, got \
-                         {target}"
-                    );
-                }
+                let member = "Description";
+                let expected = text(&own.scalars, "DBEngineVersionDescription");
+                assert_eq!(
+                    text(&target, member),
+                    expected,
+                    "case {case:?}: {member} must be the target version's own, got \
+                     {target}"
+                );
                 let major_upgrade = own.major_engine_version != family;
                 assert_eq!(
                     text(&target, "IsMajorVersionUpgrade"),
                     major_upgrade.to_string(),
                     "case {case:?}: a target in another major-version family is a major \
                      version upgrade, got {target}"
-                );
-                // A snapshot is upgraded straight into the target only where that upgrade
-                // moves it between major versions; restoring into a later build of its own
-                // family needs no snapshot upgrade.
-                assert_eq!(
-                    text(&target, "SupportsSnapshotUpgrade"),
-                    major_upgrade.to_string(),
-                    "case {case:?}: SupportsSnapshotUpgrade must answer for the target \
-                     kind, got {target}"
                 );
                 if text(&target, "AutoUpgrade") == "true" {
                     assert!(

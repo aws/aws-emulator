@@ -48,6 +48,7 @@ pub struct OptionGroupOption {
     pub option_group_option_settings: Option<Vec<OptionGroupOptionSetting>>,
     pub option_group_option_versions: Option<Vec<OptionVersion>>,
     pub copyable_cross_account: Option<bool>,
+    pub copyable_cross_region: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#OptionGroupOptionSetting")]

@@ -19,7 +19,7 @@
 //!    of its family reports every later build of that family as a minor upgrade target,
 //!    which is what a client computes a minor-version upgrade path from.
 //! 3. An entry's `ValidUpgradeTarget` is exactly the engine's later entries, each
-//!    classified (`AutoUpgrade`, `IsMajorVersionUpgrade`, `SupportsSnapshotUpgrade`) and
+//!    classified (`AutoUpgrade`, `IsMajorVersionUpgrade`) and
 //!    each carrying the capability flags of the version it would move the caller ONTO.
 //! 4. Every entry carries the whole member set this report publishes, with the values
 //!    that engine and that build publish — the anchors table names one build per engine
@@ -36,14 +36,12 @@ use crate::db_instances::{emulator, optional_text, subtrees, text};
 /// identity and family, the description, the CA certificates it can be launched with, its
 /// status, and each capability flag a client gates on before it creates with the version.
 ///
-/// Source: the `DBEngineVersion` members this service's model declares, plus the ones RDS
-/// reports beside them (`MinorEngineVersion`, `SupportsRDSProxy`, `SupportsCluster`,
-/// `SupportsDataGroups`), as `OPERATIONS.md` lists them for this operation's output.
-const EVERY_ENTRY_MEMBER: [&str; 20] = [
+/// Source: the `DBEngineVersion` members this service's model declares, as `OPERATIONS.md`
+/// lists them for this operation's output.
+const EVERY_ENTRY_MEMBER: [&str; 19] = [
     "Engine",
     "EngineVersion",
     "MajorEngineVersion",
-    "MinorEngineVersion",
     "DBParameterGroupFamily",
     "DBEngineDescription",
     "DBEngineVersionDescription",
@@ -65,15 +63,12 @@ const EVERY_ENTRY_MEMBER: [&str; 20] = [
 /// The members every `UpgradeTarget` of an entry carries: what the target IS, how the
 /// upgrade onto it is classified, and the capabilities the caller would be running after
 /// taking it.
-const EVERY_TARGET_MEMBER: [&str; 11] = [
+const EVERY_TARGET_MEMBER: [&str; 8] = [
     "Engine",
     "EngineVersion",
-    "MajorEngineVersion",
-    "MinorEngineVersion",
     "Description",
     "AutoUpgrade",
     "IsMajorVersionUpgrade",
-    "SupportsSnapshotUpgrade",
     "SupportedEngineModes",
     "SupportsGlobalDatabases",
     "SupportsParallelQuery",
@@ -392,24 +387,6 @@ async fn an_entrys_upgrade_targets_are_the_engines_later_builds_each_classified(
                     "case {target_case:?}: an upgrade target stays on the same engine, \
                      got {target}"
                 );
-                let target_major = text(target, "MajorEngineVersion");
-                let crosses_a_family = target_major != version.major_engine_version;
-                assert_eq!(
-                    flag(&target_case, target, "IsMajorVersionUpgrade"),
-                    crosses_a_family,
-                    "case {target_case:?}: an upgrade is a major-version upgrade exactly \
-                     when it leaves the entry's family ({:?} to {target_major:?}), got \
-                     {target}",
-                    version.major_engine_version
-                );
-                // A snapshot is upgraded straight to the target only where the upgrade is
-                // a major-version one; inside a family a restore needs no upgrade at all.
-                assert_eq!(
-                    flag(&target_case, target, "SupportsSnapshotUpgrade"),
-                    crosses_a_family,
-                    "case {target_case:?}: snapshot upgrade is reported for a \
-                     major-version upgrade, got {target}"
-                );
                 // The capabilities a target reports are the TARGET's own: the entry the
                 // report carries for that build says the same about it.
                 let as_an_entry = reported
@@ -421,6 +398,16 @@ async fn an_entrys_upgrade_targets_are_the_engines_later_builds_each_classified(
                              report publishes, got {order:?}"
                         )
                     });
+                let target_major = as_an_entry.major_engine_version.clone();
+                let crosses_a_family = target_major != version.major_engine_version;
+                assert_eq!(
+                    flag(&target_case, target, "IsMajorVersionUpgrade"),
+                    crosses_a_family,
+                    "case {target_case:?}: an upgrade is a major-version upgrade exactly \
+                     when it leaves the entry's family ({:?} to {target_major:?}), got \
+                     {target}",
+                    version.major_engine_version
+                );
                 for member in ["SupportsGlobalDatabases", "SupportsParallelQuery"] {
                     assert_eq!(
                         flag(&target_case, target, member),

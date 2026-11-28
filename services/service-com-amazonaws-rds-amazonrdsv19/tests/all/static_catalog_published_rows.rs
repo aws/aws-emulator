@@ -12,11 +12,10 @@
 //! rather than over one recorded request:
 //!
 //! 1. A capability Amazon RDS publishes for whole DB instance class FAMILIES — the Multi-AZ DB
-//!    cluster deployment, Optimized Reads and Optimized Writes — is offered on the
-//!    general-purpose (`m`) and memory-optimized (`r`, `x`, `z`) families and on neither the
-//!    burstable (`t`) nor the compute-optimized (`c`) ones, with the two that need the
-//!    instance's own local NVMe SSD storage offered only on the `d` generations of those
-//!    families.
+//!    cluster deployment — is offered on the general-purpose (`m`) and memory-optimized (`r`,
+//!    `x`, `z`) families and on neither the burstable (`t`) nor the compute-optimized (`c`)
+//!    ones, and only on the `d` generations of those families, which carry the instance's own
+//!    local NVMe SSD storage.
 //! 2. `SupportedNetworkTypes` reports the value list `NetworkType` publishes, in the order
 //!    that list names them.
 //! 3. The storage FLOOR an option publishes for a (engine, storage type) pair is the engine's
@@ -64,10 +63,10 @@ async fn options(
 }
 
 // ---------------------------------------------------------------------------
-// Rule 1: the capabilities published per class family
+// Rule 1: the capability published per class family
 // ---------------------------------------------------------------------------
 
-/// One (engine, class) row and the three family-scoped capability answers an option of it
+/// One (engine, class) row and the family-scoped capability answer an option of it
 /// reports.
 struct CapabilityRow {
     /// Why this row is in the table.
@@ -76,20 +75,14 @@ struct CapabilityRow {
     class: &'static str,
     /// `SupportsClusters`.
     clusters: &'static str,
-    /// `SupportsOptimizedReads`.
-    optimized_reads: &'static str,
-    /// `SupportsOptimizedWrites`.
-    optimized_writes: &'static str,
 }
 
 /// The rows: every class PURPOSE this service offers, with and without local NVMe SSD
 /// storage, across the engines whose instance owns its storage and the engines whose cluster
 /// manages it.
 ///
-/// Source: the published scope of each capability — the Multi-AZ DB cluster deployment of
-/// Amazon RDS for MySQL and PostgreSQL, Amazon RDS Optimized Reads (temporary objects on the
-/// instance's local NVMe SSD storage) and Amazon RDS Optimized Writes (the MySQL-compatible
-/// engines' atomic writes) — each of which AWS publishes for whole general-purpose and
+/// Source: the published scope of the capability — the Multi-AZ DB cluster deployment of
+/// Amazon RDS for MySQL and PostgreSQL, which AWS publishes for whole general-purpose and
 /// memory-optimized class families. The classes include ones no issue cited (`db.r6gd`,
 /// `db.x2iedn`, `db.m6g`) beside the two that were (`db.c6gd.12xlarge`, `db.t3.2xlarge`).
 const CAPABILITY_ROWS: &[CapabilityRow] = &[
@@ -98,86 +91,64 @@ const CAPABILITY_ROWS: &[CapabilityRow] = &[
         engine: "mysql",
         class: "db.c6gd.12xlarge",
         clusters: "false",
-        optimized_reads: "false",
-        optimized_writes: "false",
     },
     CapabilityRow {
         case: "a burstable class",
         engine: "mysql",
         class: "db.t3.2xlarge",
         clusters: "false",
-        optimized_reads: "false",
-        optimized_writes: "false",
     },
     CapabilityRow {
         case: "a memory-optimized class with local NVMe storage",
         engine: "mysql",
         class: "db.r5d.4xlarge",
         clusters: "true",
-        optimized_reads: "true",
-        optimized_writes: "true",
     },
     CapabilityRow {
         case: "a memory-intensive class with local NVMe storage",
         engine: "mysql",
         class: "db.x2iedn.xlarge",
         clusters: "true",
-        optimized_reads: "true",
-        optimized_writes: "true",
     },
     CapabilityRow {
         case: "a general-purpose class without local NVMe storage",
         engine: "mysql",
         class: "db.m6g.large",
         clusters: "false",
-        optimized_reads: "false",
-        optimized_writes: "true",
     },
     CapabilityRow {
         case: "a general-purpose class with local NVMe storage",
         engine: "mysql",
         class: "db.m6gd.2xlarge",
         clusters: "true",
-        optimized_reads: "true",
-        optimized_writes: "true",
     },
     CapabilityRow {
         case: "the other engine that backs a Multi-AZ DB cluster",
         engine: "postgres",
         class: "db.r6gd.large",
         clusters: "true",
-        // Optimized Writes is the MySQL-compatible engines' capability.
-        optimized_reads: "true",
-        optimized_writes: "false",
     },
     CapabilityRow {
         case: "an engine that backs no Multi-AZ DB cluster",
         engine: "mariadb",
         class: "db.r5d.4xlarge",
         clusters: "false",
-        optimized_reads: "true",
-        optimized_writes: "true",
     },
     CapabilityRow {
         case: "an engine with neither capability on a local-NVMe class",
         engine: "oracle-se2",
         class: "db.r5d.4xlarge",
         clusters: "false",
-        optimized_reads: "true",
-        optimized_writes: "false",
     },
     CapabilityRow {
         case: "a cluster engine, whose instance is only ever a cluster member",
         engine: "aurora-mysql",
         class: "db.r6g.large",
         clusters: "true",
-        // A cluster member's temporary objects are not placed on the host it runs on.
-        optimized_reads: "false",
-        optimized_writes: "false",
     },
 ];
 
-/// Each capability is answered for the class FAMILY's published purpose and local storage,
+/// The capability is answered for the class FAMILY's published purpose and local storage,
 /// not for the spelling of one class name.
 #[tokio::test]
 async fn the_family_scoped_capabilities_follow_the_classs_purpose_and_local_storage() {
@@ -191,12 +162,9 @@ async fn the_family_scoped_capabilities_follow_the_classs_purpose_and_local_stor
             "case {case:?}: the class is one this service offers for this engine, so it must \
              be reported"
         );
-        for option in &found {
-            for (member, expected) in [
-                ("SupportsClusters", row.clusters),
-                ("SupportsOptimizedReads", row.optimized_reads),
-                ("SupportsOptimizedWrites", row.optimized_writes),
-            ] {
+            let member = "SupportsClusters";
+            let expected = row.clusters;
+            for option in &found {
                 let reported = optional_text(option, member);
                 assert_eq!(
                     reported.as_deref(),
@@ -205,7 +173,6 @@ async fn the_family_scoped_capabilities_follow_the_classs_purpose_and_local_stor
                      {option}"
                 );
             }
-        }
     }
 }
 

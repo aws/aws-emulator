@@ -17,10 +17,8 @@
 //!   Neptune engine is the licensed product, so its snapshots — and the automated backup of
 //!   the same cluster — report the ENGINE'S name, while every other engine's cluster reports
 //!   the licence that engine family publishes.
-//! * The source cluster's custom-data-group flag is carried onto its snapshots, and the full
-//!   size of the data a snapshot holds is reported once the snapshot has been TAKEN — a
-//!   snapshot still being made reports no size at all, and one that captured no data reports
-//!   zero.
+//! * The source cluster's engine, encryption reading and license model are carried onto its
+//!   snapshots.
 //! * ONE projection: the create that took the snapshot, the read that polls it and the
 //!   delete that removed it report the same values for all of them.
 //!
@@ -28,24 +26,15 @@
 //! `CreateDBCluster` documents (Aurora DB clusters and Multi-AZ DB clusters), four engines
 //! across the three control planes this front door serves, a request that leaves storage
 //! encryption to the service and one that asks for it, and a source cluster with and without
-//! a DB instance in it (so the snapshot both captures storage and captures none). The size a
-//! snapshot reports is driven over the engine's own PostgreSQL wire: a client writes rows,
-//! snapshots the cluster, writes more and snapshots again, so the size is read against data
-//! this test knows the extent of.
+//! a DB instance in it (so the snapshot both captures storage and captures none).
 
 use std::time::{Duration, Instant};
 
 use smithy_server_runtime::MultiServiceRouter;
 use tokio::time::sleep;
 
-use crate::db_cluster_snapshot_restore::cluster_endpoint;
 use crate::db_clusters::{describe_one, the_cluster};
-use crate::db_instance_engine_endpoint::{DATABASE, MASTER_PASSWORD, MASTER_USER};
 use crate::db_instances::{call, emulator, expect_ok, optional_text, subtrees, text};
-// The ledger the snapshot-restore suites write and read over the PostgreSQL wire: the size a
-// snapshot reports is the size of exactly that data, so this suite drives the same table
-// rather than keeping a second copy of the harness.
-use crate::db_snapshot_restore::{fill_ledger, run, session_on, LEDGER_ROWS};
 
 /// How long a poll loop is given before this suite calls a transition unobservable.
 ///
@@ -223,7 +212,10 @@ async fn snapshot_once_taken(router: &MultiServiceRouter, case: &str, snapshot: 
 ///
 /// A poll loop for the same reason as [`snapshot_once_taken`]: the loop ends on the
 /// CONDITION rather than after a span, so how fast the host runs cannot decide it.
-async fn cluster_once_available(
+///
+/// `pub(crate)` so a sibling suite of this one test target waits for a cluster the same way
+/// rather than growing a second copy of this loop.
+pub(crate) async fn cluster_once_available(
     router: &MultiServiceRouter,
     case: &str,
     identifier: &str,
@@ -281,15 +273,15 @@ fn assert_copied_members(
          {of_the_cluster:?}, got {reported:?} in {snapshot}"
     );
 
-    // The flag is the source cluster's, read off that cluster's envelope rather than
+    // The engine is the source cluster's, read off that cluster's envelope rather than
     // restated here.
-    let reported = optional_text(snapshot, "CustomDataGroupPresent");
-    let of_the_cluster = text(cluster, "CustomDataGroupPresent");
+    let reported = optional_text(snapshot, "Engine");
+    let of_the_cluster = text(cluster, "Engine");
     assert_eq!(
         reported.as_deref(),
         Some(of_the_cluster.as_str()),
-        "case {case:?}: the snapshot carries the cluster's CustomDataGroupPresent \
-         {of_the_cluster:?}, got {reported:?} in {snapshot}"
+        "case {case:?}: the snapshot carries the cluster's Engine {of_the_cluster:?}, got \
+         {reported:?} in {snapshot}"
     );
 }
 
@@ -319,8 +311,7 @@ async fn a_cluster_snapshot_envelope_projects_the_cluster_it_was_taken_from() {
         }
         let cluster = cluster_once_available(&router, row.case, row.cluster).await;
 
-        // The create answers the snapshot it stored: the copied members are already there,
-        // and the size is not — the snapshot is still being taken.
+        // The create answers the snapshot it stored: the copied members are already there.
         let taken = expect_ok(
             row.case,
             call(
@@ -335,17 +326,8 @@ async fn a_cluster_snapshot_envelope_projects_the_cluster_it_was_taken_from() {
         );
         let taken = the_snapshot(row.case, &taken);
         assert_copied_members(row.case, "CreateDBClusterSnapshot", &taken, row, &cluster);
-        let reported = optional_text(&taken, "FullSnapshotSizeInBytes");
-        assert_eq!(
-            reported, None,
-            "case {:?}: a snapshot still being taken reports no size, got {reported:?} in \
-             {taken}",
-            row.case
-        );
 
-        // The read-back a waiter polls reports the same members, plus the size of the data
-        // the finished snapshot holds — zero for one taken of a cluster nothing was ever
-        // written to.
+        // The read-back a waiter polls reports the same members.
         let read_back = snapshot_once_taken(&router, row.case, &snapshot).await;
         assert_copied_members(
             row.case,
@@ -353,14 +335,6 @@ async fn a_cluster_snapshot_envelope_projects_the_cluster_it_was_taken_from() {
             &read_back,
             row,
             &cluster,
-        );
-        let reported = optional_text(&read_back, "FullSnapshotSizeInBytes");
-        assert_eq!(
-            reported.as_deref(),
-            Some("0"),
-            "case {:?}: a snapshot that holds no data reports zero bytes, got {reported:?} \
-             in {read_back}",
-            row.case
         );
 
         // The delete answers the snapshot as it stood, with the same copied members: it is
@@ -479,127 +453,3 @@ async fn a_cluster_snapshot_copies_the_source_clusters_engine_version() {
     }
 }
 
-/// The row a client writes AFTER the first snapshot was taken, so it is part of what a later
-/// snapshot holds and of no earlier one.
-const LATER_ROW: (i32, &str) = (99, "written after the first snapshot");
-
-/// The bytes the engine accounts one `(id INTEGER, note TEXT)` ledger row: eight for the
-/// integer and the note's own length, which is how a stored value's size is read
-/// (`state::data_plane::sql_engine::Cell::byte_cost`).
-fn ledger_row_bytes(note: &str) -> i64 {
-    8 + note.len() as i64
-}
-
-/// `FullSnapshotSizeInBytes` off a snapshot envelope, as the number it is.
-fn reported_size(case: &str, snapshot: &str) -> i64 {
-    let reported = text(snapshot, "FullSnapshotSizeInBytes");
-    reported.parse().unwrap_or_else(|_| {
-        panic!("case {case:?}: FullSnapshotSizeInBytes must be a number, got {reported:?}")
-    })
-}
-
-/// `CreateDBClusterSnapshot`, as the `<DBClusterSnapshot>` it answered.
-async fn take_snapshot(
-    router: &MultiServiceRouter,
-    case: &str,
-    cluster: &str,
-    snapshot: &str,
-) -> String {
-    the_snapshot(
-        case,
-        &expect_ok(
-            case,
-            call(
-                router,
-                "CreateDBClusterSnapshot",
-                &[
-                    ("DBClusterIdentifier", cluster),
-                    ("DBClusterSnapshotIdentifier", snapshot),
-                ],
-            )
-            .await,
-        ),
-    )
-}
-
-/// The size a snapshot reports is the size of the DATA IT CAPTURED, measured at the instant
-/// it was taken: it counts the rows a client wrote over the engine's own wire before the
-/// snapshot, it does not change when the source is written to afterwards, and a snapshot
-/// taken after those later writes is larger by exactly what they added.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_snapshot_reports_the_size_of_the_data_it_captured() {
-    let router = emulator();
-    let case = "an Aurora PostgreSQL cluster whose rows a client wrote over the wire";
-    let cluster = "emu-snapenv-sized";
-
-    // A cluster a client can log in to: the master credential and the database the
-    // engine-endpoint suites of this target connect with.
-    expect_ok(
-        case,
-        call(
-            &router,
-            "CreateDBCluster",
-            &[
-                ("DBClusterIdentifier", cluster),
-                ("Engine", "aurora-postgresql"),
-                ("MasterUsername", MASTER_USER),
-                ("MasterUserPassword", MASTER_PASSWORD),
-                ("DatabaseName", DATABASE),
-            ],
-        )
-        .await,
-    );
-    let ready = cluster_once_available(&router, case, cluster).await;
-    let endpoint = cluster_endpoint(case, &ready);
-    let mut session = session_on(&endpoint, case).await;
-    fill_ledger(&mut session, case).await;
-
-    // The data the first snapshot captures includes exactly the ledger this client wrote, so
-    // the size it reports accounts for those rows' values (the engine's own catalog of the
-    // captured databases is part of the copy too, so the ledger is a floor, not the whole).
-    let ledger_bytes: i64 = LEDGER_ROWS
-        .iter()
-        .map(|(_, note)| ledger_row_bytes(note))
-        .sum();
-    take_snapshot(&router, case, cluster, "emu-snapenv-sized-s1").await;
-    let first = snapshot_once_taken(&router, case, "emu-snapenv-sized-s1").await;
-    let first_size = reported_size(case, &first);
-    assert!(
-        first_size >= ledger_bytes,
-        "case {case:?}: the snapshot reports the size of the data it captured, which holds \
-         the {ledger_bytes} bytes of the ledger's values, got {first_size} in {first}"
-    );
-
-    // One more row, written after that snapshot was taken.
-    run(
-        &mut session,
-        case,
-        &format!(
-            "INSERT INTO ledger (id, note) VALUES ({}, '{}')",
-            LATER_ROW.0, LATER_ROW.1
-        ),
-    )
-    .await;
-
-    // The first snapshot's copy is immutable, so its size is the same on every later read.
-    let again = snapshot_once_taken(&router, case, "emu-snapenv-sized-s1").await;
-    let again_size = reported_size(case, &again);
-    assert_eq!(
-        again_size, first_size,
-        "case {case:?}: a write to the source after the snapshot cannot change the size the \
-         snapshot holds, got {again_size} where it was {first_size} in {again}"
-    );
-
-    // A snapshot taken now holds that row too, so it is larger by exactly its values.
-    take_snapshot(&router, case, cluster, "emu-snapenv-sized-s2").await;
-    let second = snapshot_once_taken(&router, case, "emu-snapenv-sized-s2").await;
-    let second_size = reported_size(case, &second);
-    let grown_by = ledger_row_bytes(LATER_ROW.1);
-    assert_eq!(
-        second_size,
-        first_size + grown_by,
-        "case {case:?}: a snapshot of the grown ledger is larger by the row that was added \
-         ({grown_by} bytes), got {second_size} where the earlier one was {first_size} in \
-         {second}"
-    );
-}

@@ -184,16 +184,12 @@ fn assert_always_reported(case: &str, label: &str, cluster: &str, row: &Envelope
     let case = format!("{case} ({label})");
 
     // The flags the recorded envelope carries on every cluster: a cluster created here is
-    // VPC-based with no internet access gateway in front of it, has neither capability
-    // turned on, and runs no database activity stream — which the envelope reports under
-    // both of the names it carries that status under.
+    // VPC-based with no internet access gateway in front of it, and runs no database
+    // activity stream.
     for (member, expected) in [
         ("VPCNetworkingEnabled", "true"),
         ("InternetAccessGatewayEnabled", "false"),
-        ("DocdbAnalyticsEnabled", "false"),
-        ("CustomDataGroupPresent", "false"),
         ("ActivityStreamStatus", "stopped"),
-        ("DBActivityStreamStatus", "stopped"),
     ] {
         let reported = optional_text(cluster, member);
         assert_eq!(

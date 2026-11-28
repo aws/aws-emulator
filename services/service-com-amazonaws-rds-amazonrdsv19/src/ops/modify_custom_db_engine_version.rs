@@ -394,13 +394,7 @@ fn as_output(version: CreateCustomDBEngineVersionOutput) -> ModifyCustomDBEngine
     ModifyCustomDBEngineVersionOutput {
         engine: version.engine,
         major_engine_version: version.major_engine_version,
-        minor_engine_version: version.minor_engine_version,
         engine_version: version.engine_version,
-        supports_rds_proxy: version.supports_rds_proxy,
-        supports_cluster: version.supports_cluster,
-        supports_data_groups: version.supports_data_groups,
-        supports_enhanced_binlog: version.supports_enhanced_binlog,
-        supports_change_data_capture_streams: version.supports_change_data_capture_streams,
         database_installation_files_s3_bucket_name: version
             .database_installation_files_s3_bucket_name,
         database_installation_files_s3_prefix: version.database_installation_files_s3_prefix,

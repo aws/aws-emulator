@@ -118,13 +118,11 @@ const EVENT_CATEGORIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// One published Amazon DocumentDB engine version: the version, its major line, its minor
-/// release within that line, its parameter-group family, and the versions it can be upgraded
-/// to in place.
+/// One published Amazon DocumentDB engine version: the version, its major line, its
+/// parameter-group family, and the versions it can be upgraded to in place.
 struct DocdbVersion {
     version: &'static str,
     major: &'static str,
-    minor: &'static str,
     family: &'static str,
     upgrade_targets: &'static [&'static str],
 }
@@ -137,56 +135,48 @@ const DOCDB_VERSIONS: &[DocdbVersion] = &[
     DocdbVersion {
         version: "3.6.0",
         major: "3.6",
-        minor: "0",
         family: "docdb3.6",
         upgrade_targets: &["5.0.0", "5.0.1", "5.0.2", "8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "4.0.0",
         major: "4.0",
-        minor: "0",
         family: "docdb4.0",
         upgrade_targets: &["4.0.1", "5.0.0", "5.0.1", "5.0.2", "8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "4.0.1",
         major: "4.0",
-        minor: "1",
         family: "docdb4.0",
         upgrade_targets: &["5.0.0", "5.0.1", "5.0.2", "8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "5.0.0",
         major: "5.0",
-        minor: "0",
         family: "docdb5.0",
         upgrade_targets: &["5.0.1", "5.0.2", "8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "5.0.1",
         major: "5.0",
-        minor: "1",
         family: "docdb5.0",
         upgrade_targets: &["5.0.2", "8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "5.0.2",
         major: "5.0",
-        minor: "2",
         family: "docdb5.0",
         upgrade_targets: &["8.0.0", "8.0.1"],
     },
     DocdbVersion {
         version: "8.0.0",
         major: "8.0",
-        minor: "0",
         family: "docdb8.0",
         upgrade_targets: &["8.0.1"],
     },
     DocdbVersion {
         version: "8.0.1",
         major: "8.0",
-        minor: "1",
         family: "docdb8.0",
         upgrade_targets: &[],
     },
@@ -211,13 +201,10 @@ const SHARED_VERSION_CAPABILITIES: &[(&str, bool)] =
 /// none of these, and that view reports none of them rather than inventing one.
 const RDS_ONLY_VERSION_MEMBERS: &[(&str, &str)] = &[
     ("SupportsReadReplica", "false"),
-    ("SupportsCluster", "false"),
     ("SupportsGlobalDatabases", "false"),
-    ("SupportsRDSProxy", "false"),
     ("SupportsParallelQuery", "false"),
     ("SupportsBabelfish", "false"),
     ("SupportsLimitlessDatabase", "false"),
-    ("SupportsDataGroups", "false"),
 ];
 
 /// The capability members only the Amazon RDS view's model declares on an ORDERABLE OPTION
@@ -236,12 +223,9 @@ const RDS_ONLY_OPTION_MEMBERS: &[(&str, bool)] = &[
     ("SupportsIops", false),
     ("SupportsStorageThroughput", false),
     ("SupportsHttpEndpoint", false),
-    ("SupportsOptimizedReads", false),
-    ("SupportsOptimizedWrites", false),
     ("SupportsKerberosAuthentication", false),
     ("SupportsDedicatedLogVolume", false),
     ("SupportsAdditionalStorageVolumes", false),
-    ("RequiresCustomProcessorFeatures", false),
     ("OutpostCapable", false),
 ];
 
@@ -448,14 +432,12 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                         "case {case:?}: expected the published family and description, got \
                          {got:?}"
                     );
-                    // The version split is a member only the Amazon RDS view's model
-                    // declares; see `RDS_ONLY_VERSION_MEMBERS`.
-                    for (member, value) in [
-                        ("MajorEngineVersion", expected.major),
-                        ("MinorEngineVersion", expected.minor),
-                    ] {
+                    // The major line a version belongs to is a member only the Amazon RDS
+                    // view's model declares; see `RDS_ONLY_VERSION_MEMBERS`.
+                    {
+                        let member = "MajorEngineVersion";
                         let got = text(row, member);
-                        let want = rds_only.then(|| value.to_string());
+                        let want = rds_only.then(|| expected.major.to_string());
                         assert_eq!(
                             got, want,
                             "case {case:?}: expected {member} {want:?}, got {got:?}"
@@ -506,16 +488,6 @@ fn every_view_of_the_rds_front_door_publishes_one_catalog() {
                             ),
                             "case {case:?} -> {version}: a target that leaves the version's \
                              line is a major-version upgrade, got {got:?}"
-                        );
-                        // Whether a snapshot can be upgraded straight to the target is a
-                        // member only the Amazon RDS view's model declares; see
-                        // `RDS_ONLY_VERSION_MEMBERS`.
-                        let got = text(target, "SupportsSnapshotUpgrade");
-                        let want = rds_only.then(|| crosses_a_line.to_string());
-                        assert_eq!(
-                            got, want,
-                            "case {case:?} -> {version}: expected SupportsSnapshotUpgrade \
-                             {want:?}, got {got:?}"
                         );
                     }
                 }

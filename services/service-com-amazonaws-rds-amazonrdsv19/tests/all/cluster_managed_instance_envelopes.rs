@@ -58,8 +58,6 @@ struct MemberCase {
     db_name: Option<&'static str>,
     /// `StorageEncryptionType`: how the cluster's volume is protected.
     storage_encryption_type: &'static str,
-    /// `HttpEndpointEnabled`: whether the cluster's Data API endpoint answers.
-    http_endpoint_enabled: bool,
     /// `PromotionTier`: the failover order the member was created at.
     promotion_tier: &'static str,
 }
@@ -92,7 +90,6 @@ const MEMBER_CASES: &[MemberCase] = &[
         // Aurora storage is encrypted at rest under a key the service owns unless the
         // request named one of its own.
         storage_encryption_type: "sse-rds",
-        http_endpoint_enabled: false,
         promotion_tier: "0",
     },
     MemberCase {
@@ -112,7 +109,6 @@ const MEMBER_CASES: &[MemberCase] = &[
         master_username: Some("pgadmin"),
         db_name: None,
         storage_encryption_type: "sse-kms",
-        http_endpoint_enabled: true,
         promotion_tier: "15",
     },
     MemberCase {
@@ -128,7 +124,6 @@ const MEMBER_CASES: &[MemberCase] = &[
         master_username: None,
         db_name: None,
         storage_encryption_type: "sse-rds",
-        http_endpoint_enabled: false,
         // `PromotionTier` "Default: 1" for a member that asked for none.
         promotion_tier: "1",
     },
@@ -233,14 +228,6 @@ fn assert_cluster_managed(case: &str, envelope: &str, row: &MemberCase, instance
         ("StorageEncryptionType", Some(row.storage_encryption_type)),
         ("PromotionTier", Some(row.promotion_tier)),
         ("VPCNetworkingEnabled", Some("true")),
-        (
-            "HttpEndpointEnabled",
-            Some(if row.http_endpoint_enabled {
-                "true"
-            } else {
-                "false"
-            }),
-        ),
     ] {
         assert_member(case, envelope, instance, member, expected);
     }
@@ -318,10 +305,8 @@ async fn an_instance_that_belongs_to_no_cluster_keeps_the_storage_its_request_na
         // port it was asked to listen on, and no failover order inside a cluster.
         ("DbInstancePort", Some("0")),
         ("PromotionTier", None),
-        // The two flags are reported for every instance: this one runs in a VPC of its own
-        // and, belonging to no cluster, has no HTTP endpoint.
+        // The flag is reported for every instance: this one runs in a VPC of its own.
         ("VPCNetworkingEnabled", Some("true")),
-        ("HttpEndpointEnabled", Some("false")),
     ] {
         assert_member(case, "describe", &described, member, expected);
     }

@@ -62,6 +62,9 @@ pub struct ModifyDBClusterInput {
     pub ca_certificate_identifier: Option<String>,
     pub master_user_authentication_type: Option<String>,
     pub engine_lifecycle_support: Option<String>,
+    pub enable_internet_access_gateway: Option<bool>,
+    pub enable_vpc_networking: Option<bool>,
+    pub db_subnet_group_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#ModifyDBClusterResult")]

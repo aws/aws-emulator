@@ -25,6 +25,7 @@ pub struct CopyDBSnapshotInput {
     pub snapshot_target: Option<String>,
     pub copy_option_group: Option<bool>,
     pub snapshot_availability_zone: Option<String>,
+    pub tag_specifications: Option<Vec<TagSpecification>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#CopyDBSnapshotResult")]

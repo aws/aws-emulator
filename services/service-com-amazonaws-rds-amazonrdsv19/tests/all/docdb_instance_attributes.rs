@@ -33,13 +33,12 @@ use crate::db_instances::{call, emulator, expect_ok, optional_text, texts};
 /// provisions per instance, which is none; the licence model that engine's catalogue
 /// publishes (`service_common::docdb_engine_catalog::LICENSE_MODEL`); and the port an
 /// instance whose port is its cluster's carries, which is none.
-const CLUSTER_MANAGED_ATTRIBUTES: [(&str, &str); 8] = [
+const CLUSTER_MANAGED_ATTRIBUTES: [(&str, &str); 7] = [
     ("AllocatedStorage", "1"),
     ("StorageThroughput", "0"),
     ("DbInstancePort", "0"),
     ("PubliclyAccessible", "false"),
     ("VPCNetworkingEnabled", "true"),
-    ("HttpEndpointEnabled", "false"),
     ("LicenseModel", "na"),
     // Reported on every such instance, one subelement per pending change: an instance with
     // nothing pending carries the element with nothing inside it.
@@ -305,11 +304,9 @@ async fn an_instance_of_this_doors_own_engine_keeps_reporting_what_its_request_c
         ("MasterUsername", "ownadmin"),
         ("PubliclyAccessible", "true"),
         ("LicenseModel", "postgresql-license"),
-        // The two flags are reported for EVERY instance, each read off the network the
-        // instance is in and the HTTP endpoint it has: this one is in a VPC of its own
-        // and, belonging to no cluster, has no HTTP endpoint.
+        // The flag is reported for EVERY instance, read off the network the instance is
+        // in: this one is in a VPC of its own.
         ("VPCNetworkingEnabled", "true"),
-        ("HttpEndpointEnabled", "false"),
     ] {
         let actual = optional_text(&created, member);
         assert_eq!(

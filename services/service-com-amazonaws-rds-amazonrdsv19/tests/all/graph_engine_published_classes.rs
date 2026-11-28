@@ -160,17 +160,9 @@ async fn every_class_the_graph_engine_publishes_is_orderable_for_every_published
                 "case {case:?}: an option is offered in the Region's own zones, got {}",
                 option.xml
             );
-            // The capability members a class could otherwise be read as changing: this
-            // engine's CLUSTER manages the storage, so even a local-NVMe class of its own
-            // list offers no Optimized Reads, and the member that says an instance of it is
-            // only ever a cluster member is reported for every class.
-            assert_eq!(
-                text(&option.xml, "SupportsOptimizedReads"),
-                "false",
-                "case {case:?}: a cluster member's temporary objects are not placed on the \
-                 host it runs on, so no class of this engine offers Optimized Reads, got {}",
-                option.xml
-            );
+            // The capability member a class could otherwise be read as changing: the member
+            // that says an instance of this engine is only ever a cluster member is reported
+            // for every class.
             assert_eq!(
                 text(&option.xml, "SupportsClusters"),
                 "true",

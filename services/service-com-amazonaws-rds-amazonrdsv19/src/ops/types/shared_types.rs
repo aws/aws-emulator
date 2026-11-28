@@ -312,17 +312,6 @@ pub struct DBParameterGroupQuotaExceededFault {
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DBClusterSnapshot")]
 #[derive(Debug, Clone, Default)]
 pub struct DBClusterSnapshot {
-    /// Whether the cluster the snapshot was taken from carries a custom data group; added
-    /// to the on-disk model from the recorded AWS responses, like
-    /// [`DBCluster::custom_data_group_present`], which is the same flag on the CLUSTER this
-    /// snapshot copied it from. Projected by
-    /// [`crate::state::DbClusterSnapshotRecord::to_wire`].
-    pub custom_data_group_present: Option<bool>,
-    /// The full size of the data the snapshot holds, in bytes; added to the on-disk model
-    /// from the recorded AWS responses, like [`DBClusterSnapshot::custom_data_group_present`].
-    /// Projected by [`crate::state::DbClusterSnapshotRecord::to_wire`] for a snapshot that
-    /// has been taken, which is where its size is known.
-    pub full_snapshot_size_in_bytes: Option<i64>,
     pub availability_zones: Option<Vec<String>>,
     pub db_cluster_snapshot_identifier: Option<String>,
     pub db_cluster_identifier: Option<String>,
@@ -391,6 +380,13 @@ pub struct DBParameterGroup {
     pub db_parameter_group_family: Option<String>,
     pub description: Option<String>,
     pub db_parameter_group_arn: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rds#TagSpecification")]
+#[derive(Debug, Clone, Default)]
+pub struct TagSpecification {
+    pub resource_type: Option<String>,
+    pub tags: Option<Vec<Tag>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DBSnapshot")]
@@ -484,6 +480,7 @@ pub struct OptionGroup {
     pub source_option_group: Option<String>,
     pub source_account_id: Option<String>,
     pub copy_timestamp: Option<::aws_smithy_types::DateTime>,
+    pub source_region: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#Option")]
@@ -606,13 +603,7 @@ pub struct StorageQuotaExceededFault {
 pub struct CreateCustomDBEngineVersionOutput {
     pub engine: Option<String>,
     pub major_engine_version: Option<String>,
-    pub minor_engine_version: Option<String>,
     pub engine_version: Option<String>,
-    pub supports_rds_proxy: Option<bool>,
-    pub supports_cluster: Option<bool>,
-    pub supports_data_groups: Option<bool>,
-    pub supports_enhanced_binlog: Option<bool>,
-    pub supports_change_data_capture_streams: Option<bool>,
     pub database_installation_files_s3_bucket_name: Option<String>,
     pub database_installation_files_s3_prefix: Option<String>,
     pub database_installation_files: Option<Vec<String>>,
@@ -668,12 +659,9 @@ pub struct CustomDBEngineVersionAMI {
 pub struct UpgradeTarget {
     pub engine: Option<String>,
     pub engine_version: Option<String>,
-    pub major_engine_version: Option<String>,
-    pub minor_engine_version: Option<String>,
     pub description: Option<String>,
     pub auto_upgrade: Option<bool>,
     pub is_major_version_upgrade: Option<bool>,
-    pub supports_snapshot_upgrade: Option<bool>,
     pub supported_engine_modes: Option<Vec<String>>,
     pub supports_parallel_query: Option<bool>,
     pub supports_global_databases: Option<bool>,
@@ -681,7 +669,6 @@ pub struct UpgradeTarget {
     pub supports_limitless_database: Option<bool>,
     pub supports_local_write_forwarding: Option<bool>,
     pub supports_integrations: Option<bool>,
-    pub supports_data_groups: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#Timezone")]
@@ -742,13 +729,6 @@ pub struct ServerlessV2ScalingConfiguration {
     pub seconds_until_auto_pause: Option<i32>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.rds#TagSpecification")]
-#[derive(Debug, Clone, Default)]
-pub struct TagSpecification {
-    pub resource_type: Option<String>,
-    pub tags: Option<Vec<Tag>>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DBClusterAssociatedRole")]
 #[derive(Debug, Clone, Default)]
 pub struct DBClusterAssociatedRole {
@@ -759,29 +739,6 @@ pub struct DBClusterAssociatedRole {
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DBCluster")]
 #[derive(Debug, Clone, Default)]
 pub struct DBCluster {
-    /// The cluster's database-activity-stream status, under the member name the recorded
-    /// cluster envelope of this front door carries BESIDE
-    /// [`DBCluster::activity_stream_status`]. The member was added to this service's
-    /// on-disk model from the recorded AWS responses — the shipped model snapshot carries
-    /// no such member on this shape, while the recorded envelope always carries it — and
-    /// its value is projected by [`crate::state::DbClusterRecord::to_wire`], the one place
-    /// a stored cluster becomes this shape.
-    pub db_activity_stream_status: Option<String>,
-    /// Whether the Amazon DocumentDB analytics capability is enabled for the cluster;
-    /// added to the on-disk model from the recorded AWS responses, like
-    /// [`DBCluster::db_activity_stream_status`].
-    pub docdb_analytics_enabled: Option<bool>,
-    /// Whether the cluster carries a custom data group; added to the on-disk model from
-    /// the recorded AWS responses, like [`DBCluster::db_activity_stream_status`].
-    pub custom_data_group_present: Option<bool>,
-    /// The immutable resource id of the global database cluster this cluster is a MEMBER
-    /// of, reported beside [`DBCluster::global_cluster_identifier`] (the caller-supplied
-    /// name of that same global cluster); added to the on-disk model from the recorded AWS
-    /// responses, like [`DBCluster::db_activity_stream_status`]. Projected by
-    /// [`crate::state::ComAmazonawsRdsAmazonrdsv19State::cluster_to_wire`] from the global
-    /// cluster record the membership resolves to, so it cannot name a global cluster this
-    /// service does not hold.
-    pub global_cluster_resource_id: Option<String>,
     pub allocated_storage: Option<i32>,
     pub availability_zones: Option<Vec<String>>,
     pub backup_retention_period: Option<i32>,
@@ -919,6 +876,8 @@ pub struct ClusterPendingModifiedValues {
     pub rds_custom_cluster_configuration: Option<RdsCustomClusterConfiguration>,
     pub iops: Option<i32>,
     pub certificate_details: Option<CertificateDetails>,
+    pub vpc_networking_enabled: Option<bool>,
+    pub internet_access_gateway_enabled: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#PendingCloudwatchLogsExports")]
@@ -1083,15 +1042,6 @@ pub struct CreateDBClusterEndpointOutput {
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#DBInstance")]
 #[derive(Debug, Clone, Default)]
 pub struct DBInstance {
-    /// Whether the instance runs inside a virtual private cloud. The member was added to
-    /// this service's on-disk model from the recorded AWS responses — the shipped model
-    /// snapshot carries no such member on this shape — and is projected for an instance of
-    /// a sibling control plane's engine, whose own API reports it; see
-    /// [`crate::state::DbInstanceRecord::to_wire`].
-    pub vpc_networking_enabled: Option<bool>,
-    /// Whether an HTTP endpoint is enabled for the instance; added to the on-disk model
-    /// from the recorded AWS responses, like [`DBInstance::vpc_networking_enabled`].
-    pub http_endpoint_enabled: Option<bool>,
     pub db_instance_identifier: Option<String>,
     pub db_instance_class: Option<String>,
     pub engine: Option<String>,
@@ -1099,6 +1049,7 @@ pub struct DBInstance {
     pub master_username: Option<String>,
     pub db_name: Option<String>,
     pub endpoint: Option<Endpoint>,
+    pub primary_endpoint: Option<PrimaryEndpoint>,
     pub allocated_storage: Option<i32>,
     pub instance_create_time: Option<::aws_smithy_types::DateTime>,
     pub preferred_backup_window: Option<String>,
@@ -1186,6 +1137,7 @@ pub struct DBInstance {
     pub storage_operation_status: Option<String>,
     pub storage_operation_percent_progress: Option<i32>,
     pub db_capacity_reservation_identifier: Option<String>,
+    pub vpc_networking_enabled: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rds#Endpoint")]
@@ -1193,6 +1145,13 @@ pub struct DBInstance {
 pub struct Endpoint {
     pub address: Option<String>,
     pub port: Option<i32>,
+    pub hosted_zone_id: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.rds#PrimaryEndpoint")]
+#[derive(Debug, Clone, Default)]
+pub struct PrimaryEndpoint {
+    pub address: Option<String>,
     pub hosted_zone_id: Option<String>,
 }
 

@@ -134,10 +134,8 @@ struct CapabilityCase {
 ///
 /// Source: each member's own documentation on `OrderableDBInstanceOption`, plus the
 /// capability's own published scope — the Data API HTTP endpoint of an Aurora cluster, the
-/// local NVMe storage Optimized Reads places its temporary objects on (the `d` generations
-/// of the general-purpose and memory-optimized families), the MySQL-compatible engines'
-/// Optimized Writes, and the Database Activity Streams modes the member itself lists per
-/// engine.
+/// Multi-AZ DB cluster deployment of the general-purpose and memory-optimized families, and
+/// the Database Activity Streams modes the member itself lists per engine.
 const CAPABILITIES: &[CapabilityCase] = &[
     CapabilityCase {
         case: "an Aurora PostgreSQL serverless option",
@@ -151,13 +149,8 @@ const CAPABILITIES: &[CapabilityCase] = &[
             ("SupportsGlobalDatabases", "true"),
             // Kerberos authentication is published for this engine.
             ("SupportsKerberosAuthentication", "true"),
-            // No class of this engine takes additional storage volumes, requires its
-            // processor features to be named, or has the local NVMe storage Optimized Reads
-            // needs; Optimized Writes is the MySQL-compatible engines'.
+            // No class of this engine takes additional storage volumes.
             ("SupportsAdditionalStorageVolumes", "false"),
-            ("RequiresCustomProcessorFeatures", "false"),
-            ("SupportsOptimizedReads", "false"),
-            ("SupportsOptimizedWrites", "false"),
             // Aurora storage is the cluster's, so no per-instance storage is ordered.
             ("SupportsIops", "false"),
             ("SupportsStorageAutoscaling", "false"),
@@ -174,7 +167,7 @@ const CAPABILITIES: &[CapabilityCase] = &[
         expected: &[
             ("SupportsHttpEndpoint", "true"),
             ("SupportsKerberosAuthentication", "true"),
-            ("SupportsOptimizedReads", "false"),
+            ("SupportsClusters", "true"),
         ],
         empty_processor_features: true,
         // "Aurora PostgreSQL returns the value [sync, async]."
@@ -186,7 +179,8 @@ const CAPABILITIES: &[CapabilityCase] = &[
         class: "db.r6g.large",
         expected: &[
             ("SupportsHttpEndpoint", "true"),
-            ("SupportsOptimizedWrites", "false"),
+            // An instance of a cluster engine is only ever a member of its cluster.
+            ("SupportsClusters", "true"),
         ],
         empty_processor_features: true,
         // "Aurora MySQL and RDS for Oracle return [async] only."
@@ -199,10 +193,9 @@ const CAPABILITIES: &[CapabilityCase] = &[
         expected: &[
             // No cluster of this engine has a Data API endpoint.
             ("SupportsHttpEndpoint", "false"),
-            // The local NVMe generations are the ones Optimized Reads is offered on, and
-            // Optimized Writes is this engine's.
-            ("SupportsOptimizedReads", "true"),
-            ("SupportsOptimizedWrites", "true"),
+            // The local NVMe generations of the general-purpose and memory-optimized
+            // families are the ones a Multi-AZ DB cluster is offered on.
+            ("SupportsClusters", "true"),
             ("SupportsKerberosAuthentication", "true"),
         ],
         empty_processor_features: true,
@@ -213,10 +206,7 @@ const CAPABILITIES: &[CapabilityCase] = &[
         case: "an RDS for MySQL option on a class without local NVMe storage",
         engine: "mysql",
         class: "db.m6i.large",
-        expected: &[
-            ("SupportsOptimizedReads", "false"),
-            ("SupportsOptimizedWrites", "true"),
-        ],
+        expected: &[("SupportsClusters", "false")],
         empty_processor_features: true,
         activity_stream_modes: &[],
     },
@@ -227,11 +217,7 @@ const CAPABILITIES: &[CapabilityCase] = &[
         case: "an RDS for MySQL option on a compute-optimized class with local NVMe storage",
         engine: "mysql",
         class: "db.c6gd.12xlarge",
-        expected: &[
-            ("SupportsOptimizedReads", "false"),
-            ("SupportsOptimizedWrites", "false"),
-            ("SupportsClusters", "false"),
-        ],
+        expected: &[("SupportsClusters", "false")],
         empty_processor_features: true,
         activity_stream_modes: &[],
     },
@@ -242,7 +228,7 @@ const CAPABILITIES: &[CapabilityCase] = &[
         expected: &[
             // The Db2 engines publish no domain membership, so no Kerberos.
             ("SupportsKerberosAuthentication", "false"),
-            ("SupportsOptimizedWrites", "false"),
+            ("SupportsClusters", "false"),
         ],
         empty_processor_features: true,
         activity_stream_modes: &[],

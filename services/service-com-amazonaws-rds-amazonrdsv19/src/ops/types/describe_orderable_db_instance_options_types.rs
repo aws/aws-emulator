@@ -73,9 +73,6 @@ pub struct OrderableDBInstanceOption {
     pub supports_dedicated_log_volume: Option<bool>,
     pub supports_additional_storage_volumes: Option<bool>,
     pub supports_http_endpoint: Option<bool>,
-    pub supports_optimized_reads: Option<bool>,
-    pub supports_optimized_writes: Option<bool>,
-    pub requires_custom_processor_features: Option<bool>,
     pub available_additional_storage_volumes_options: Option<Vec<AvailableAdditionalStorageVolumesOption>>,
 }
 

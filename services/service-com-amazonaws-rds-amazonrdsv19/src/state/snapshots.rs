@@ -116,14 +116,13 @@ pub struct DbClusterSnapshotRecord {
     /// VOLUME copy's own tables ([`snapshot_data_bytes`]), and these databases belong to
     /// another service, which publishes a copy rather than a size. The two surfaces are to
     /// become one volume per cluster, at which point there is one thing to measure; until
-    /// then the member reports the volume the cluster's own engine endpoint serves.
+    /// then the number covers the volume the cluster's own engine endpoint serves.
     pub data_api_storage: Option<::std::sync::Arc<DataApiClusterData>>,
-    /// The full size, in bytes, of the data [`Self::storage`] holds — what
-    /// `FullSnapshotSizeInBytes` reports for a snapshot that has been taken.
+    /// The full size, in bytes, of the data [`Self::storage`] holds.
     ///
     /// Summed ONCE, where the copy was taken ([`snapshot_data_bytes`], called off the
     /// request's worker thread by [`data_plane::captured_data_bytes`]), because the copy
-    /// never changes afterwards: a read of the snapshot reports this number rather than
+    /// never changes afterwards: a read of the snapshot reads this number rather than
     /// walking its data again. Zero for a snapshot that captured no storage at all and for
     /// one whose databases were never written to.
     pub data_bytes: i64,
@@ -306,17 +305,6 @@ impl DbClusterSnapshotRecord {
             // says only whether a KMS key of the caller's was named: a client can tell
             // none/sse-rds/sse-kms apart only from this member.
             storage_encryption_type: Some(self.storage_encryption_type().to_string()),
-            // Whether the cluster the snapshot was taken from carried a custom data group,
-            // which is the flag that cluster's own envelope reports
-            // ([`DEFAULT_CUSTOM_DATA_GROUP_PRESENT`]).
-            custom_data_group_present: Some(DEFAULT_CUSTOM_DATA_GROUP_PRESENT),
-            // The size of the data the snapshot holds, which — like the allocated storage
-            // and the progress above — is known only once the snapshot has been TAKEN: a
-            // snapshot still being made reports no size at all. Measured when the copy was
-            // taken ([`Self::data_bytes`]), so a read reports it rather than re-walking the
-            // snapshot's data.
-            full_snapshot_size_in_bytes: (self.status == SNAPSHOT_STATUS_AVAILABLE)
-                .then_some(self.data_bytes),
             kms_key_id: self.kms_key_id.clone(),
             db_cluster_snapshot_arn: Some(self.arn()),
             source_db_cluster_snapshot_arn: self.source_snapshot_arn.clone(),
@@ -348,16 +336,15 @@ const SNAPSHOT_SIZE_PAGE_ROWS: usize = 500;
 /// log when it stopped there rather than reading on.
 const SNAPSHOT_SIZE_MAX_VALUES: usize = 1_000_000;
 
-/// The full size, in bytes, of the data a snapshot holds — what
-/// `DBClusterSnapshot$FullSnapshotSizeInBytes` reports.
+/// The full size, in bytes, of the data a snapshot holds.
 ///
-/// The member is "the full size of the snapshot, in bytes … the size of all the blocks that
-/// were written to the snapshot" (`DBSnapshot$FullSnapshotSizeInBytes`, the shape where this
-/// checkout's model declares it), so it is the size of the data the snapshot's own copy
-/// carries: every value in every table of every database that copy holds
-/// ([`table_names`], [`data_plane::sql_engine::Cell::byte_cost`]). A snapshot that captured
-/// no storage at all — one of a cluster with no DB instance in it — and one whose databases
-/// were never written to both hold no data, so both report zero rather than nothing.
+/// Measured the way `DBSnapshot$FullSnapshotSizeInBytes` defines the quantity — "the full
+/// size of the snapshot, in bytes … the size of all the blocks that were written to the
+/// snapshot" — so it is the size of the data the snapshot's own copy carries: every value in
+/// every table of every database that copy holds ([`table_names`],
+/// [`data_plane::sql_engine::Cell::byte_cost`]). A snapshot that captured no storage at all —
+/// one of a cluster with no DB instance in it — and one whose databases were never written to
+/// both hold no data, so both measure zero rather than nothing.
 ///
 /// Bounded three ways, because a caller decides how much data a copy holds:
 /// [`MAX_EXPORTED_TABLES`] tables — the ceiling the export of a snapshot's tables already
