@@ -53,6 +53,23 @@ pub const REPLICATION_COMPLETION_DELAY: Duration = Duration::from_secs(3);
 /// from ever being taken over by one.
 pub const REPLICATION_SERVICE_PRINCIPAL: &str = "replication.s3tables.amazonaws.com";
 
+/// How this service states a destination replication can never write the replica
+/// to: one whose table bucket already holds a table under the source table's
+/// namespace and name that replication did not create.
+///
+/// A table name is unique within its namespace and a table that is not
+/// replication's own is never taken over ([`REPLICATION_SERVICE_PRINCIPAL`]), so
+/// such a destination is terminally failed rather than pending. It is also what a
+/// destination reads as once its replica has been disassociated from replication
+/// (`DisassociateTableReplication`: "On the source table,
+/// GetTableReplicationStatus reports a failure for this destination the next time
+/// replication to it is attempted").
+///
+/// FIXED text: it names the CLASS of the failure and takes neither the
+/// destination, the namespace nor the table name from state.
+pub const REPLICA_NAME_TAKEN_MESSAGE: &str =
+    "The destination holds a table of this name that replication does not manage.";
+
 /// `ReplicationStatus` — the state of replication to ONE destination. Values
 /// from `com.amazonaws.s3tables#ReplicationStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +360,31 @@ impl ComAmazonawsS3tablesS3tablebucketsState {
                             state: ReplicationState::Failed,
                             last_successful_update: None,
                             failure_message: Some(BUCKET_NOT_FOUND_MESSAGE.to_string()),
+                        };
+                    }
+                    // Nor can a destination whose bucket already holds a table
+                    // under the source table's namespace and name that
+                    // replication does not manage: a name is unique within its
+                    // namespace, and a table that is not replication's own is
+                    // never taken over. Replication to it can therefore never
+                    // complete, which is the modeled failed state
+                    // ([`REPLICA_NAME_TAKEN_MESSAGE`]) rather than one that is
+                    // still pending.
+                    if replica.is_none()
+                        && self
+                            .table_buckets
+                            .get(destination)
+                            .and_then(|bucket| bucket.namespaces.get(&location.namespace))
+                            .is_some_and(|namespace| {
+                                namespace.tables.contains_key(&location.name)
+                            })
+                    {
+                        return ReplicationDestinationStatus {
+                            destination_table_bucket_arn: destination.clone(),
+                            destination_table_arn: None,
+                            state: ReplicationState::Failed,
+                            last_successful_update: None,
+                            failure_message: Some(REPLICA_NAME_TAKEN_MESSAGE.to_string()),
                         };
                     }
                     // A replication is reported completed only when BOTH hold:

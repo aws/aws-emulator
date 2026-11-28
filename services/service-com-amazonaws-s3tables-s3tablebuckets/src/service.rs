@@ -478,6 +478,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         gate_operations!(
             gated,
             engine,
+            complete_table_migration::CompleteTableMigration,
             create_namespace::CreateNamespace,
             create_table::CreateTable,
             create_table_bucket::CreateTableBucket,
@@ -490,10 +491,12 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             delete_table_bucket_replication::DeleteTableBucketReplication,
             delete_table_policy::DeleteTablePolicy,
             delete_table_replication::DeleteTableReplication,
+            disassociate_table_replication::DisassociateTableReplication,
             get_namespace::GetNamespace,
             get_table::GetTable,
             get_table_bucket::GetTableBucket,
             get_table_bucket_encryption::GetTableBucketEncryption,
+            get_table_bucket_logging::GetTableBucketLogging,
             get_table_bucket_maintenance_configuration::GetTableBucketMaintenanceConfiguration,
             get_table_bucket_metrics_configuration::GetTableBucketMetricsConfiguration,
             get_table_bucket_policy::GetTableBucketPolicy,
@@ -503,6 +506,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             get_table_maintenance_configuration::GetTableMaintenanceConfiguration,
             get_table_maintenance_job_status::GetTableMaintenanceJobStatus,
             get_table_metadata_location::GetTableMetadataLocation,
+            get_table_migration::GetTableMigration,
             get_table_policy::GetTablePolicy,
             get_table_record_expiration_configuration::GetTableRecordExpirationConfiguration,
             get_table_record_expiration_job_status::GetTableRecordExpirationJobStatus,
@@ -511,9 +515,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             get_table_storage_class::GetTableStorageClass,
             list_namespaces::ListNamespaces,
             list_table_buckets::ListTableBuckets,
+            list_table_migrations::ListTableMigrations,
             list_tables::ListTables,
             list_tags_for_resource::ListTagsForResource,
             put_table_bucket_encryption::PutTableBucketEncryption,
+            put_table_bucket_logging::PutTableBucketLogging,
             put_table_bucket_maintenance_configuration::PutTableBucketMaintenanceConfiguration,
             put_table_bucket_metrics_configuration::PutTableBucketMetricsConfiguration,
             put_table_bucket_policy::PutTableBucketPolicy,
@@ -524,9 +530,12 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             put_table_record_expiration_configuration::PutTableRecordExpirationConfiguration,
             put_table_replication::PutTableReplication,
             rename_table::RenameTable,
+            start_table_migration::StartTableMigration,
+            sync_table_migration::SyncTableMigration,
             tag_resource::TagResource,
             untag_resource::UntagResource,
             update_table_metadata_location::UpdateTableMetadataLocation,
+            update_table_migration::UpdateTableMigration,
         );
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
@@ -704,6 +713,10 @@ mod tests {
         "/smithy-model/com-amazonaws-s3tables-s3tablebuckets.json"
     );
 
+    /// The namespace and the table the catalog cases below are addressed for.
+    const NAMESPACE: &str = "ns";
+    const TABLE: &str = "t";
+
     /// Every operation name the MODEL declares, read from the model this crate
     /// was generated from rather than from a hand-kept list — so a rule stated
     /// over "every operation of this service" is checked over the surface the
@@ -721,7 +734,7 @@ mod tests {
             .filter_map(|(id, _)| id.rsplit('#').next().map(str::to_string))
             .collect();
         assert!(
-            operations.len() >= 49,
+            operations.len() >= 58,
             "case \"the model's surface\": expected this service's operations, got {operations:?}"
         );
         operations
@@ -755,9 +768,154 @@ mod tests {
             );
         }
         assert_eq!(
-            served, 49,
-            "case \"the served surface\": expected the 49 operations this crate has a handler \
+            served, 58,
+            "case \"the served surface\": expected the 58 operations this crate has a handler \
              for, got {served}"
+        );
+    }
+
+    /// RULE applied to the OTHER seam `override_operation` serves: the Iceberg
+    /// REST catalog is not an operation of this model, so no entry of
+    /// `gate_operations!` can wrap it in [`authorization::Authorized`] — the
+    /// authorization decision is taken inside the catalog instead, against the
+    /// control-plane action each of its endpoints takes
+    /// ([`iceberg_rest::decided_as`]).
+    ///
+    /// Every request the catalog CLAIMS must therefore name an action and a
+    /// resource for that decision, or it would be served with the policies in
+    /// force ignored. The one exception is a configuration request naming no
+    /// warehouse: it addresses no resource of this service at all, and the
+    /// catalog refuses it for naming none.
+    #[test]
+    fn every_request_the_iceberg_catalog_claims_is_decided_against_a_resource() {
+        // The warehouse prefix travels as one path segment, so a value with no
+        // separator in it stands in for the table bucket ARN a client addresses
+        // the catalog by; what this asserts is which action and which resource
+        // the decision is taken on, not how the segment is spelled.
+        let warehouse = "warehouse";
+        let table = || Some((NAMESPACE.to_string(), TABLE.to_string()));
+        // (case, method, uri, the decision the endpoint must be taken under)
+        let rows: Vec<(&str, &str, String, iceberg_rest::Decided)> = vec![
+            (
+                "the warehouse's configuration",
+                "GET",
+                format!("/iceberg/v1/config?warehouse={warehouse}"),
+                iceberg_rest::Decided {
+                    operation: "GetTableBucket",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: None,
+                },
+            ),
+            (
+                "the warehouse's namespaces",
+                "GET",
+                format!("/iceberg/v1/{warehouse}/namespaces"),
+                iceberg_rest::Decided {
+                    operation: "ListNamespaces",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: None,
+                },
+            ),
+            (
+                "one namespace",
+                "GET",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}"),
+                iceberg_rest::Decided {
+                    operation: "GetNamespace",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: None,
+                },
+            ),
+            (
+                "whether a namespace exists",
+                "HEAD",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}"),
+                iceberg_rest::Decided {
+                    operation: "GetNamespace",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: None,
+                },
+            ),
+            (
+                "a namespace's tables",
+                "GET",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}/tables"),
+                iceberg_rest::Decided {
+                    operation: "ListTables",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: None,
+                },
+            ),
+            (
+                "a table's metadata",
+                "GET",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}/tables/{TABLE}"),
+                iceberg_rest::Decided {
+                    operation: "GetTableMetadataLocation",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: table(),
+                },
+            ),
+            (
+                "whether a table exists",
+                "HEAD",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}/tables/{TABLE}"),
+                iceberg_rest::Decided {
+                    operation: "GetTable",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: table(),
+                },
+            ),
+            (
+                "a commit to a table",
+                "POST",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}/tables/{TABLE}"),
+                iceberg_rest::Decided {
+                    operation: "UpdateTableMetadataLocation",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: table(),
+                },
+            ),
+            (
+                "a table method the catalog does not serve",
+                "DELETE",
+                format!("/iceberg/v1/{warehouse}/namespaces/{NAMESPACE}/tables/{TABLE}"),
+                iceberg_rest::Decided {
+                    operation: "GetTable",
+                    table_bucket_arn: warehouse.to_string(),
+                    table: table(),
+                },
+            ),
+        ];
+        for (case, method, uri, expected) in rows {
+            assert!(
+                iceberg_rest::serves(method, &uri),
+                "case {case:?}: the catalog must claim {method} {uri}"
+            );
+            let decided = iceberg_rest::decided_as(method, &uri).unwrap_or_else(|| {
+                panic!(
+                    "case {case:?}: every request the catalog claims names a resource to decide \
+                     against; {method} {uri} names none, so it would be served with the policies \
+                     in force ignored"
+                )
+            });
+            assert_eq!(
+                decided, expected,
+                "case {case:?}: expected the decision to be taken on that action and resource"
+            );
+        }
+
+        // The one request that names no resource: a configuration request naming
+        // no warehouse, which the catalog refuses for naming none.
+        let no_warehouse = "/iceberg/v1/config";
+        assert!(
+            iceberg_rest::serves("GET", no_warehouse),
+            "case \"a configuration naming no warehouse\": the catalog claims it"
+        );
+        assert!(
+            iceberg_rest::decided_as("GET", no_warehouse).is_none(),
+            "case \"a configuration naming no warehouse\": it addresses no resource of this \
+             service"
         );
     }
 }

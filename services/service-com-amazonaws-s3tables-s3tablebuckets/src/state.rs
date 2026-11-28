@@ -60,6 +60,12 @@ pub mod kms_key_access;
 mod tagging;
 pub use tagging::*;
 
+/// The migrations of a source table into a table of this store: the record each
+/// one leaves behind, the destination table it creates and the states the clock
+/// moves it through.
+mod migrations;
+pub use migrations::*;
+
 /// The region a table bucket's ARN carries when the request carries no
 /// parseable SigV4 credential scope to name one.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -342,6 +348,53 @@ impl MetricsConfiguration {
     pub fn id(&self) -> &'static str {
         WHOLE_BUCKET_METRICS_CONFIGURATION_ID
     }
+}
+
+/// `PartitionDateSource` — which date the keys of a table bucket's log objects
+/// are partitioned by. Values from `com.amazonaws.s3tables#PartitionDateSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartitionDateSource {
+    /// "The time that the requests in the log were made."
+    EventTime,
+    /// "The time that the log was delivered."
+    DeliveryTime,
+}
+
+impl PartitionDateSource {
+    /// Every modeled value, for exhaustiveness checks.
+    pub const ALL: &'static [Self] = &[Self::EventTime, Self::DeliveryTime];
+
+    /// The value as it goes on the wire.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::EventTime => "EventTime",
+            Self::DeliveryTime => "DeliveryTime",
+        }
+    }
+
+    /// Parse a wire value, or `None` when it names no modeled value.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_wire() == value)
+    }
+}
+
+/// The stored form of a table bucket's server access logging configuration: the
+/// general purpose bucket its logs are delivered to, the prefix the log object
+/// keys carry and the date those keys are partitioned by.
+///
+/// A bucket holds one of these only while logging is ON: "To disable logging,
+/// specify an empty `TableBucketLoggingStatus`"
+/// (`PutTableBucketLogging$tableBucketLoggingStatus`), and a read of a bucket
+/// that holds none reports a status with no `loggingEnabled` member — which is
+/// how a client observes that logging is off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketLogging {
+    pub target_bucket: String,
+    pub target_prefix: String,
+    pub partition_date_source: PartitionDateSource,
 }
 
 /// `TableRecordExpirationStatus` — whether the records of a table expire.
@@ -1032,6 +1085,11 @@ pub struct TableBucket {
     /// The namespaces resident in this bucket, keyed by namespace name, so a
     /// list has one stable order to page over.
     pub namespaces: BTreeMap<String, Namespace>,
+    /// Where this bucket's server access logs are delivered, `None` until a put
+    /// turns logging on: a table bucket delivers no logs until one is set, and a
+    /// read of a bucket that has none reports a logging status with no
+    /// `loggingEnabled` member rather than being refused ([`BucketLogging`]).
+    pub logging: Option<BucketLogging>,
 }
 
 /// A namespace, as this emulator stores it: a logical grouping of tables inside
@@ -1127,6 +1185,13 @@ pub struct Table {
     /// entry has run under its default status since the table was created,
     /// which [`table_task_schedule`] is where it is resolved from.
     pub maintenance_schedules: BTreeMap<TableMaintenanceType, MaintenanceSchedule>,
+    /// When the migration into this table was COMPLETED
+    /// (`CompleteTableMigration`), and `None` on every table whose migration is
+    /// not complete — a table no migration created included. "You can't undo
+    /// this operation", so the instant is written once and never cleared, and it
+    /// is what a second complete, and a sync after one, are refused against
+    /// ([`migrations`]).
+    pub migration_completed_at: Option<SystemTime>,
     pub tags: BTreeMap<String, String>,
 }
 
@@ -1173,6 +1238,14 @@ pub struct ComAmazonawsS3tablesS3tablebucketsState {
     /// Every live table, keyed by its `tableARN`: the index the `tableArn`
     /// addressing mode resolves through.
     pub tables_by_arn: BTreeMap<String, TableLocation>,
+    /// Every migration this account has started, keyed by its `migrationId`.
+    /// A migration outlives the call that started it and is the resource
+    /// `GetTableMigration` and `ListTableMigrations` report
+    /// ([`migrations`]).
+    pub migrations: BTreeMap<String, Migration>,
+    /// Counts the migrations this store has recorded, so the listing can hand
+    /// them back newest first whatever the clock did. Never exposed on the wire.
+    pub migrations_recorded: u64,
     /// Counts the ids this store has minted, so two ids minted inside one clock
     /// tick still differ. Never exposed on the wire.
     pub minted_ids: u64,

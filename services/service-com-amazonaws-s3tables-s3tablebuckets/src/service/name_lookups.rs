@@ -225,6 +225,7 @@ lookup_operations! {
     get_namespace: get_namespace::GetNamespace => ["namespace"],
     delete_namespace: delete_namespace::DeleteNamespace => ["namespace"],
     list_tables: list_tables::ListTables => ["namespace"],
+    list_table_migrations: list_table_migrations::ListTableMigrations => ["namespace", "name"],
     create_table: create_table::CreateTable => ["namespace"],
     get_table: get_table::GetTable => ["namespace", "name"],
     delete_table: delete_table::DeleteTable => ["namespace", "name"],

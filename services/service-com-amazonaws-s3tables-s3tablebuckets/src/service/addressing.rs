@@ -42,9 +42,12 @@ const PAYLOAD_MEMBERS: &[&str] = &[
 ///   table by ARN ("The tagged resource can be a table bucket or a table");
 /// * `tableArn` — a table's own ARN, which the replication and record-expiration
 ///   operations address one by;
+/// * `tableARN` — the same thing under the other spelling this model uses for
+///   it, which the migration operations address a destination table by;
 /// * `tableBucketARN` — the table bucket every other operation of this service
 ///   addresses, or addresses a table inside, by.
-pub(super) const ARN_MEMBERS: &[&str] = &["resourceArn", "tableArn", "tableBucketARN"];
+pub(super) const ARN_MEMBERS: &[&str] =
+    &["resourceArn", "tableArn", "tableARN", "tableBucketARN"];
 
 /// The addressing members of ONE request's input.
 pub(super) struct Addressing {

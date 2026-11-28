@@ -118,6 +118,9 @@ impl ComAmazonawsS3tablesS3tablebucketsState {
                     maintenance_schedules: BTreeMap::new(),
                     tags: BTreeMap::new(),
                     namespaces: BTreeMap::new(),
+                    // The bucket delivers no server access logs until a put
+                    // turns logging on.
+                    logging: None,
                 },
             );
         }
@@ -360,6 +363,9 @@ impl ComAmazonawsS3tablesS3tablebucketsState {
             replication: None,
             maintenance: BTreeMap::new(),
             maintenance_schedules: BTreeMap::new(),
+            // No migration created this table, so there is no migration of it to
+            // complete.
+            migration_completed_at: None,
             tags: BTreeMap::new(),
         };
 

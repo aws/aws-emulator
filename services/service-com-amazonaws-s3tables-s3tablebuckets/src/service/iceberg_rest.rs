@@ -215,6 +215,22 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for IcebergCatalog<Eng> {
         ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
         Box::pin(async move {
+            // The AUTHORIZATION decision, taken before anything is read or
+            // written — the same decision every modelled operation of this
+            // service is served behind ([`super::authorization`]). The catalog is
+            // reached through a seam the model binds no operation to, so the
+            // gated routing table cannot wrap it: the decision is taken HERE
+            // instead, against the control-plane action the endpoint's records
+            // belong to and the resource it acts on ([`governed`]), so no
+            // endpoint of this data plane is served with the policies in force
+            // ignored.
+            if let Some(message) = self.authorization_refusal(ctx, req) {
+                return error(
+                    crate::scaffolded::ACCESS_DENIED_STATUS,
+                    crate::scaffolded::ACCESS_DENIED_CODE,
+                    &message,
+                );
+            }
             // The URI resolved to this operation, so it names an endpoint of the
             // catalog: either its table endpoint or one of the discovery
             // endpoints beside it. A URI that names neither is never routed
@@ -253,6 +269,52 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for IcebergCatalog<Eng> {
 }
 
 impl<Eng: Send + Sync + 'static> IcebergCatalog<Eng> {
+    /// The sentence this request is refused with when the policies in force on
+    /// the caller and on what it addresses do not let it perform the action the
+    /// endpoint takes, and `None` when nothing refuses it.
+    ///
+    /// The three pieces are the modelled gate's ([`super::authorization`]): the
+    /// resource the request acts on, the resource-based document in force on the
+    /// table bucket holding it, and the shared decision
+    /// ([`crate::state::authorization::refusal`]) which words the refusal. The
+    /// store is read ONCE, under one guard, nothing in it is written, and the
+    /// guard is released before the decision is asked — the decision reads other
+    /// services' stores.
+    fn authorization_refusal(
+        &self,
+        ctx: &OperationContext<'_>,
+        req: &RtRequest,
+    ) -> Option<String> {
+        let addressed = governed(req.method(), req.uri())?;
+        let (resource, policy) = {
+            let state = crate::state::service_state(&*self.engine)?;
+            let store = state.lock();
+            let bucket = store.table_buckets.get(&addressed.table_bucket_arn);
+            // A table's permission is granted ON the table, under the policy of
+            // the bucket holding it; a request naming a table this account does
+            // not hold is decided against the bucket, which is the only resource
+            // such a request names.
+            let resource = addressed
+                .table
+                .as_ref()
+                .and_then(|(namespace, name)| {
+                    bucket
+                        .and_then(|bucket| bucket.namespaces.get(namespace))
+                        .and_then(|namespace| namespace.tables.get(name))
+                        .map(|table| table.table_arn.clone())
+                })
+                .unwrap_or_else(|| addressed.table_bucket_arn.clone());
+            (resource, bucket.and_then(|bucket| bucket.policy.clone()))
+        };
+        crate::state::authorization::refusal(
+            &*self.engine,
+            ctx,
+            addressed.operation,
+            &resource,
+            policy.as_deref(),
+        )
+    }
+
     /// Serve `GET`: the table's metadata document and the location of the file
     /// it is written to.
     ///
@@ -920,6 +982,92 @@ fn empty(status: u16) -> RtResponse {
     );
     response.headers_mut().insert("content-length", "0");
     response
+}
+
+/// What a catalog request ACTS ON, and the control-plane action it is performed
+/// under.
+///
+/// The catalog is not an operation of the model, so no modelled permission names
+/// it; but every endpoint of it reads or writes the SAME records a modelled
+/// operation does, and S3 Tables documents the permission for each of those. So
+/// the action a catalog request is decided under is the control-plane action
+/// whose records the endpoint reaches — a load reads the table's metadata
+/// location, a commit moves it, a namespace listing lists namespaces — and the
+/// resource is the one the modelled gate decides those operations against
+/// ([`super::authorization`]): the table when the request addresses one, else the
+/// table bucket it is addressed within.
+struct Governed {
+    /// The modelled operation whose permission this endpoint takes.
+    operation: &'static str,
+    /// The warehouse the request is addressed for: a table bucket's ARN.
+    table_bucket_arn: String,
+    /// The namespace and name of the table the request addresses inside it, when
+    /// it addresses one.
+    table: Option<(String, String)>,
+}
+
+impl Governed {
+    /// The decision this request is taken under, as the test in
+    /// [`crate::service`] reads it: the action and the resource.
+    #[cfg(test)]
+    fn decided(&self) -> Decided {
+        Decided {
+            operation: self.operation,
+            table_bucket_arn: self.table_bucket_arn.clone(),
+            table: self.table.clone(),
+        }
+    }
+}
+
+/// The decision ONE catalog request is taken under: the control-plane action the
+/// endpoint takes, the table bucket it is addressed for, and the table inside it
+/// when it addresses one.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Decided {
+    pub(super) operation: &'static str,
+    pub(super) table_bucket_arn: String,
+    pub(super) table: Option<(String, String)>,
+}
+
+/// The decision the catalog request `method` and `uri` is taken under, or `None`
+/// when it addresses no resource of this service at all.
+///
+/// The one reader outside this module is the test in [`crate::service`] that
+/// holds this catalog to the gate every modelled operation of the service is
+/// served behind: the catalog is reached through a seam the model binds no
+/// operation to, so no entry of that service's gated routing table can wrap it,
+/// and a request it CLAIMS but names no resource for would be served with the
+/// policies in force ignored.
+#[cfg(test)]
+pub(super) fn decided_as(method: &str, uri: &str) -> Option<Decided> {
+    Some(governed(method, uri)?.decided())
+}
+
+/// What the catalog request `method` and `uri` acts on, or `None` when it
+/// addresses no resource of this service at all — the configuration endpoint of a
+/// request naming no warehouse, which leaves the decision nothing to be taken on
+/// (and is refused for naming none).
+fn governed(method: &str, uri: &str) -> Option<Governed> {
+    if let Some(discovery) = discovery::request_of(method, uri) {
+        return discovery.governed();
+    }
+    let request = catalog_request_of(method, uri)?;
+    Some(Governed {
+        operation: match request.endpoint {
+            // A load answers the table's metadata document and the location of
+            // the file it is written to.
+            TableEndpoint::Load => "GetTableMetadataLocation",
+            // Whether the table is there at all, which is what a read of the
+            // table answers.
+            TableEndpoint::Exists | TableEndpoint::Unserved => "GetTable",
+            // A commit MOVES the table to another metadata document, which is
+            // what the modelled write of that member does.
+            TableEndpoint::Commit => "UpdateTableMetadataLocation",
+        },
+        table_bucket_arn: request.table_bucket_arn,
+        table: Some((request.namespace, request.table)),
+    })
 }
 
 /// One refusal of the catalog, in the Iceberg REST catalog's own error envelope:

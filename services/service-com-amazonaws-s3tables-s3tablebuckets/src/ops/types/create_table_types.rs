@@ -56,25 +56,6 @@ pub struct SchemaField {
     pub required: bool,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSchemaV2")]
-#[derive(Debug, Clone, Default)]
-pub struct IcebergSchemaV2 {
-    pub r#type: String,
-    pub fields: Vec<SchemaV2Field>,
-    pub schema_id: Option<i32>,
-    pub identifier_field_ids: Option<Vec<i32>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#SchemaV2Field")]
-#[derive(Debug, Clone, Default)]
-pub struct SchemaV2Field {
-    pub id: i32,
-    pub name: String,
-    pub r#type: ::aws_smithy_types::Document,
-    pub required: bool,
-    pub doc: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergPartitionSpec")]
 #[derive(Debug, Clone, Default)]
 pub struct IcebergPartitionSpec {
@@ -89,22 +70,6 @@ pub struct IcebergPartitionField {
     pub transform: String,
     pub name: String,
     pub field_id: Option<i32>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSortOrder")]
-#[derive(Debug, Clone, Default)]
-pub struct IcebergSortOrder {
-    pub order_id: i32,
-    pub fields: Vec<IcebergSortField>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSortField")]
-#[derive(Debug, Clone, Default)]
-pub struct IcebergSortField {
-    pub source_id: i32,
-    pub transform: String,
-    pub direction: String,
-    pub null_order: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3tables#CreateTableResponse")]

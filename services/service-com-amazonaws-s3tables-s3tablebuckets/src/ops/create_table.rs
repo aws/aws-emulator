@@ -992,6 +992,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // Nor any schedule of its own: every task has been eligible to run
             // on the table since it was created, under its default status.
             maintenance_schedules: ::std::collections::BTreeMap::new(),
+            // No migration created this table, so there is no migration of it
+            // to complete.
+            migration_completed_at: None,
             tags,
         };
 

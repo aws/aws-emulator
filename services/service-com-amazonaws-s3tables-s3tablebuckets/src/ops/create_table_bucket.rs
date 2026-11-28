@@ -306,6 +306,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A fresh bucket holds no namespaces; `CreateNamespace` is what
             // puts one in it.
             namespaces: ::std::collections::BTreeMap::new(),
+            // A fresh table bucket delivers no server access logs:
+            // `PutTableBucketLogging` is what turns logging on for it.
+            logging: None,
         };
         store.table_buckets.insert(arn.clone(), bucket);
         // The lock covers the state change only; everything below is owned.

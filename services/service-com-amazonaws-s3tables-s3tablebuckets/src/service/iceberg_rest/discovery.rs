@@ -191,6 +191,41 @@ pub(super) fn request_of(method: &str, uri: &str) -> Option<Discovery> {
     }
 }
 
+impl Discovery {
+    /// What this discovery request acts on, and the control-plane action it is
+    /// performed under — the question [`super::governed`] asks of every catalog
+    /// request before it is served.
+    ///
+    /// Each arm names the modelled operation whose RECORDS the endpoint reports
+    /// from, since that is the operation whose permission S3 Tables documents for
+    /// reading them: the warehouse's configuration reports the table bucket, the
+    /// namespace listings report what `ListNamespaces` and `GetNamespace` report,
+    /// and the table listing what `ListTables` reports. A configuration request
+    /// naming no warehouse addresses no resource of this service at all, which
+    /// leaves the decision nothing to be taken on.
+    pub(super) fn governed(&self) -> Option<super::Governed> {
+        let (operation, table_bucket_arn) = match self {
+            Self::Config { warehouse } => ("GetTableBucket", warehouse.clone()?),
+            Self::Namespaces {
+                table_bucket_arn, ..
+            } => ("ListNamespaces", table_bucket_arn.clone()),
+            Self::Namespace {
+                table_bucket_arn, ..
+            } => ("GetNamespace", table_bucket_arn.clone()),
+            Self::Tables {
+                table_bucket_arn, ..
+            } => ("ListTables", table_bucket_arn.clone()),
+        };
+        Some(super::Governed {
+            operation,
+            table_bucket_arn,
+            // A discovery endpoint addresses the warehouse or a namespace in it,
+            // never one table, so the decision is taken on the table bucket.
+            table: None,
+        })
+    }
+}
+
 impl<Eng: Send + Sync + 'static> IcebergCatalog<Eng> {
     /// Serve one discovery request.
     ///

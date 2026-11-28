@@ -556,6 +556,119 @@ impl Emulator {
         .await
     }
 
+    /// `DisassociateTableReplication`, which addresses the replica table by a
+    /// query member and carries no body (`PUT /table-replication/disassociate`).
+    pub async fn disassociate_table_replication(&self, region: &str, table_arn: &str) -> Reply {
+        self.call(
+            "PUT",
+            &format!(
+                "/table-replication/disassociate{}",
+                query_string(&[("tableArn", table_arn.to_string())])
+            ),
+            region,
+            None,
+        )
+        .await
+    }
+
+    /// `PutTableBucketLogging`: the bucket's ARN is the one path label and the
+    /// status travels as the body's `tableBucketLoggingStatus` — an EMPTY one
+    /// turns logging off.
+    pub async fn put_table_bucket_logging(
+        &self,
+        region: &str,
+        arn: &str,
+        status: &Value,
+    ) -> Reply {
+        self.call(
+            "PUT",
+            &format!("/buckets/{}/logging", encode(arn)),
+            region,
+            Some(&serde_json::json!({ "tableBucketLoggingStatus": status })),
+        )
+        .await
+    }
+
+    pub async fn get_table_bucket_logging(&self, region: &str, arn: &str) -> Reply {
+        self.call(
+            "GET",
+            &format!("/buckets/{}/logging", encode(arn)),
+            region,
+            None,
+        )
+        .await
+    }
+
+    /// `StartTableMigration`: every member travels in the body
+    /// (`POST /start-table-migration`).
+    pub async fn start_table_migration(&self, region: &str, request: &Value) -> Reply {
+        self.call("POST", "/start-table-migration", region, Some(request))
+            .await
+    }
+
+    /// `SyncTableMigration`: every member travels in the body
+    /// (`POST /sync-table-migration`).
+    pub async fn sync_table_migration(&self, region: &str, request: &Value) -> Reply {
+        self.call("POST", "/sync-table-migration", region, Some(request))
+            .await
+    }
+
+    /// `GetTableMigration` with whichever query members the case names, so a
+    /// suite can address a migration by its id, by its destination table, or
+    /// incompletely on purpose.
+    pub async fn get_table_migration(&self, region: &str, query: &[(&str, String)]) -> Reply {
+        self.call(
+            "GET",
+            &format!("/get-table-migration{}", query_string(query)),
+            region,
+            None,
+        )
+        .await
+    }
+
+    /// `ListTableMigrations` with whichever query members the case names.
+    pub async fn list_table_migrations(&self, region: &str, query: &[(&str, String)]) -> Reply {
+        self.call(
+            "GET",
+            &format!("/list-table-migrations{}", query_string(query)),
+            region,
+            None,
+        )
+        .await
+    }
+
+    /// `UpdateTableMigration`: the migration is addressed by query members and
+    /// the state it is asked to move to travels in the body.
+    pub async fn update_table_migration(
+        &self,
+        region: &str,
+        query: &[(&str, String)],
+        body: &Value,
+    ) -> Reply {
+        self.call(
+            "POST",
+            &format!("/update-table-migration{}", query_string(query)),
+            region,
+            Some(body),
+        )
+        .await
+    }
+
+    /// `CompleteTableMigration`, which addresses the migrated table by a query
+    /// member and carries no body (`POST /complete-table-migration`).
+    pub async fn complete_table_migration(&self, region: &str, table_arn: &str) -> Reply {
+        self.call(
+            "POST",
+            &format!(
+                "/complete-table-migration{}",
+                query_string(&[("tableARN", table_arn.to_string())])
+            ),
+            region,
+            None,
+        )
+        .await
+    }
+
     /// `PutTableRecordExpirationConfiguration`: the table's ARN travels as a
     /// query member and the configuration as the body's `value`.
     pub async fn put_table_record_expiration_configuration(
@@ -1424,4 +1537,106 @@ pub fn now_seconds() -> f64 {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .expect("the clock is after the epoch")
         .as_secs_f64()
+}
+
+/// The IAM role a migration is started with: a role of the emulated account, in
+/// the one form the model admits for the member
+/// (`@pattern(^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/.+$)`).
+pub fn migration_role_arn() -> String {
+    format!("arn:aws:iam::{ACCOUNT}:role/s3tables-migration")
+}
+
+/// The general purpose bucket a migration writes its reports to, in the one form
+/// the model admits for the member
+/// (`S3BucketARN`, `@pattern(^arn:aws[-a-z0-9]*:s3[a-z]*:[-a-z0-9]*:([0-9]{12})?:.+$)`).
+pub const MIGRATION_REPORT_BUCKET: &str = "arn:aws:s3:::s3tables-migration-reports";
+
+/// A `StartTableMigration` body migrating a Glue Data Catalog table into
+/// `namespace`/`name` of `bucket_arn`, carrying the members every start needs and
+/// nothing else.
+///
+/// Held here because more than one suite starts a migration; a case that cares
+/// about one member adds or replaces that member on the object this returns.
+pub fn start_migration_request(bucket_arn: &str, namespace: &str, name: &str) -> Value {
+    serde_json::json!({
+        "roleARN": migration_role_arn(),
+        "sourceType": "glueTable",
+        "source": {
+            "glueTable": {
+                "catalogId": ACCOUNT,
+                "databaseName": "sales",
+                "tableName": "orders",
+            }
+        },
+        "destinationTable": {
+            "tableBucketARN": bucket_arn,
+            "namespace": namespace,
+            "name": name,
+        },
+        "migrationOutput": { "bucket": MIGRATION_REPORT_BUCKET },
+    })
+}
+
+/// A `SyncTableMigration` body syncing the migration of `table_arn`.
+pub fn sync_migration_request(table_arn: &str) -> Value {
+    serde_json::json!({
+        "roleARN": migration_role_arn(),
+        "tableARN": table_arn,
+        "migrationOutput": { "bucket": MIGRATION_REPORT_BUCKET },
+    })
+}
+
+/// How long [`await_migration_state`] keeps looking before it gives up. GENEROUS
+/// on purpose: it polls for the condition and asserts nothing about how long it
+/// took, so a loaded host only makes it poll more often.
+pub const MIGRATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long it waits between two polls of a migration's state.
+pub const MIGRATION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The states a migration has ENDED in, which it moves no further from
+/// (`MigrationState`).
+pub const ENDED_MIGRATION_STATES: [&str; 3] = ["succeeded", "failed", "cancelled"];
+
+/// The read of the migration `migration_id` once it reports `wanted`, looked for
+/// until it does.
+///
+/// A migration runs asynchronously: the call that starts it answers while the
+/// migration is still at the state the request was accepted in, so every suite
+/// that needs a later state waits for that CONDITION — never for a span — which
+/// is this one loop. `wanted` must be a state the migration RESTS in (one it
+/// leaves only when a request moves it, or one it has ended in); a migration that
+/// ends on some other state fails the case at once rather than waiting out the
+/// deadline.
+pub async fn await_migration_state(
+    emulator: &Emulator,
+    region: &str,
+    migration_id: &str,
+    wanted: &str,
+    case: &str,
+) -> Reply {
+    let deadline = std::time::Instant::now() + MIGRATION_DEADLINE;
+    loop {
+        let read = served(
+            emulator
+                .get_table_migration(region, &[("migrationId", migration_id.to_string())])
+                .await,
+            "GetTableMigration",
+            case,
+        );
+        let state = read.text("state");
+        if state == wanted {
+            return read;
+        }
+        assert!(
+            !ENDED_MIGRATION_STATES.contains(&state.as_str()),
+            "case {case:?}: expected migration {migration_id} to reach {wanted:?}, but it has \
+             already ended in {state:?}"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: expected migration {migration_id} to reach {wanted:?}, got {state:?}"
+        );
+        tokio::time::sleep(MIGRATION_POLL_INTERVAL).await;
+    }
 }

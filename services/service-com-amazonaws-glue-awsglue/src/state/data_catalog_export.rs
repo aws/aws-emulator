@@ -404,6 +404,9 @@ pub fn create_export_table_bucket<Eng: Send + Sync + 'static>(
             // A bucket S3 Tables has just taken holds no namespaces: what a namespace or a
             // table in it is created by is that service's own writes.
             namespaces: BTreeMap::new(),
+            // Nor does it deliver any server access logs: a put on that service's own
+            // logging surface is what turns them on.
+            logging: None,
         },
     );
     Some(arn)

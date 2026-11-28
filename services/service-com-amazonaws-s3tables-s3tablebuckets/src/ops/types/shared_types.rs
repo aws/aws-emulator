@@ -60,6 +60,32 @@ pub struct EncryptionConfiguration {
     pub kms_key_arn: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#TableBucketLoggingStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct TableBucketLoggingStatus {
+    pub logging_enabled: Option<LoggingEnabled>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#LoggingEnabled")]
+#[derive(Debug, Clone, Default)]
+pub struct LoggingEnabled {
+    pub target_bucket: String,
+    pub target_prefix: String,
+    pub target_object_key_format: TargetObjectKeyFormat,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#TargetObjectKeyFormat")]
+#[derive(Debug, Clone, Default)]
+pub struct TargetObjectKeyFormat {
+    pub partitioned_prefix: PartitionedPrefix,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#PartitionedPrefix")]
+#[derive(Debug, Clone, Default)]
+pub struct PartitionedPrefix {
+    pub partition_date_source: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.s3tables#TableBucketReplicationConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct TableBucketReplicationConfiguration {
@@ -119,6 +145,41 @@ pub struct TableReplicationRule {
     pub destinations: Vec<ReplicationDestination>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSchemaV2")]
+#[derive(Debug, Clone, Default)]
+pub struct IcebergSchemaV2 {
+    pub r#type: String,
+    pub fields: Vec<SchemaV2Field>,
+    pub schema_id: Option<i32>,
+    pub identifier_field_ids: Option<Vec<i32>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#SchemaV2Field")]
+#[derive(Debug, Clone, Default)]
+pub struct SchemaV2Field {
+    pub id: i32,
+    pub name: String,
+    pub r#type: ::aws_smithy_types::Document,
+    pub required: bool,
+    pub doc: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSortOrder")]
+#[derive(Debug, Clone, Default)]
+pub struct IcebergSortOrder {
+    pub order_id: i32,
+    pub fields: Vec<IcebergSortField>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#IcebergSortField")]
+#[derive(Debug, Clone, Default)]
+pub struct IcebergSortField {
+    pub source_id: i32,
+    pub transform: String,
+    pub direction: String,
+    pub null_order: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.s3tables#TableMaintenanceConfigurationValue")]
 #[derive(Debug, Clone, Default)]
 pub struct TableMaintenanceConfigurationValue {
@@ -148,6 +209,49 @@ pub struct IcebergSnapshotManagementSettings {
     pub max_snapshot_age_hours: Option<i32>,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.s3tables#SourceConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SourceConfiguration {
+    glueTable(GlueTableSource),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#GlueTableSource")]
+#[derive(Debug, Clone, Default)]
+pub struct GlueTableSource {
+    pub catalog_id: String,
+    pub database_name: String,
+    pub table_name: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MaintenanceSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct MaintenanceSettings {
+    pub iceberg_compaction: Option<MigrationCompactionSettings>,
+    pub iceberg_snapshot_management: Option<MigrationSnapshotManagementSettings>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MigrationCompactionSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct MigrationCompactionSettings {
+    pub target_file_size_mb: i32,
+    pub strategy: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MigrationSnapshotManagementSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct MigrationSnapshotManagementSettings {
+    pub min_snapshots_to_keep: i32,
+    pub max_snapshot_age_hours: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MigrationPolicies")]
+#[derive(Debug, Clone, Default)]
+pub struct MigrationPolicies {
+    pub unmatched_source_fields_policy: String,
+    pub incompatible_values_policy: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.s3tables#TableRecordExpirationConfigurationValue")]
 #[derive(Debug, Clone, Default)]
 pub struct TableRecordExpirationConfigurationValue {
@@ -167,6 +271,33 @@ pub struct MethodNotAllowedException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MigrationOutputConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct MigrationOutputConfiguration {
+    pub bucket: String,
+    pub prefixes: Option<MigrationReportPrefixes>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3tables#MigrationReportPrefixes")]
+#[derive(Debug, Clone, Default)]
+pub struct MigrationReportPrefixes {
+    pub table_compatibility_report: Option<String>,
+    pub object_compatibility_report: Option<String>,
+    pub object_migration_report: Option<String>,
+}
+
+/// The values `CompressionCodec` accepts on the wire.
+pub const COMPRESSION_CODEC_VALUES: &[&str] = &["gzip", "snappy", "uncompressed", "zstd"];
+
+
+/// The values `DataFileFormat` accepts on the wire.
+pub const DATA_FILE_FORMAT_VALUES: &[&str] = &["parquet"];
+
+
+/// The values `FindingCategory` accepts on the wire.
+pub const FINDING_CATEGORY_VALUES: &[&str] = &["access", "data", "internal", "metadata"];
+
+
 /// The values `IcebergCompactionStrategy` accepts on the wire.
 pub const ICEBERG_COMPACTION_STRATEGY_VALUES: &[&str] = &["auto", "binpack", "sort", "z-order"];
 
@@ -179,6 +310,10 @@ pub const ICEBERG_NULL_ORDER_VALUES: &[&str] = &["nulls-first", "nulls-last"];
 pub const ICEBERG_SORT_DIRECTION_VALUES: &[&str] = &["asc", "desc"];
 
 
+/// The values `IncompatibleValuesPolicy` accepts on the wire.
+pub const INCOMPATIBLE_VALUES_POLICY_VALUES: &[&str] = &["fail", "setNull"];
+
+
 /// The values `JobStatus` accepts on the wire.
 pub const JOB_STATUS_VALUES: &[&str] = &["Disabled", "Failed", "Not_Yet_Run", "Successful"];
 
@@ -187,8 +322,32 @@ pub const JOB_STATUS_VALUES: &[&str] = &["Disabled", "Failed", "Not_Yet_Run", "S
 pub const MAINTENANCE_STATUS_VALUES: &[&str] = &["disabled", "enabled"];
 
 
+/// The values `MigrationFailureCode` accepts on the wire.
+pub const MIGRATION_FAILURE_CODE_VALUES: &[&str] = &["destinationPermissions", "internalError", "objectCompatibilityReport", "objectMigrationReport", "reportBucketNotSupported", "resourceNotFound", "rolePermissions", "sourceNotSupported", "sourcePermissions", "tableCompatibilityReport"];
+
+
+/// The values `MigrationRequestedState` accepts on the wire.
+pub const MIGRATION_REQUESTED_STATE_VALUES: &[&str] = &["cancelled", "queued"];
+
+
+/// The values `MigrationSourceType` accepts on the wire.
+pub const MIGRATION_SOURCE_TYPE_VALUES: &[&str] = &["glueTable"];
+
+
+/// The values `MigrationState` accepts on the wire.
+pub const MIGRATION_STATE_VALUES: &[&str] = &["cancelled", "cancelling", "failed", "migrating", "new", "pendingReview", "planning", "queued", "succeeded"];
+
+
+/// The values `MigrationType` accepts on the wire.
+pub const MIGRATION_TYPE_VALUES: &[&str] = &["start", "sync"];
+
+
 /// The values `OpenTableFormat` accepts on the wire.
 pub const OPEN_TABLE_FORMAT_VALUES: &[&str] = &["ICEBERG"];
+
+
+/// The values `PartitionDateSource` accepts on the wire.
+pub const PARTITION_DATE_SOURCE_VALUES: &[&str] = &["DeliveryTime", "EventTime"];
 
 
 /// The values `ReplicationStatus` accepts on the wire.
@@ -233,5 +392,9 @@ pub const TABLE_RECORD_EXPIRATION_STATUS_VALUES: &[&str] = &["disabled", "enable
 
 /// The values `TableType` accepts on the wire.
 pub const TABLE_TYPE_VALUES: &[&str] = &["aws", "customer"];
+
+
+/// The values `UnmatchedSourceFieldsPolicy` accepts on the wire.
+pub const UNMATCHED_SOURCE_FIELDS_POLICY_VALUES: &[&str] = &["drop", "fail"];
 
 

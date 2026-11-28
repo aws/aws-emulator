@@ -121,6 +121,15 @@ fn addressed<Eng: Send + Sync + 'static>(
             policy,
         });
     }
+    // The same thing under the other spelling this model uses for a table's own
+    // ARN, which the migration operations address a destination table by.
+    if let Some(arn) = text("tableARN") {
+        let policy = policy_of_bucket_holding(&arn);
+        return Some(Governed {
+            resource: arn,
+            policy,
+        });
+    }
     let bucket_arn = text("tableBucketARN")?;
     let bucket = store.table_buckets.get(&bucket_arn);
     let policy = bucket.and_then(|bucket| bucket.policy.clone());

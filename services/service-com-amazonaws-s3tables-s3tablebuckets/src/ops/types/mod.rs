@@ -14,6 +14,7 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod complete_table_migration_types;
 pub mod create_namespace_types;
 pub mod create_table_bucket_types;
 pub mod create_table_types;
@@ -26,8 +27,10 @@ pub mod delete_table_bucket_types;
 pub mod delete_table_policy_types;
 pub mod delete_table_replication_types;
 pub mod delete_table_types;
+pub mod disassociate_table_replication_types;
 pub mod get_namespace_types;
 pub mod get_table_bucket_encryption_types;
+pub mod get_table_bucket_logging_types;
 pub mod get_table_bucket_maintenance_configuration_types;
 pub mod get_table_bucket_metrics_configuration_types;
 pub mod get_table_bucket_policy_types;
@@ -38,6 +41,7 @@ pub mod get_table_encryption_types;
 pub mod get_table_maintenance_configuration_types;
 pub mod get_table_maintenance_job_status_types;
 pub mod get_table_metadata_location_types;
+pub mod get_table_migration_types;
 pub mod get_table_policy_types;
 pub mod get_table_record_expiration_configuration_types;
 pub mod get_table_record_expiration_job_status_types;
@@ -47,9 +51,11 @@ pub mod get_table_storage_class_types;
 pub mod get_table_types;
 pub mod list_namespaces_types;
 pub mod list_table_buckets_types;
+pub mod list_table_migrations_types;
 pub mod list_tables_types;
 pub mod list_tags_for_resource_types;
 pub mod put_table_bucket_encryption_types;
+pub mod put_table_bucket_logging_types;
 pub mod put_table_bucket_maintenance_configuration_types;
 pub mod put_table_bucket_metrics_configuration_types;
 pub mod put_table_bucket_policy_types;
@@ -61,10 +67,15 @@ pub mod put_table_record_expiration_configuration_types;
 pub mod put_table_replication_types;
 pub mod rename_table_types;
 pub mod shared_types;
+pub mod start_table_migration_types;
+pub mod sync_table_migration_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_table_metadata_location_types;
+pub mod update_table_migration_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use complete_table_migration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_namespace_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -90,9 +101,13 @@ pub use delete_table_replication_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_table_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use disassociate_table_replication_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_namespace_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_bucket_encryption_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_table_bucket_logging_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_bucket_maintenance_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -114,6 +129,8 @@ pub use get_table_maintenance_job_status_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_metadata_location_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_table_migration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_table_record_expiration_configuration_types::*;
@@ -132,11 +149,15 @@ pub use list_namespaces_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_table_buckets_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_table_migrations_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tables_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_table_bucket_encryption_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_table_bucket_logging_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_table_bucket_maintenance_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -160,9 +181,15 @@ pub use rename_table_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_table_migration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use sync_table_migration_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_table_metadata_location_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_table_migration_types::*;
 
