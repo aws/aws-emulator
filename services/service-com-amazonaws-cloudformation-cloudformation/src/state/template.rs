@@ -3104,6 +3104,9 @@ pub const IMPLEMENTED_RESOURCE_TYPES: &[&str] = &[
     // The real-time log configuration a cache behaviour sends its log records through,
     // publishing the ARN CloudFront mints for it.
     CLOUDFRONT_REALTIME_LOG_CONFIG,
+    // The trust store a distribution validates viewer client certificates against, publishing
+    // the ARN and the id CloudFront mints for it beside that service's own report of it.
+    CLOUDFRONT_TRUST_STORE,
     "AWS::CloudWatch::Alarm",
     "AWS::CloudWatch::CompositeAlarm",
     CLOUDWATCH_METRIC_STREAM,

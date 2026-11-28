@@ -638,6 +638,18 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         // sampling rate, its fields and its endpoints, and the ARN is the one read-only value
         // beside them.
         CLOUDFRONT_REALTIME_LOG_CONFIG => &["Arn"],
+        // A trust store publishes the ARN and the id CloudFront minted for it, the status that
+        // service reports it in, the instant it last changed and the number of CA certificates
+        // the bundle it was built from holds — the members of that service's own trust store a
+        // declaration does not state, each of which only the service that read the bundle can
+        // report.
+        CLOUDFRONT_TRUST_STORE => &[
+            "Arn",
+            "Id",
+            "LastModifiedTime",
+            "NumberOfCaCertificates",
+            "Status",
+        ],
         APIGATEWAY_REST_API => &["RestApiId", "RootResourceId"],
         APIGATEWAY_RESOURCE => &["ResourceId"],
         // The AppSync types' own half of the catalogue, beside their return values.
@@ -1027,6 +1039,12 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // call on one takes (`GetVpcOrigin$Id`, `DeleteVpcOrigin$Id`, an origin's
         // `VpcOriginConfig$VpcOriginId`).
         || resource_type == CLOUDFRONT_VPC_ORIGIN
+        // A TRUST STORE is one more: `CreateTrustStore` takes the store's NAME and the CA
+        // certificates bundle it is built from and no identifier, and answers the `ts_…` id
+        // CloudFront minted together with the ARN built around it — which is what that type's
+        // `Ref` returns and what every call on one takes (`UpdateTrustStore$Id`,
+        // `DeleteTrustStore$Id`, a distribution's `TrustStoreConfig$TrustStoreId`).
+        || resource_type == CLOUDFRONT_TRUST_STORE
         // A GuardDuty trusted IP list is the same case: `CreateIPSet` takes no identifier
         // for the list — the `Name` a declaration states is only the user-friendly name of
         // the IPSet — and answers the `IpSetId` GuardDuty minted, which is what that

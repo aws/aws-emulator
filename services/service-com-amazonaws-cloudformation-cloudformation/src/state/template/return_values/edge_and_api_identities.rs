@@ -82,6 +82,17 @@ pub const CLOUDFRONT_REALTIME_LOG_CONFIG: &str = "AWS::CloudFront::RealtimeLogCo
 /// `services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/src/state/realtime_log_configs.rs`).
 pub(crate) const CLOUDFRONT_REALTIME_LOG_CONFIG_ARN_TYPE: &str = "realtime-log-config";
 
+/// The `AWS::CloudFront::TrustStore` resource type: the trust store a distribution validates
+/// viewer client certificates against, identified by the namespace-labelled id CloudFront
+/// mints for it ([`cloudfront_trust_store_id`]) and named by the ARN built around that id.
+pub const CLOUDFRONT_TRUST_STORE: &str = "AWS::CloudFront::TrustStore";
+
+/// The resource type a trust store's ARN spells
+/// (`arn:aws:cloudfront::<account>:trust-store/<Id>`) — the form the owning service mints one
+/// in (`trust_store_arn` in
+/// `services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/src/state/trust_stores.rs`).
+pub(crate) const CLOUDFRONT_TRUST_STORE_ARN_TYPE: &str = "trust-store";
+
 /// The Amazon API Gateway resource types whose published `Ref` is a SERVICE-ASSIGNED id
 /// rather than a name a template states: a REST API, a resource of one, and a deployment
 /// of one.
@@ -287,6 +298,7 @@ pub(crate) const CLOUDFRONT_CONNECTION_GROUP_ENDPOINT_SALT: &str =
 pub(crate) const CLOUDFRONT_CONNECTION_FUNCTION_ID_SALT: &str =
     "cloudfront/connection-function-id";
 pub(crate) const CLOUDFRONT_VPC_ORIGIN_ID_SALT: &str = "cloudfront/vpc-origin-id";
+pub(crate) const CLOUDFRONT_TRUST_STORE_ID_SALT: &str = "cloudfront/trust-store-id";
 pub(crate) const APIGATEWAY_REST_API_ID_SALT: &str = "apigateway/rest-api-id";
 pub(crate) const APIGATEWAY_ROOT_RESOURCE_ID_SALT: &str = "apigateway/root-resource-id";
 pub(crate) const APIGATEWAY_RESOURCE_ID_SALT: &str = "apigateway/resource-id";
@@ -418,6 +430,31 @@ pub(crate) fn cloudfront_vpc_origin_id(name: &str) -> String {
 /// The resource type a VPC origin's ARN spells, as the model's own VPC origin examples write it
 /// (`arn:aws:cloudfront::<account>:vpcorigin/<Id>`) — WITHOUT the separator the route carries.
 pub(crate) const CLOUDFRONT_VPC_ORIGIN_ARN_TYPE: &str = "vpcorigin";
+
+/// The namespace label a TRUST STORE's identifier carries, as the owning service mints one
+/// (`TRUST_STORE_ID_PREFIX` in
+/// `services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/src/state/trust_stores.rs`).
+pub(crate) const CLOUDFRONT_TRUST_STORE_ID_LABEL: &str = "ts_";
+
+/// An identifier of the shape CloudFront assigns a TRUST STORE: the namespace label
+/// ([`CLOUDFRONT_TRUST_STORE_ID_LABEL`]) followed by [`CLOUDFRONT_ID_BODY_LEN`] characters of
+/// the uppercase ENTITY alphabet — the width and alphabet the owning service mints a trust
+/// store id at, as it mints a VPC origin's ([`cloudfront_vpc_origin_id`]).
+///
+/// A stand-in of that shape, stable across reads for the reason [`derived_digits`] gives, and
+/// replaced by the id the owning service minted once the trust store exists
+/// ([`identity_is_service_assigned`]).
+pub(crate) fn cloudfront_trust_store_id(name: &str) -> String {
+    format!(
+        "{CLOUDFRONT_TRUST_STORE_ID_LABEL}{}",
+        derived_digits(
+            CLOUDFRONT_TRUST_STORE_ID_SALT,
+            name,
+            CLOUDFRONT_ID_BODY_LEN,
+            Alphabet::Upper,
+        )
+    )
+}
 
 /// The routing endpoint CloudFront publishes for a connection group: "the routing endpoint
 /// (also known as the DNS name) that is assigned to the connection group, such as

@@ -652,6 +652,28 @@ pub(crate) fn return_values(
             attributes.insert("Arn".to_string(), arn.clone());
             (arn, attributes)
         }
+        // "Ref returns the trust store ID"; Fn::GetAtt: Arn, Id, LastModifiedTime,
+        // NumberOfCaCertificates, Status. CloudFront mints the id in its own
+        // namespace-labelled entity form ([`cloudfront_trust_store_id`]) and builds the ARN
+        // around it; a template declares the trust store's name and the CA certificates bundle
+        // it is built from, never an identifier. The status, the instant and the certificate
+        // count are that service's own report of the trust store — the count being a property
+        // of the bundle's bytes, which only the service that read them can state.
+        CLOUDFRONT_TRUST_STORE => {
+            let id = cloudfront_trust_store_id(name);
+            attributes.insert(
+                "Arn".to_string(),
+                cloudfront_arn(&format!("{CLOUDFRONT_TRUST_STORE_ARN_TYPE}/{id}")),
+            );
+            attributes.insert("Id".to_string(), id.clone());
+            for attribute in ["LastModifiedTime", "NumberOfCaCertificates", "Status"] {
+                attributes.insert(
+                    attribute.to_string(),
+                    service_assigned_document(name, attribute),
+                );
+            }
+            (id, attributes)
+        }
         // "Ref returns the RestApi ID"; Fn::GetAtt: RestApiId, RootResourceId. API Gateway
         // ASSIGNS both ids — a template names the API but not its identifier — in the form
         // [`api_gateway_assigned_id`] describes, and the root resource is a resource of the

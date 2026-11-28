@@ -281,8 +281,10 @@ pub(crate) fn identifying_return_value(resource_type: &str) -> Option<&'static s
         | CLOUDFRONT_PUBLIC_KEY
         | CLOUDFRONT_KEY_GROUP
         | CLOUDFRONT_CONNECTION_GROUP
-        // A VPC origin is identified by the `vo_`-prefixed id that service mints too.
-        | CLOUDFRONT_VPC_ORIGIN => "Id",
+        // A VPC origin is identified by the `vo_`-prefixed id that service mints too, and a
+        // TRUST STORE by the `ts_`-prefixed one it mints for a trust store.
+        | CLOUDFRONT_VPC_ORIGIN
+        | CLOUDFRONT_TRUST_STORE => "Id",
         // A key value store is identified by the ARN its own data plane addresses it by, a
         // connection function by the ARN CloudFront built around the id it minted, and a
         // function by the ARN a cache behaviour names it by. A real-time log configuration is

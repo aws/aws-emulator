@@ -103,6 +103,10 @@ mod vpc_origin;
 /// through the same seam.
 mod realtime_log_config;
 
+/// The trust store a stack declares so a distribution can validate the client certificates
+/// viewers present: another per-type half beside this one, reached through the same seam.
+mod trust_store;
+
 /// The two resource types this file provisions itself.
 pub(crate) const CLOUDFRONT_DISTRIBUTION: &str = "AWS::CloudFront::Distribution";
 pub(crate) const CLOUDFRONT_ORIGIN_ACCESS_CONTROL: &str = "AWS::CloudFront::OriginAccessControl";
@@ -129,6 +133,8 @@ pub(crate) enum Kind {
     VpcOrigin,
     /// `AWS::CloudFront::RealtimeLogConfig`, whose arms are [`realtime_log_config`]'s.
     RealtimeLogConfig,
+    /// `AWS::CloudFront::TrustStore`, whose arms are [`trust_store`]'s.
+    TrustStore,
 }
 
 /// The kind of CloudFront resource `resource_type` is, or `None` for a type no module here
@@ -142,6 +148,7 @@ pub(crate) fn kind_of(resource_type: &str) -> Option<Kind> {
         }
         vpc_origin::CLOUDFRONT_VPC_ORIGIN => Some(Kind::VpcOrigin),
         realtime_log_config::CLOUDFRONT_REALTIME_LOG_CONFIG => Some(Kind::RealtimeLogConfig),
+        trust_store::CLOUDFRONT_TRUST_STORE => Some(Kind::TrustStore),
         other => policy_and_key_resources::kind_of(other)
             .map(Kind::PolicyOrKey)
             .or_else(|| {
@@ -562,6 +569,10 @@ pub(super) async fn create(
         // `CreateRealtimeLogConfig` takes none: the type is not taggable, so no tags are
         // propagated to it.
         Kind::RealtimeLogConfig => realtime_log_config::create(ctx, region, resource).await,
+        // A TRUST STORE is taggable: the type publishes a `Tags` property and
+        // `CreateTrustStore` takes that list, so it carries the tags CloudFormation gives it
+        // beside its own.
+        Kind::TrustStore => trust_store::create(ctx, region, resource, propagated).await,
     }
 }
 
@@ -653,6 +664,7 @@ pub(super) async fn update(
         Kind::RealtimeLogConfig => {
             realtime_log_config::update(ctx, region, resource, declared).await
         }
+        Kind::TrustStore => trust_store::update(ctx, region, resource, declared).await,
     }
 }
 
@@ -705,6 +717,7 @@ pub(super) async fn delete(
         }
         Kind::VpcOrigin => vpc_origin::delete(ctx, region, resource).await,
         Kind::RealtimeLogConfig => realtime_log_config::delete(ctx, region, resource).await,
+        Kind::TrustStore => trust_store::delete(ctx, region, resource).await,
     }
 }
 
@@ -733,6 +746,10 @@ pub(super) async fn removal(
         // A real-time log configuration is gone as its delete answers: nothing propagates to
         // the edge locations before it is removed.
         Kind::RealtimeLogConfig => Ok(Removal::Gone),
+        // A trust store is gone as its delete answers too: that call either removes the trust
+        // store or refuses the removal outright for a trust store a distribution still
+        // validates certificates against ([`trust_store::remove`]).
+        Kind::TrustStore => Ok(Removal::Gone),
     }
 }
 
@@ -1328,9 +1345,29 @@ async fn call_cloudfront_versioned(
     body: Option<&str>,
     if_match: Option<&str>,
 ) -> Result<(String, BTreeMap<String, String>), Refusal> {
-    let sent: Vec<(&'static str, String)> = if_match
+    call_cloudfront_headed(ctx, region, method, path, body, if_match, &[]).await
+}
+
+/// [`call_cloudfront_versioned`], with request headers of the OPERATION's own beside the
+/// `If-Match`.
+///
+/// An operation that binds an input member to a HEADER rather than into the body — such as
+/// `UpdateTrustStore$UseClientCertificateOCSPEndpoint` — travels that member here, so the
+/// request carries it where the model binds it rather than in a document that operation does
+/// not read it from.
+async fn call_cloudfront_headed(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    method: &'static str,
+    path: &str,
+    body: Option<&str>,
+    if_match: Option<&str>,
+    headers: &[(&'static str, String)],
+) -> Result<(String, BTreeMap<String, String>), Refusal> {
+    let mut sent: Vec<(&'static str, String)> = if_match
         .map(|version| vec![(IF_MATCH_HEADER, version.to_string())])
         .unwrap_or_default();
+    sent.extend(headers.iter().cloned());
     call_rest_xml(
         ctx,
         CLOUDFRONT_SIGNING_NAME,
