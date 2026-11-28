@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetFinancialRecord
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetFinancialRecord`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetFinancialRecord::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports one invoice or credit memo the account holds, including the details that
+//! are specific to its type.
+//!
+//! Neither of the two identifier members is `@required`, so the "exactly one" rule
+//! both this operation and the `FinancialRecordKey` union state is this handler's to
+//! enforce: both or neither is a 400 `ValidationException`. Whichever one is named
+//! resolves through [`crate::state::FinancialRecordStore::lookup`], the same lookup
+//! `BatchGetFinancialRecord` resolves a key through, so the two cannot disagree
+//! about which record a key names — and looking a record up by its invoice ID
+//! returns the identical record to looking it up by its Payments ID.
 //!
 //! ## Shape of an operation
 //!
@@ -91,6 +93,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::{projections, refusals, RecordKey};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -164,18 +167,77 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetFinancialRecord` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetFinancialRecordErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetFinancialRecord"))
+        // `ctx` carries request metadata only; this read uses nothing from it.
+        let _ = ctx;
+        let key = requested_key(&input)?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unreachable)?;
+        let held = state.lock();
+        let record = held
+            .financial_records
+            .lookup(key)
+            .ok_or_else(|| not_found(key))?;
+        Ok(GetFinancialRecordOutput {
+            financial_record: projections::financial_record(record),
+        })
     }
+}
+
+/// The key this request names, or a refusal when it names both ways or neither.
+///
+/// The two members are individually optional in the model, so this is the one rule
+/// the framework cannot have checked before the handler runs: "specify exactly one
+/// member … if you specify both or neither, the request fails with
+/// `ValidationException`".
+fn requested_key(input: &GetFinancialRecordInput) -> Result<RecordKey<'_>, GetFinancialRecordError> {
+    match (input.identifier.as_deref(), input.invoice_identifier.as_deref()) {
+        (Some(id), None) => Ok(RecordKey::Id(id)),
+        (None, Some(invoice_id)) => Ok(RecordKey::InvoiceId(invoice_id)),
+        (Some(_), Some(_)) | (None, None) => Err(not_exactly_one_identifier()),
+    }
+}
+
+/// A 500 `InternalServerException`: the engine this operation was built from does
+/// not hold this service's store, so no record can be read.
+fn store_unreachable() -> GetFinancialRecordError {
+    GetFinancialRecordErrorModeled::InternalServerException(InternalServerException {
+        message: refusals::STORE_UNREACHABLE.to_string(),
+        retry_after_seconds: None,
+    })
+    .into()
+}
+
+/// A 400 `ValidationException`: the request named both ways of identifying a record,
+/// or neither. Both members are named in `fieldList`, because the rule is about the
+/// two of them together and a caller correcting the request has to look at both.
+fn not_exactly_one_identifier() -> GetFinancialRecordError {
+    GetFinancialRecordErrorModeled::ValidationException(ValidationException {
+        message: refusals::EXACTLY_ONE_IDENTIFIER.to_string(),
+        reason: refusals::REASON_FIELD_VALIDATION_FAILED.to_string(),
+        field_list: Some(
+            [
+                refusals::IDENTIFIER_MEMBER,
+                refusals::INVOICE_IDENTIFIER_MEMBER,
+            ]
+            .into_iter()
+            .map(|member| ValidationExceptionField {
+                name: member.to_string(),
+                message: refusals::EXACTLY_ONE_IDENTIFIER.to_string(),
+            })
+            .collect(),
+        ),
+    })
+    .into()
+}
+
+/// A 404 `ResourceNotFoundException`: no record on this account is named by the key
+/// the request gave. The key is reported back in the modelled `resourceId`, so the
+/// message stays the one sentence the model gives this error.
+fn not_found(key: RecordKey<'_>) -> GetFinancialRecordError {
+    let (RecordKey::Id(requested) | RecordKey::InvoiceId(requested)) = key;
+    GetFinancialRecordErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: refusals::RESOURCE_NOT_FOUND.to_string(),
+        resource_id: Some(requested.to_string()),
+        resource_type: Some(refusals::FINANCIAL_RECORD_RESOURCE_TYPE.to_string()),
+    })
+    .into()
 }

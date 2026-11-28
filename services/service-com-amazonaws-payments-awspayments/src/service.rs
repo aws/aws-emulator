@@ -58,7 +58,14 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// Build this service from the shared engine. The engine is threaded into the
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
+    ///
+    /// This is also where this service's store is installed
+    /// ([`crate::state::install_service_state`]): every operation this service binds
+    /// only reports, so the inventory the store starts with — and the anchor instant
+    /// its records are dated from — must be fixed when the emulator boots rather
+    /// than by whichever request reaches the store first.
     pub fn new(engine: Arc<Eng>) -> Self {
+        crate::state::install_service_state(&*engine);
         Self {
             entry: crate::ServiceDefinition::new(engine),
         }

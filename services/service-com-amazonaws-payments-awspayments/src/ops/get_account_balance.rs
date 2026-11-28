@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetAccountBalance
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetAccountBalance`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetAccountBalance::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports one balance of the account, DERIVED from the held records rather than
+//! stored: "each amount is the sum of the outstanding balances of your invoices or
+//! credit memos that have the status `OUTSTANDING`", as one amount per merchant of
+//! record and currency, and "amounts are never added together across merchants of
+//! record or currencies". [`crate::state::balances`] computes it, so changing the
+//! held records changes the answer.
 //!
 //! ## Shape of an operation
 //!
@@ -102,6 +100,10 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::{
+    account_balance_amounts, page, projections, query_scope, refusals, BalanceType,
+    InvalidPaginationToken,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -174,18 +176,80 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetAccountBalance` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetAccountBalanceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetAccountBalance"))
+        // `ctx` carries request metadata only; this read uses nothing from it.
+        let _ = ctx;
+        // The member is required and the model closes its value set, so the
+        // framework has already refused a request that names no balance type or one
+        // outside the set. A value this build cannot read is therefore refused, not
+        // answered with an empty balance that would read as "you owe nothing".
+        let balance_type =
+            BalanceType::from_wire(&input.balance_type).ok_or_else(unreadable_balance_type)?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unreachable)?;
+        let held = state.lock();
+        let amounts = account_balance_amounts(held.financial_records.records(), balance_type);
+        let scope = query_scope(&[Self::NAME, balance_type.as_str()]);
+        let (balances, next_token) = page(
+            &amounts,
+            input.next_token.as_deref(),
+            page_size(input.max_results),
+            &held.page_token_key,
+            &scope,
+        )
+        .map_err(invalid_pagination_token)?;
+        Ok(GetAccountBalanceOutput {
+            account_balances: balances
+                .iter()
+                .map(projections::account_balance)
+                .collect(),
+            next_token,
+        })
     }
+}
+
+/// The largest page this operation can answer with: the model constrains
+/// `maxResults` to the range 1..100, as `smithy_query(query="operation",
+/// operation="GetAccountBalance")` reports.
+const MAX_PAGE_SIZE: i32 = 100;
+
+/// How many amounts one page carries, from the request's `maxResults`; see
+/// `list_payment_instruments` for why the clamp is here.
+fn page_size(max_results: i32) -> usize {
+    usize::try_from(max_results.clamp(1, MAX_PAGE_SIZE)).unwrap_or(1)
+}
+
+/// A 500 `InternalServerException`: the engine this operation was built from does
+/// not hold this service's store, so there are no records to add up.
+fn store_unreachable() -> GetAccountBalanceError {
+    GetAccountBalanceErrorModeled::InternalServerException(InternalServerException {
+        message: refusals::STORE_UNREACHABLE.to_string(),
+        retry_after_seconds: None,
+    })
+    .into()
+}
+
+/// A 400 `ValidationException`: `balanceType` carries a value this service cannot
+/// read as a balance type, so there is no balance to add up.
+fn unreadable_balance_type() -> GetAccountBalanceError {
+    let requirement = refusals::unreadable_enum_member("balanceType", BalanceType::ALL);
+    GetAccountBalanceErrorModeled::ValidationException(ValidationException {
+        message: requirement.clone(),
+        reason: refusals::REASON_FIELD_VALIDATION_FAILED.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: "balanceType".to_string(),
+            message: requirement,
+        }]),
+    })
+    .into()
+}
+
+/// A 400 `ValidationException`: the request named a `nextToken` this balance cannot
+/// resume from — a token that cannot be read, or one minted for another balance
+/// type.
+fn invalid_pagination_token(_refused: InvalidPaginationToken) -> GetAccountBalanceError {
+    GetAccountBalanceErrorModeled::ValidationException(ValidationException {
+        message: InvalidPaginationToken::MESSAGE.to_string(),
+        reason: InvalidPaginationToken::REASON.to_string(),
+        field_list: None,
+    })
+    .into()
 }

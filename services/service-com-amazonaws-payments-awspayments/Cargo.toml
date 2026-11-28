@@ -21,14 +21,19 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Exact decimal arithmetic for the account balances this service adds up — the same
+# arbitrary-precision library the emulator's other exact-numeric engines use.
+bigdecimal = "0.4"
+# `page_tokens`: the one way the emulator's services tell a continuation token they
+# ISSUED from one a caller built, which is what the three paginated listings here
+# resume a page from.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 automod = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true

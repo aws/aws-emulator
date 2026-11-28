@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListPaymentInstruments
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListPaymentInstruments`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListPaymentInstruments::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the payment instruments the account holds, in the order the store holds
+//! them, one page at a time. The page is a projection of the held records
+//! ([`crate::state::projections::payment_instrument_summary`]) — "this operation
+//! returns summaries", without the method-specific details `GetPaymentInstrument`
+//! carries — and the `nextToken` is the one every paginated operation of this
+//! service mints ([`crate::state::pagination`]).
 //!
 //! ## Shape of an operation
 //!
@@ -91,6 +89,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::{page, projections, query_scope, refusals, InvalidPaginationToken};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -163,18 +162,67 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListPaymentInstruments` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListPaymentInstrumentsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListPaymentInstruments"))
+        // `ctx` carries request metadata only; this listing reads nothing from it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unreachable)?;
+        let held = state.lock();
+        // The listing takes no filter and no ordering, so every request asks the one
+        // question this operation answers: the scope is the operation itself.
+        let scope = query_scope(&[Self::NAME]);
+        let (instruments, next_token) = page(
+            held.payment_instruments.instruments(),
+            input.next_token.as_deref(),
+            page_size(input.max_results),
+            &held.page_token_key,
+            &scope,
+        )
+        .map_err(invalid_pagination_token)?;
+        Ok(ListPaymentInstrumentsOutput {
+            payment_instrument_summaries: instruments
+                .iter()
+                .map(projections::payment_instrument_summary)
+                .collect(),
+            next_token,
+        })
     }
+}
+
+/// The largest page this operation can answer with.
+///
+/// The model constrains `maxResults` to the range 1..25 and the output list to a
+/// length of at most 25 — `smithy_query(query="operation",
+/// operation="ListPaymentInstruments")` reports both — so a page never carries more
+/// than the response can describe.
+const MAX_PAGE_SIZE: i32 = 25;
+
+/// How many instruments one page carries, from the request's `maxResults`.
+///
+/// The framework refuses a `maxResults` outside that modelled range before this
+/// handler runs, and fills in the modelled default (25) when the member is absent,
+/// so the clamp only keeps the page size inside the bound the response can carry
+/// whatever reaches it.
+fn page_size(max_results: i32) -> usize {
+    usize::try_from(max_results.clamp(1, MAX_PAGE_SIZE)).unwrap_or(1)
+}
+
+/// A 500 `InternalServerException`: the engine this operation was built from does
+/// not hold this service's store, so there are no instruments to report.
+fn store_unreachable() -> ListPaymentInstrumentsError {
+    ListPaymentInstrumentsErrorModeled::InternalServerException(InternalServerException {
+        message: refusals::STORE_UNREACHABLE.to_string(),
+        retry_after_seconds: None,
+    })
+    .into()
+}
+
+/// A 400 `ValidationException`: the request named a `nextToken` this listing cannot
+/// resume from. `fieldList` is left absent — the model populates it "when `reason`
+/// is `FIELD_VALIDATION_FAILED`", and this reason is not that one.
+fn invalid_pagination_token(_refused: InvalidPaginationToken) -> ListPaymentInstrumentsError {
+    ListPaymentInstrumentsErrorModeled::ValidationException(ValidationException {
+        message: InvalidPaginationToken::MESSAGE.to_string(),
+        reason: InvalidPaginationToken::REASON.to_string(),
+        field_list: None,
+    })
+    .into()
 }

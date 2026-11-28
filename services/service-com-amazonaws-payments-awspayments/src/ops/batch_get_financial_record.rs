@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op BatchGetFinancialRecord
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `BatchGetFinancialRecord`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`BatchGetFinancialRecord::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports up to 100 of the account's financial records in one request, each
+//! identified by its Payments ID or its invoice ID.
+//!
+//! "Each key that you request appears once in the response, either as a record in
+//! `financialRecords` or as an error in `errors`", and "a key that matches no record
+//! on your account is returned in `errors` and doesn't fail the request" — so one
+//! missing key is a 200 with a `NOT_FOUND` entry carrying that key back as it was
+//! requested, not a failure of the whole batch. Each key resolves through
+//! [`crate::state::FinancialRecordStore::lookup`], the same lookup
+//! `GetFinancialRecord` resolves its identifier through, so a key cannot name one
+//! record here and another one there.
 //!
 //! ## Shape of an operation
 //!
@@ -88,6 +91,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::{projections, refusals, BatchErrorCode, RecordKey};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -160,18 +164,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `BatchGetFinancialRecord` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(BatchGetFinancialRecordErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("BatchGetFinancialRecord"))
+        // `ctx` carries request metadata only; this read uses nothing from it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unreachable)?;
+        let held = state.lock();
+        let mut financial_records = Vec::new();
+        let mut errors = Vec::new();
+        // One pass over the keys AS REQUESTED, so each key is answered exactly once
+        // and a key the account has no record for takes nothing else down with it.
+        // The list is bounded by the modelled `keys` length (1..100), which the
+        // framework has already refused anything outside of.
+        for key in &input.keys {
+            match held.financial_records.lookup(record_key(key)) {
+                Some(record) => financial_records.push(projections::financial_record(record)),
+                None => errors.push(not_found(key)),
+            }
+        }
+        Ok(BatchGetFinancialRecordOutput {
+            financial_records,
+            errors,
+        })
     }
+}
+
+/// One requested key as the store's own key type, so this operation and
+/// `GetFinancialRecord` resolve a key the same way.
+fn record_key(key: &FinancialRecordKey) -> RecordKey<'_> {
+    match key {
+        FinancialRecordKey::Identifier(id) => RecordKey::Id(id),
+        FinancialRecordKey::invoiceIdentifier(invoice_id) => RecordKey::InvoiceId(invoice_id),
+    }
+}
+
+/// The error entry for a key no record on this account matches.
+///
+/// `FinancialRecordError$key` is "the key of the record that couldn't be retrieved,
+/// as you requested it", so the requested key is handed back unchanged — the same
+/// union member carrying the same value — and the `message` is the one the model
+/// documents for the code ([`BatchErrorCode::message`]).
+fn not_found(key: &FinancialRecordKey) -> FinancialRecordError {
+    FinancialRecordError {
+        key: key.clone(),
+        code: BatchErrorCode::NotFound.as_str().to_string(),
+        message: BatchErrorCode::NotFound.message().to_string(),
+    }
+}
+
+/// A 500 `InternalServerException`: the engine this operation was built from does
+/// not hold this service's store, so no record can be read.
+///
+/// Stated for the WHOLE request rather than per key: the modelled per-key
+/// `INTERNAL_ERROR` says "the other records in the request are unaffected", and a
+/// store nothing can reach affects every one of them.
+fn store_unreachable() -> BatchGetFinancialRecordError {
+    BatchGetFinancialRecordErrorModeled::InternalServerException(InternalServerException {
+        message: refusals::STORE_UNREACHABLE.to_string(),
+        retry_after_seconds: None,
+    })
+    .into()
 }

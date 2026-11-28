@@ -19738,11 +19738,11 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
+ "bigdecimal",
  "bytes",
- "hex",
  "http",
  "serde_json",
- "sha2 0.10.9",
+ "service-common",
  "tokio",
  "tracing",
 ]

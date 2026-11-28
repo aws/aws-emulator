@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListFinancialRecords
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListFinancialRecords`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListFinancialRecords::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the invoices and credit memos the account holds that match the request's
+//! filters, in the requested order, one page at a time.
+//!
+//! Three filters and one ordering, each read off the held record:
+//!
+//! * `types` selects by the record's type, and is required, so a record of a type
+//!   the request did not name is never returned;
+//! * `settlementStatuses`, when present, selects by the record's settlement status —
+//!   which is the status mapping the model documents, so `OPEN` is exactly the
+//!   outstanding and processing records;
+//! * `issuedAfter` is inclusive and `issuedBefore` is exclusive, so the window is
+//!   half-open and two adjacent windows return each record once;
+//! * `sortBy` has one member, `ISSUED_AT`, and `sortOrder` defaults to `DESCENDING`
+//!   — "with the newest first by default".
+//!
+//! A page is a projection of the matched records
+//! ([`crate::state::projections::financial_record_summary`]), without the
+//! type-specific details `GetFinancialRecord` carries, and the `nextToken` is minted
+//! for the filter set it was answered under, so it cannot resume a different one.
 //!
 //! ## Shape of an operation
 //!
@@ -112,6 +123,12 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::{
+    page, projections, query_scope, records, refusals, FinancialRecordRecord,
+    FinancialRecordSortField, FinancialRecordType, InvalidPaginationToken, SettlementStatus,
+    SortOrder,
+};
+use ::aws_smithy_types::DateTime;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -184,18 +201,269 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListFinancialRecords` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListFinancialRecordsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListFinancialRecords"))
+        // `ctx` carries request metadata only; this listing reads nothing from it.
+        let _ = ctx;
+        let filter = Filter::of(&input)?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(store_unreachable)?;
+        let held = state.lock();
+        let matched = filter.matching(held.financial_records.records());
+        let (summaries, next_token) = page(
+            &matched,
+            input.next_token.as_deref(),
+            page_size(input.max_results),
+            &held.page_token_key,
+            &filter.scope(Self::NAME),
+        )
+        .map_err(invalid_pagination_token)?;
+        Ok(ListFinancialRecordsOutput {
+            financial_record_summaries: summaries
+                .iter()
+                .map(|record| projections::financial_record_summary(record))
+                .collect(),
+            next_token,
+        })
     }
+}
+
+/// The largest page this operation can answer with: the model constrains
+/// `maxResults` to the range 1..100, as `smithy_query(query="operation",
+/// operation="ListFinancialRecords")` reports.
+const MAX_PAGE_SIZE: i32 = 100;
+
+/// The ordering a request that names no `sortOrder` is served in.
+///
+/// `ListFinancialRecordsRequest$sortOrder` documents it: "the default is
+/// `DESCENDING`, which returns the newest records first", which is the same thing
+/// the operation's own documentation says ("with the newest first by default").
+const DEFAULT_SORT_ORDER: SortOrder = SortOrder::Descending;
+
+/// Which records a request selects, and in which order — the request's filters,
+/// read once, in the forms the held records are compared against.
+struct Filter {
+    /// The record types to return. Empty is impossible: the member is required and
+    /// the model closes its value set, so the framework refuses both an absent list
+    /// and a member outside the set before this handler runs.
+    types: Vec<FinancialRecordType>,
+    /// The settlement statuses to return, or `None` to return both — "when you omit
+    /// this member, the operation returns records with both settlement statuses".
+    settlement_statuses: Option<Vec<SettlementStatus>>,
+    /// The earliest instant to return records for, inclusive.
+    issued_after: Option<DateTime>,
+    /// The latest instant to return records for, exclusive.
+    issued_before: Option<DateTime>,
+    /// The order to sort the results in.
+    sort_order: SortOrder,
+}
+
+impl Filter {
+    /// The filter `input` describes, or a refusal of a member this service cannot
+    /// read.
+    ///
+    /// The framework has already refused a value outside a modelled enum's set and
+    /// an absent required member, so these refusals are unreachable through the
+    /// generated walk; they are here because the alternative — dropping a value that
+    /// could not be read — answers 200 with a filter the request did not ask for,
+    /// and an unreadable `types` would then select no record at all and report that
+    /// as "your account holds none".
+    fn of(input: &ListFinancialRecordsInput) -> Result<Self, ListFinancialRecordsError> {
+        if let (Some(after), Some(before)) = (input.issued_after, input.issued_before) {
+            // "When you specify both `issuedAfter` and `issuedBefore`,
+            // `issuedBefore` must be later than `issuedAfter`." The window is
+            // half-open, so an empty window is not a window at all.
+            if records::instant_key(&before) <= records::instant_key(&after) {
+                return Err(window_is_empty());
+            }
+        }
+        let mut types = Vec::new();
+        for wire in &input.types {
+            match FinancialRecordType::from_wire(wire) {
+                Some(kind) => types.push(kind),
+                None => return Err(unreadable_member("types", FinancialRecordType::ALL)),
+            }
+        }
+        let settlement_statuses = match &input.settlement_statuses {
+            None => None,
+            Some(wire_statuses) => {
+                let mut statuses = Vec::new();
+                for wire in wire_statuses {
+                    match SettlementStatus::from_wire(wire) {
+                        Some(status) => statuses.push(status),
+                        None => {
+                            return Err(unreadable_member(
+                                "settlementStatuses",
+                                SettlementStatus::ALL,
+                            ))
+                        }
+                    }
+                }
+                Some(statuses)
+            }
+        };
+        // `sortBy` closes on one member, so reading it decides nothing — but a value
+        // that is not that member is still a value this listing cannot serve.
+        if let Some(wire) = input.sort_by.as_deref() {
+            if FinancialRecordSortField::from_wire(wire).is_none() {
+                return Err(unreadable_member(
+                    "sortBy",
+                    FinancialRecordSortField::ALL,
+                ));
+            }
+        }
+        let sort_order = match input.sort_order.as_deref() {
+            None => DEFAULT_SORT_ORDER,
+            Some(wire) => SortOrder::from_wire(wire)
+                .ok_or_else(|| unreadable_member("sortOrder", SortOrder::ALL))?,
+        };
+        Ok(Self {
+            types,
+            settlement_statuses,
+            issued_after: input.issued_after,
+            issued_before: input.issued_before,
+            sort_order,
+        })
+    }
+
+    /// The held records this filter selects, in the order it sorts them.
+    ///
+    /// Borrowed, not cloned: the page this request answers with is projected from a
+    /// handful of these, so copying every matched record to sort them would copy the
+    /// whole selection for nothing.
+    ///
+    /// `sortBy` closes on one member, `ISSUED_AT`, so the sort key is the instant
+    /// the record was issued whether or not the request names the field. Records
+    /// issued at the same instant are ordered by their ID, so one page boundary
+    /// cannot fall differently between two calls of the same query.
+    fn matching<'a>(
+        &self,
+        records: &'a [FinancialRecordRecord],
+    ) -> Vec<&'a FinancialRecordRecord> {
+        let mut matched: Vec<&FinancialRecordRecord> = records
+            .iter()
+            .filter(|record| self.selects(record))
+            .collect();
+        matched.sort_by(|left, right| {
+            let by_issue = left.issued_key().cmp(&right.issued_key());
+            let by_issue = match self.sort_order {
+                SortOrder::Ascending => by_issue,
+                SortOrder::Descending => by_issue.reverse(),
+            };
+            by_issue.then_with(|| left.id.cmp(&right.id))
+        });
+        matched
+    }
+
+    /// Whether one held record satisfies every filter.
+    fn selects(&self, record: &FinancialRecordRecord) -> bool {
+        self.types.contains(&record.record_type())
+            && self
+                .settlement_statuses
+                .as_ref()
+                .is_none_or(|statuses| statuses.contains(&record.settlement_status()))
+            && self
+                .issued_after
+                .is_none_or(|after| record.issued_key() >= records::instant_key(&after))
+            && self
+                .issued_before
+                .is_none_or(|before| record.issued_key() < records::instant_key(&before))
+    }
+
+    /// The scope of the question this filter asks, under `operation`'s name, so a
+    /// `nextToken` minted under it resumes only this filter set and ordering.
+    ///
+    /// The types and the settlement statuses are sorted into their canonical order
+    /// first: both lists are modelled `uniqueItems`, so they are SETS, and the same
+    /// set sent in a different order is the same question.
+    fn scope(&self, operation: &str) -> String {
+        let mut types: Vec<&str> = self.types.iter().map(|kind| kind.as_str()).collect();
+        types.sort_unstable();
+        let mut statuses: Vec<&str> = self
+            .settlement_statuses
+            .iter()
+            .flatten()
+            .map(|status| status.as_str())
+            .collect();
+        statuses.sort_unstable();
+        query_scope(&[
+            operation,
+            &types.join(","),
+            &statuses.join(","),
+            &instant_part(self.issued_after),
+            &instant_part(self.issued_before),
+            self.sort_order.as_str(),
+        ])
+    }
+}
+
+/// One timestamp filter as a scope part: its epoch instant, or an empty part when
+/// the request left it out.
+fn instant_part(at: Option<DateTime>) -> String {
+    at.map(|at| {
+        let (secs, nanos) = records::instant_key(&at);
+        format!("{secs}.{nanos:09}")
+    })
+    .unwrap_or_default()
+}
+
+/// How many records one page carries, from the request's `maxResults`; see
+/// `list_payment_instruments` for why the clamp is here.
+fn page_size(max_results: i32) -> usize {
+    usize::try_from(max_results.clamp(1, MAX_PAGE_SIZE)).unwrap_or(1)
+}
+
+/// A 500 `InternalServerException`: the engine this operation was built from does
+/// not hold this service's store, so there are no records to report.
+fn store_unreachable() -> ListFinancialRecordsError {
+    ListFinancialRecordsErrorModeled::InternalServerException(InternalServerException {
+        message: refusals::STORE_UNREACHABLE.to_string(),
+        retry_after_seconds: None,
+    })
+    .into()
+}
+
+/// A 400 `ValidationException`: the request's `issuedBefore` is not later than its
+/// `issuedAfter`, so the window it names holds no instant.
+fn window_is_empty() -> ListFinancialRecordsError {
+    field_validation_failed("issuedBefore", ISSUED_BEFORE_MUST_BE_LATER.to_string())
+}
+
+/// A 400 `ValidationException`: `member` carries a value this service cannot read as
+/// the enum the model types it as.
+fn unreadable_member<T: ::std::fmt::Display>(
+    member: &str,
+    declared: &[T],
+) -> ListFinancialRecordsError {
+    field_validation_failed(
+        member,
+        refusals::unreadable_enum_member(member, declared),
+    )
+}
+
+/// A 400 `ValidationException` stating `requirement` of `member`: the modelled
+/// `FIELD_VALIDATION_FAILED` reason, with `fieldList` naming the member a caller has
+/// to change — which is what that reason's `fieldList` is for.
+fn field_validation_failed(member: &str, requirement: String) -> ListFinancialRecordsError {
+    ListFinancialRecordsErrorModeled::ValidationException(ValidationException {
+        message: requirement.clone(),
+        reason: refusals::REASON_FIELD_VALIDATION_FAILED.to_string(),
+        field_list: Some(vec![ValidationExceptionField {
+            name: member.to_string(),
+            message: requirement,
+        }]),
+    })
+    .into()
+}
+
+/// What the service requires of the two timestamp filters together, as
+/// `ListFinancialRecordsRequest$issuedBefore` states it.
+const ISSUED_BEFORE_MUST_BE_LATER: &str = "issuedBefore must be later than issuedAfter.";
+
+/// A 400 `ValidationException`: the request named a `nextToken` this listing cannot
+/// resume from — a token that cannot be read, or one minted for another filter set.
+fn invalid_pagination_token(_refused: InvalidPaginationToken) -> ListFinancialRecordsError {
+    ListFinancialRecordsErrorModeled::ValidationException(ValidationException {
+        message: InvalidPaginationToken::MESSAGE.to_string(),
+        reason: InvalidPaginationToken::REASON.to_string(),
+        field_list: None,
+    })
+    .into()
 }
