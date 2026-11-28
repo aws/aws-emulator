@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateProtectConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateProtectConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateProtectConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -159,18 +150,61 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateProtectConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateProtectConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateProtectConfiguration"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                UpdateProtectConfigurationErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some(
+                            "the protect-configuration store is unavailable".to_string(),
+                        ),
+                        request_id: None,
+                    },
+                )
+                .into(),
+            );
+        };
+        let mut state = store.lock();
+
+        // `ProtectConfigurationId` is a `ProtectConfigurationIdOrArn`, so either form names
+        // the resource; the store is keyed by the bare id.
+        let named = crate::state::name_from_name_or_arn(&input.protect_configuration_id);
+        let Some(record) = state.protect_configurations.get_mut(named) else {
+            return Err(
+                UpdateProtectConfigurationErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::resource_not_found_message(
+                            PROTECT_CONFIGURATION_RESOURCE_TYPE,
+                            named,
+                        )),
+                        resource_type: Some(PROTECT_CONFIGURATION_RESOURCE_TYPE.to_string()),
+                        resource_id: Some(named.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The one setting this operation carries is written onto the stored record, and a
+        // request that omits it leaves the record as it was — so the configuration's
+        // deletion protection is whatever the last request naming it set, which is what
+        // every later read of it reports and what `DeleteProtectConfiguration` weighs its
+        // documented precondition against.
+        if let Some(deletion_protection_enabled) = input.deletion_protection_enabled {
+            record.deletion_protection_enabled = deletion_protection_enabled;
+        }
+
+        // The response is read back off the stored record, so what the caller sees is what
+        // was persisted rather than what was passed in.
+        Ok(UpdateProtectConfigurationOutput {
+            protect_configuration_arn: record.arn.clone(),
+            protect_configuration_id: record.id.clone(),
+            created_timestamp: crate::state::to_timestamp(record.created_timestamp),
+            account_default: record.account_default,
+            deletion_protection_enabled: record.deletion_protection_enabled,
+        })
     }
 }
+
+/// The `ResourceType` this operation's refusals name, as the model's enum spells it.
+const PROTECT_CONFIGURATION_RESOURCE_TYPE: &str = "protect-configuration";

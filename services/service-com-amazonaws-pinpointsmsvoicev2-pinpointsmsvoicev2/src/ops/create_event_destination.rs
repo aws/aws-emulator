@@ -226,37 +226,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // nothing to log to and one naming several does not say where events go. Neither
         // is a usable request, and the model declares no cross-member constraint for it,
         // so both are refused here.
-        let named: Vec<&str> = [
-            input
-                .cloud_watch_logs_destination
-                .is_some()
-                .then_some("CloudWatchLogsDestination"),
-            input
-                .kinesis_firehose_destination
-                .is_some()
-                .then_some("KinesisFirehoseDestination"),
-            input.sns_destination.is_some().then_some("SnsDestination"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let named = crate::state::named_event_destination_members([
+            input.cloud_watch_logs_destination.is_some(),
+            input.kinesis_firehose_destination.is_some(),
+            input.sns_destination.is_some(),
+        ]);
         if named.is_empty() {
             return Err(CreateEventDestinationErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(format!(
-                        "a value must be provided for a single event destination using one of {}",
-                        DESTINATION_MEMBERS.join(", ")
-                    )),
+                    message: Some(crate::state::no_event_destination_message()),
                     reason: Some("MISSING_PARAMETER".to_string()),
-                    fields: Some(
-                        DESTINATION_MEMBERS
-                            .iter()
-                            .map(|member| ValidationExceptionField {
-                                name: (*member).to_string(),
-                                message: "exactly one event destination is required".to_string(),
-                            })
-                            .collect(),
-                    ),
+                    fields: Some(crate::state::event_destination_fields(
+                        &crate::state::EVENT_DESTINATION_MEMBERS,
+                    )),
                 },
             )
             .into());
@@ -264,21 +246,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if named.len() > 1 {
             return Err(CreateEventDestinationErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(format!(
-                        "only one event destination can be created at a time, but {} were \
-                         provided",
-                        named.join(", ")
-                    )),
+                    message: Some(crate::state::too_many_event_destinations_message(&named)),
                     reason: Some("PARAMETERS_CANNOT_BE_USED_TOGETHER".to_string()),
-                    fields: Some(
-                        named
-                            .iter()
-                            .map(|member| ValidationExceptionField {
-                                name: (*member).to_string(),
-                                message: "exactly one event destination is required".to_string(),
-                            })
-                            .collect(),
-                    ),
+                    fields: Some(crate::state::event_destination_fields(&named)),
                 },
             )
             .into());
@@ -430,14 +400,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ))
     }
 }
-
-/// The input members that each name one kind of event destination, in the order the
-/// operation's documentation lists them. Exactly one of them carries a value.
-const DESTINATION_MEMBERS: [&str; 3] = [
-    "CloudWatchLogsDestination",
-    "KinesisFirehoseDestination",
-    "SnsDestination",
-];
 
 /// The response for one stored event destination, every member read from the records.
 fn event_destination_output(

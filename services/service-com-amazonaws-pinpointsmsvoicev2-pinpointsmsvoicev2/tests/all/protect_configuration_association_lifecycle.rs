@@ -260,8 +260,9 @@ async fn the_protect_configuration_link_is_independent_of_the_sets_event_destina
     emulator.associate(set, &protect).await;
 
     // One row per shape the set's event-destination list can be driven into: filled, grown,
-    // shrunk and emptied again. `UpdateEventDestination` is not a row: it is still a
-    // scaffold in this emulator, so a row for it would assert on a 501.
+    // shrunk and emptied again. `UpdateEventDestination` is not a row: it changes one
+    // destination's own members rather than which destinations the set holds, which the
+    // sibling suite `event_destination_updates` pins.
     let rows: Vec<(&str, &str, serde_json::Value, Vec<&str>)> = vec![
         (
             "the first destination added",

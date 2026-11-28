@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateEventDestination
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateEventDestination`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateEventDestination::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -174,18 +165,150 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateEventDestination` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateEventDestinationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateEventDestination"))
+        let _ = ctx;
+        let Some(store) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateEventDestinationErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("the configuration-set store is unavailable".to_string()),
+                    request_id: None,
+                },
+            )
+            .into());
+        };
+        let mut state = store.lock();
+
+        // `ConfigurationSetName` is a `ConfigurationSetNameOrArn`, so the caller may name
+        // the set by ARN; the store is keyed by name. A destination only exists inside a
+        // set, so a set that is gone leaves nothing here to update.
+        let set_name =
+            crate::state::name_from_name_or_arn(&input.configuration_set_name).to_string();
+        let Some(set) = state.configuration_sets.get_mut(&set_name) else {
+            return Err(UpdateEventDestinationErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        CONFIGURATION_SET_RESOURCE_TYPE,
+                        &set_name,
+                    )),
+                    resource_type: Some(CONFIGURATION_SET_RESOURCE_TYPE.to_string()),
+                    resource_id: Some(set_name),
+                },
+            )
+            .into());
+        };
+
+        // A destination's name identifies it within its set, so at most one record matches
+        // and a name that matches none names no resource to update.
+        let Some(position) = set.event_destinations.iter().position(|destination| {
+            destination.event_destination_name == input.event_destination_name
+        }) else {
+            return Err(UpdateEventDestinationErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::resource_not_found_message(
+                        EVENT_DESTINATION_RESOURCE_TYPE,
+                        &input.event_destination_name,
+                    )),
+                    resource_type: Some(EVENT_DESTINATION_RESOURCE_TYPE.to_string()),
+                    resource_id: Some(input.event_destination_name),
+                },
+            )
+            .into());
+        };
+
+        // A destination publishes to ONE place, so a request naming two of the three
+        // destination members does not say where events go. The model declares no
+        // cross-member constraint for it, so it is refused here, as `CreateEventDestination`
+        // refuses the same pair.
+        let named = crate::state::named_event_destination_members([
+            input.cloud_watch_logs_destination.is_some(),
+            input.kinesis_firehose_destination.is_some(),
+            input.sns_destination.is_some(),
+        ]);
+        if named.len() > 1 {
+            return Err(UpdateEventDestinationErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::too_many_event_destinations_message(&named)),
+                    reason: Some("PARAMETERS_CANNOT_BE_USED_TOGETHER".to_string()),
+                    fields: Some(crate::state::event_destination_fields(&named)),
+                },
+            )
+            .into());
+        }
+
+        // "You can't change an event destination's type between CloudWatch Logs, Firehose,
+        // and Amazon SNS": a request naming a destination member other than the one the
+        // stored record holds asks for exactly that, and the model carries a
+        // `ConflictExceptionReason` for it. The conflict is the CHANGE of kind, so a record
+        // holding no kind at all has none to change and the requested one is simply written.
+        let stored_member = destination_member(&set.event_destinations[position]);
+        if let (Some(requested), Some(stored)) = (named.first(), stored_member) {
+            if *requested != stored {
+                return Err(UpdateEventDestinationErrorModeled::ConflictException(
+                    ConflictException {
+                        // AWS words this service's conflict message as a restatement of the
+                        // exception's own members, so both carry the same values.
+                        message: Some(crate::state::conflict_message(
+                            EVENT_DESTINATION_MISMATCH,
+                            EVENT_DESTINATION_RESOURCE_TYPE,
+                            &input.event_destination_name,
+                        )),
+                        reason: Some(EVENT_DESTINATION_MISMATCH.to_string()),
+                        resource_type: Some(EVENT_DESTINATION_RESOURCE_TYPE.to_string()),
+                        resource_id: Some(input.event_destination_name),
+                    },
+                )
+                .into());
+            }
+        }
+
+        // Every member the request carries is written onto the stored record and every
+        // member it leaves out stays as it was, so the destination's state after the update
+        // is what the last request that named each member set — which is what every later
+        // read of it reports, the record `DeleteEventDestination` echoes included.
+        let destination = &mut set.event_destinations[position];
+        if let Some(enabled) = input.enabled {
+            destination.enabled = enabled;
+        }
+        if let Some(matching_event_types) = input.matching_event_types {
+            destination.matching_event_types = matching_event_types;
+        }
+        if let Some(cloud_watch_logs_destination) = input.cloud_watch_logs_destination {
+            destination.cloud_watch_logs_destination = Some(cloud_watch_logs_destination);
+        }
+        if let Some(kinesis_firehose_destination) = input.kinesis_firehose_destination {
+            destination.kinesis_firehose_destination = Some(kinesis_firehose_destination);
+        }
+        if let Some(sns_destination) = input.sns_destination {
+            destination.sns_destination = Some(sns_destination);
+        }
+
+        // Read the response back out of the store: what the caller sees is what was
+        // persisted, not what was passed in.
+        let updated = set.event_destinations[position].clone();
+        Ok(UpdateEventDestinationOutput {
+            configuration_set_arn: Some(set.arn.clone()),
+            configuration_set_name: Some(set.name.clone()),
+            event_destination: Some(updated),
+        })
     }
+}
+
+/// The `ResourceType` this operation's refusals name, as the model's enum spells them.
+const CONFIGURATION_SET_RESOURCE_TYPE: &str = "configuration-set";
+const EVENT_DESTINATION_RESOURCE_TYPE: &str = "event-destination";
+
+/// The `ConflictExceptionReason` the model carries for a request that does not name the
+/// kind of destination the stored record is.
+const EVENT_DESTINATION_MISMATCH: &str = "EVENT_DESTINATION_MISMATCH";
+
+/// Which kind of destination a stored record publishes through, or `None` for a record that
+/// carries none of them — read through the service's one statement of that member set
+/// ([`crate::state::named_event_destination_members`]).
+fn destination_member(destination: &EventDestination) -> Option<&'static str> {
+    crate::state::named_event_destination_members([
+        destination.cloud_watch_logs_destination.is_some(),
+        destination.kinesis_firehose_destination.is_some(),
+        destination.sns_destination.is_some(),
+    ])
+    .first()
+    .copied()
 }

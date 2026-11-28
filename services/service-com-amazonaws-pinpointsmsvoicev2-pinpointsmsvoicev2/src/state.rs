@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::SystemTime;
 
-use crate::ops::types::{EventDestination, Tag};
+use crate::ops::types::{EventDestination, Tag, ValidationExceptionField};
 
 /// This service's SigV4 signing name, which is also its ARN namespace.
 ///
@@ -354,6 +354,63 @@ pub fn invalid_parameters_message(wire_names: &[&str]) -> String {
 /// and then could not use. `reason` is a `ValidationExceptionReason`.
 pub fn validation_error_message(reason: &str, fields: &str) -> String {
     format!("Validation Error Occurred - Reason=\"{reason}\" Fields=\"{fields}\"")
+}
+
+/// The request members that each name one KIND of event destination, in the order the
+/// event-destination operations document them.
+///
+/// Stated once for the whole service: an event destination publishes to one place, so the
+/// create needs exactly one of these members and the update at most one, and both have to
+/// name the same set — two copies of it drift the moment the model declares a fourth kind.
+pub const EVENT_DESTINATION_MEMBERS: [&str; 3] = [
+    "CloudWatchLogsDestination",
+    "KinesisFirehoseDestination",
+    "SnsDestination",
+];
+
+/// Which of [`EVENT_DESTINATION_MEMBERS`] are present, in that order, from one presence
+/// flag per member — so every reader of "which kind of destination is this" asks it here
+/// rather than spelling the three members a second time.
+pub fn named_event_destination_members(present: [bool; 3]) -> Vec<&'static str> {
+    EVENT_DESTINATION_MEMBERS
+        .iter()
+        .zip(present)
+        .filter_map(|(member, given)| given.then_some(*member))
+        .collect()
+}
+
+/// The `Fields` entry each member of `named` earns on a refusal of the event-destination
+/// member set: every one of them failed the same requirement, which is that exactly one
+/// kind of destination is named.
+pub fn event_destination_fields(named: &[&str]) -> Vec<ValidationExceptionField> {
+    named
+        .iter()
+        .map(|member| ValidationExceptionField {
+            name: (*member).to_string(),
+            message: ONE_EVENT_DESTINATION_REQUIREMENT.to_string(),
+        })
+        .collect()
+}
+
+/// The requirement every `Fields` entry of such a refusal states.
+const ONE_EVENT_DESTINATION_REQUIREMENT: &str = "exactly one event destination is required";
+
+/// The message a request naming SEVERAL event destinations is refused with: it does not say
+/// where events go. Worded once, so the create and the update state it the same way.
+pub fn too_many_event_destinations_message(named: &[&str]) -> String {
+    format!(
+        "only one event destination can be provided, but {} were provided",
+        named.join(", ")
+    )
+}
+
+/// The message a request that must name one event destination and names NONE is refused
+/// with: it has nothing to log to.
+pub fn no_event_destination_message() -> String {
+    format!(
+        "a value must be provided for a single event destination using one of {}",
+        EVENT_DESTINATION_MEMBERS.join(", ")
+    )
 }
 
 /// The message a `ResourceNotFoundException` carries: like the conflict message, this
