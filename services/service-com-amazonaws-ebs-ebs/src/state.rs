@@ -527,14 +527,72 @@ impl Snapshot {
     pub fn holds_no_block(&self) -> bool {
         self.blocks.is_empty()
     }
+
+    /// What a `StartSnapshot` answering for this snapshot reports, taken as of NOW.
+    ///
+    /// The answer is a value, not a view: once taken it is what the call that took it
+    /// said, whatever later happens to the snapshot it was taken from. That is what lets
+    /// the create's answer be REMEMBERED beside the `ClientToken` it was given under
+    /// ([`StartSnapshotIdempotencyRecord`]).
+    pub fn start_snapshot_answer(&self) -> StartSnapshotAnswer {
+        StartSnapshotAnswer {
+            snapshot_id: self.snapshot_id.clone(),
+            owner_id: self.owner_id.clone(),
+            status: self.status,
+            start_time: self.start_time,
+            volume_size: self.volume_size,
+            block_size: self.block_size,
+            description: self.description.clone(),
+            tags: self.tags.clone(),
+            parent_snapshot_id: self.parent_snapshot_id.clone(),
+            kms_key_arn: self.kms_key_arn.clone(),
+            sse_type: self.sse_type,
+        }
+    }
+}
+
+/// The answer ONE `StartSnapshot` call gave: every member of its response, as that call
+/// reported them.
+///
+/// Held rather than recomputed because a response is the result of the call that produced
+/// it. A snapshot's record goes on living after the call that minted it — its status moves
+/// when it is sealed and when its `Timeout` falls due, and its blocks come and go — so
+/// rendering a past answer from the record as it stands now would report the snapshot's
+/// present instead of what that call answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSnapshotAnswer {
+    pub snapshot_id: String,
+    pub owner_id: String,
+    pub status: SnapshotStatus,
+    pub start_time: SystemTime,
+    pub volume_size: i64,
+    pub block_size: i32,
+    pub description: Option<String>,
+    pub tags: Vec<StoredTag>,
+    pub parent_snapshot_id: Option<String>,
+    pub kms_key_arn: Option<String>,
+    pub sse_type: Option<SseType>,
 }
 
 /// What a `ClientToken` remembers, so a repeat of the SAME request replays the original
 /// answer while a repeat with DIFFERENT parameters is a `ConflictException`.
+///
+/// `ClientToken` is documented so that the retries "return the result from the original
+/// successful request and they have no additional effect", so what is remembered is that
+/// RESULT ([`answer`](Self::answer)) and not a pointer to a record whose later life the
+/// result never saw. The snapshot the original call minted is the one the answer names.
 #[derive(Debug, Clone)]
 pub struct StartSnapshotIdempotencyRecord {
-    pub snapshot_id: String,
+    /// The answer the original successful request returned, verbatim.
+    pub answer: StartSnapshotAnswer,
     pub request_fingerprint: String,
+}
+
+impl StartSnapshotIdempotencyRecord {
+    /// The snapshot the original request minted, which is the one its answer named.
+    pub fn snapshot_id(&self) -> &str {
+        &self.answer.snapshot_id
+    }
 }
 
 /// Per-service state for com-amazonaws-ebs-ebs. A handler reaches it through [`service_state`].
@@ -681,7 +739,7 @@ impl ComAmazonawsEbsEbsState {
     pub fn remove_snapshot(&mut self, snapshot_id: &str) -> Option<Snapshot> {
         let removed = self.snapshots.remove(snapshot_id)?;
         self.client_tokens
-            .retain(|_, record| record.snapshot_id != snapshot_id);
+            .retain(|_, record| record.snapshot_id() != snapshot_id);
         self.refresh_transition_schedule();
         Some(removed)
     }

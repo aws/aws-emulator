@@ -3,7 +3,9 @@
 //! @op StartSnapshot
 //!
 //! Implemented: mints a snapshot, persists it in [`crate::state`] and answers from the
-//! stored record. `ClientToken` makes the call idempotent; `ParentSnapshotId` seeds the
+//! stored record. `ClientToken` makes the call idempotent, remembering the answer this
+//! call gave so a retry returns that answer rather than the snapshot's later life;
+//! `ParentSnapshotId` seeds the
 //! new snapshot with a copy of the parent's blocks, so the volume the request asks for
 //! must address at least as much as the parent's does, and it hands the new snapshot the
 //! parent's encryption unless the request names a key of its own.
@@ -153,7 +155,7 @@ use crate::state::{
     blocks_in_volume, expiry_from_timeout, fingerprint_hex_sha256, invalid_volume_size_message,
     is_well_formed_snapshot_id, malformed_snapshot_id_message, snapshot_encryption,
     snapshot_not_found_message, too_many_tags_message, BlockEntry, Snapshot, SnapshotStatus,
-    StartSnapshotIdempotencyRecord, StoredTag, CLIENT_TOKEN_CONFLICT_MESSAGE,
+    StartSnapshotAnswer, StartSnapshotIdempotencyRecord, StoredTag, CLIENT_TOKEN_CONFLICT_MESSAGE,
     DEFAULT_SNAPSHOT_TIMEOUT_MINUTES, MAX_STORED_BLOCKS_PER_SNAPSHOT, MAX_STORED_BLOCKS_TOTAL,
     MAX_STORED_SNAPSHOTS, MAX_TAGS_PER_SNAPSHOT, MAX_VOLUME_SIZE_GIB,
     PARENT_SNAPSHOT_ID_AND_ENCRYPT_MESSAGE, SNAPSHOT_BLOCK_SIZE_BYTES,
@@ -327,13 +329,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )
                     .into());
                 }
-                let snapshot_id = record.snapshot_id.clone();
-                let snapshot = store.snapshots.get(&snapshot_id).ok_or_else(|| {
-                    no_state_message(format!(
-                        "ClientToken {token} names snapshot {snapshot_id}, which is no longer stored"
-                    ))
-                })?;
-                return Ok(response_for(snapshot));
+                // "The subsequent retries with the same client token return the result
+                // from the original successful request and they have no additional
+                // effect": the result is the one that call RETURNED, which the record
+                // holds, so a retry reports neither what the snapshot has become since
+                // (its seal, its cancellation) nor anything the retry itself did — it did
+                // nothing.
+                return Ok(response_for(&record.answer));
             }
         }
 
@@ -477,21 +479,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         store.snapshots.insert(snapshot_id.clone(), snapshot);
         store.refresh_transition_schedule();
-        if let Some(token) = input.client_token.as_deref() {
-            store.client_tokens.insert(
-                token.to_string(),
-                StartSnapshotIdempotencyRecord {
-                    snapshot_id: snapshot_id.clone(),
-                    request_fingerprint: fingerprint,
-                },
-            );
-        }
 
         // Answer from the record that was just persisted, never from the request.
         let stored = store.snapshots.get(&snapshot_id).ok_or_else(|| {
             no_state_message(format!("snapshot {snapshot_id} was not persisted"))
         })?;
-        Ok(response_for(stored))
+        let answer = stored.start_snapshot_answer();
+        // The answer is remembered beside the token, not just the id of the snapshot it
+        // named, because what a retry owes the caller is this answer and the snapshot's
+        // record does not stay as this answer found it.
+        if let Some(token) = input.client_token.as_deref() {
+            store.client_tokens.insert(
+                token.to_string(),
+                StartSnapshotIdempotencyRecord {
+                    answer: answer.clone(),
+                    request_fingerprint: fingerprint,
+                },
+            );
+        }
+        Ok(response_for(&answer))
     }
 }
 
@@ -593,24 +599,25 @@ fn push_optional_member(canonical: &mut String, name: &str, value: Option<&str>)
     }
 }
 
-/// Render the stored snapshot as this operation's output.
+/// Render ONE answer — the one this call took from the record it minted, or the one a
+/// past call took and the `ClientToken` remembers — as this operation's output.
 ///
-/// An optional member the stored snapshot does NOT have is left absent rather than
-/// materialised as a placeholder: restJson1 omits an absent member, and `SseType` and
-/// `Tags` are optional with no `@default`, so an unencrypted snapshot reports no
-/// `SseType` and an untagged one reports no `Tags` — a caller can tell "the service did
-/// not report one" from "the service reported this value".
-fn response_for(snapshot: &Snapshot) -> StartSnapshotOutput {
+/// An optional member the answer does NOT carry is left absent rather than materialised
+/// as a placeholder: restJson1 omits an absent member, and `SseType` and `Tags` are
+/// optional with no `@default`, so an unencrypted snapshot reports no `SseType` and an
+/// untagged one reports no `Tags` — a caller can tell "the service did not report one"
+/// from "the service reported this value".
+fn response_for(answer: &StartSnapshotAnswer) -> StartSnapshotOutput {
     StartSnapshotOutput {
-        description: snapshot.description.clone(),
-        snapshot_id: Some(snapshot.snapshot_id.clone()),
-        owner_id: Some(snapshot.owner_id.clone()),
-        status: Some(snapshot.status.as_wire().to_string()),
-        start_time: Some(::aws_smithy_types::DateTime::from(snapshot.start_time)),
-        volume_size: Some(snapshot.volume_size),
-        block_size: Some(snapshot.block_size),
-        tags: (!snapshot.tags.is_empty()).then(|| {
-            snapshot
+        description: answer.description.clone(),
+        snapshot_id: Some(answer.snapshot_id.clone()),
+        owner_id: Some(answer.owner_id.clone()),
+        status: Some(answer.status.as_wire().to_string()),
+        start_time: Some(::aws_smithy_types::DateTime::from(answer.start_time)),
+        volume_size: Some(answer.volume_size),
+        block_size: Some(answer.block_size),
+        tags: (!answer.tags.is_empty()).then(|| {
+            answer
                 .tags
                 .iter()
                 .map(|tag| Tag {
@@ -619,9 +626,9 @@ fn response_for(snapshot: &Snapshot) -> StartSnapshotOutput {
                 })
                 .collect()
         }),
-        parent_snapshot_id: snapshot.parent_snapshot_id.clone(),
-        kms_key_arn: snapshot.kms_key_arn.clone(),
-        sse_type: snapshot
+        parent_snapshot_id: answer.parent_snapshot_id.clone(),
+        kms_key_arn: answer.kms_key_arn.clone(),
+        sse_type: answer
             .sse_type
             .map(|sse_type| sse_type.as_wire().to_string()),
     }
