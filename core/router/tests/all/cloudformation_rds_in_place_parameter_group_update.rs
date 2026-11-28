@@ -5,20 +5,31 @@
 //! client that deployed it can observe the change landing.
 //!
 //! The rule under test: **a property an in-place stack update changes is applied to the
-//! resource the owning service holds, and the owning service's own read reports it** — the
-//! stack neither replaces the instance (its `DbiResourceId`, the identity Amazon RDS minted
-//! for it, is untouched) nor leaves the association unobservable. Amazon RDS then settles the
-//! membership as `ModifyDBInstance$DBParameterGroupName` documents: the group name changes at
-//! once, but "the actual parameter changes are not applied until you reboot the instance
-//! without failover" and "the DB instance isn't rebooted automatically", so the newly
-//! associated group reports `ParameterApplyStatus` `pending-reboot` until the client reboots
-//! the instance and `in-sync` once that reboot has brought the engine up under it, while
+//! resource the owning service holds, and the stack is finished with the resource only once
+//! that configuration is really IN FORCE on it** — the stack neither replaces the instance (its
+//! `DbiResourceId`, the identity Amazon RDS minted for it, is untouched) nor leaves the
+//! association unapplied. Amazon RDS does not apply an association by itself:
+//! `ModifyDBInstance$DBParameterGroupName` says the group name changes at once, but "the actual
+//! parameter changes are not applied until you reboot the instance without failover" and "the
+//! DB instance isn't rebooted automatically", which `DBParameterGroupStatus$ParameterApplyStatus`
+//! reports as `pending-reboot` against `in-sync`, "the parameter group change is synchronized
+//! with the database". So the restart is the DEPLOYMENT's — `AWS::RDS::DBInstance`'s own
+//! `DBParameterGroupName` documentation says a change to the referenced group's data members may
+//! need the instance restarted during an update, and that a group carrying static parameters,
+//! changed or not, makes an update trigger a reboot — and the client that waits on the instance
+//! after `UPDATE_COMPLETE` reads `in-sync` with no reboot of its own, while
 //! `DescribeDBParameters` on that group reports the template's value under `Source` `user`.
 //!
 //! Why it matters: managing RDS configuration through CloudFormation is the normal way to do
 //! it, and every client that waits on the instance's reported group — a CDK or Terraform
 //! convergence loop, an `aws rds wait`, a deployment script — blocks forever if the update
-//! completes without the association becoming observable.
+//! completes with the association parked at `pending-reboot` and nothing ever applying it.
+//!
+//! This suite drives the rule across the two crates' own wires, row by row over what the group
+//! switched to declares. `services/service-com-amazonaws-cloudformation-cloudformation/tests/
+//! all/rds_db_instance_parameter_group_update.rs` is the deployment side's own suite: it spans
+//! the group CONTENTS (a dynamic parameter, a static one, both together, and none at all) and
+//! the create side of the same rule.
 //!
 //! Two crates have to agree for this to hold (CloudFormation deploys the change and makes the
 //! calls; Amazon RDS owns the instance, the groups and the apply status), so the suite lives
@@ -46,9 +57,6 @@ const UPDATE_COMPLETE: &str = "UPDATE_COMPLETE";
 /// `DBParameterGroupStatus$ParameterApplyStatus` of a group whose values the engine is
 /// running.
 const IN_SYNC: &str = "in-sync";
-
-/// The status of a group an association has attached and whose reboot is still outstanding.
-const PENDING_REBOOT: &str = "pending-reboot";
 
 /// `Parameter$Source` of a value a caller — here the template — set.
 const SOURCE_USER: &str = "user";
@@ -395,10 +403,12 @@ async fn a_cfn_parameter_group_switch_lands_on_the_live_db_instance() {
             "case {case:?}: the update points the instance at another group than the create did"
         );
 
-        // The association becomes observable on Amazon RDS's own read, where it waits for the
-        // reboot that applies it — the switch itself reboots nothing.
+        // The association is in force on Amazon RDS's own read, under the deployment's own
+        // power: the restart the association needs is the update's to make, so the client that
+        // waits after `UPDATE_COMPLETE` reads the new group synchronized with the database
+        // without rebooting anything itself.
         let settled_instance =
-            awaited_membership(&router, case, &identifier, &group_b, PENDING_REBOOT).await;
+            awaited_membership(&router, case, &identifier, &group_b, IN_SYNC).await;
 
         // An in-place update, not a replacement: the identity Amazon RDS minted survives it.
         let updated_resource_id = element(&settled_instance, "DbiResourceId");
@@ -408,8 +418,8 @@ async fn a_cfn_parameter_group_switch_lands_on_the_live_db_instance() {
              resource id alone, got {updated_resource_id:?} after {created_resource_id:?}"
         );
 
-        // And the reboot the client issues is what puts the association in force, which is the
-        // convergence a deployment waits on.
+        // A reboot the client issues anyway is accepted and leaves the association where it
+        // is: what it would have applied has been applied already.
         let (status, rebooted) = rds(
             &router,
             "RebootDBInstance",

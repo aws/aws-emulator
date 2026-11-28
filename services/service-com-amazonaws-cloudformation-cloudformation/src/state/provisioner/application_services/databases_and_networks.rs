@@ -2082,6 +2082,14 @@ pub(crate) const DB_INSTANCE_STATUSES_COMING_UP: &[&str] = &[
 /// instance must be available" — so it is made here, and an association Amazon RDS refuses is
 /// the resource's own failure in that service's words rather than an instance the stack
 /// reports created without the role its template declared.
+///
+/// The DB PARAMETER GROUP the declaration puts the instance on is applied here for the same
+/// reason ([`super::super::rds_parameter_group_application`]): Amazon RDS changes the
+/// association at once but leaves its values waiting for a reboot it does not perform itself,
+/// so the resource's work is held open — and the instance restarted — until that service
+/// reports the membership synchronized, rather than reported deployed while the engine still
+/// runs under the group it was moved off. A membership that service reports it could NOT apply
+/// fails the resource there, in its own account of it.
 pub(crate) async fn db_instance_readiness(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -2098,6 +2106,16 @@ pub(crate) async fn db_instance_readiness(
         .and_then(scalar_text)
         .unwrap_or_default();
     if status == DB_INSTANCE_STATUS_AVAILABLE {
+        if let Some(outstanding) =
+            super::super::rds_parameter_group_application::apply_declared_parameter_group(
+                ctx,
+                region,
+                physical_resource_id,
+            )
+            .await?
+        {
+            return Ok(outstanding);
+        }
         if let Some(refusal) = super::super::rds_role_associations::associate_declared_roles(
             ctx,
             region,

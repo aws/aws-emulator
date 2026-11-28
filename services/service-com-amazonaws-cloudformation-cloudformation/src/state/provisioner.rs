@@ -3608,6 +3608,10 @@ mod rds_role_associations;
 /// it: the DB instance is the type whose create and modify carry no `AssociatedRoles` member
 /// at all.
 mod rds_db_instance_roles;
+/// The DB parameter group an `AWS::RDS::DBInstance` declaration puts the instance on, applied
+/// so the engine really runs under it before the stack reports the resource deployed — which
+/// Amazon RDS does not do on its own for an association.
+mod rds_parameter_group_application;
 /// The endpoints an `AWS::RDS::DBCluster` and an `AWS::RDS::DBInstance` publish, read off
 /// Amazon RDS once it reports the resource serving so a stack output carries the address a
 /// client really connects to.
