@@ -1204,10 +1204,10 @@ async fn a_permission_version_that_cannot_be_written_is_refused() {
         (
             "a permission Amazon Web Services manages",
             json!({"permissionArn": aws_managed, "policyTemplate": template}),
-            "InvalidParameterException",
+            "OperationNotPermittedException",
             Some(format!(
-                "permissionArn '{aws_managed}' names a permission that Amazon Web Services \
-                 manages, so no new version of it can be created"
+                "Permission {aws_managed} is an Amazon Web Services managed permission, \
+                 which Amazon Web Services creates and manages. You can't modify it."
             )),
         ),
         (

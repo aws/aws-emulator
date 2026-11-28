@@ -322,6 +322,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     },
                 )
             })?;
+        // A deprecated permission "can't be associated with new resource shares, but
+        // existing associations continue to function"
+        // (`ResourceSharePermissionDetail$status`), so attaching one is an operation
+        // that is not permitted while the deprecation stands. The attachments the share
+        // already holds are untouched.
+        if permission.is_deprecated() {
+            return Err(
+                AssociateResourceSharePermissionErrorModeled::OperationNotPermittedException(
+                    OperationNotPermittedException {
+                        message: crate::state::deprecated_permission_not_attachable_message(
+                            &input.permission_arn,
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
         // A version the permission never carried names nothing to attach, whatever else
         // the request asks for.
         if let Some(requested) = input.permission_version {

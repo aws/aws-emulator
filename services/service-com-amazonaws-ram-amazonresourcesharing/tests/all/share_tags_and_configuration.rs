@@ -30,13 +30,12 @@ use super::harness::*;
 
 /// The configuration a share created without an explicit one reports.
 ///
-/// `ResourceShareConfiguration` declares two boolean members,
-/// `exclusiveAccountAccess` and `retainSharingOnAccountLeaveOrganization`
+/// `ResourceShareConfiguration` declares one boolean member,
+/// `retainSharingOnAccountLeaveOrganization`
 /// (`smithy_query(query="shape",shape="ResourceShareConfiguration")`), and a share
-/// neither retains sharing nor restricts access unless that was asked for.
+/// does not retain sharing unless that was asked for.
 fn default_configuration() -> Value {
     json!({
-        "exclusiveAccountAccess": false,
         "retainSharingOnAccountLeaveOrganization": false,
     })
 }
@@ -86,37 +85,26 @@ async fn every_reported_share_carries_its_configuration_and_its_tag_list() {
                 "tags": [{ "key": "team", "value": "platform" }],
             }),
             configuration: json!({
-                "exclusiveAccountAccess": false,
                 "retainSharingOnAccountLeaveOrganization": true,
             }),
             tags: vec![("team", "platform")],
         },
         ProjectionCase {
-            case: "exclusive account access asked for",
+            case: "retention asked for beside several tags",
             request: json!({
-                "name": "projection-exclusive",
-                "resourceShareConfiguration": { "exclusiveAccountAccess": true },
-            }),
-            configuration: json!({
-                "exclusiveAccountAccess": true,
-                "retainSharingOnAccountLeaveOrganization": false,
-            }),
-            tags: vec![],
-        },
-        ProjectionCase {
-            case: "both configuration members asked for",
-            request: json!({
-                "name": "projection-both",
+                "name": "projection-retain-tagged",
                 "resourceShareConfiguration": {
-                    "exclusiveAccountAccess": true,
                     "retainSharingOnAccountLeaveOrganization": true,
                 },
+                "tags": [
+                    { "key": "cost-center", "value": "7" },
+                    { "key": "team", "value": "network" },
+                ],
             }),
             configuration: json!({
-                "exclusiveAccountAccess": true,
                 "retainSharingOnAccountLeaveOrganization": true,
             }),
-            tags: vec![],
+            tags: vec![("cost-center", "7"), ("team", "network")],
         },
         ProjectionCase {
             case: "retention spelled out as the default",
@@ -131,7 +119,6 @@ async fn every_reported_share_carries_its_configuration_and_its_tag_list() {
                 ],
             }),
             configuration: json!({
-                "exclusiveAccountAccess": false,
                 "retainSharingOnAccountLeaveOrganization": false,
             }),
             tags: vec![("cost-center", "42"), ("team", "platform")],
@@ -399,17 +386,13 @@ async fn a_tag_mutation_is_what_the_next_read_reports() {
                 status, 200,
                 "case {case:?}/step {index}: the mutation expected 200, got {status} with {body:?}"
             );
-            // A tag mutation reports what it changed; exactly what each one reports is
-            // pinned over its own table in `mutation_reports.rs`, so here the response
-            // only has to carry that report.
-            let member = match step {
-                TagStep::Add(_) => "tagsCreated",
-                TagStep::Remove(_) => "deletedTags",
-            };
-            assert!(
-                body.get(member).and_then(Value::as_array).is_some(),
-                "case {case:?}/step {index}: expected the mutation to report {member}, got \
-                 {body:?}"
+            // `TagResourceResponse` and `UntagResourceResponse` declare no members, so a
+            // successful mutation answers with an empty body; what it changed is read
+            // back below through `GetResourceShares`.
+            assert_eq!(
+                body,
+                json!({}),
+                "case {case:?}/step {index}: expected an empty mutation body, got {body:?}"
             );
         }
 
@@ -727,7 +710,6 @@ async fn a_deleted_share_keeps_its_record_and_a_repeat_delete_is_the_same_succes
                     .cloned()
                     .unwrap_or(Value::Null),
                 json!({
-                    "exclusiveAccountAccess": false,
                     "retainSharingOnAccountLeaveOrganization": true,
                 }),
                 "case {case:?}/{selector}: the record must keep its configuration, got {share:?}"

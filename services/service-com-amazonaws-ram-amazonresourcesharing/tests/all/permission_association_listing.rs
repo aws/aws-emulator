@@ -664,6 +664,49 @@ async fn each_filter_keeps_the_associations_it_names() {
             }),
             vec![(permission.clone(), mixed_share.clone())],
         ),
+        (
+            "resourceShareArn naming the share that holds one permission",
+            json!({"resourceShareArn": project_share.clone()}),
+            vec![(permission.clone(), project_share.clone())],
+        ),
+        (
+            "resourceShareArn naming the share that holds two",
+            json!({"resourceShareArn": mixed_share.clone()}),
+            vec![
+                (permission.clone(), mixed_share.clone()),
+                (subnet_default.clone(), mixed_share.clone()),
+            ],
+        ),
+        (
+            "resourceShareArn naming a share this account does not hold",
+            json!({
+                "resourceShareArn":
+                    format!(
+                        "arn:aws:ram:{REGION}:{ACCOUNT}:resource-share/\
+                         00000000-0000-0000-0000-000000000000"
+                    ),
+            }),
+            Vec::new(),
+        ),
+        (
+            "resourceShareArn and permissionArn, which keep the one pair both name",
+            json!({
+                "resourceShareArn": mixed_share.clone(),
+                "permissionArn": subnet_default.clone(),
+            }),
+            vec![(subnet_default.clone(), mixed_share.clone())],
+        ),
+        (
+            "resourceOwner SELF, the documented default, which keeps the shares this \
+             account owns",
+            json!({"resourceOwner": "SELF"}),
+            everything.clone(),
+        ),
+        (
+            "resourceOwner OTHER-ACCOUNTS, which keeps the shares owned elsewhere",
+            json!({"resourceOwner": "OTHER-ACCOUNTS"}),
+            Vec::new(),
+        ),
     ];
 
     for (case, mut body, mut wanted) in rows {
@@ -878,6 +921,18 @@ async fn a_request_this_read_cannot_serve_is_refused() {
             "a nextToken whose pair is the wrong way round",
             json!({"nextToken": encode_permission_association_cursor(&share_arn, &permission)}),
             "InvalidNextTokenException",
+            None,
+        ),
+        (
+            "a resourceShareArn that is not an ARN",
+            json!({"resourceShareArn": "resource-share/abc"}),
+            "MalformedArnException",
+            None,
+        ),
+        (
+            "a resourceShareArn that names a managed permission",
+            json!({"resourceShareArn": permission.clone()}),
+            "MalformedArnException",
             None,
         ),
     ];

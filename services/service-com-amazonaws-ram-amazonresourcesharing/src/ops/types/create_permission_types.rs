@@ -17,6 +17,7 @@ pub struct CreatePermissionInput {
     pub name: String,
     pub resource_type: String,
     pub policy_template: String,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterDeclaration>>,
     pub client_token: Option<String>,
     pub tags: Option<Vec<Tag>>,
 }
@@ -31,12 +32,6 @@ pub struct CreatePermissionOutput {
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionAlreadyExistsException")]
 #[derive(Debug, Clone, Default)]
 pub struct PermissionAlreadyExistsException {
-    pub message: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionLimitExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct PermissionLimitExceededException {
     pub message: String,
 }
 

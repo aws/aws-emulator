@@ -17,6 +17,7 @@ pub struct ReplacePermissionAssociationsInput {
     pub from_permission_arn: String,
     pub from_permission_version: Option<i32>,
     pub to_permission_arn: String,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterInput>>,
     pub client_token: Option<String>,
 }
 

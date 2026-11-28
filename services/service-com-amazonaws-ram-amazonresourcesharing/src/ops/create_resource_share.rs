@@ -317,10 +317,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let configuration =
             crate::state::share_configuration(input.resource_share_configuration.as_ref());
         let rendered_configuration = format!(
-            "retain={:?}{}exclusive={:?}",
-            configuration.retain_sharing_on_account_leave_organization,
-            '\u{1}',
-            configuration.exclusive_account_access
+            "retain={:?}",
+            configuration.retain_sharing_on_account_leave_organization
         );
 
         let mut store = state.lock();
@@ -376,6 +374,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         message: format!(
                             "this account already holds the maximum of {} resource shares",
                             crate::state::MAX_RESOURCE_SHARES
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // "Setting the status to DEPRECATED prevents new resource share associations"
+        // (`UpdatePermission$status`): attaching the permission to the share this call
+        // would create is such an association, so the create is refused rather than
+        // leaving a share governed by a permission that may not govern it.
+        if let Some(deprecated) = permission_arns.iter().find(|permission_arn| {
+            store
+                .permission(permission_arn)
+                .is_some_and(crate::state::PermissionRecord::is_deprecated)
+        }) {
+            return Err(
+                CreateResourceShareErrorModeled::OperationNotPermittedException(
+                    OperationNotPermittedException {
+                        message: crate::state::deprecated_permission_not_attachable_message(
+                            deprecated,
                         ),
                     },
                 )

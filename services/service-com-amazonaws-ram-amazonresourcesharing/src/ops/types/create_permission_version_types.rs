@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ram-amazonresourceshari
 pub struct CreatePermissionVersionInput {
     pub permission_arn: String,
     pub policy_template: String,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterDeclaration>>,
     pub client_token: Option<String>,
 }
 

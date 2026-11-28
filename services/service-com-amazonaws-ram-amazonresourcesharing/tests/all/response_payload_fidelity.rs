@@ -5,21 +5,20 @@
 //!
 //! The three rules under test, each asserted over a table rather than one case:
 //!
-//! * **A tag MUTATION reports its entries as self-describing documents; a tag reported
-//!   as part of a resource's state does not.** `TagResource$tagsCreated` and
-//!   `UntagResource$deletedTags` carry, on every entry, the AWS JSON structure
-//!   discriminator `__type` naming the serialized structure (`Tag`) beside the modelled
-//!   `key`/`value` pair (`smithy_query(query="shape",shape="Tag")`: the model declares
-//!   exactly `key` and `value`, so the discriminator is not a modelled member);
-//!   `ResourceShare$tags` carries the pair alone. Strip the discriminator and one
-//!   stored pair is the same object in both places.
-//! * **Every managed-permission summary a response carries reports the
-//!   service-linked-share restriction.** A summary of a managed permission carries, beside
-//!   the twelve members `smithy_query(query="shape",shape="ResourceSharePermissionSummary")`
-//!   declares, a boolean saying whether that permission may govern only a service-linked
-//!   resource share; it is read off the stored permission, so every operation that projects
-//!   a summary reports it and its value follows the permission's state rather than the
-//!   operation that reported it.
+//! * **A tag MUTATION answers with an empty body; a tag reported as part of a
+//!   resource's state carries the modelled pair.** `TagResourceResponse` and
+//!   `UntagResourceResponse` declare no members
+//!   (`smithy_query(query="shape",shape="TagResourceResponse")`), so a successful
+//!   mutation carries nothing, and `ResourceShare$tags` reports every stored pair with
+//!   exactly the members `Tag` declares (`smithy_query(query="shape",shape="Tag")`:
+//!   exactly `key` and `value`) and no structure discriminator.
+//! * **Every managed-permission summary a response carries reports exactly the members
+//!   `ResourceSharePermissionSummary` declares, from the stored permission.** The
+//!   summary's members are the ones
+//!   `smithy_query(query="shape",shape="ResourceSharePermissionSummary")` declares and no
+//!   other, and each value is read off the stored permission, so every operation that
+//!   projects a summary reports the same values for one permission and a read never moves
+//!   them.
 //! * **`external` is derived from the entity and the share's owning account, and the
 //!   teardown report carries false.** `ResourceShareAssociation$external` "indicates
 //!   whether the principal belongs to the same organization in Organizations as the
@@ -80,8 +79,8 @@ fn member_names(value: &Value, into: &mut BTreeSet<String>) {
 }
 
 /// Assert no member of a body reporting a resource's own state is a type
-/// discriminator: a member whose name starts with `__`. Only the two tag mutations
-/// report their entries as documents; everything else carries modelled members alone.
+/// discriminator: a member whose name starts with `__`. Every body this service answers
+/// carries modelled members alone.
 fn assert_no_discriminator(label: &str, body: &Value) {
     let mut names = BTreeSet::new();
     member_names(body, &mut names);
@@ -120,41 +119,8 @@ fn modelled_tag_members() -> BTreeSet<String> {
     ["key", "value"].iter().map(|m| (*m).to_string()).collect()
 }
 
-/// The member name the AWS JSON structure discriminator travels under.
-const DISCRIMINATOR: &str = "__type";
-
-/// The value the discriminator carries on a tag entry: the local name of the
-/// `com.amazonaws.ram#Tag` structure being serialized.
-const TAG_STRUCTURE_NAME: &str = "Tag";
-
-/// `entry` with its structure discriminator checked and taken off, so what is left can
-/// be compared with the same pair reported as part of a resource's own state.
-fn without_discriminator(label: &str, entry: &Value) -> Value {
-    let mut object = entry
-        .as_object()
-        .unwrap_or_else(|| panic!("case {label:?}: expected a JSON object, got {entry:?}"))
-        .clone();
-    let discriminator = object.remove(DISCRIMINATOR);
-    assert_eq!(
-        discriminator.as_ref().and_then(Value::as_str),
-        Some(TAG_STRUCTURE_NAME),
-        "case {label:?}: a tag-mutation entry must carry {DISCRIMINATOR:?} = \
-         {TAG_STRUCTURE_NAME:?}, got {entry:?}"
-    );
-    Value::Object(object)
-}
-
-/// The members a tag-mutation entry carries: the discriminator plus the modelled
-/// members named in `modelled`.
-fn document_members(modelled: &[&str]) -> BTreeSet<String> {
-    std::iter::once(DISCRIMINATOR)
-        .chain(modelled.iter().copied())
-        .map(str::to_string)
-        .collect()
-}
-
 #[tokio::test]
-async fn a_tag_mutation_reports_documents_while_a_share_reports_plain_pairs() {
+async fn a_tag_mutation_answers_empty_while_a_share_reports_plain_pairs() {
     let router = emulator();
 
     // The rule generalises over the tag PAIR, so the rows differ along the form of the
@@ -237,9 +203,8 @@ async fn a_tag_mutation_reports_documents_while_a_share_reports_plain_pairs() {
 
         let arn = arn_of(case, &created);
 
-        // TagResource: every reported entry is a document — the discriminator naming the
-        // Tag structure, plus the modelled pair — and with the discriminator taken off
-        // it is the very object the SAME pair gets inside the share.
+        // TagResource answers with nothing; what it attached is the share's own tag set,
+        // where the SAME pair is reported with the modelled members alone.
         let tags: Vec<Value> = add
             .iter()
             .map(|(key, value)| json!({ "key": key, "value": value }))
@@ -250,19 +215,12 @@ async fn a_tag_mutation_reports_documents_while_a_share_reports_plain_pairs() {
             status, 200,
             "case {case:?}: TagResource expected 200, got {status} with {tagged:?}"
         );
-        let created_entries = list_of(case, &tagged, "tagsCreated");
         assert_eq!(
-            created_entries.len(),
-            add.len(),
-            "case {case:?}: expected one reported entry per attached pair, got {tagged:?}"
+            tagged,
+            json!({}),
+            "case {case:?}: TagResource declares no response members, so the body must be \
+             empty, got {tagged:?}"
         );
-        for entry in &created_entries {
-            assert_eq!(
-                members_of(case, entry),
-                document_members(&["key", "value"]),
-                "case {case:?}: tagsCreated entry carries the wrong members: {entry:?}"
-            );
-        }
 
         let (status, listed) = get_shares(
             &router,
@@ -276,17 +234,33 @@ async fn a_tag_mutation_reports_documents_while_a_share_reports_plain_pairs() {
         assert_no_discriminator(case, &listed);
         let share = only_share(case, &listed);
         let share_entries = list_of(case, &share, "tags");
-        for entry in &created_entries {
-            let plain = without_discriminator(case, entry);
+        for entry in &share_entries {
+            assert_eq!(
+                members_of(case, entry),
+                modelled_tag_members(),
+                "case {case:?}: a tag inside the share carries unmodelled members: {entry:?}"
+            );
+        }
+        for (key, value) in &add {
             assert!(
-                share_entries.contains(&plain),
-                "case {case:?}: the pair {plain:?} TagResource reported is serialized \
-                 differently inside the share: {share_entries:?}"
+                share_entries.contains(&json!({ "key": key, "value": value })),
+                "case {case:?}: the pair {key:?}={value:?} TagResource attached is not the \
+                 object the share carries: {share_entries:?}"
             );
         }
 
-        // UntagResource: the pair is gone, so an entry names the key alone — still a
-        // document, carrying the discriminator and no member the model does not declare.
+        // UntagResource answers with nothing either, and the keys it named are gone from
+        // the share while every other pair stays.
+        let kept: Vec<Value> = share_entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| !remove.contains(&key))
+            })
+            .cloned()
+            .collect();
         let (status, untagged) = untag_resource(
             &router,
             &json!({ "resourceShareArn": arn, "tagKeys": remove }),
@@ -296,24 +270,31 @@ async fn a_tag_mutation_reports_documents_while_a_share_reports_plain_pairs() {
             status, 200,
             "case {case:?}: UntagResource expected 200, got {status} with {untagged:?}"
         );
-        let deleted_entries = list_of(case, &untagged, "deletedTags");
         assert_eq!(
-            deleted_entries.len(),
-            remove.len(),
-            "case {case:?}: expected one entry per removed key, got {untagged:?}"
+            untagged,
+            json!({}),
+            "case {case:?}: UntagResource declares no response members, so the body must be \
+             empty, got {untagged:?}"
         );
-        for entry in &deleted_entries {
-            assert_eq!(
-                members_of(case, entry),
-                document_members(&["key"]),
-                "case {case:?}: deletedTags entry carries the wrong members: {entry:?}"
-            );
-        }
+        let (status, after) = get_shares(
+            &router,
+            &json!({ "resourceOwner": "SELF", "resourceShareArns": [arn] }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the read after the removal expected 200, got {status} with \
+             {after:?}"
+        );
+        assert_eq!(
+            list_of(case, &only_share(case, &after), "tags"),
+            kept,
+            "case {case:?}: expected the pairs the removal left behind, got {after:?}"
+        );
     }
 
-    // The other side of the same rule: a REFUSED tag mutation carries no tag entry at
-    // all — it answers in the restJson1 error envelope, whose own discriminator names
-    // the error class rather than the Tag structure.
+    // The other side of the same rule: a REFUSED tag mutation answers in the restJson1
+    // error envelope rather than with a success body.
     let (status, refused) = tag_resource(
         &router,
         &json!({
@@ -759,13 +740,28 @@ async fn external_is_a_property_of_the_entity_and_the_owner_alone() {
 }
 
 // ---------------------------------------------------------------------------
-// Every managed-permission summary reports the service-linked-share restriction
+// Every managed-permission summary carries exactly the modelled members
 // ---------------------------------------------------------------------------
 
-/// The member a summary of a managed permission carries beside the twelve
-/// `ResourceSharePermissionSummary` declares: whether that permission may govern only a
-/// resource share an Amazon Web Services service created on the account's behalf.
-const RESTRICTION_MEMBER: &str = "restrictToServiceLinkedShares";
+/// The members `ResourceSharePermissionSummary` declares, from
+/// `smithy_query(query="shape",shape="ResourceSharePermissionSummary")`. A summary may
+/// leave a member out, but may carry no member outside this list.
+const SUMMARY_MEMBERS: [&str; 14] = [
+    "arn",
+    "version",
+    "defaultVersion",
+    "name",
+    "resourceType",
+    "status",
+    "creationTime",
+    "lastUpdatedTime",
+    "isResourceTypeDefault",
+    "permissionType",
+    "featureSet",
+    "permissionTemplateParameters",
+    "tags",
+    "resourceOwner",
+];
 
 /// The resource type the share below shares, and the type whose default managed
 /// permission the second test writes the restriction onto.
@@ -811,32 +807,39 @@ fn arn_of_summary(case: &str, summary: &Value) -> String {
 /// The restriction one reported summary carries. A summary that carries no such member,
 /// or carries something that is not a boolean, fails the case: AWS sends a boolean on
 /// every element.
-fn restriction_of(case: &str, summary: &Value) -> bool {
-    let reported = summary.get(RESTRICTION_MEMBER).unwrap_or_else(|| {
-        panic!("case {case:?}: expected a {RESTRICTION_MEMBER} member, got {summary:?}")
+fn resource_type_default_of(case: &str, summary: &Value) -> bool {
+    let reported = summary.get("isResourceTypeDefault").unwrap_or_else(|| {
+        panic!("case {case:?}: expected an isResourceTypeDefault member, got {summary:?}")
     });
     reported.as_bool().unwrap_or_else(|| {
         panic!(
-            "case {case:?}: {RESTRICTION_MEMBER} must be a boolean, got {reported:?} in \
+            "case {case:?}: isResourceTypeDefault must be a boolean, got {reported:?} in \
              {summary:?}"
         )
     })
 }
 
-/// Every reported summary's `(arn, restriction)` pair, asserting each one carries the
-/// member at all.
-fn restrictions_of(case: &str, body: &Value) -> Vec<(String, bool)> {
+/// Every reported summary's `(arn, isResourceTypeDefault)` pair, asserting each one
+/// carries only members the shape declares.
+fn summary_flags_of(case: &str, body: &Value) -> Vec<(String, bool)> {
     let summaries = summaries_of(case, body);
     assert!(
         !summaries.is_empty(),
         "case {case:?}: expected at least one reported permission, got {body:?}"
     );
+    let declared: BTreeSet<String> = SUMMARY_MEMBERS.iter().map(|m| (*m).to_string()).collect();
     summaries
         .iter()
         .map(|summary| {
+            let members = members_of(case, summary);
+            assert!(
+                members.is_subset(&declared),
+                "case {case:?}: a summary carries a member the shape does not declare: \
+                 {summary:?}"
+            );
             (
                 arn_of_summary(case, summary),
-                restriction_of(case, summary),
+                resource_type_default_of(case, summary),
             )
         })
         .collect()
@@ -852,7 +855,7 @@ fn ok(case: &str, (status, body): (u16, Value)) -> Value {
 }
 
 #[tokio::test]
-async fn every_operation_that_reports_a_permission_summary_reports_the_restriction() {
+async fn every_operation_that_reports_a_permission_summary_reports_modelled_members() {
     let router = emulator();
 
     // A customer managed permission beside the catalog, so the rows span both
@@ -936,14 +939,20 @@ async fn every_operation_that_reports_a_permission_summary_reports_the_restricti
     ];
 
     for (case, body) in rows {
-        for (arn, restricted) in restrictions_of(case, &body) {
-            // Nothing this store holds is published for service-linked shares only, so
-            // every one of them reports the member as false — and reports it, which is
-            // what a client that branches on it reads.
-            assert!(
-                !restricted,
-                "case {case:?}: {arn} is attachable to any share, so {RESTRICTION_MEMBER} \
-                 must be false, got {restricted}"
+        assert_no_discriminator(case, &body);
+        // A permission this account created is not the default for its resource type,
+        // and a catalog entry is one exactly when the library publishes it as one, so
+        // every reported flag is the stored permission's own.
+        for (arn, is_default) in summary_flags_of(case, &body) {
+            let expected = AWS_MANAGED_PERMISSIONS
+                .iter()
+                .find(|entry| aws_managed_permission_arn(entry.name) == arn)
+                .map(|entry| entry.is_resource_type_default)
+                .unwrap_or(false);
+            assert_eq!(
+                is_default, expected,
+                "case {case:?}: expected isResourceTypeDefault {expected} for {arn}, got \
+                 {is_default}"
             );
         }
     }
@@ -954,7 +963,7 @@ async fn every_operation_that_reports_a_permission_summary_reports_the_restricti
         "ListPermissions covers the catalog",
         list_permissions(&router, &json!({})).await,
     );
-    let reported: Vec<String> = restrictions_of("ListPermissions covers the catalog", &listed)
+    let reported: Vec<String> = summary_flags_of("ListPermissions covers the catalog", &listed)
         .into_iter()
         .map(|(arn, _)| arn)
         .collect();
@@ -974,11 +983,11 @@ async fn every_operation_that_reports_a_permission_summary_reports_the_restricti
 }
 
 #[tokio::test]
-async fn the_reported_restriction_follows_the_stored_permission() {
+async fn the_reported_summary_follows_the_stored_permission() {
     let (router, engine) = emulator_with_engine();
 
     let minted = ok(
-        "mint a permission to restrict",
+        "mint a permission to flag",
         create_permission(
             &router,
             &json!({
@@ -990,55 +999,55 @@ async fn the_reported_restriction_follows_the_stored_permission() {
         .await,
     );
     let minted_arn = arn_of_summary(
-        "mint a permission to restrict",
-        &summaries_of("mint a permission to restrict", &minted)[0],
+        "mint a permission to flag",
+        &summaries_of("mint a permission to flag", &minted)[0],
     );
 
     // The default managed permission of the type the share below shares, so the
-    // share-scoped read projects a RESTRICTED permission too.
+    // share-scoped read projects a flagged permission too.
     let subnet_default = AWS_MANAGED_PERMISSIONS
         .iter()
         .find(|entry| entry.resource_type == SUBNET_RESOURCE_TYPE && entry.is_resource_type_default)
         .expect("the catalog publishes a default permission for the type the share shares");
     let subnet_default_arn = aws_managed_permission_arn(subnet_default.name);
 
-    // The restriction is a property of the stored permission, so writing it onto two
-    // records — one of each population — is what a read must then report.
-    let restricted = [minted_arn.clone(), subnet_default_arn.clone()];
+    // The resource-type default is a property of the stored permission, so writing it
+    // onto two records — one of each population — is what a read must then report.
+    let defaulted = [minted_arn.clone(), subnet_default_arn.clone()];
     {
         let state = store(&engine);
         let mut locked = state.lock();
-        for arn in &restricted {
+        for arn in &defaulted {
             let permission = locked
                 .permissions
                 .get_mut(arn)
                 .unwrap_or_else(|| panic!("the store holds the permission {arn}"));
-            permission.restrict_to_service_linked_shares = true;
+            permission.is_resource_type_default = true;
         }
     }
 
     let share = create_ok(
         &router,
-        "a share governed by a restricted permission",
+        "a share governed by a flagged permission",
         &json!({"name": "restricted-probe-share", "resourceArns": [LOCAL_RESOURCE]}),
     )
     .await;
-    let share_arn = arn_of("a share governed by a restricted permission", &share);
+    let share_arn = arn_of("a share governed by a flagged permission", &share);
 
-    // Each read reports true for exactly the two permissions carrying the restriction
-    // and false for every other, so the value follows the state and not the caller.
+    // Each read reports true for exactly the two permissions carrying the flag and the
+    // stored value for every other, so the value follows the state and not the caller.
     let reads: Vec<(&str, Value)> = vec![
         (
-            "ListPermissions after the restriction was written",
+            "ListPermissions after the flag was written",
             ok(
-                "ListPermissions after the restriction was written",
+                "ListPermissions after the flag was written",
                 list_permissions(&router, &json!({})).await,
             ),
         ),
         (
-            "ListPermissionVersions of the restricted catalog entry",
+            "ListPermissionVersions of the flagged catalog entry",
             ok(
-                "ListPermissionVersions of the restricted catalog entry",
+                "ListPermissionVersions of the flagged catalog entry",
                 list_permission_versions(
                     &router,
                     &json!({"permissionArn": subnet_default_arn.clone()}),
@@ -1047,9 +1056,9 @@ async fn the_reported_restriction_follows_the_stored_permission() {
             ),
         ),
         (
-            "ListPermissionVersions of the restricted created permission",
+            "ListPermissionVersions of the flagged created permission",
             ok(
-                "ListPermissionVersions of the restricted created permission",
+                "ListPermissionVersions of the flagged created permission",
                 list_permission_versions(&router, &json!({"permissionArn": minted_arn.clone()}))
                     .await,
             ),
@@ -1064,27 +1073,39 @@ async fn the_reported_restriction_follows_the_stored_permission() {
         ),
     ];
     for (case, body) in &reads {
-        for (arn, reported) in restrictions_of(case, body) {
-            let expected = restricted.contains(&arn);
+        for (arn, reported) in summary_flags_of(case, body) {
+            let expected = expected_default(&defaulted, &arn);
             assert_eq!(
                 reported, expected,
-                "case {case:?}: expected {RESTRICTION_MEMBER} {expected} for {arn}, got {reported}"
+                "case {case:?}: expected isResourceTypeDefault {expected} for {arn}, got \
+                 {reported}"
             );
         }
     }
 
     // And reading it does not move it: a second read of the same permission reports the
-    // same restriction.
+    // same flag.
     let again = ok(
         "a repeated read",
         list_permissions(&router, &json!({"resourceType": SUBNET_RESOURCE_TYPE})).await,
     );
-    for (arn, reported) in restrictions_of("a repeated read", &again) {
-        let expected = restricted.contains(&arn);
+    for (arn, reported) in summary_flags_of("a repeated read", &again) {
+        let expected = expected_default(&defaulted, &arn);
         assert_eq!(
             reported, expected,
-            "case \"a repeated read\": expected {RESTRICTION_MEMBER} {expected} for {arn}, \
+            "case \"a repeated read\": expected isResourceTypeDefault {expected} for {arn}, \
              got {reported}"
         );
     }
+}
+
+/// What `isResourceTypeDefault` must report for `arn`: true for a record the test wrote
+/// the flag onto, and otherwise the value the stored population carries — a catalog
+/// entry's published flag, and false for a permission this account created.
+fn expected_default(written: &[String], arn: &str) -> bool {
+    written.iter().any(|flagged| flagged == arn)
+        || AWS_MANAGED_PERMISSIONS
+            .iter()
+            .find(|entry| aws_managed_permission_arn(entry.name) == arn)
+            .is_some_and(|entry| entry.is_resource_type_default)
 }

@@ -42,10 +42,9 @@ struct ShareCase {
 }
 
 /// The configuration a share created without an explicit one reports: the modelled
-/// `ResourceShareConfiguration` with both members at this service's defaults.
+/// `ResourceShareConfiguration` with its member at this service's default.
 fn default_configuration() -> Value {
     json!({
-        "exclusiveAccountAccess": false,
         "retainSharingOnAccountLeaveOrganization": false,
     })
 }
@@ -145,7 +144,6 @@ fn share_cases() -> Vec<ShareCase> {
             allow_external_principals: true,
             tags: json!([]),
             configuration: json!({
-                "exclusiveAccountAccess": false,
                 "retainSharingOnAccountLeaveOrganization": true,
             }),
             associations: vec![("RESOURCE", LOCAL_RESOURCE_TWO, false)],

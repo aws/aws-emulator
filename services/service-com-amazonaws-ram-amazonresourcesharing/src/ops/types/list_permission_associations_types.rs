@@ -20,6 +20,8 @@ pub struct ListPermissionAssociationsInput {
     pub resource_type: Option<String>,
     pub feature_set: Option<String>,
     pub default_version: Option<bool>,
+    pub resource_owner: Option<String>,
+    pub resource_share_arn: Option<String>,
     pub next_token: Option<String>,
     pub max_results: Option<i32>,
 }
@@ -42,5 +44,6 @@ pub struct AssociatedPermission {
     pub feature_set: Option<String>,
     pub last_updated_time: Option<::aws_smithy_types::DateTime>,
     pub resource_share_arn: Option<String>,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameter>>,
 }
 

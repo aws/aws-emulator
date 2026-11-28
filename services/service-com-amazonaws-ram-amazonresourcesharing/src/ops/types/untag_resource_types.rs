@@ -19,16 +19,8 @@ pub struct UntagResourceInput {
     pub resource_arn: Option<String>,
 }
 
-/// `com.amazonaws.ram#UntagResourceResponse`.
-///
-/// Its schema and serializer are stated in [`super::tag_wire`] rather than emitted by
-/// `#[smithy_macros::smithy(shape = ...)]`, because each reported entry carries the
-/// structure discriminator the model does not declare; see that module's docs.
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#UntagResourceResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct UntagResourceOutput {
-    /// The tags the call detached, one per key the request named that the resource
-    /// actually carried. The member was added to this service's on-disk model from the
-    /// recorded AWS responses; see the handler's module docs.
-    pub deleted_tags: Option<Vec<Tag>>,
 }
 

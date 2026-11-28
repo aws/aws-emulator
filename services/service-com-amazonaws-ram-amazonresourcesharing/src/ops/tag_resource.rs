@@ -4,19 +4,8 @@
 //! Attaches tag pairs to the stored resource share named by `resourceShareArn`, so
 //! a later `GetResourceShares` reports them, and answers with the pairs it attached.
 //!
-//! ## `tagsCreated`, a member added to this service's model
-//!
-//! The shipped model declares `TagResourceResponse` with no members, while the
-//! recorded AWS responses in corpus `simparity-wire-aws-v1` answer the call with the
-//! tags it created (one entry per request tag, carrying the tag's key and value). A
-//! schema-driven serializer cannot emit a member the model does not declare, so
-//! `tagsCreated` (target `TagList`) was ADDED to
-//! `smithy-model/com-amazonaws-ram-amazonresourcesharing.json`, exactly as
-//! `ResourceShareConfiguration$exclusiveAccountAccess` was before it. The RULE the
-//! handler implements is "a tag mutation reports what it changed": the response lists
-//! the pair now in effect for every distinct key the request named. Each reported entry
-//! goes onto the wire as a self-describing document — see
-//! [`crate::ops::types::tag_wire`].
+//! `TagResourceResponse` declares no members, so a successful call answers with an
+//! empty body: what it attached is read back through `GetResourceShares`.
 //!
 //! Exactly one of `resourceShareArn` and `resourceArn` may be named ("You must
 //! specify either resourceArn, or resourceShareArn, but not both"). `resourceArn`
@@ -304,23 +293,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             share.last_updated_time = now;
         }
 
-        // What the call attached, read back out of the share it wrote: one entry per
-        // distinct key the request named, carrying the value now in effect. A request
-        // that names a key twice attached one pair, so it is reported once.
-        let tags_created = crate::state::tag_list(
-            &arriving
-                .keys()
-                .filter_map(|key| {
-                    share
-                        .tags
-                        .get_key_value(key)
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                })
-                .collect(),
-        );
-
-        Ok(TagResourceOutput {
-            tags_created: Some(tags_created),
-        })
+        Ok(TagResourceOutput {})
     }
 }

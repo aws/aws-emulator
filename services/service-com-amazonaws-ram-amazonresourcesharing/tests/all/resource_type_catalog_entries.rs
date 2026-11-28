@@ -3,16 +3,10 @@
 //! End-to-end HTTP tests for the ENTRIES `ListResourceTypes` publishes.
 //!
 //! The rule the rows below pin: every entry of the shareable-resource-type catalog
-//! describes one resource type this service can share, and describes it with all four
-//! members RAM reports on an entry — the type's display name, the service code half of it
-//! as the service its resources belong to, that type's Region scope, and whether
-//! resources of the type can be shared only through a service-linked resource share.
-//! The last one is not a constant: it follows from the managed permissions this service
-//! publishes for the type, because a resource share is governed by a permission for the
-//! type of each resource it shares, so a type whose published permissions may all govern
-//! service-linked shares alone can be shared only that way, and a type with a published
-//! permission that is not so restricted — or with none published at all — restricts
-//! nothing.
+//! describes one resource type this service can share, and describes it with exactly the
+//! members `ServiceNameAndResourceType` declares — the type's display name, the service
+//! code half of it as the service its resources belong to, and that type's Region scope —
+//! and with no member the shape does not declare.
 //!
 //! The rows vary along what the rule generalises over:
 //!
@@ -39,19 +33,9 @@ use smithy_server_runtime::MultiServiceRouter;
 // Every suite in this crate calls the service the one way: through `tests/all/harness.rs`.
 use super::harness::*;
 
-/// The members RAM reports on every `ServiceNameAndResourceType`: the three the on-disk
-/// model declares
-/// (`smithy_query(query="shape",shape="ServiceNameAndResourceType")`) and the restriction
-/// flag the service reports beside them.
-const ENTRY_MEMBERS: [&str; 4] = [
-    "resourceType",
-    "serviceName",
-    "resourceRegionScope",
-    "restrictToServiceLinkedShares",
-];
-
-/// The member this issue is about, named once.
-const RESTRICTION_MEMBER: &str = "restrictToServiceLinkedShares";
+/// The members RAM reports on every `ServiceNameAndResourceType`, from
+/// `smithy_query(query="shape",shape="ServiceNameAndResourceType")`.
+const ENTRY_MEMBERS: [&str; 3] = ["resourceType", "serviceName", "resourceRegionScope"];
 
 async fn list_resource_types(router: &MultiServiceRouter, body: &Value) -> (u16, Value) {
     call(router, "POST", "/listresourcetypes", Some(body)).await
@@ -114,30 +98,6 @@ fn text(case: &str, entry: &Value, member: &str) -> String {
         .to_string()
 }
 
-/// The `restrictToServiceLinkedShares` an entry reported, which must be a boolean rather
-/// than absent: code that branches on it reads a value on every entry.
-fn restriction(case: &str, entry: &Value) -> bool {
-    entry
-        .get(RESTRICTION_MEMBER)
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            panic!("case {case:?}: expected a boolean {RESTRICTION_MEMBER}, got {entry:?}")
-        })
-}
-
-/// What `restrictToServiceLinkedShares` must report for `resource_type`, computed here
-/// from the managed permissions this service publishes rather than read back from the
-/// code under test: a type with at least one published permission, all of which may
-/// govern service-linked shares alone, is restricted; every other type is not.
-fn expected_restriction(resource_type: &str) -> bool {
-    let published: Vec<bool> = AWS_MANAGED_PERMISSIONS
-        .iter()
-        .filter(|entry| resource_type_matches(entry.resource_type, resource_type))
-        .map(|entry| entry.restrict_to_service_linked_shares)
-        .collect();
-    !published.is_empty() && published.iter().all(|restricted| *restricted)
-}
-
 /// How many permissions the library publishes for `resource_type`, so a failed assertion
 /// says which side of the rule the type stands on.
 fn published_permissions(resource_type: &str) -> usize {
@@ -166,7 +126,7 @@ fn halves(resource_type: &str) -> (String, String) {
 }
 
 #[tokio::test]
-async fn every_published_entry_reports_all_four_members_of_its_resource_type() {
+async fn every_published_entry_reports_all_three_members_of_its_resource_type() {
     let router = emulator();
     let case = "the whole catalog";
     let reported = walk_catalog(&router, case, None, None).await;
@@ -208,18 +168,11 @@ async fn every_published_entry_reports_all_four_members_of_its_resource_type() {
             [RESOURCE_REGION_SCOPE_GLOBAL, RESOURCE_REGION_SCOPE_REGIONAL].contains(&scope.as_str()),
             "case {name:?}: expected one Region scope of the type, got {scope:?}"
         );
-        assert_eq!(
-            restriction(&name, entry),
-            expected_restriction(&name),
-            "case {name:?}: expected the restriction the {} permission(s) published for the \
-             type imply, got {entry:?}",
-            published_permissions(&name)
-        );
     }
 }
 
 #[tokio::test]
-async fn the_restriction_follows_the_permissions_published_for_the_type() {
+async fn an_entry_reports_the_scope_of_the_type_whatever_its_library_publishes() {
     let router = emulator();
     let reported = walk_catalog(&router, "the whole catalog", None, None).await;
     let by_name: BTreeMap<String, Value> = reported
@@ -227,10 +180,9 @@ async fn the_restriction_follows_the_permissions_published_for_the_type() {
         .map(|entry| (text("the whole catalog", entry, "resourceType"), entry.clone()))
         .collect();
 
-    // One row per side of the rule the restriction follows, each naming a type the
-    // issue did not cite: the library publishes one permission for it, several, or none
-    // at all — and no permission it publishes today may govern service-linked shares
-    // alone, so no type is restricted.
+    // One row per shape a type's managed-permission library can take, each naming a type
+    // the issue did not cite: the library publishes one permission for it, several, or
+    // none at all — an entry describes the type the same way either way.
     for (case, resource_type, publishes, scope) in [
         (
             "a type the library publishes a permission for",
@@ -279,11 +231,16 @@ async fn the_restriction_follows_the_permissions_published_for_the_type() {
             scope,
             "case {case:?}: expected the Region scope of the type, got {entry:?}"
         );
+        let members: BTreeSet<&str> = entry
+            .as_object()
+            .unwrap_or_else(|| panic!("case {case:?}: expected an entry object, got {entry:?}"))
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
-            restriction(case, entry),
-            expected_restriction(resource_type),
-            "case {case:?}: expected the restriction the published permissions imply, got \
-             {entry:?}"
+            members,
+            ENTRY_MEMBERS.into_iter().collect::<BTreeSet<&str>>(),
+            "case {case:?}: expected exactly the members the shape declares, got {entry:?}"
         );
     }
 }

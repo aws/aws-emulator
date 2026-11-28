@@ -105,6 +105,9 @@ impl ReplaceWorkRecord {
                 .map(|version| version.to_string()),
             to_permission_arn: Some(self.to_permission_arn.clone()),
             to_permission_version: Some(self.to_permission_version.to_string()),
+            // The model declares the template parameters the replacement applied; a
+            // permission this slice holds declares none, so there is nothing to report.
+            permission_template_parameters: None,
             status: Some(self.status.clone()),
             status_message: None,
             creation_time: Some(super::to_date_time(self.creation_time)),

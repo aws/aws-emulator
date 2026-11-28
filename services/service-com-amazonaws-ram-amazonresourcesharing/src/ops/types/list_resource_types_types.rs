@@ -26,21 +26,11 @@ pub struct ListResourceTypesOutput {
     pub next_token: Option<String>,
 }
 
-/// `com.amazonaws.ram#ServiceNameAndResourceType`.
-///
-/// Its schema, serializer and deserializer are stated in [`super::resource_type_wire`]
-/// rather than emitted by `#[smithy_macros::smithy(shape = ...)]`, because RAM reports
-/// one member beside the three the on-disk model declares; see that module's docs.
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#ServiceNameAndResourceType")]
 #[derive(Debug, Clone, Default)]
 pub struct ServiceNameAndResourceType {
     pub resource_type: Option<String>,
     pub service_name: Option<String>,
     pub resource_region_scope: Option<String>,
-    /// Whether resources of this type can be shared only through a service-linked
-    /// resource share. Read off the managed permissions this service publishes for the
-    /// type ([`crate::state::resource_type_restricted_to_service_linked_shares`]); the
-    /// member is reported by the service beyond this service's on-disk model, which is
-    /// why the shape's wire form is hand-written.
-    pub restrict_to_service_linked_shares: Option<bool>,
 }
 

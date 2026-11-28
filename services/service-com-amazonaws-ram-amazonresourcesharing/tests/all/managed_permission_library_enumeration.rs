@@ -8,8 +8,8 @@
 //! belongs to Amazon Web Services rather than to an account, so an unfiltered read in any
 //! account reports one `ResourceSharePermissionSummary` per published permission, each
 //! carrying its account-less ARN, its name, the resource type it governs, `AWS_MANAGED`,
-//! `ATTACHABLE`, the version the library publishes it at with `defaultVersion` true,
-//! whether it is that resource type's default, and `restrictToServiceLinkedShares`. A
+//! `ATTACHABLE`, the version the library publishes it at with `defaultVersion` true, and
+//! whether it is that resource type's default. A
 //! read scoped with `resourceType` keeps the permissions published for that one type,
 //! matched without regard to case or to the separators inside the resource code, and a
 //! shareable type the library publishes nothing for selects none of them.
@@ -175,12 +175,6 @@ fn assert_summary(case: &str, permission: &Value, name: &str) {
         flag(case, permission, "isResourceTypeDefault"),
         entry.is_resource_type_default,
         "case {case:?}: expected the resource-type default flag, got {permission:?}"
-    );
-    assert_eq!(
-        flag(case, permission, "restrictToServiceLinkedShares"),
-        entry.restrict_to_service_linked_shares,
-        "case {case:?}: every summary carries the service-linked-share restriction, got \
-         {permission:?}"
     );
 }
 

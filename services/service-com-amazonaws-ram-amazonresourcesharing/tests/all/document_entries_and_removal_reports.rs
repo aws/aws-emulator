@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! End-to-end HTTP tests for the two things RAM reports differently from the bare
-//! modelled structure: the entries of a TAG MUTATION, and the association records of a
+//! modelled structure: the BODY of a tag mutation, and the association records of a
 //! TEARDOWN.
 //!
-//! * **A tag mutation's entries are self-describing documents.**
-//!   `TagResource$tagsCreated` and `UntagResource$deletedTags` carry, on every entry,
-//!   the AWS JSON structure discriminator `__type` whose value is the local name of the
-//!   structure being serialized (`Tag`), beside the modelled members
-//!   (`smithy_query(query="shape",shape="Tag")` declares exactly `key` and `value`).
-//!   The same stored pair reported as part of the share's own state
-//!   (`ResourceShare$tags`) carries the modelled members alone, so stripping the
-//!   discriminator from a mutation's entry yields exactly the share's object. The rows
-//!   below span the COUNT and the SHAPE of the reported list — the dimension the rule
-//!   generalises over — which the per-pair table in `response_payload_fidelity.rs`
-//!   does not.
+//! * **A tag mutation answers with nothing and is read back from the share.**
+//!   `TagResourceResponse` and `UntagResourceResponse` declare no members
+//!   (`smithy_query(query="shape",shape="TagResourceResponse")`), so a successful
+//!   mutation answers with an empty body; what it changed is the share's own `tags`,
+//!   whose entries carry exactly the members `Tag` declares
+//!   (`smithy_query(query="shape",shape="Tag")` declares exactly `key` and `value`) and
+//!   no structure discriminator. The rows below span the COUNT and the SHAPE of the
+//!   mutated set — the dimension the rule generalises over — which the per-pair table in
+//!   `response_payload_fidelity.rs` does not.
 //! * **A teardown report carries `external = false`.**
 //!   `DisassociateResourceShare` "removes the specified principals, resources, or
 //!   source constraints from participating in the specified resource share" and answers
@@ -32,18 +30,15 @@ use serde_json::{json, Value};
 // Every suite in this crate calls the service the one way: through `tests/all/harness.rs`.
 use super::harness::*;
 
-/// The member name the AWS JSON structure discriminator travels under.
+/// The member name an AWS JSON structure discriminator would travel under: a tag inside
+/// a share's own state carries none.
 const DISCRIMINATOR: &str = "__type";
 
-/// The value the discriminator carries on a tag entry: the local name of the
-/// `com.amazonaws.ram#Tag` structure.
-const TAG_STRUCTURE_NAME: &str = "Tag";
-
 // ---------------------------------------------------------------------------
-// A tag mutation's entries are documents; the share's own tags are not
+// A tag mutation answers with nothing; the share's own tags are plain pairs
 // ---------------------------------------------------------------------------
 
-/// A row of the document-entry table: how many pairs a single mutation reports, and
+/// A row of the tag-mutation table: how many pairs a single mutation changes, and
 /// which of their keys the share already carried.
 struct DocumentCase {
     case: &'static str,
@@ -63,42 +58,34 @@ fn entries(label: &str, body: &Value, member: &str) -> Vec<Value> {
         .unwrap_or_else(|| panic!("case {label:?}: response carried no {member}, got {body:?}"))
 }
 
-/// Assert `entry` is a tag document and answer it without the discriminator.
-fn plain_pair(label: &str, member: &str, entry: &Value) -> Value {
-    let mut object = entry
+/// Assert `entry` carries exactly the members `Tag` declares, and answer its key.
+fn plain_key(label: &str, member: &str, entry: &Value) -> String {
+    let object = entry
         .as_object()
-        .unwrap_or_else(|| panic!("case {label:?}: {member} entry is not an object: {entry:?}"))
-        .clone();
-    let discriminator = object.remove(DISCRIMINATOR);
-    assert_eq!(
-        discriminator.as_ref().and_then(Value::as_str),
-        Some(TAG_STRUCTURE_NAME),
-        "case {label:?}: every {member} entry must carry {DISCRIMINATOR:?} = \
-         {TAG_STRUCTURE_NAME:?}, got {entry:?}"
-    );
-    let left: BTreeSet<&String> = object.keys().collect();
-    let modelled: BTreeSet<&String> = left
-        .iter()
-        .copied()
-        .filter(|name| *name == "key" || *name == "value")
-        .collect();
-    assert_eq!(
-        left, modelled,
+        .unwrap_or_else(|| panic!("case {label:?}: {member} entry is not an object: {entry:?}"));
+    let declared: BTreeSet<&str> = ["key", "value"].into_iter().collect();
+    let reported: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    assert!(
+        reported.is_subset(&declared),
         "case {label:?}: a {member} entry carries a member the model does not declare: \
          {entry:?}"
     );
-    Value::Object(object)
+    object
+        .get("key")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {label:?}: a {member} entry carries no key: {entry:?}"))
+        .to_string()
 }
 
 #[tokio::test]
-async fn a_tag_mutation_reports_documents_of_the_pairs_the_share_stores() {
+async fn a_tag_mutation_answers_empty_and_the_share_reports_plain_pairs() {
     let router = emulator();
 
-    // The rule generalises over the reported LIST, so the rows differ along its length
+    // The rule generalises over the mutated SET, so the rows differ along its size
     // and along what the mutation met: one pair on an untagged share, one pair that
     // overwrites a key the share already carried, several pairs at once, a removal that
-    // takes every key off, and a removal naming a key the share never carried (which is
-    // reported by nobody, so the list is empty).
+    // takes every key off, and a removal naming a key the share never carried (which
+    // changes nothing).
     let cases = vec![
         DocumentCase {
             case: "one new pair",
@@ -162,15 +149,15 @@ async fn a_tag_mutation_reports_documents_of_the_pairs_the_share_stores() {
             status, 200,
             "case {case:?}: TagResource expected 200, got {status} with {tagged:?}"
         );
-        let created_entries = entries(case, &tagged, "tagsCreated");
         assert_eq!(
-            created_entries.len(),
-            add.len(),
-            "case {case:?}: expected one entry per attached pair, got {tagged:?}"
+            tagged,
+            json!({}),
+            "case {case:?}: TagResource declares no response members, so the body must be \
+             empty, got {tagged:?}"
         );
 
-        // Each entry, with the discriminator taken off, is the object the SAME pair gets
-        // inside the share — the round trip through the implemented read.
+        // What it attached is the share's own tag set — the round trip through the
+        // implemented read.
         let (status, listed) = get_shares(
             &router,
             &json!({ "resourceOwner": "SELF", "resourceShareArns": [arn] }),
@@ -182,16 +169,17 @@ async fn a_tag_mutation_reports_documents_of_the_pairs_the_share_stores() {
         );
         let share = only_share(case, &listed);
         let share_entries = entries(case, &share, "tags");
-        for entry in &created_entries {
-            let plain = plain_pair(case, "tagsCreated", entry);
+        for (key, value) in &add {
             assert!(
-                share_entries.contains(&plain),
-                "case {case:?}: the pair {plain:?} TagResource reported is not the object \
+                share_entries.contains(&json!({ "key": key, "value": value })),
+                "case {case:?}: the pair {key}={value} TagResource attached is not the object \
                  the share carries: {share_entries:?}"
             );
         }
-        // A tag reported as part of the share's own state carries no discriminator.
+        // A tag reported as part of the share's own state carries the modelled members
+        // alone, with no structure discriminator.
         for entry in &share_entries {
+            plain_key(case, "tags", entry);
             assert!(
                 entry.get(DISCRIMINATOR).is_none(),
                 "case {case:?}: a tag inside the share must carry no {DISCRIMINATOR:?}, \
@@ -201,13 +189,12 @@ async fn a_tag_mutation_reports_documents_of_the_pairs_the_share_stores() {
 
         let carried_before: BTreeSet<String> = share_entries
             .iter()
-            .filter_map(|entry| entry.get("key").and_then(Value::as_str))
-            .map(str::to_string)
+            .map(|entry| plain_key(case, "tags", entry))
             .collect();
-        let expected_removed: BTreeSet<String> = remove
+        let expected_left: BTreeSet<String> = carried_before
             .iter()
-            .map(|key| (*key).to_string())
-            .filter(|key| carried_before.contains(key))
+            .filter(|key| !remove.contains(&key.as_str()))
+            .cloned()
             .collect();
 
         let (status, untagged) = untag_resource(
@@ -219,21 +206,29 @@ async fn a_tag_mutation_reports_documents_of_the_pairs_the_share_stores() {
             status, 200,
             "case {case:?}: UntagResource expected 200, got {status} with {untagged:?}"
         );
-        let deleted_entries = entries(case, &untagged, "deletedTags");
-        let reported_removed: BTreeSet<String> = deleted_entries
+        assert_eq!(
+            untagged,
+            json!({}),
+            "case {case:?}: UntagResource declares no response members, so the body must be \
+             empty, got {untagged:?}"
+        );
+
+        let (status, after) = get_shares(
+            &router,
+            &json!({ "resourceOwner": "SELF", "resourceShareArns": [arn] }),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the read after the removal expected 200, got {status} with {after:?}"
+        );
+        let left: BTreeSet<String> = entries(case, &only_share(case, &after), "tags")
             .iter()
-            .map(|entry| plain_pair(case, "deletedTags", entry))
-            .filter_map(|plain| {
-                plain
-                    .get("key")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+            .map(|entry| plain_key(case, "tags", entry))
             .collect();
         assert_eq!(
-            reported_removed, expected_removed,
-            "case {case:?}: expected the keys the share carried to be reported as \
-             removed, got {untagged:?}"
+            left, expected_left,
+            "case {case:?}: expected the keys the removal left behind, got {after:?}"
         );
     }
 }

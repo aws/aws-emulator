@@ -22,7 +22,15 @@ pub struct CreateResourceShareInput {
     pub client_token: Option<String>,
     pub permission_arns: Option<Vec<String>>,
     pub sources: Option<Vec<String>>,
+    pub permission_template_parameters: Option<Vec<PermissionArnAndTemplateParameters>>,
     pub resource_share_configuration: Option<ResourceShareConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionArnAndTemplateParameters")]
+#[derive(Debug, Clone, Default)]
+pub struct PermissionArnAndTemplateParameters {
+    pub permission_arn: Option<String>,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterInput>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#CreateResourceShareResponse")]

@@ -161,7 +161,7 @@ fn rows(share: &str, other_share: &str) -> Vec<Row> {
                 "/createresourceshare",
                 json!({
                     "name": "mismatch-configuration",
-                    "resourceShareConfiguration": { "exclusiveAccountAccess": false },
+                    "resourceShareConfiguration": { "retainSharingOnAccountLeaveOrganization": false },
                     "clientToken": "token-configuration",
                 }),
             ),
@@ -169,7 +169,7 @@ fn rows(share: &str, other_share: &str) -> Vec<Row> {
                 "/createresourceshare",
                 json!({
                     "name": "mismatch-configuration",
-                    "resourceShareConfiguration": { "exclusiveAccountAccess": true },
+                    "resourceShareConfiguration": { "retainSharingOnAccountLeaveOrganization": true },
                     "clientToken": "token-configuration",
                 }),
             ),

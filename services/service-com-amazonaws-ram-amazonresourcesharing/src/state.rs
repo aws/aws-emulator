@@ -27,6 +27,7 @@ mod aws_managed_permissions;
 mod permission_associations;
 mod permission_attachments;
 mod permission_deletion;
+mod permission_deprecation;
 mod permission_replacement;
 mod permission_version_deletion;
 mod policy_actions;
@@ -35,6 +36,7 @@ pub use aws_managed_permissions::*;
 pub use permission_associations::*;
 pub use permission_attachments::*;
 pub use permission_deletion::*;
+pub use permission_deprecation::*;
 pub use permission_replacement::*;
 pub use permission_version_deletion::*;
 pub use policy_actions::*;
@@ -97,14 +99,6 @@ pub const DEFAULT_ALLOW_EXTERNAL_PRINCIPALS: bool = true;
 /// structure on every `ResourceShare` it returns, with the defaults for a share
 /// created without an explicit one.
 pub const DEFAULT_RETAIN_SHARING_ON_ACCOUNT_LEAVE_ORGANIZATION: bool = false;
-
-/// `ResourceShareConfiguration$exclusiveAccountAccess` when the create request does
-/// not name it.
-///
-/// Access to a share is not exclusive to the accounts it is shared with unless that
-/// is asked for, so the service default is false — the value RAM reports for a share
-/// created without an explicit configuration.
-pub const DEFAULT_EXCLUSIVE_ACCOUNT_ACCESS: bool = false;
 
 /// The `featureSet` of a share created through the RAM API.
 ///
@@ -899,13 +893,10 @@ pub struct PermissionRecord {
     /// of this resource type" (`ResourceSharePermissionSummary$isResourceTypeDefault`),
     /// which is a property of the permission rather than of one of its versions.
     pub is_resource_type_default: bool,
-    /// Whether this permission may govern only a service-linked resource share — a
-    /// share an Amazon Web Services service created on the account's behalf — rather
-    /// than any share a caller creates. A property of the permission, published with it
-    /// for an AWS managed one ([`AwsManagedPermission::restrict_to_service_linked_shares`])
-    /// and false for one a caller created for their own shares, and reported on every
-    /// summary this record is projected into.
-    pub restrict_to_service_linked_shares: bool,
+    /// Whether `UpdatePermission` has deprecated this permission, so every version of
+    /// it reports [`PERMISSION_STATUS_DEPRECATED`] and no new resource share
+    /// association may be made with it ([`permission_deprecation`]).
+    pub deprecated: bool,
     /// Every version written for this permission, keyed by version number: the key
     /// order is total and stable, so a paginated read over versions has a page order.
     pub versions: BTreeMap<i32, PermissionVersionRecord>,
@@ -945,10 +936,11 @@ impl PermissionRecord {
             // A permission carrying no tags reports `[]`, so a caller can tell "no
             // tags" from "tags not reported".
             tags: Some(tag_list(&self.tags)),
-            // Reported on every summary, from this record's own flag: a caller reads
-            // whether the permission is confined to service-linked shares without
-            // having to fetch the permission itself.
-            restrict_to_service_linked_shares: Some(self.restrict_to_service_linked_shares),
+            // Members the model declares and this slice holds no state behind: a
+            // permission here declares no template parameters, and the owner of a
+            // permission this account can read is reported by the reads that know it.
+            permission_template_parameters: None,
+            resource_owner: None,
         }
     }
 
@@ -969,6 +961,11 @@ impl PermissionRecord {
             feature_set: Some(self.feature_set.clone()),
             status: Some(self.version_status(version)),
             tags: Some(tag_list(&self.tags)),
+            // Members the model declares and this slice holds no state behind: a
+            // permission here declares no template parameters, and the owner of a
+            // permission this account can read is reported by the reads that know it.
+            permission_template_parameters: None,
+            resource_owner: None,
         }
     }
 }
@@ -1700,11 +1697,6 @@ pub fn share_configuration(
     requested: Option<&ResourceShareConfiguration>,
 ) -> ResourceShareConfiguration {
     ResourceShareConfiguration {
-        exclusive_account_access: Some(
-            requested
-                .and_then(|configuration| configuration.exclusive_account_access)
-                .unwrap_or(DEFAULT_EXCLUSIVE_ACCOUNT_ACCESS),
-        ),
         retain_sharing_on_account_leave_organization: Some(
             requested
                 .and_then(|configuration| {
@@ -2183,6 +2175,16 @@ pub fn permission_type_matches(filter: Option<&str>, permission_type: &str) -> b
         PERMISSION_TYPE_FILTER_ALL => true,
         requested => requested == permission_type,
     }
+}
+
+/// Whether a managed permission reporting `status` passes a `permissionStatus` filter.
+///
+/// Worded like [`permission_type_matches`]: a read that names no filter keeps every
+/// permission, and one that names a `PermissionStatus` keeps the permissions reporting
+/// exactly it — `ListPermissions$permissionStatus` "filter[s] the results to include
+/// only permissions with the specified status".
+pub fn permission_status_matches(filter: Option<&str>, status: &str) -> bool {
+    filter.is_none_or(|requested| requested == status)
 }
 
 /// Whether the managed permission `arn` names is one a request signed for `region`

@@ -20,7 +20,13 @@
 //!   without regard to case or to the separators inside the resource code
 //!   ([`crate::state::resource_type_matches`]), because the member "is not case
 //!   sensitive". A well-formed type no permission applies to selects none of them, so
-//!   the page is empty rather than refused.
+//!   the page is empty rather than refused;
+//! * `permissionStatus` keeps the permissions reporting that one `PermissionStatus`
+//!   ([`crate::state::permission_status_matches`]), so a permission `UpdatePermission`
+//!   deprecated is kept by `DEPRECATED` and left out by `ATTACHABLE`;
+//! * `resourceOwner` keeps the permissions this account owns (`SELF`) or the ones shared
+//!   with it by others (`OTHER-ACCOUNTS`), which is the account a permission's ARN names
+//!   against the calling account.
 //!
 //! A permission belongs to the Region it was created in, which its ARN carries, so a
 //! read reports the ones this Region holds plus the AWS managed catalog, whose ARNs name
@@ -230,6 +236,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })?),
         };
         let region = crate::state::request_region(ctx.parts());
+        // "SELF — returns only permissions owned by the calling account";
+        // "OTHER-ACCOUNTS — returns only permissions shared with the calling account by
+        // other accounts" (`ListPermissionsRequest$resourceOwner`). A permission's owner
+        // is the account its ARN names: one this account created carries that account
+        // ([`crate::state::permission_arn`]), while a permission Amazon Web Services
+        // publishes carries no account of a caller's at all
+        // ([`crate::state::aws_managed_permission_arn`]) — it is shared with this account
+        // rather than owned by it. The member declares no default, so a read that names
+        // none keeps both populations.
+        let owner_is_self = input
+            .resource_owner
+            .as_deref()
+            .map(|requested| requested == crate::state::RESOURCE_OWNER_SELF);
+        let account = ::engine::emulator_account_id();
 
         let store = state.lock();
 
@@ -243,6 +263,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         for (arn, permission) in listed {
             if !crate::state::permission_visible_in_region(arn, &region) {
+                continue;
+            }
+            if owner_is_self
+                .is_some_and(|wanted| wanted != (crate::state::arn_account(arn) == Some(account)))
+            {
                 continue;
             }
             if !crate::state::permission_type_matches(
@@ -267,6 +292,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ),
                 })
             })?;
+            // "Filter the results to include only permissions with the specified status"
+            // (`permissionStatus`'s own documentation), and the status is the one this
+            // permission reports for the version being listed — so a permission
+            // `UpdatePermission` deprecated is kept by `DEPRECATED` and left out by
+            // `ATTACHABLE`.
+            if !crate::state::permission_status_matches(
+                input.permission_status.as_deref(),
+                &permission.version_status(version),
+            ) {
+                continue;
+            }
             // The first permission that does not fit becomes the next page's start, and
             // only then is a `nextToken` emitted — the last page carries none.
             if permissions.len() == page_size {

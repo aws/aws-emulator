@@ -15,7 +15,9 @@
 //! `featureSet`.
 //!
 //! Every input member but the pagination pair is a FILTER over those pairs, so a request
-//! naming none of them reports every association this store holds.
+//! naming none of them reports every association this store holds — except
+//! `resourceOwner`, whose own default is `SELF` ("if you don't specify this parameter,
+//! the default is SELF"), which keeps the associations of the shares this account owns.
 //!
 //! A pure read: it reports what the store holds, and the only writes it makes are the
 //! moves the clock already owed (an association settling, a permission's delete
@@ -209,12 +211,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         })?;
 
-        // The model constrains neither member, so both rules are applied here, each
+        // The model constrains neither ARN member, so both rules are applied here, each
         // rendered as the modelled error RAM words that refusal with.
         if let Some(why) = input
             .permission_arn
             .as_deref()
             .and_then(|arn| crate::state::permission_arn_rejection("permissionArn", arn))
+            .or_else(|| {
+                input
+                    .resource_share_arn
+                    .as_deref()
+                    .and_then(|arn| {
+                        crate::state::share_arn_rejection("resourceShareArn", arn)
+                    })
+            })
         {
             return Err(
                 ListPermissionAssociationsErrorModeled::MalformedArnException(
@@ -267,6 +277,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.settle_due_permissions(now);
 
         let associations = store.permission_associations();
+        // "Returns only associations with resource shares owned by the calling account"
+        // for `SELF`, "owned by other Amazon Web Services accounts" for
+        // `OTHER-ACCOUNTS`, and "if you don't specify this parameter, the default is
+        // SELF" (`ListPermissionAssociationsRequest$resourceOwner`).
+        let owner_is_self = input
+            .resource_owner
+            .as_deref()
+            .unwrap_or(crate::state::RESOURCE_OWNER_SELF)
+            == crate::state::RESOURCE_OWNER_SELF;
+        let account = ::engine::emulator_account_id();
         let mut permissions = Vec::with_capacity(page_size.min(associations.len()));
         let mut next_token = None;
         // The pairs are in (permission ARN, share ARN) order, so a token naming a pair
@@ -286,6 +306,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if input
                 .permission_version
                 .is_some_and(|wanted| association.permission_version != wanted)
+            {
+                continue;
+            }
+            // "Specifies the Amazon Resource Name (ARN) of the resource share for which
+            // you want to retrieve permission associations"
+            // (`ListPermissionAssociationsRequest$resourceShareArn`): the share end of
+            // the pair, so a read that names one is about that share's pairs alone.
+            if input
+                .resource_share_arn
+                .as_deref()
+                .is_some_and(|wanted| association.resource_share_arn != wanted)
+            {
+                continue;
+            }
+            // Every share this emulator holds was created by the account that owns it,
+            // so `SELF` keeps the associations of every share it holds and
+            // `OTHER-ACCOUNTS` keeps those of a share owned elsewhere — none, until a
+            // share arrives from outside.
+            if owner_is_self
+                != store
+                    .share(&association.resource_share_arn)
+                    .is_some_and(|share| share.owning_account_id == account)
             {
                 continue;
             }

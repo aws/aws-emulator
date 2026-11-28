@@ -137,6 +137,7 @@ pub enum CreatePermissionVersionErrorModeled {
     InvalidPolicyException(InvalidPolicyException),
     MalformedArnException(MalformedArnException),
     MalformedPolicyTemplateException(MalformedPolicyTemplateException),
+    OperationNotPermittedException(OperationNotPermittedException),
     PermissionVersionsLimitExceededException(PermissionVersionsLimitExceededException),
     ServerInternalException(ServerInternalException),
     ServiceUnavailableException(ServiceUnavailableException),
@@ -281,17 +282,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // permission", and an AWS managed one is a permission "Amazon Web Services
         // created and manages" that "you can't modify"
         // (`ResourceSharePermissionSummary$permissionType`), so there is no version of
-        // one for a caller to write. The operation models no error for an operation
-        // that is not permitted, so the parameter naming that permission is what is
-        // refused.
+        // one for a caller to write: asking for one is asking for an operation that is
+        // not permitted, which this operation now models
+        // (`smithy_query(query="operation",operation="CreatePermissionVersion")`).
         if permission.permission_type != crate::state::PERMISSION_TYPE_CUSTOMER_MANAGED {
             return Err(
-                CreatePermissionVersionErrorModeled::InvalidParameterException(
-                    InvalidParameterException {
-                        message: format!(
-                            "permissionArn '{}' names a permission that Amazon Web Services \
-                             manages, so no new version of it can be created",
-                            input.permission_arn
+                CreatePermissionVersionErrorModeled::OperationNotPermittedException(
+                    OperationNotPermittedException {
+                        message: crate::state::aws_managed_permission_not_updatable_message(
+                            &input.permission_arn,
                         ),
                     },
                 )

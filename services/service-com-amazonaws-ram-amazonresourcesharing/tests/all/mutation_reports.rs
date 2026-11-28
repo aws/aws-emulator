@@ -5,12 +5,11 @@
 //!
 //! The rules under test, each asserted over a table of inputs rather than one case:
 //!
-//! * a tag mutation reports what it changed: `TagResource` answers with the pair now
-//!   in effect for every distinct key the request named, and `UntagResource` answers
-//!   with the keys the share actually carried and this call removed — so a mutation
-//!   that was a no-op is distinguishable from one that changed the tag set — and each
-//!   reported entry is a self-describing document, carrying the structure
-//!   discriminator beside the pair (see `src/ops/types/tag_wire.rs`);
+//! * a tag mutation changes the stored tag set and nothing else: `TagResource` leaves the
+//!   pair now in effect for every distinct key the request named, `UntagResource` drops
+//!   exactly the keys the share carried and the request named, and both answer with an
+//!   empty body, because `TagResourceResponse` and `UntagResourceResponse` declare no
+//!   members — what changed is read back through `GetResourceShares`;
 //! * `DisassociateResourceShare` takes an association to the terminal `DISASSOCIATED`
 //!   status and the record SURVIVES there, so a read still reports the association,
 //!   a status-filtered read selects it and a caller polling for the teardown sees it
@@ -56,7 +55,7 @@ struct ReportCase {
 }
 
 #[tokio::test]
-async fn a_tag_mutation_reports_exactly_what_it_changed() {
+async fn a_tag_mutation_changes_exactly_the_tag_set_it_names() {
     let router = emulator();
 
     // The rule generalises over what a mutation does to a tag set, so the rows differ
@@ -170,19 +169,11 @@ async fn a_tag_mutation_reports_exactly_what_it_changed() {
             match step {
                 Mutation::Add(pairs) => {
                     // A key named twice in one call attaches one pair — the last value
-                    // wins — so it is reported once.
+                    // wins — so the set the share ends up with carries it once.
                     let mut attached: BTreeMap<String, String> = BTreeMap::new();
                     for (key, value) in pairs {
                         attached.insert((*key).to_string(), (*value).to_string());
                     }
-                    // A reported entry is the pair plus the structure discriminator the
-                    // tag mutations serialize their entries with.
-                    let expected: Vec<Value> = attached
-                        .iter()
-                        .map(|(key, value)| {
-                            json!({ "__type": "Tag", "key": key, "value": value })
-                        })
-                        .collect();
 
                     let tags: Vec<Value> = pairs
                         .iter()
@@ -196,30 +187,14 @@ async fn a_tag_mutation_reports_exactly_what_it_changed() {
                         "case {label:?}: TagResource expected 200, got {status} with {body:?}"
                     );
                     assert_eq!(
-                        body.get("tagsCreated"),
-                        Some(&Value::Array(expected.clone())),
-                        "case {label:?}: expected tagsCreated {expected:?}, got {body:?}"
+                        body,
+                        json!({}),
+                        "case {label:?}: TagResource declares no response members, so the body \
+                         must be empty, got {body:?}"
                     );
                     carried.extend(attached);
                 }
                 Mutation::Remove(keys) => {
-                    // Only the keys the share actually carried are removed, each
-                    // reported once and by key alone: the pair is gone, so there is no
-                    // value left in effect to report.
-                    let removed: Vec<&&str> = {
-                        let mut removed: Vec<&&str> = keys
-                            .iter()
-                            .filter(|key| carried.contains_key(**key))
-                            .collect();
-                        removed.sort_unstable();
-                        removed.dedup();
-                        removed
-                    };
-                    let expected: Vec<Value> = removed
-                        .iter()
-                        .map(|key| json!({ "__type": "Tag", "key": key }))
-                        .collect();
-
                     let (status, body) = untag_resource(
                         &router,
                         &json!({ "resourceShareArn": arn, "tagKeys": keys }),
@@ -230,9 +205,10 @@ async fn a_tag_mutation_reports_exactly_what_it_changed() {
                         "case {label:?}: UntagResource expected 200, got {status} with {body:?}"
                     );
                     assert_eq!(
-                        body.get("deletedTags"),
-                        Some(&Value::Array(expected.clone())),
-                        "case {label:?}: expected deletedTags {expected:?}, got {body:?}"
+                        body,
+                        json!({}),
+                        "case {label:?}: UntagResource declares no response members, so the \
+                         body must be empty, got {body:?}"
                     );
                     for key in keys {
                         carried.remove(*key);
@@ -241,8 +217,8 @@ async fn a_tag_mutation_reports_exactly_what_it_changed() {
             }
         }
 
-        // The report is a report of the stored share, so the share now carries exactly
-        // what the reports said it would.
+        // The mutations are what the stored share now carries, read back through the
+        // operation that reports a share's tag set.
         let (_, listed) = get_shares(
             &router,
             &json!({ "resourceOwner": "SELF", "resourceShareArns": [arn] }),

@@ -334,6 +334,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     },
                 )
             })?;
+        // "Setting the status to DEPRECATED prevents new resource share associations"
+        // (`UpdatePermission$status`), and the replacement associates every share it
+        // moves with the `to` permission, so a deprecated one is refused rather than
+        // moving shares onto a permission that may not govern them. The `from` end is
+        // not held to it: a replacement is how a share LEAVES a deprecated permission.
+        if to.is_deprecated() {
+            return Err(
+                ReplacePermissionAssociationsErrorModeled::OperationNotPermittedException(
+                    OperationNotPermittedException {
+                        message: crate::state::deprecated_permission_not_attachable_message(
+                            &input.to_permission_arn,
+                        ),
+                    },
+                )
+                .into(),
+            );
+        }
         // "A resource share can have only one permission per resource type"
         // (`AssociateResourceSharePermission$replace`), and a managed permission governs
         // the resources of exactly one type, so a replacement holds only between two

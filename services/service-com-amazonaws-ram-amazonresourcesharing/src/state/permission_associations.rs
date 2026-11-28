@@ -82,6 +82,9 @@ impl PermissionAssociationRecord {
             feature_set: Some(self.feature_set.clone()),
             last_updated_time: Some(to_date_time(self.last_updated_time)),
             resource_share_arn: Some(self.resource_share_arn.clone()),
+            // The model declares template parameters on the association; a permission
+            // this slice holds declares none, so there is nothing to report.
+            permission_template_parameters: None,
         }
     }
 }

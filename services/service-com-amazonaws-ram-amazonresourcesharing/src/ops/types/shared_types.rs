@@ -129,6 +129,21 @@ pub struct UnknownResourceException {
     pub message: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionTemplateParameterInput")]
+#[derive(Debug, Clone, Default)]
+pub struct PermissionTemplateParameterInput {
+    pub name: Option<String>,
+    pub values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionTemplateParameterDeclaration")]
+#[derive(Debug, Clone, Default)]
+pub struct PermissionTemplateParameterDeclaration {
+    pub name: Option<String>,
+    pub r#type: Option<String>,
+    pub description: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#Tag")]
 #[derive(Debug, Clone, Default)]
 pub struct Tag {
@@ -136,12 +151,7 @@ pub struct Tag {
     pub value: Option<String>,
 }
 
-/// `com.amazonaws.ram#ResourceSharePermissionSummary`.
-///
-/// Its schema, serializer and deserializer are stated in
-/// [`super::permission_summary_wire`] rather than emitted by
-/// `#[smithy_macros::smithy(shape = ...)]`, because RAM reports one member beside the
-/// twelve the on-disk model declares; see that module's docs.
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#ResourceSharePermissionSummary")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceSharePermissionSummary {
     pub arn: Option<String>,
@@ -155,13 +165,18 @@ pub struct ResourceSharePermissionSummary {
     pub is_resource_type_default: Option<bool>,
     pub permission_type: Option<String>,
     pub feature_set: Option<String>,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameter>>,
     pub tags: Option<Vec<Tag>>,
-    /// Whether the managed permission this summary describes may govern only a
-    /// service-linked resource share. Read off the stored permission
-    /// ([`crate::state::PermissionRecord::restrict_to_service_linked_shares`]); the
-    /// member is reported by the service beyond this service's on-disk model, which is
-    /// why the shape's wire form is hand-written.
-    pub restrict_to_service_linked_shares: Option<bool>,
+    pub resource_owner: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionTemplateParameter")]
+#[derive(Debug, Clone, Default)]
+pub struct PermissionTemplateParameter {
+    pub name: Option<String>,
+    pub r#type: Option<String>,
+    pub description: Option<String>,
+    pub values: Option<Vec<String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#InvalidPolicyException")]
@@ -176,6 +191,12 @@ pub struct MalformedPolicyTemplateException {
     pub message: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.ram#PermissionLimitExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct PermissionLimitExceededException {
+    pub message: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#ResourceSharePermissionDetail")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceSharePermissionDetail {
@@ -185,6 +206,7 @@ pub struct ResourceSharePermissionDetail {
     pub name: Option<String>,
     pub resource_type: Option<String>,
     pub permission: Option<String>,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterDeclaration>>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
     pub last_updated_time: Option<::aws_smithy_types::DateTime>,
     pub is_resource_type_default: Option<bool>,
@@ -192,12 +214,12 @@ pub struct ResourceSharePermissionDetail {
     pub feature_set: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<Tag>>,
+    pub resource_owner: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#ResourceShareConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceShareConfiguration {
-    pub exclusive_account_access: Option<bool>,
     pub retain_sharing_on_account_leave_organization: Option<bool>,
 }
 
@@ -269,6 +291,7 @@ pub struct ReplacePermissionAssociationsWork {
     pub from_permission_version: Option<String>,
     pub to_permission_arn: Option<String>,
     pub to_permission_version: Option<String>,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameter>>,
     pub status: Option<String>,
     pub status_message: Option<String>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
@@ -280,7 +303,11 @@ pub const PERMISSION_FEATURE_SET_VALUES: &[&str] = &["CREATED_FROM_POLICY", "PRO
 
 
 /// The values `PermissionStatus` accepts on the wire.
-pub const PERMISSION_STATUS_VALUES: &[&str] = &["ATTACHABLE", "DELETED", "DELETING", "UNATTACHABLE"];
+pub const PERMISSION_STATUS_VALUES: &[&str] = &["ATTACHABLE", "DELETED", "DELETING", "DEPRECATED", "UNATTACHABLE"];
+
+
+/// The values `PermissionTemplateParameterType` accepts on the wire.
+pub const PERMISSION_TEMPLATE_PARAMETER_TYPE_VALUES: &[&str] = &["STRING", "STRING_LIST"];
 
 
 /// The values `PermissionType` accepts on the wire.
@@ -329,5 +356,9 @@ pub const RESOURCE_SHARE_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETED", "DELETI
 
 /// The values `ResourceStatus` accepts on the wire.
 pub const RESOURCE_STATUS_VALUES: &[&str] = &["AVAILABLE", "LIMIT_EXCEEDED", "PENDING", "UNAVAILABLE", "ZONAL_RESOURCE_INACCESSIBLE"];
+
+
+/// The values `UpdatePermissionStatus` accepts on the wire.
+pub const UPDATE_PERMISSION_STATUS_VALUES: &[&str] = &["ATTACHABLE", "DEPRECATED"];
 
 

@@ -13,11 +13,7 @@
 //! with the display name the catalog publishes, the service code half of it as the
 //! service the resources belong to, and the Region scope of that service's resources
 //! ([`crate::state::resource_type_region_scope`]); `resourceRegionScope` keeps one
-//! scope, or both under `ALL`, which is also what a request naming no filter gets. Each
-//! entry also reports whether resources of the type can be shared only through a
-//! service-linked resource share, read off the managed permissions this service
-//! publishes for it
-//! ([`crate::state::resource_type_restricted_to_service_linked_shares`]).
+//! scope, or both under `ALL`, which is also what a request naming no filter gets.
 //!
 //! ## Shape of an operation
 //!
@@ -228,14 +224,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 service_name: crate::state::resource_type_service(entry.resource_type)
                     .map(str::to_string),
                 resource_region_scope: Some(scope.to_string()),
-                // Reported on every entry, from the managed permissions this service
-                // publishes for the type: a caller reads whether the type is confined to
-                // service-linked shares without having to enumerate its permissions.
-                restrict_to_service_linked_shares: Some(
-                    crate::state::resource_type_restricted_to_service_linked_shares(
-                        entry.resource_type,
-                    ),
-                ),
             });
         }
 

@@ -80,11 +80,16 @@ impl PermissionRecord {
 
     /// The `PermissionStatus` a read of `version` of this permission reports: the
     /// status the delete put the whole permission in, then the status the delete of
-    /// that one version put it in, or — for a version nobody has deleted — the
-    /// version's own status.
+    /// that one version put it in, then — for a permission `UpdatePermission`
+    /// deprecated — [`super::PERMISSION_STATUS_DEPRECATED`], or else the version's own
+    /// status.
+    ///
+    /// A delete outranks a deprecation: a permission being deleted is no longer one a
+    /// status of its own describes.
     pub fn version_status(&self, version: &PermissionVersionRecord) -> String {
         match self.deletion.as_ref().or(version.deletion.as_ref()) {
             Some(deletion) => deletion.status.clone(),
+            None if self.is_deprecated() => super::PERMISSION_STATUS_DEPRECATED.to_string(),
             None => version.status.clone(),
         }
     }

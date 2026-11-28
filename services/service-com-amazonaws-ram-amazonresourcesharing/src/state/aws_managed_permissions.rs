@@ -94,11 +94,6 @@ pub struct AwsManagedPermission {
     /// of them reports the flag, and the one this service attaches to a share that names
     /// none is [`default_aws_managed_permission`]'s.
     pub is_resource_type_default: bool,
-    /// Whether Amazon Web Services publishes this permission for service-linked
-    /// resource shares only — a share a service created on the account's behalf — so a
-    /// caller cannot attach it to a share of their own. A published property of each
-    /// permission, reported beside the modelled members of every summary it appears in.
-    pub restrict_to_service_linked_shares: bool,
     /// The version Amazon Web Services publishes this permission at, which is therefore
     /// its default version: a permission the library has revised since it was first
     /// published is published at the revision, and a read of it reports that number
@@ -114,13 +109,6 @@ pub struct AwsManagedPermission {
     /// the number is the entry's own published one rather than a fallback.
     pub version: i32,
 }
-
-/// Whether a permission the catalog publishes for any resource share, which is what
-/// every entry below is, is confined to service-linked shares: it is not. Every
-/// permission the library publishes today is one a caller may attach to a share of their
-/// own, so both constructors below carry this value; a published service-linked-only
-/// permission would be recorded with its own constructor rather than by widening these.
-const ATTACHABLE_TO_ANY_SHARE: bool = false;
 
 /// The resource type a private certificate authority's ARN names, spelled as
 /// [`super::RESOURCE_TYPES`] publishes it. Named once because the permissions Amazon Web
@@ -1618,12 +1606,6 @@ pub const AWS_MANAGED_PERMISSIONS: &[AwsManagedPermission] = &[
 
 /// One catalog entry, at the version a permission is first published at.
 ///
-/// Every entry the catalog publishes is one a caller may attach to a share of their own
-/// ([`ATTACHABLE_TO_ANY_SHARE`]), which is why neither constructor takes that flag: the
-/// restriction is a per-permission property of the record
-/// ([`super::PermissionRecord::restrict_to_service_linked_shares`]), reported from there
-/// on every summary, and no permission the library publishes today carries it.
-///
 /// An entry written this way is one the library publishes at its FIRST version — it has
 /// not been revised since publication — while one published at a revision is written with
 /// [`entry_at_version`] and carries that number.
@@ -1657,7 +1639,6 @@ const fn entry_at_version(
         resource_type,
         actions,
         is_resource_type_default,
-        restrict_to_service_linked_shares: ATTACHABLE_TO_ANY_SHARE,
         version,
     }
 }
@@ -1712,7 +1693,10 @@ impl AwsManagedPermission {
             last_updated_time: now,
             default_version: version,
             is_resource_type_default: self.is_resource_type_default,
-            restrict_to_service_linked_shares: self.restrict_to_service_linked_shares,
+            // A permission Amazon Web Services publishes is attachable, and no caller
+            // can deprecate one: `UpdatePermission` acts on a customer managed
+            // permission only.
+            deprecated: false,
             versions: [(
                 version,
                 PermissionVersionRecord {
@@ -1762,33 +1746,5 @@ pub fn default_aws_managed_permission(
         entry.is_resource_type_default
             && super::resource_type_matches(entry.resource_type, resource_type)
     })
-}
-
-/// Whether resources of `resource_type` can be shared only through a SERVICE-LINKED
-/// resource share — a share an Amazon Web Services service created on the account's
-/// behalf — rather than through a share a caller creates.
-///
-/// Every resource share is governed by a managed permission for the type of each
-/// resource it shares, so a resource type whose published permissions may all govern
-/// service-linked shares alone
-/// ([`AwsManagedPermission::restrict_to_service_linked_shares`]) can only be shared that
-/// way, and one with a published permission that is not so restricted can be shared by
-/// any caller. The answer is therefore read off the permissions this service publishes
-/// for the type rather than written beside the type a second time, so the two can never
-/// disagree; a type the library publishes no permission for restricts nothing.
-///
-/// The type is matched the way [`super::resource_type_matches`] matches one, so either
-/// spelling of a type finds the permissions published for it.
-pub fn resource_type_restricted_to_service_linked_shares(resource_type: &str) -> bool {
-    let mut published = AWS_MANAGED_PERMISSIONS
-        .iter()
-        .filter(|entry| super::resource_type_matches(entry.resource_type, resource_type));
-    match published.next() {
-        None => false,
-        Some(first) => {
-            first.restrict_to_service_linked_shares
-                && published.all(|entry| entry.restrict_to_service_linked_shares)
-        }
-    }
 }
 

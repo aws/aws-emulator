@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ram-amazonresourceshari
 pub struct AssociateResourceSharePermissionInput {
     pub resource_share_arn: String,
     pub permission_arn: String,
+    pub permission_template_parameters: Option<Vec<PermissionTemplateParameterInput>>,
     pub replace: Option<bool>,
     pub client_token: Option<String>,
     pub permission_version: Option<i32>,

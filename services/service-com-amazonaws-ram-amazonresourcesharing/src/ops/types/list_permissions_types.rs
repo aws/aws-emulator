@@ -15,9 +15,11 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ram-amazonresourceshari
 #[derive(Debug, Clone, Default)]
 pub struct ListPermissionsInput {
     pub resource_type: Option<String>,
+    pub resource_owner: Option<String>,
     pub next_token: Option<String>,
     pub max_results: Option<i32>,
     pub permission_type: Option<String>,
+    pub permission_status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ram#ListPermissionsResponse")]
