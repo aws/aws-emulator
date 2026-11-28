@@ -125,7 +125,15 @@ fn unpublished_instance_type(data: &RequestLaunchTemplateData) -> Option<String>
 /// Naming NO group at all is not one: a version that names none in the place that applies is
 /// a version whose instance is given its VPC's default group
 /// ([`super::launch_template_security_groups`]), so there is nothing contradictory about it.
-fn security_groups_are_part_of_the_network_interface(data: &RequestLaunchTemplateData) -> bool {
+///
+/// Public because the CONSUMERS of a launch template ask the same question of the version a
+/// resource of theirs would launch from: THE ONE reading of these members against
+/// `$NetworkInterfaces` in the tree, so no service decides on its own which of two spellings
+/// of the same parameters a launch can use.
+#[must_use]
+pub fn security_groups_are_part_of_the_network_interface(
+    data: &RequestLaunchTemplateData,
+) -> bool {
     let declared = data.network_interfaces.as_deref().unwrap_or_default();
     if declared.is_empty() {
         return true;

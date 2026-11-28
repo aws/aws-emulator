@@ -271,6 +271,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             {
                 return Err(refusal);
             }
+            // And its network configuration has to be one a launch could apply, exactly as it
+            // must when a group is created or updated
+            // ([`crate::state::group_configuration::launch_template_interface_groups_error`]).
+            if let Some(refusal) =
+                crate::state::group_configuration::launch_template_interface_groups_error(
+                    &*self.engine,
+                    desired.launch_template.as_ref(),
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
+            // And the key pair it names has to be one the account holds, exactly as it must
+            // when a group is created or updated
+            // ([`crate::state::group_configuration::unresolvable_key_pair_error`]).
+            if let Some(refusal) =
+                crate::state::group_configuration::unresolvable_key_pair_error(
+                    &*self.engine,
+                    desired.launch_template.as_ref(),
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
             // And the instance TYPE the replaced instances are launched as has to be stated
             // somewhere the desired configuration carries it, exactly as it must when a group
             // is created or updated: a refresh cannot move the group's instances onto a
@@ -280,6 +304,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::group_configuration::launch_template_instance_type_error(
                     &*self.engine,
                     desired.launch_template.as_ref(),
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
+            if let Some(refusal) =
+                crate::state::group_configuration::override_instance_selection_error(
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
+            if let Some(refusal) =
+                crate::state::group_configuration::override_instance_type_error(
+                    desired.mixed_instances_policy.as_ref(),
+                )
+            {
+                return Err(refusal);
+            }
+            if let Some(refusal) =
+                crate::state::group_configuration::instances_distribution_error(
                     desired.mixed_instances_policy.as_ref(),
                 )
             {

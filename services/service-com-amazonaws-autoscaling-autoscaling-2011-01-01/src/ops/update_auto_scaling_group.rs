@@ -368,6 +368,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(refusal);
         }
+        if let Some(refusal) = crate::state::group_configuration::override_instance_selection_error(
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            return Err(refusal);
+        }
+        if let Some(refusal) = crate::state::group_configuration::override_instance_type_error(
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            return Err(refusal);
+        }
+        if let Some(refusal) = crate::state::group_configuration::instances_distribution_error(
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            return Err(refusal);
+        }
         if let Some(refusal) = crate::state::group_configuration::duplicate_override_error(
             input.mixed_instances_policy.as_ref(),
         ) {
@@ -514,6 +529,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // at launch parameters that cannot launch anything would leave it permanently unable
         // to hold capacity.
         if let Some(refusal) = crate::state::group_configuration::unlaunchable_launch_template_error(
+            &*self.engine,
+            input.launch_template.as_ref(),
+            input.mixed_instances_policy.as_ref(),
+        ) {
+            return Err(refusal);
+        }
+        // And its network configuration has to be one a launch could apply, exactly as the
+        // create requires of the one it is given
+        // ([`crate::state::group_configuration::launch_template_interface_groups_error`]).
+        if let Some(refusal) =
+            crate::state::group_configuration::launch_template_interface_groups_error(
+                &*self.engine,
+                input.launch_template.as_ref(),
+                input.mixed_instances_policy.as_ref(),
+            )
+        {
+            return Err(refusal);
+        }
+        // And the key pair it names has to be one the account holds, exactly as the create
+        // requires of the one it is given
+        // ([`crate::state::group_configuration::unresolvable_key_pair_error`]).
+        if let Some(refusal) = crate::state::group_configuration::unresolvable_key_pair_error(
             &*self.engine,
             input.launch_template.as_ref(),
             input.mixed_instances_policy.as_ref(),

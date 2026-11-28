@@ -231,15 +231,16 @@ pub fn launch_source_error<E>(
     (stated != 1).then(|| Scaffolded::validation_error(ONE_LAUNCH_SOURCE_MESSAGE))
 }
 
-/// What Amazon EC2 Auto Scaling answers a launch-template specification that names no launch
-/// template at all.
+/// What Amazon EC2 Auto Scaling answers a launch-template specification that does not name
+/// EXACTLY ONE launch template.
 ///
 /// "Conditional: You must specify either a `LaunchTemplateId` or a `LaunchTemplateName`"
 /// (`smithy_query(query="shape",shape="LaunchTemplateSpecification")`, which both halves
 /// carry): a specification states the VERSION of ONE template, so one carrying neither half
-/// names nothing to launch from. Fixed text naming the two members, with nothing of the
-/// request in it — the rule is about the specification's MEMBERS, exactly as
-/// [`ONE_LAUNCH_SOURCE_MESSAGE`]'s is about the request's.
+/// names nothing to launch from and one carrying both names two templates where a launch
+/// source has one. Fixed text naming the two members, with nothing of the request in it — the
+/// rule is about the specification's MEMBERS, exactly as [`ONE_LAUNCH_SOURCE_MESSAGE`]'s is
+/// about the request's, so one sentence covers either way of breaking it.
 pub const LAUNCH_TEMPLATE_IDENTITY_MESSAGE: &str =
     "Valid requests must contain either launchTemplateId or LaunchTemplateName";
 
@@ -262,10 +263,12 @@ pub const MIXED_INSTANCES_POLICY_TEMPLATE_MESSAGE: &str =
 /// Decided from the MEMBERS alone, so it is answered before any of their values is resolved
 /// ([`unresolvable_launch_template_error`]): a launch source naming no template has nothing
 /// to resolve, and the caller is told to name one rather than told that a template it never
-/// named does not exist.
+/// named does not exist. A specification stating BOTH halves is decided there too, and for
+/// the same reason: which template it names is not a question about what the account holds,
+/// so neither half is looked up.
 ///
-/// Three ways a launch source names none, in the order the members nest, and the first two
-/// are their own verdict because the caller left out a different member:
+/// Four ways a launch source names no ONE template, in the order the members nest, and the
+/// first two are their own verdict because the caller left out a different member:
 ///
 /// * a `MixedInstancesPolicy` carries no `LaunchTemplate` member at all, so there is no launch
 ///   template in the policy to weigh and the caller is told to add one
@@ -280,7 +283,12 @@ pub const MIXED_INSTANCES_POLICY_TEMPLATE_MESSAGE: &str =
 ///   `LaunchTemplate`, the launch template of its `MixedInstancesPolicy` and the one each
 ///   override of that policy may name are all read, the rule being a fact about the SHAPE and
 ///   holding wherever a request carries one — and that is the same pair of members, so it is
-///   the same sentence.
+///   the same sentence;
+/// * a specification states BOTH halves, which names two templates and not one: the pair of
+///   members is ALTERNATIVE spellings of one template's identity, so stating both is the same
+///   defect as stating neither — the specification does not say which template the group
+///   launches from — and carries the same sentence. Read wherever a specification sits, for
+///   the reason the line above is.
 pub fn launch_template_identity_error<E>(
     launch_template: Option<&LaunchTemplateSpecification>,
     mixed_instances_policy: Option<&MixedInstancesPolicy>,
@@ -293,12 +301,26 @@ pub fn launch_template_identity_error<E>(
     let policy_names_no_template = mixed_instances_policy.is_some_and(|policy| {
         super::ec2_instances::specifications(None, Some(policy)).is_empty()
     });
-    let a_specification_names_no_template =
+    let a_specification_names_no_one_template =
         super::ec2_instances::specifications(launch_template, mixed_instances_policy)
             .into_iter()
-            .any(|specification| TemplateIdentity::of(specification).is_none());
-    (policy_names_no_template || a_specification_names_no_template)
+            .any(|specification| !names_one_template(specification));
+    (policy_names_no_template || a_specification_names_no_one_template)
         .then(|| Scaffolded::validation_error(LAUNCH_TEMPLATE_IDENTITY_MESSAGE))
+}
+
+/// Whether ONE launch-template specification names exactly one launch template: it states one
+/// half of the identity and not the other.
+///
+/// "You must specify either a `LaunchTemplateId` or a `LaunchTemplateName`"
+/// ([`LAUNCH_TEMPLATE_IDENTITY_MESSAGE`]): the two members are alternative spellings of ONE
+/// template's identity, so a specification carrying neither names no template and one
+/// carrying both names two. The empty string states no half, exactly as
+/// [`TemplateIdentity::of`] reads it — the one reading of these two members in this module.
+fn names_one_template(specification: &LaunchTemplateSpecification) -> bool {
+    let stated = |half: Option<&str>| half.is_some_and(|half| !half.is_empty());
+    stated(specification.launch_template_id.as_deref())
+        != stated(specification.launch_template_name.as_deref())
 }
 
 /// The detail a refusal carries for a launch-template version that asks for a public address
@@ -407,6 +429,121 @@ fn unlaunchable_launch_parameters(
             .iter()
             .any(|interface| interface.associate_public_ip_address == Some(true)))
     .then(|| PUBLIC_ADDRESS_WITH_MULTIPLE_INTERFACES.to_string())
+}
+
+/// What Amazon EC2 Auto Scaling answers a launch-template version whose launch parameters
+/// state the security groups OUTSIDE the network interface it declares.
+///
+/// A launch names its security groups in ONE place: "if you specify a network interface, you
+/// must specify any security groups as part of the network interface"
+/// (`RequestLaunchTemplateData$SecurityGroupIds` and `$SecurityGroups` against
+/// `$NetworkInterfaces`, whose own `Groups` is where they then belong), so a version stating
+/// interfaces and top-level groups states them twice and the launch has no one set to apply.
+/// Entirely fixed text: this service's own preamble for a launch template it cannot use
+/// followed by the sentence naming where the groups belong, and no value of the request.
+const INVALID_LAUNCH_TEMPLATE: &str = "Invalid launch template:";
+
+/// The detail that preamble carries for groups stated outside the interface.
+const SECURITY_GROUPS_OUTSIDE_INTERFACE: &str =
+    "When a network interface is provided, the security groups must be a part of it.";
+
+/// The refusal for a launch source whose launch-template version states its security groups
+/// outside the network interface it declares, or `None` when every version it names states
+/// them in one place.
+///
+/// Amazon EC2 Auto Scaling reads the version a group would launch from when the group is
+/// configured, so a version whose network configuration no launch could apply is refused on
+/// the REQUEST rather than left to fail at every launch. WHETHER the parameters put the groups
+/// where a launch can use them is the owning service's own reading of its own members
+/// ([`ec2::security_groups_are_part_of_the_network_interface`], the one reading of them in the
+/// tree, which that service also reports as a finding on the write that stored the version),
+/// so the two services cannot disagree about which versions a launch can apply. The code is
+/// the one this service answers a parameter of the request it cannot use with
+/// ([`Scaffolded::invalid_query_parameter`]), the same code a version stating no instance
+/// type is answered ([`LAUNCH_TEMPLATE_INSTANCE_TYPE_MESSAGE`]).
+///
+/// Asked of every specification the launch source carries, for the reason
+/// [`launch_template_identity_error`] reads them all. `None` covers a version the account does
+/// not hold and an engine carrying no Amazon EC2 store: a refusal has to be grounded in launch
+/// parameters the account's Amazon EC2 state answered with, never assumed.
+pub fn launch_template_interface_groups_error<Eng: Send + Sync + 'static, E>(
+    engine: &Eng,
+    launch_template: Option<&LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    super::ec2_instances::specifications(launch_template, mixed_instances_policy)
+        .into_iter()
+        .filter_map(|specification| {
+            super::ec2_instances::launch_template_data(engine, specification)
+        })
+        .any(|data| !ec2::security_groups_are_part_of_the_network_interface(&data))
+        .then(|| {
+            Scaffolded::invalid_query_parameter(format!(
+                "{INVALID_LAUNCH_TEMPLATE} {SECURITY_GROUPS_OUTSIDE_INTERFACE}"
+            ))
+        })
+}
+
+/// What Amazon EC2 Auto Scaling answers a launch source whose launch-template version names a
+/// key pair the account does not hold, or `None` when every version it names a key pair of the
+/// account's own — and `None` for a reference whose sentence the owning service no longer
+/// words, which is never replaced by one of this service's own.
+///
+/// A key pair is Amazon EC2's resource ("the name of the key pair",
+/// `RequestLaunchTemplateData$KeyName`), so the detail is that service's own sentence for a
+/// name it holds no key pair under ([`ec2::invalid_key_pair_name_not_found`], the one wording
+/// of that refusal in the tree) after this service's preamble for a launch source it cannot
+/// use ([`INVALID_LAUNCH_SOURCE`]) — the two-part sentence an instance profile that does not
+/// resolve is reported with ([`super::iam_instance_profiles`]).
+fn absent_key_pair_detail(key_name: &str) -> Option<String> {
+    match ec2::invalid_key_pair_name_not_found::<()>(key_name) {
+        Ec2Refusal::ServiceError(refusal) => Some(refusal.message),
+        // That constructor answers this refusal and nothing else; a reference whose sentence
+        // it stopped carrying is left unreported rather than reported in words this service
+        // invented for another service's resource.
+        _ => None,
+    }
+}
+
+/// The refusal for a launch source whose launch-template version names a key pair the account
+/// does not hold, or `None` when every version it names names one the account holds.
+///
+/// Amazon EC2 Auto Scaling reads the version a group would launch from when the group is
+/// configured, and a launch into a key pair the account does not hold places nothing: the
+/// request is refused instead of leaving the group unable to launch capacity. The key pairs
+/// are the account's own Amazon EC2 resources, resolved against that service's store under one
+/// acquisition of its lock, released before this answers.
+///
+/// Asked of every specification the launch source carries, for the reason
+/// [`launch_template_identity_error`] reads them all. `None` covers a version the account does
+/// not hold and an engine carrying no Amazon EC2 store: a refusal has to be grounded in what
+/// the account's Amazon EC2 state answered, never assumed.
+pub fn unresolvable_key_pair_error<Eng: Send + Sync + 'static, E>(
+    engine: &Eng,
+    launch_template: Option<&LaunchTemplateSpecification>,
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    let key_names: Vec<String> =
+        super::ec2_instances::specifications(launch_template, mixed_instances_policy)
+            .into_iter()
+            .filter_map(|specification| {
+                super::ec2_instances::launch_template_data(engine, specification)
+            })
+            .filter_map(|data| data.key_name)
+            .filter(|key_name| !key_name.is_empty())
+            .collect();
+    if key_names.is_empty() {
+        return None;
+    }
+    let state = ec2::service_state(engine)?;
+    let absent = {
+        let store = state.lock();
+        key_names
+            .into_iter()
+            .find(|key_name| store.key_pair_id_for_name(key_name).is_none())?
+    };
+    absent_key_pair_detail(&absent)
+        .map(|detail| Scaffolded::validation_error(format!("{INVALID_LAUNCH_SOURCE} {detail}")))
 }
 
 /// What Amazon EC2 Auto Scaling answers a group whose launch-template version names no
@@ -866,6 +1003,206 @@ pub fn duplicate_override_message(instance_types: &[&str]) -> String {
          the request and try again: [{}]",
         instance_types.join(", ")
     )
+}
+
+/// The values `InstancesDistribution$OnDemandAllocationStrategy` may take: "the following
+/// lists the valid values: `lowest-price` …, `prioritized` …"
+/// (`smithy_query(query="doc",shape="InstancesDistribution",member="OnDemandAllocationStrategy")`),
+/// listed in the order the service names them in the refusal it answers a value outside the
+/// set with ([`allocation_strategy_message`]).
+pub const ON_DEMAND_ALLOCATION_STRATEGIES: &[&str] = &["prioritized", "lowest-price"];
+
+/// The values `InstancesDistribution$SpotAllocationStrategy` may take: "the following lists
+/// the valid values: `capacity-optimized`, `capacity-optimized-prioritized`, `lowest-price`,
+/// `price-capacity-optimized`"
+/// (`smithy_query(query="doc",shape="InstancesDistribution",member="SpotAllocationStrategy")`),
+/// listed in the order the service names them in the refusal it answers a value outside the
+/// set with — the default first, as [`ON_DEMAND_ALLOCATION_STRATEGIES`] is ordered by the
+/// same hand.
+pub const SPOT_ALLOCATION_STRATEGIES: &[&str] = &[
+    "lowest-price",
+    "capacity-optimized",
+    "capacity-optimized-prioritized",
+    "price-capacity-optimized",
+];
+
+/// What Amazon EC2 Auto Scaling answers a distribution whose allocation strategy is not one
+/// of the values that member publishes.
+///
+/// The sentence names the MEMBER that was not valid and the whole set of values it may take,
+/// and carries nothing of the request — the rejected value is not echoed, so one wording
+/// serves every value outside the set. The set itself is stated through this service's one
+/// rendering of an admissible value set ([`super::stated_value_set`]), so two refusals that
+/// name a set cannot show it in two shapes.
+#[must_use]
+pub fn allocation_strategy_message(member: &str, strategies: &[&str]) -> String {
+    format!(
+        "{member} is not valid. Valid options are: {}.",
+        super::stated_value_set(strategies.iter().copied())
+    )
+}
+
+/// The widest value `InstancesDistribution$OnDemandPercentageAboveBaseCapacity` may carry:
+/// "expressed as a number (for example, 20 specifies 20% On-Demand Instances, 80% Spot
+/// Instances). If set to 100, only On-Demand Instances are used"
+/// (`smithy_query(query="shape",shape="InstancesDistribution")`) — a percentage, so 100 is
+/// the whole of the capacity above the base and nothing above it means anything.
+pub const MAX_ON_DEMAND_PERCENTAGE: i32 = 100;
+
+/// The lowest value that member may carry: 0, the percentage that puts none of the capacity
+/// above the base on On-Demand Instances.
+pub const MIN_ON_DEMAND_PERCENTAGE: i32 = 0;
+
+/// How the boundary validator names that member, the spelling the service's own refusal
+/// carries ([`super::constraint_violation_message`]).
+const ON_DEMAND_PERCENTAGE_MEMBER_PATH: &str =
+    "mixedInstancesPolicy.launchStrategy.onDemandCapacityOverBasePercentage";
+
+/// What Amazon EC2 Auto Scaling answers an override naming an instance type the service that
+/// owns instance types does not publish.
+///
+/// Fixed text around the one variable part, which is the type the request named: "you must
+/// specify an instance type that is supported in your requested Region and Availability
+/// Zones" (`LaunchTemplateOverrides$InstanceType`), so the value itself is what the caller
+/// has to change and the sentence names it.
+#[must_use]
+pub fn invalid_override_instance_type_message(instance_type: &str) -> String {
+    format!("The specified instance type {instance_type} is not valid")
+}
+
+/// The refusal for a mixed instances policy whose override names an instance type that does
+/// not exist, or `None` when every type its overrides name is one Amazon EC2 publishes.
+///
+/// An override says which instance type the group launches INSTEAD of the one its launch
+/// template states, and an instance is placed as a type the service that owns them publishes
+/// ([`ec2::instance_type_is_modelled`], the one catalog of types in the tree): a type outside
+/// that catalog is capacity the group could never hold, so the request is refused instead of
+/// stored. Decided from the request's own value — the catalog is published, not account
+/// state — in the order the request names the overrides, so the first type that does not
+/// exist is the one the refusal names.
+pub fn override_instance_type_error<E>(
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    let overrides = mixed_instances_policy?
+        .launch_template
+        .as_ref()?
+        .overrides
+        .as_ref()?;
+    overrides
+        .iter()
+        .filter_map(|entry| entry.instance_type.as_deref())
+        .filter(|instance_type| !instance_type.is_empty())
+        .find(|instance_type| !ec2::instance_type_is_modelled(instance_type))
+        .map(|instance_type| {
+            Scaffolded::validation_error(invalid_override_instance_type_message(instance_type))
+        })
+}
+
+/// The refusal for a mixed instances policy whose instances distribution states an allocation
+/// strategy outside the set its member publishes, or a percentage outside the range its
+/// member publishes, and `None` when every value it states is one the member admits.
+///
+/// An allocation strategy is "the allocation strategy to apply to your On-Demand Instances"
+/// and "… to your Spot Instances" (`InstancesDistribution`), each member documenting the
+/// values it may take: a value outside its set names no strategy the service could apply, so
+/// the request is refused instead of stored under a strategy nothing implements. The
+/// percentage that splits the capacity above the base is a PERCENTAGE, so a number outside
+/// `MIN_ON_DEMAND_PERCENTAGE..=MAX_ON_DEMAND_PERCENTAGE` describes no split; that is a value
+/// outside the bounds of ONE member, which this service states as the boundary validator
+/// does ([`super::constraint_violation_message`]) rather than in a sentence of its own.
+///
+/// Decided from the request's own VALUES, before anything is resolved or stored, and the
+/// members are read in one fixed order so one request has one verdict. The distribution's
+/// other numeric members are left to their own evidence: that clause names the member by the
+/// path the validator spells it with, and no path is invented for a member none is recorded
+/// for.
+pub fn instances_distribution_error<E>(
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    let distribution = mixed_instances_policy?.instances_distribution.as_ref()?;
+    let strategy_refusal = [
+        (
+            "OnDemandAllocationStrategy",
+            distribution.on_demand_allocation_strategy.as_deref(),
+            ON_DEMAND_ALLOCATION_STRATEGIES,
+        ),
+        (
+            "SpotAllocationStrategy",
+            distribution.spot_allocation_strategy.as_deref(),
+            SPOT_ALLOCATION_STRATEGIES,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(member, stated, strategies)| {
+        let stated = stated?;
+        (!strategies.contains(&stated))
+            .then(|| Scaffolded::validation_error(allocation_strategy_message(member, strategies)))
+    });
+    if let Some(refusal) = strategy_refusal {
+        return Some(refusal);
+    }
+    let percentage = distribution.on_demand_percentage_above_base_capacity?;
+    let constraint = if percentage < MIN_ON_DEMAND_PERCENTAGE {
+        format!("Member must have value greater than or equal to {MIN_ON_DEMAND_PERCENTAGE}")
+    } else if percentage > MAX_ON_DEMAND_PERCENTAGE {
+        format!("Member must have value less than or equal to {MAX_ON_DEMAND_PERCENTAGE}")
+    } else {
+        return None;
+    };
+    Some(Scaffolded::validation_error(
+        super::constraint_violation_message(
+            percentage,
+            ON_DEMAND_PERCENTAGE_MEMBER_PATH,
+            &constraint,
+        ),
+    ))
+}
+
+/// What Amazon EC2 Auto Scaling answers an override that chooses its instance types BOTH
+/// ways at once.
+///
+/// "If you specify `InstanceRequirements`, you can't specify `InstanceType`"
+/// (`smithy_query(query="shape",shape="LaunchTemplateOverrides")`): the two members are
+/// alternative ways of saying which types an override launches — one names the type, the
+/// other states the attributes the service selects types by — so an override carrying both
+/// says it twice and differently. Fixed text naming the member that cannot be used beside
+/// the other, with no value of the request in it: the rule is about the override's MEMBERS,
+/// exactly as [`LAUNCH_TEMPLATE_IDENTITY_MESSAGE`]'s is about a specification's.
+pub const OVERRIDE_INSTANCE_TYPE_WITH_REQUIREMENTS_MESSAGE: &str =
+    "The parameter InstanceType cannot be used in a launch template override using instance \
+     requirements.";
+
+/// The refusal for a mixed instances policy whose override chooses its instance types both
+/// ways at once, or `None` when every override chooses them one way.
+///
+/// Decided from the MEMBERS alone, so it is answered before any of their values is looked up
+/// — which type the override would launch is not a question about what the account holds —
+/// and before the rule about the SET of overrides ([`duplicate_override_error`]): an override
+/// that cannot stand on its own is refused for its own members rather than counted among the
+/// types the policy names.
+///
+/// Asked of every override the policy carries, in the order the request wrote them, the rule
+/// being a fact about ONE override and therefore holding for each of them.
+pub fn override_instance_selection_error<E>(
+    mixed_instances_policy: Option<&MixedInstancesPolicy>,
+) -> Option<Scaffolded<E>> {
+    let overrides = mixed_instances_policy?
+        .launch_template
+        .as_ref()?
+        .overrides
+        .as_ref()?;
+    overrides
+        .iter()
+        .any(|entry| {
+            entry.instance_requirements.is_some()
+                && entry
+                    .instance_type
+                    .as_deref()
+                    .is_some_and(|instance_type| !instance_type.is_empty())
+        })
+        .then(|| {
+            Scaffolded::validation_error(OVERRIDE_INSTANCE_TYPE_WITH_REQUIREMENTS_MESSAGE)
+        })
 }
 
 /// The refusal for a mixed instances policy that overrides the same instance type more than

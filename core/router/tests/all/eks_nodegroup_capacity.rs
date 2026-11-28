@@ -42,6 +42,11 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// See [`POLL_INTERVAL`].
 const POLLS: usize = 200;
 
+/// The key pair the node group that asks for REMOTE ACCESS names, held by the account
+/// before that node group is created (`RemoteAccessConfig$ec2SshKey` names a key pair
+/// Amazon EC2 holds).
+const REMOTE_ACCESS_KEY: &str = "capacity-key";
+
 /// Read a cluster until it is `ACTIVE`, which is the precondition a node group and a
 /// Fargate profile both have.
 fn wait_for_active_cluster(
@@ -123,6 +128,25 @@ fn a_managed_node_group_reports_the_auto_scaling_group_that_really_backs_it() {
             );
             wait_for_active_cluster(&router, &runtime, cluster);
 
+            // The key pair the remote-access row's node group names. "The Amazon EC2 SSH
+            // key name that provides access for SSH communication with the nodes"
+            // (`RemoteAccessConfig$ec2SshKey`) names a key pair of the ACCOUNT, and the
+            // launch template the node group's capacity comes up under carries it — so a
+            // launch source naming a key pair Amazon EC2 does not hold backs no group at
+            // all. Created here, through the service that owns key pairs, so the row's
+            // precondition is the account's own resource rather than a name nothing holds.
+            let key_pair = ec2(
+                &router,
+                &runtime,
+                "CreateKeyPair",
+                &[("KeyName", REMOTE_ACCESS_KEY)],
+            );
+            assert_eq!(
+                key_pair.status, 200,
+                "setup: the node group's remote-access key pair must be created, got \
+                 {key_pair:?}"
+            );
+
             // The rows differ along what the node group asks for: the default sizes,
             // explicit sizes, and remote access (which is what gives the node group a
             // security group of its own beside the Auto Scaling group).
@@ -146,7 +170,7 @@ fn a_managed_node_group_reports_the_auto_scaling_group_that_really_backs_it() {
                 (
                     "a node group that asks for remote access",
                     "ng-remote",
-                    serde_json::json!({ "remoteAccess": { "ec2SshKey": "capacity-key" } }),
+                    serde_json::json!({ "remoteAccess": { "ec2SshKey": REMOTE_ACCESS_KEY } }),
                     2,
                     true,
                 ),
