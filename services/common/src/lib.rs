@@ -893,6 +893,9 @@ pub mod restated_refusal;
 /// nothing else, for every service whose protocol names the shape in `x-amzn-errortype`.
 pub mod rest_json_error_body;
 pub mod rfc3339;
+/// The claim an `rpcv2Cbor` service makes on a request that names no service at all and
+/// addresses that protocol's own `/service/{Service}/operation/{Operation}` URI.
+pub mod rpc_v2_cbor_claim;
 pub mod rpc_target;
 /// The ONE reading of what an Amazon S3 BUCKET NAME has to be, for every service that
 /// takes one as a caller-supplied string and points a resource of its own at it.

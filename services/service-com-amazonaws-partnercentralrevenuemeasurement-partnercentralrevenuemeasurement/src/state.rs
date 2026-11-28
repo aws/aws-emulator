@@ -32,6 +32,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The revenue-attribution half of this store: the records that plane's
+/// operations read and write, and the refusals they answer with. Held in its own
+/// file because it is a separate resource with separate identifiers, while the
+/// two planes share this module's catalogs, ARNs, paging and refusal builders.
+pub mod attributions;
+
 use crate::ops::types::{
     ConflictException, InternalServerException, MarketplaceRevenueShareProductDetail,
     MarketplaceRevenueShareProductEntry, MarketplaceRevenueShareProductSummary,
@@ -536,6 +542,22 @@ pub struct ComAmazonawsPartnercentralrevenuemeasurementPartnercentralrevenuemeas
     /// answers with the version it wrote instead of failing the optimistic
     /// concurrency check against a revision it has itself already moved.
     pub allocation_update_idempotency: HashMap<String, (CatalogName, String, String, i32)>,
+    /// Every revenue attribution, keyed by `(Catalog, Id)` — a `BTreeMap`, for
+    /// the same reasons as the shares above: stable, resumable list pages and
+    /// two catalogs that are separate namespaces.
+    pub revenue_attributions: BTreeMap<(CatalogName, String), attributions::RevenueAttribution>,
+    /// `ClientToken` -> the attribution key it created, so an `@idempotent`
+    /// `CreateRevenueAttribution` replayed with the same token answers with the
+    /// attribution it already minted. Kept separate from the share maps because
+    /// the creates are different operations: one token reused across both must
+    /// not make a create of one answer with the other.
+    pub attribution_idempotency: HashMap<String, (CatalogName, String)>,
+    /// `ClientToken` -> `(Catalog, attribution id, the revision the update
+    /// produced)`, so an `@idempotent` `UpdateRevenueAttribution` replayed with
+    /// the same token answers with the revision it wrote instead of failing the
+    /// optimistic concurrency check against a revision it has itself already
+    /// moved.
+    pub attribution_update_idempotency: HashMap<String, (CatalogName, String, i32)>,
     /// Source of the sequence number behind every minted share and allocation
     /// id. Monotonic, so no two resources in one store ever share an id.
     pub next_sequence: u64,
@@ -563,6 +585,27 @@ impl ComAmazonawsPartnercentralrevenuemeasurementPartnercentralrevenuemeasuremen
     ) -> Option<&mut MarketplaceRevenueShare> {
         self.marketplace_revenue_shares
             .get_mut(&(catalog, share_id.to_string()))
+    }
+
+    /// The revenue attribution `(catalog, attribution_id)` names, if the store
+    /// holds it.
+    pub fn attribution(
+        &self,
+        catalog: CatalogName,
+        attribution_id: &str,
+    ) -> Option<&attributions::RevenueAttribution> {
+        self.revenue_attributions
+            .get(&(catalog, attribution_id.to_string()))
+    }
+
+    /// The revenue attribution `(catalog, attribution_id)` names, for mutation.
+    pub fn attribution_mut(
+        &mut self,
+        catalog: CatalogName,
+        attribution_id: &str,
+    ) -> Option<&mut attributions::RevenueAttribution> {
+        self.revenue_attributions
+            .get_mut(&(catalog, attribution_id.to_string()))
     }
 }
 

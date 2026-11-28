@@ -40,7 +40,8 @@ const REGION: &str = "eu-west-1";
 /// What one row expects of this front door.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Claim {
-    /// This endpoint's own wire surface: it answers in its own awsQuery envelope.
+    /// This endpoint's own wire surface, or a request addressed to this endpoint that names
+    /// no form of it: it answers in its own awsQuery envelope.
     FrontDoor,
     /// Not this endpoint's traffic, so with nothing else mounted it reaches NOBODY.
     Elsewhere,

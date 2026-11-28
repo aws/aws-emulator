@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListRevenueAttributions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListRevenueAttributions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListRevenueAttributions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! One page of the revenue attributions [`crate::state`] holds in the catalog,
+//! filtered by the members the request carries and ordered so a page resumes
+//! where the previous one stopped.
 //!
 //! ## Shape of an operation
 //!
@@ -90,6 +85,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -162,18 +159,181 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListRevenueAttributions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListRevenueAttributionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListRevenueAttributions"))
+        // A reporting operation: it reads the store and writes nothing, so what a
+        // later caller sees is unchanged by this call.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListRevenueAttributionsErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        // `AttributionSortBy` declares exactly one field; absent, the list is in
+        // the store's own stable order, which is attribution id ascending.
+        let sort_by_last_modified = match input.sort_by.as_deref() {
+            None | Some("") => false,
+            Some("LastModifiedDate") => true,
+            Some(_) => {
+                return Err(validation(crate::state::invalid_enum(
+                    "SortBy",
+                    ATTRIBUTION_SORT_BY_VALUES,
+                )))
+            }
+        };
+        // The model states no default for this list's `SortOrder`, so an absent
+        // one leaves the store's ascending order in place.
+        let sort_order = match input.sort_order.as_deref() {
+            None | Some("") => crate::state::SortOrder::Ascending,
+            Some(value) => match crate::state::SortOrder::from_wire(value) {
+                Some(order) => order,
+                None => {
+                    return Err(validation(crate::state::invalid_enum(
+                        "SortOrder",
+                        SORT_ORDER_VALUES,
+                    )))
+                }
+            },
+        };
+        if let Some(requested) = input.max_results.filter(|value| *value < 1) {
+            return Err(validation(crate::state::invalid_max_results(requested)));
+        }
+
+        let state = state.lock();
+        // `Identifiers` names the attributions to report on, so one that names
+        // none earns the modelled 404 rather than being dropped from the page: a
+        // caller asking about a specific attribution is told it does not exist.
+        let wanted_ids: Option<Vec<String>> = match input.identifiers.as_ref() {
+            None => None,
+            Some(identifiers) => {
+                let mut resolved: Vec<String> = Vec::with_capacity(identifiers.len());
+                for identifier in identifiers {
+                    let id = attributions::parse_attribution_identifier(identifier)
+                        .filter(|id| state.attribution(catalog, id).is_some())
+                        .ok_or_else(|| {
+                            not_found(attributions::referenced_attribution_not_found(identifier))
+                        })?;
+                    resolved.push(id);
+                }
+                Some(resolved)
+            }
+        };
+
+        let mut rows: Vec<((i64, u32, String), String, AttributionSummary)> = Vec::new();
+        for ((attribution_catalog, attribution_id), attribution) in &state.revenue_attributions {
+            if *attribution_catalog != catalog {
+                continue;
+            }
+            if wanted_ids
+                .as_ref()
+                .is_some_and(|wanted| !wanted.iter().any(|id| id == attribution_id))
+            {
+                continue;
+            }
+            // The two creation bounds are compared at whole-second granularity,
+            // which is the precision a bound survives this protocol's timestamp
+            // encoding at (`state::epoch_whole_seconds`), so a bound a caller
+            // echoes back from a `CreatedDate` means exactly that instant.
+            let created = crate::state::epoch_whole_seconds(attribution.created_date);
+            if input
+                .created_after
+                .as_ref()
+                .is_some_and(|after| created < crate::state::wire_whole_seconds(*after))
+            {
+                continue;
+            }
+            if input
+                .created_before
+                .as_ref()
+                .is_some_and(|before| created >= crate::state::wire_whole_seconds(*before))
+            {
+                continue;
+            }
+            // Every `ContextFilter` must match, each against the context the
+            // attribution holds now.
+            let context = attribution.context();
+            if let Some(filters) = input.context_filters.as_ref() {
+                let kept = filters.iter().all(|filter| {
+                    attributions::context_filter_matches(
+                        &context,
+                        &filter.key,
+                        filter.values.as_ref(),
+                    )
+                });
+                if !kept {
+                    continue;
+                }
+            }
+            let revision = attribution.revision();
+            // Every derived member is computed from the stored state at the
+            // attribution's latest revision, never held as a field.
+            let (total, active) = attribution.allocation_counts_at(revision);
+            let (effective_from, effective_until) = attribution.effective_window_at(revision);
+            let sort_key = if sort_by_last_modified {
+                let (secs, nanos) = crate::state::epoch_parts(attribution.last_modified_date());
+                (secs, nanos, attribution_id.clone())
+            } else {
+                (0, 0, attribution_id.clone())
+            };
+            rows.push((
+                sort_key,
+                attribution_id.clone(),
+                AttributionSummary {
+                    id: Some(attribution.attribution_id.clone()),
+                    arn: Some(attribution.arn.clone()),
+                    catalog: Some(attribution.catalog.as_wire().to_string()),
+                    name: Some(attribution.name.clone()),
+                    tenancy_model: attribution.tenancy_model.as_wire().to_string(),
+                    marketplace_product: attribution.marketplace_product(),
+                    created_date: Some(crate::state::wire_timestamp(attribution.created_date)),
+                    last_modified_date: Some(crate::state::wire_timestamp(
+                        attribution.last_modified_date(),
+                    )),
+                    latest_revision: Some(crate::state::revision_token(revision)),
+                    effective_from,
+                    effective_until,
+                    total_active_revenue_attribution_allocation_count: Some(active),
+                    total_revenue_attribution_allocation_count: Some(total),
+                    context: attribution.context_at(revision),
+                },
+            ));
+        }
+        // The attribution id breaks every tie, so the order is total and a page
+        // resumes at exactly the item the previous one stopped before. With
+        // `SortBy` absent the rows are already in id order (the store iterates a
+        // `BTreeMap` keyed on it), so only a `LastModifiedDate` sort has work to
+        // do here.
+        if sort_by_last_modified {
+            rows.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        if sort_order == crate::state::SortOrder::Descending {
+            rows.reverse();
+        }
+
+        let cursors: Vec<String> = rows.iter().map(|row| row.1.clone()).collect();
+        let page = crate::state::page(&cursors, input.next_token.as_deref(), input.max_results)
+            .ok_or_else(|| validation(crate::state::invalid_next_token()))?;
+        let summaries: Vec<AttributionSummary> = rows[page.start..page.end]
+            .iter()
+            .map(|row| row.2.clone())
+            .collect();
+        Ok(ListRevenueAttributionsOutput {
+            // Present even when empty: the member reports the page this query
+            // answered with, and an empty page is a page.
+            revenue_attribution_summaries: Some(summaries),
+            next_token: page.next_token,
+        })
     }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> ListRevenueAttributionsError {
+    ListRevenueAttributionsErrorModeled::ValidationException(error).into()
+}
+
+/// Lift a modelled `ResourceNotFoundException` into this operation's error
+/// channel.
+fn not_found(error: ResourceNotFoundException) -> ListRevenueAttributionsError {
+    ListRevenueAttributionsErrorModeled::ResourceNotFoundException(error).into()
 }

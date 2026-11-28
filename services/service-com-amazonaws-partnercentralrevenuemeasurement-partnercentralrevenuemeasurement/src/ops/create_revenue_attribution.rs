@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateRevenueAttribution
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateRevenueAttribution`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateRevenueAttribution::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Mints a revenue attribution into [`crate::state`] and answers with the stored
+//! record, so the following `GetRevenueAttribution` answers the same values.
 //!
 //! ## Shape of an operation
 //!
@@ -102,6 +96,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -176,18 +172,153 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateRevenueAttribution` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateRevenueAttributionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateRevenueAttribution"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateRevenueAttributionErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        // `CatalogName` and `TenancyModel` are enum SHAPES: the boundary
+        // validator does not check their membership, and the deserializer
+        // materializes an absent member as the empty string, so both cases are
+        // the handler's to refuse.
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let tenancy_model =
+            attributions::parse_tenancy_model(&input.tenancy_model).map_err(validation)?;
+        if input.name.is_empty() {
+            return Err(validation(crate::state::required_member("Name")));
+        }
+        // The product is named by id or by ARN; the attribution stores and
+        // answers with the ID either way.
+        let product_id = input
+            .product_identifier
+            .as_deref()
+            .map(attributions::resolve_product_identifier);
+        let context: ::std::collections::BTreeMap<String, String> = input
+            .context
+            .iter()
+            .flatten()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let region = crate::state::request_region(ctx.parts());
+        let now = ::std::time::SystemTime::now();
+        let wanted = attributions::AttributionCreate {
+            catalog,
+            name: &input.name,
+            tenancy_model,
+            product_id: product_id.as_ref(),
+            description: input.description.as_ref(),
+            context: &context,
+            tags: input.tags.as_ref(),
+        };
+        let mut state = state.lock();
+
+        // The `@idempotent` replay: the same `ClientToken` answers with the
+        // attribution it already minted, and only when this request asks for the
+        // same one — a token reused with different parameters is a conflict.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some((minted_catalog, minted_id)) =
+                state.attribution_idempotency.get(token).cloned()
+            {
+                if let Some(attribution) = state.attribution(minted_catalog, &minted_id) {
+                    if attribution.matches_create(&wanted) {
+                        let answer = output(attribution);
+                        crate::state::audit(
+                            ctx.parts(),
+                            Self::NAME,
+                            &answer.arn,
+                            "replayed: no change",
+                        );
+                        return Ok(answer);
+                    }
+                    return Err(CreateRevenueAttributionErrorModeled::ConflictException(
+                        crate::state::client_token_conflict(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        if state.revenue_attributions.len() >= attributions::MAX_REVENUE_ATTRIBUTIONS {
+            return Err(
+                CreateRevenueAttributionErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(
+                        attributions::REVENUE_ATTRIBUTION_RESOURCE,
+                        attributions::MAX_REVENUE_ATTRIBUTIONS,
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        // The identifier is MINTED by this service: `Id` is an
+        // `^ra-[a-z0-9]{13}$` token the request does not carry, so a second
+        // create with the same name is a second attribution rather than a
+        // conflict.
+        let attribution_id = attributions::attribution_id(state.next_sequence());
+        let attribution = attributions::RevenueAttribution {
+            arn: attributions::attribution_arn(&region, catalog, &attribution_id),
+            attribution_id: attribution_id.clone(),
+            catalog,
+            created_date: now,
+            name: input.name.clone(),
+            tenancy_model,
+            product_id,
+            tags: input.tags.clone().unwrap_or_default(),
+            // An attribution is created ready: revision 1 is written by this
+            // call, and every later revision by an update or by a write to one
+            // of its allocations.
+            revisions: vec![attributions::AttributionRevision {
+                written_at: now,
+                description: input.description.clone(),
+                context,
+            }],
+            allocations: ::std::collections::BTreeMap::new(),
+        };
+
+        let key = (catalog, attribution_id.clone());
+        // Only a token the CALLER sent is recorded: an absent
+        // `@idempotencyToken` member means this create has no idempotency key,
+        // so there is nothing a later request could replay.
+        if let Some(token) = input.client_token.clone() {
+            state.attribution_idempotency.insert(token, key.clone());
+        }
+        state.revenue_attributions.insert(key, attribution);
+        // Read the stored record back, so the response is the state rather than
+        // the values that went into it.
+        let stored = state.attribution(catalog, &attribution_id).ok_or_else(|| {
+            CreateRevenueAttributionError::from(
+                CreateRevenueAttributionErrorModeled::InternalServerException(
+                    crate::state::state_unavailable(),
+                ),
+            )
+        })?;
+        let answer = output(stored);
+        crate::state::audit(ctx.parts(), Self::NAME, &answer.arn, "created");
+        Ok(answer)
+    }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> CreateRevenueAttributionError {
+    CreateRevenueAttributionErrorModeled::ValidationException(error).into()
+}
+
+/// This operation's output for a stored attribution — every member read off the
+/// record, so a create answers exactly what the following get answers.
+fn output(
+    attribution: &attributions::RevenueAttribution,
+) -> CreateRevenueAttributionOutput {
+    let revision = attribution.revision();
+    CreateRevenueAttributionOutput {
+        id: attribution.attribution_id.clone(),
+        arn: attribution.arn.clone(),
+        name: Some(attribution.name.clone()),
+        description: attribution.description_at(revision),
+        tenancy_model: attribution.tenancy_model.as_wire().to_string(),
+        marketplace_product: attribution.marketplace_product(),
+        revision: Some(crate::state::revision_token(revision)),
+        context: attribution.context_at(revision),
     }
 }

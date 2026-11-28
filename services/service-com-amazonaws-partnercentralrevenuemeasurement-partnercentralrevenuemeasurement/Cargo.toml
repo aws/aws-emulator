@@ -8,6 +8,9 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# `rpc_v2_cbor_claim`: the ONE reading of which service an `rpcv2Cbor` URI names, which
+# `can_handle` claims an otherwise unattributed request of this protocol by.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }
@@ -26,6 +29,7 @@ tracing = { workspace = true }
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
+automod = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 

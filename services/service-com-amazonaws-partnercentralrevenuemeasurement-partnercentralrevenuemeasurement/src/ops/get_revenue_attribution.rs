@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetRevenueAttribution
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetRevenueAttribution`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetRevenueAttribution::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reads one revenue attribution out of [`crate::state`], at its latest revision
+//! or at the one `Revision` names, and refuses an identifier the catalog does not
+//! hold with the modelled `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -109,6 +104,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -181,18 +178,73 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetRevenueAttribution` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetRevenueAttributionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetRevenueAttribution"))
+        // A reporting operation: it reads the store and writes nothing, so what a
+        // later caller sees is unchanged by this call.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(GetRevenueAttributionErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let state = state.lock();
+        // A value neither form of the identifier fits names no attribution
+        // either, so it earns the same 404 rather than a second kind of refusal.
+        let attribution = attributions::parse_attribution_identifier(&input.identifier)
+            .and_then(|id| state.attribution(catalog, &id))
+            .ok_or_else(|| not_found(attributions::attribution_not_found(&input.identifier)))?;
+
+        // `Revision` reads the attribution as it existed at that revision;
+        // omitting it reads the latest. A revision the attribution never reached
+        // names nothing.
+        let revision = match input.revision.as_deref() {
+            None => attribution.revision(),
+            Some(token) => crate::state::parse_revision_token(token)
+                .filter(|revision| *revision <= attribution.revision())
+                .ok_or_else(|| {
+                    not_found(attributions::attribution_revision_not_found(
+                        &input.identifier,
+                        token,
+                    ))
+                })?,
+        };
+
+        // Every derived member is computed from the stored state AT `revision`,
+        // never held as a field on the attribution.
+        let (total, active) = attribution.allocation_counts_at(revision);
+        let (effective_from, effective_until) = attribution.effective_window_at(revision);
+        Ok(GetRevenueAttributionOutput {
+            id: attribution.attribution_id.clone(),
+            arn: attribution.arn.clone(),
+            catalog: attribution.catalog.as_wire().to_string(),
+            name: Some(attribution.name.clone()),
+            description: attribution.description_at(revision),
+            tenancy_model: attribution.tenancy_model.as_wire().to_string(),
+            marketplace_product: attribution.marketplace_product(),
+            created_date: Some(crate::state::wire_timestamp(attribution.created_date)),
+            last_modified_date: Some(crate::state::wire_timestamp(
+                attribution.modified_at(revision),
+            )),
+            revision: Some(crate::state::revision_token(revision)),
+            latest_revision: Some(crate::state::revision_token(attribution.revision())),
+            effective_from,
+            effective_until,
+            total_active_revenue_attribution_allocation_count: Some(active),
+            total_revenue_attribution_allocation_count: Some(total),
+            context: attribution.context_at(revision),
+        })
     }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> GetRevenueAttributionError {
+    GetRevenueAttributionErrorModeled::ValidationException(error).into()
+}
+
+/// Lift a modelled `ResourceNotFoundException` into this operation's error
+/// channel.
+fn not_found(error: ResourceNotFoundException) -> GetRevenueAttributionError {
+    GetRevenueAttributionErrorModeled::ResourceNotFoundException(error).into()
 }

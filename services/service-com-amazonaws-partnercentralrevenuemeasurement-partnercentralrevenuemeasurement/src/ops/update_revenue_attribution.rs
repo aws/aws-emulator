@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateRevenueAttribution
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateRevenueAttribution`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateRevenueAttribution::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Appends a revision to a stored revenue attribution — the `Description` and
+//! `Context` the request carries — behind the optimistic concurrency check
+//! `Revision` is, and refuses an identifier the catalog does not hold with the
+//! modelled `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -95,6 +91,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -168,18 +166,162 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateRevenueAttribution` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateRevenueAttributionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateRevenueAttribution"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateRevenueAttributionErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        if input.revision.is_empty() {
+            return Err(validation(crate::state::required_member("Revision")));
+        }
+        let Some(supplied_revision) = crate::state::parse_revision_token(&input.revision) else {
+            return Err(validation(crate::state::invalid_value(
+                "Revision",
+                format!(
+                    "{:?} is not a revision this service could have issued",
+                    input.revision
+                ),
+            )));
+        };
+        let attribution_id = attributions::parse_attribution_identifier(&input.identifier);
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+
+        // The `@idempotent` replay: the same `ClientToken` answers with the
+        // revision it already wrote, instead of failing the optimistic
+        // concurrency check against a revision the first attempt has itself
+        // moved.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some((minted_catalog, minted_id, written_revision)) =
+                state.attribution_update_idempotency.get(token).cloned()
+            {
+                let same =
+                    minted_catalog == catalog && Some(&minted_id) == attribution_id.as_ref();
+                let held = same
+                    .then(|| state.attribution(minted_catalog, &minted_id))
+                    .flatten();
+                let replay = held
+                    .filter(|attribution| {
+                        attribution.matches_update(
+                            written_revision,
+                            input.description.as_ref(),
+                            input.context.as_ref(),
+                        )
+                    })
+                    .map(|attribution| output(attribution, written_revision));
+                if let Some(answer) = replay {
+                    crate::state::audit(
+                        ctx.parts(),
+                        Self::NAME,
+                        &answer.arn,
+                        "replayed: no change",
+                    );
+                    return Ok(answer);
+                }
+                if held.is_some() {
+                    return Err(UpdateRevenueAttributionErrorModeled::ConflictException(
+                        crate::state::client_token_conflict(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        // A value neither form of the identifier fits names no attribution
+        // either, so it earns the same 404 rather than a second kind of refusal.
+        let attribution = attribution_id
+            .as_ref()
+            .and_then(|id| state.attribution(catalog, id))
+            .ok_or_else(|| not_found(attributions::attribution_not_found(&input.identifier)))?;
+        // `Revision` is "the current revision of the revenue attribution. Must
+        // match the server's current value" — the optimistic concurrency check.
+        if supplied_revision != attribution.revision() {
+            return Err(UpdateRevenueAttributionErrorModeled::ConflictException(
+                attributions::attribution_revision_mismatch(
+                    &input.identifier,
+                    &input.revision,
+                    attribution.revision(),
+                ),
+            )
+            .into());
+        }
+        if attribution.revision() >= attributions::MAX_ATTRIBUTION_REVISION {
+            return Err(validation(attributions::attribution_revision_ceiling(
+                &input.identifier,
+            )));
+        }
+        // `Context` is a "full-replacement context map. Omit to leave the stored
+        // context unchanged; pass an empty map to clear it."
+        let context = match input.context.as_ref() {
+            None => attribution.context(),
+            Some(supplied) => supplied
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        };
+
+        let Some(id) = attribution_id else {
+            return Err(not_found(attributions::attribution_not_found(
+                &input.identifier,
+            )));
+        };
+        let Some(attribution) = state.attribution_mut(catalog, &id) else {
+            return Err(UpdateRevenueAttributionErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+        let new_revision = attribution.push_revision(now, input.description.clone(), context);
+        if let Some(token) = input.client_token.clone() {
+            state
+                .attribution_update_idempotency
+                .insert(token, (catalog, id.clone(), new_revision));
+        }
+
+        // Read the stored record back, so the response is the state rather than
+        // the values that went into it.
+        let stored = state
+            .attribution(catalog, &id)
+            .map(|attribution| output(attribution, new_revision))
+            .ok_or_else(|| {
+                UpdateRevenueAttributionError::from(
+                    UpdateRevenueAttributionErrorModeled::InternalServerException(
+                        crate::state::state_unavailable(),
+                    ),
+                )
+            })?;
+        crate::state::audit(ctx.parts(), Self::NAME, &stored.arn, "updated");
+        Ok(stored)
+    }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> UpdateRevenueAttributionError {
+    UpdateRevenueAttributionErrorModeled::ValidationException(error).into()
+}
+
+/// Lift a modelled `ResourceNotFoundException` into this operation's error
+/// channel.
+fn not_found(error: ResourceNotFoundException) -> UpdateRevenueAttributionError {
+    UpdateRevenueAttributionErrorModeled::ResourceNotFoundException(error).into()
+}
+
+/// This operation's output for a stored attribution at the revision this call
+/// wrote — every member read off the record, so the update answers what the
+/// following get answers.
+fn output(
+    attribution: &attributions::RevenueAttribution,
+    revision: i32,
+) -> UpdateRevenueAttributionOutput {
+    UpdateRevenueAttributionOutput {
+        id: attribution.attribution_id.clone(),
+        arn: attribution.arn.clone(),
+        description: attribution.description_at(revision),
+        last_modified_date: crate::state::wire_timestamp(attribution.modified_at(revision)),
+        latest_revision: Some(crate::state::revision_token(attribution.revision())),
+        context: attribution.context_at(revision),
     }
 }

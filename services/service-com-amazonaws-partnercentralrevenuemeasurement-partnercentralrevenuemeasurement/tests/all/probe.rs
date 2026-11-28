@@ -25,12 +25,9 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use prm::ops::types::{
     CreateMarketplaceRevenueShareInput, GetRevenueAttributionAllocationsTaskInput,
-    GetRevenueAttributionInput, ListRevenueAttributionAllocationsInput,
-    ListRevenueAttributionsInput, ListTagsForResourceInput, MarketplaceRevenueShareProductEntry,
+    ListTagsForResourceInput, MarketplaceRevenueShareProductEntry,
     CREATE_MARKETPLACE_REVENUE_SHARE_INPUT_SCHEMA,
-    GET_REVENUE_ATTRIBUTION_ALLOCATIONS_TASK_INPUT_SCHEMA, GET_REVENUE_ATTRIBUTION_INPUT_SCHEMA,
-    LIST_REVENUE_ATTRIBUTIONS_INPUT_SCHEMA, LIST_REVENUE_ATTRIBUTION_ALLOCATIONS_INPUT_SCHEMA,
-    LIST_TAGS_FOR_RESOURCE_INPUT_SCHEMA,
+    GET_REVENUE_ATTRIBUTION_ALLOCATIONS_TASK_INPUT_SCHEMA, LIST_TAGS_FOR_RESOURCE_INPUT_SCHEMA,
 };
 
 /// The Region the request's SigV4 credential scope names.
@@ -168,44 +165,12 @@ async fn an_unimplemented_operation_answers_501_rather_than_an_empty_success() {
             ),
         ),
         (
-            "ListRevenueAttributions",
-            body(
-                LIST_REVENUE_ATTRIBUTIONS_INPUT_SCHEMA,
-                &ListRevenueAttributionsInput {
-                    catalog: "AWS".to_string(),
-                    ..Default::default()
-                },
-            ),
-        ),
-        (
-            "GetRevenueAttribution",
-            body(
-                GET_REVENUE_ATTRIBUTION_INPUT_SCHEMA,
-                &GetRevenueAttributionInput {
-                    catalog: "AWS".to_string(),
-                    identifier: attribution.clone(),
-                    ..Default::default()
-                },
-            ),
-        ),
-        (
             "GetRevenueAttributionAllocationsTask",
             body(
                 GET_REVENUE_ATTRIBUTION_ALLOCATIONS_TASK_INPUT_SCHEMA,
                 &GetRevenueAttributionAllocationsTaskInput {
                     catalog: "AWS".to_string(),
                     revenue_attribution_identifier: attribution.clone(),
-                },
-            ),
-        ),
-        (
-            "ListRevenueAttributionAllocations",
-            body(
-                LIST_REVENUE_ATTRIBUTION_ALLOCATIONS_INPUT_SCHEMA,
-                &ListRevenueAttributionAllocationsInput {
-                    catalog: "AWS".to_string(),
-                    revenue_attribution_identifier: attribution.clone(),
-                    ..Default::default()
                 },
             ),
         ),

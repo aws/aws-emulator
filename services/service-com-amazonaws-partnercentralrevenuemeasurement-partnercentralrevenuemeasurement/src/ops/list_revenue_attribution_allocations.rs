@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListRevenueAttributionAllocations
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListRevenueAttributionAllocations`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListRevenueAttributionAllocations::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! One page of the allocations a stored revenue attribution holds, filtered by
+//! the members the request carries, and the modelled
+//! `ResourceNotFoundException` for an attribution the catalog does not hold.
+//!
+//! Allocations are written by `StartRevenueAttributionAllocationsTask`, which is
+//! still a scaffold stub, so an attribution holds none until that operation is
+//! implemented and this list answers the empty page the store really holds.
 //!
 //! ## Shape of an operation
 //!
@@ -108,6 +107,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -180,18 +181,203 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListRevenueAttributionAllocations` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListRevenueAttributionAllocationsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListRevenueAttributionAllocations"))
+        // A reporting operation: it reads the store and writes nothing, so what a
+        // later caller sees is unchanged by this call.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                ListRevenueAttributionAllocationsErrorModeled::InternalServerException(
+                    crate::state::state_unavailable(),
+                )
+                .into(),
+            );
+        };
+
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        // `RevenueAttributionAllocationSortField` declares exactly one field;
+        // absent, the page is in the store's own stable order, which is
+        // allocation id ascending.
+        let sort_by_effective_from = match input.sort_by.as_deref() {
+            None | Some("") => false,
+            Some("EffectiveFrom") => true,
+            Some(_) => {
+                return Err(validation(crate::state::invalid_enum(
+                    "SortBy",
+                    REVENUE_ATTRIBUTION_ALLOCATION_SORT_FIELD_VALUES,
+                )))
+            }
+        };
+        let sort_order = match input.sort_order.as_deref() {
+            None | Some("") => crate::state::SortOrder::Ascending,
+            Some(value) => match crate::state::SortOrder::from_wire(value) {
+                Some(order) => order,
+                None => {
+                    return Err(validation(crate::state::invalid_enum(
+                        "SortOrder",
+                        SORT_ORDER_VALUES,
+                    )))
+                }
+            },
+        };
+        let status_filter = match input.status_filter.as_deref() {
+            None | Some("") => None,
+            Some(value) => match crate::state::AllocationStatus::from_wire(value) {
+                Some(status) => Some(status),
+                None => {
+                    return Err(validation(crate::state::invalid_enum(
+                        "StatusFilter",
+                        ALLOCATION_STATUS_VALUES,
+                    )))
+                }
+            },
+        };
+        let mut entity_type_filters: Vec<crate::state::attributions::EntityType> = Vec::new();
+        for value in input.entity_type_filters.iter().flatten() {
+            match attributions::EntityType::from_wire(value) {
+                Some(entity_type) => entity_type_filters.push(entity_type),
+                None => {
+                    return Err(validation(crate::state::invalid_enum(
+                        "EntityTypeFilters",
+                        ENTITY_TYPE_VALUES,
+                    )))
+                }
+            }
+        }
+        if let Some(requested) = input.max_results.filter(|value| *value < 1) {
+            return Err(validation(crate::state::invalid_max_results(requested)));
+        }
+
+        let state = state.lock();
+        let identifier = input.revenue_attribution_identifier.as_str();
+        // A value neither form of the identifier fits names no attribution
+        // either, so it earns the same 404 rather than a second kind of refusal.
+        let attribution = attributions::parse_attribution_identifier(identifier)
+            .and_then(|id| state.attribution(catalog, &id))
+            .ok_or_else(|| not_found(attributions::attribution_not_found(identifier)))?;
+        // `RevenueAttributionRevision` lists the allocations as they existed at
+        // that attribution revision; omitting it lists the latest.
+        let revision = match input.revenue_attribution_revision.as_deref() {
+            None => attribution.revision(),
+            Some(token) => crate::state::parse_revision_token(token)
+                .filter(|revision| *revision <= attribution.revision())
+                .ok_or_else(|| {
+                    not_found(attributions::attribution_revision_not_found(
+                        identifier, token,
+                    ))
+                })?,
+        };
+
+        // Every filter is "match all of them", and each compares against the
+        // stored allocation at `revision`.
+        let mut rows: Vec<((String, String), String, RevenueAttributionAllocationSummary)> =
+            Vec::new();
+        for (allocation, version) in attribution.allocations_at(revision) {
+            if !entity_type_filters.is_empty()
+                && !entity_type_filters.contains(&allocation.entity_type)
+            {
+                continue;
+            }
+            if input
+                .entity_identifier_filters
+                .as_ref()
+                .is_some_and(|wanted| !wanted.contains(&allocation.entity_identifier))
+            {
+                continue;
+            }
+            if input
+                .customer_aws_account_id_filters
+                .as_ref()
+                .is_some_and(|wanted| !wanted.contains(&allocation.customer_aws_account_id))
+            {
+                continue;
+            }
+            if status_filter.is_some_and(|status| status != version.status) {
+                continue;
+            }
+            // The four date bounds are inclusive on both ends, and `YYYY-MM-DD`
+            // compares chronologically as a string.
+            if input
+                .after_effective_from
+                .as_deref()
+                .is_some_and(|after| version.effective_from.as_str() < after)
+            {
+                continue;
+            }
+            if input
+                .before_effective_from
+                .as_deref()
+                .is_some_and(|before| version.effective_from.as_str() > before)
+            {
+                continue;
+            }
+            if input
+                .after_effective_until
+                .as_deref()
+                .is_some_and(|after| version.effective_until.as_str() < after)
+            {
+                continue;
+            }
+            if input
+                .before_effective_until
+                .as_deref()
+                .is_some_and(|before| version.effective_until.as_str() > before)
+            {
+                continue;
+            }
+            let sort_key = if sort_by_effective_from {
+                (
+                    version.effective_from.clone(),
+                    allocation.allocation_id.clone(),
+                )
+            } else {
+                (String::new(), allocation.allocation_id.clone())
+            };
+            rows.push((
+                sort_key,
+                allocation.allocation_id.clone(),
+                RevenueAttributionAllocationSummary {
+                    revenue_attribution_allocation_id: allocation.allocation_id.clone(),
+                    revenue_attribution_identifier: attribution.attribution_id.clone(),
+                    entity_type: allocation.entity_type.as_wire().to_string(),
+                    entity_identifier: allocation.entity_identifier.clone(),
+                    entity_name: allocation.entity_name.clone(),
+                    customer_aws_account_id: allocation.customer_aws_account_id.clone(),
+                    revenue_share_percent: version.revenue_share_percent.clone(),
+                    effective_from: version.effective_from.clone(),
+                    effective_until: version.effective_until.clone(),
+                    status: version.status.as_wire().to_string(),
+                },
+            ));
+        }
+        // The allocation id breaks every tie, so the order is total and a page
+        // resumes at exactly the item the previous one stopped before.
+        if sort_by_effective_from {
+            rows.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        if sort_order == crate::state::SortOrder::Descending {
+            rows.reverse();
+        }
+
+        let cursors: Vec<String> = rows.iter().map(|row| row.1.clone()).collect();
+        let page = crate::state::page(&cursors, input.next_token.as_deref(), input.max_results)
+            .ok_or_else(|| validation(crate::state::invalid_next_token()))?;
+        Ok(ListRevenueAttributionAllocationsOutput {
+            revenue_attribution_allocation_summaries: rows[page.start..page.end]
+                .iter()
+                .map(|row| row.2.clone())
+                .collect(),
+            next_token: page.next_token,
+        })
     }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> ListRevenueAttributionAllocationsError {
+    ListRevenueAttributionAllocationsErrorModeled::ValidationException(error).into()
+}
+
+/// Lift a modelled `ResourceNotFoundException` into this operation's error
+/// channel.
+fn not_found(error: ResourceNotFoundException) -> ListRevenueAttributionAllocationsError {
+    ListRevenueAttributionAllocationsErrorModeled::ResourceNotFoundException(error).into()
 }

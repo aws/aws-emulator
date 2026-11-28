@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetRevenueAttributionAllocation
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetRevenueAttributionAllocation`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetRevenueAttributionAllocation::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reads one allocation under a stored revenue attribution, at the attribution's
+//! latest revision or at the one `RevenueAttributionRevision` names, and refuses
+//! an attribution or an allocation the store does not hold with the modelled
+//! `ResourceNotFoundException`.
+//!
+//! Allocations are written by `StartRevenueAttributionAllocationsTask`, which is
+//! still a scaffold stub, so an attribution holds none until that operation is
+//! implemented and this read answers the modelled 404 for every allocation id.
 //!
 //! ## Shape of an operation
 //!
@@ -108,6 +108,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+use crate::state::attributions;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -180,18 +182,83 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetRevenueAttributionAllocation` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetRevenueAttributionAllocationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetRevenueAttributionAllocation"))
+        // A reporting operation: it reads the store and writes nothing, so what a
+        // later caller sees is unchanged by this call.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                GetRevenueAttributionAllocationErrorModeled::InternalServerException(
+                    crate::state::state_unavailable(),
+                )
+                .into(),
+            );
+        };
+
+        let catalog = crate::state::parse_catalog(&input.catalog).map_err(validation)?;
+        let state = state.lock();
+        let identifier = input.revenue_attribution_identifier.as_str();
+        // A value neither form of the identifier fits names no attribution
+        // either, so it earns the same 404 rather than a second kind of refusal.
+        let attribution = attributions::parse_attribution_identifier(identifier)
+            .and_then(|id| state.attribution(catalog, &id))
+            .ok_or_else(|| not_found(attributions::attribution_not_found(identifier)))?;
+
+        // `RevenueAttributionRevision` reads the allocation as it existed at that
+        // attribution revision; omitting it reads the latest.
+        let revision = match input.revenue_attribution_revision.as_deref() {
+            None => attribution.revision(),
+            Some(token) => crate::state::parse_revision_token(token)
+                .filter(|revision| *revision <= attribution.revision())
+                .ok_or_else(|| {
+                    not_found(attributions::attribution_revision_not_found(
+                        identifier, token,
+                    ))
+                })?,
+        };
+
+        let allocation_id = input.revenue_attribution_allocation_id.as_str();
+        // An allocation the attribution did not hold AT `revision` is not found
+        // at that revision, even when a later revision added it.
+        let (allocation, version) = attribution
+            .allocations
+            .get(allocation_id)
+            .and_then(|allocation| Some((allocation, allocation.version_at(revision)?)))
+            .ok_or_else(|| {
+                not_found(attributions::attribution_allocation_not_found(
+                    allocation_id,
+                ))
+            })?;
+
+        Ok(GetRevenueAttributionAllocationOutput {
+            revenue_attribution_allocation_id: allocation.allocation_id.clone(),
+            // The attribution's own id, which is the short form every allocation
+            // output declares, whichever form the request named it by.
+            revenue_attribution_identifier: attribution.attribution_id.clone(),
+            entity_type: allocation.entity_type.as_wire().to_string(),
+            entity_identifier: allocation.entity_identifier.clone(),
+            entity_name: allocation.entity_name.clone(),
+            customer_aws_account_id: allocation.customer_aws_account_id.clone(),
+            revenue_share_percent: version.revenue_share_percent.clone(),
+            effective_from: version.effective_from.clone(),
+            effective_until: version.effective_until.clone(),
+            status: version.status.as_wire().to_string(),
+            created_date: crate::state::wire_timestamp(allocation.created_date),
+            last_modified_date: crate::state::wire_timestamp(version.modified_date),
+            revenue_attribution_revision: crate::state::revision_token(version.revision),
+            revenue_attribution_latest_revision: crate::state::revision_token(
+                attribution.revision(),
+            ),
+        })
     }
+}
+
+/// Lift a modelled `ValidationException` into this operation's error channel.
+fn validation(error: ValidationException) -> GetRevenueAttributionAllocationError {
+    GetRevenueAttributionAllocationErrorModeled::ValidationException(error).into()
+}
+
+/// Lift a modelled `ResourceNotFoundException` into this operation's error
+/// channel.
+fn not_found(error: ResourceNotFoundException) -> GetRevenueAttributionAllocationError {
+    GetRevenueAttributionAllocationErrorModeled::ResourceNotFoundException(error).into()
 }

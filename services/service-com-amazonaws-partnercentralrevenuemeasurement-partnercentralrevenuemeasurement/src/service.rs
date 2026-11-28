@@ -75,11 +75,42 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
         // Claim a request whose resolved route key is this service's signing
-        // name. Edit this for anything the model does not express — a signing
-        // name shared by several services, or access-key-id-based routing.
+        // name — OR, when the caller presented a SigV4-family credential that
+        // names no service, one whose `rpcv2Cbor` URI names this service's own
+        // shape.
+        //
+        // The framework's resolver reads an `AWS4-HMAC-SHA256` credential scope,
+        // then an `X-Amz-Target`, then a service-naming endpoint host. A signed
+        // request to this service can match none of the three: `rpcv2Cbor` has
+        // no `X-Amz-Target` (it names its operation in the URI), a client
+        // pointed at this emulator reaches it on a host that names no service,
+        // and a request signed with SigV4A (`AWS4-ECDSA-P256-SHA256`, the scheme
+        // this service's model lists FIRST) carries a credential scope with no
+        // Region field, which that reader does not parse. Such a request
+        // resolves to NO key, so a signing-name-only claim leaves it unclaimed —
+        // and the router answers `404 UnknownService` in its own awsJson
+        // envelope, which is not decodable by any client of a service whose
+        // single declared protocol is `rpcv2Cbor`. The protocol names its target
+        // service in the URI, so that is what this service reads it from —
+        // through the ONE reader `service-common` states that rule with, which
+        // `service_common::claims_request` reads the same path with.
+        //
+        // The claim is not authentication and replaces none: the router
+        // authenticates the request it routed, so a claimed request whose
+        // signature does not verify is still refused — in THIS service's
+        // envelope rather than the router's. `tests/all/revenue_attribution.rs`
+        // asserts that with request authentication on.
         match smithy_server_runtime::resolve_route_key(parts) {
             Some(key) => key == self.entry.identity().signing_name(),
-            None => false,
+            // Only the `rpcv2Cbor` form may claim an otherwise unattributed
+            // request, and only when it names THIS service's shape: a request
+            // that names another service's is left to that service, and one
+            // presenting no credential at all keeps reaching whatever the
+            // framework's own routing decides for it.
+            None => ::service_common::rpc_v2_cbor_claim::claims_unattributed_rpc_v2_cbor_route(
+                parts,
+                self.entry.identity().shape_id(),
+            ),
         }
     }
 
