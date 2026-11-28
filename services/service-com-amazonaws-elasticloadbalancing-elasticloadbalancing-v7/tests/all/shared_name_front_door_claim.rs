@@ -59,8 +59,9 @@ struct Row {
 ///
 /// The rows differ along what the rule generalises over: the root path the query wire
 /// uses, the `rpcv2Cbor` path space the peer of this signing name names itself in, a REST
-/// path no Elastic Load Balancing model binds, and the same root path signed for a key
-/// that is not this endpoint's at all.
+/// path no Elastic Load Balancing model binds on this endpoint and the same path on
+/// another service's endpoint, and the root path signed for a key that is not this
+/// endpoint's at all.
 const ROWS: &[Row] = &[
     Row {
         case: "the query wire's own root path",
@@ -83,6 +84,15 @@ const ROWS: &[Row] = &[
         signing_name: "elasticloadbalancing",
         path: "/2012-06-01/load-balancers",
         claim: Claim::FrontDoor,
+    },
+    Row {
+        // The same path addressed to ANOTHER service's endpoint: that host names no
+        // Elastic Load Balancing endpoint and the path is no form of this wire, so this
+        // front door claims nothing of it.
+        case: "a REST path on another service's endpoint",
+        signing_name: "sqs",
+        path: "/2012-06-01/load-balancers",
+        claim: Claim::Elsewhere,
     },
     Row {
         case: "the root path signed for another service's key",

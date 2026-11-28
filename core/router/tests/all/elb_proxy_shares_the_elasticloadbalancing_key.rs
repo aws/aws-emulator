@@ -22,8 +22,9 @@
 //! The rows span what the rule generalises over: each model's own wire form, every routing
 //! signal that resolves the shared key (a credential scope, a host label, a presigned query
 //! parameter, none at all), each service's own key beside the shared one, several operations
-//! of the proxy's model rather than one, and the forms that must be claimed by NEITHER (an
-//! RPC path naming a service neither model declares).
+//! of the proxy's model rather than one, and a path NEITHER model publishes — which the API
+//! published at the addressed endpoint answers for that endpoint, and which is claimed by
+//! nobody when no endpoint of this family was addressed at all.
 
 use std::sync::Arc;
 

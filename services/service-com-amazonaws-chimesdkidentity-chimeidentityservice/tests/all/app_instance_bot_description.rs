@@ -26,6 +26,12 @@
 //! instant without moving its created instant, and writes to no other bot; an
 //! `AppInstanceBotArn` that resolves to no bot persists nothing and is refused with that
 //! same permanent 403, whose table of cases is the one the describe's refusal spans.
+//!
+//! The third RULE pinned here: that refusal is the modelled `ForbiddenException` CLASS on
+//! the wire — the shape a REST+JSON client resolves the failure from, in
+//! `x-amzn-errortype` and in the body's `__type` — and never the absence class, so a
+//! caller branching on the error code takes the refusal branch for every unresolvable bot
+//! ARN.
 
 use serde_json::{json, Value};
 
@@ -1387,5 +1393,201 @@ async fn the_bot_read_refusal_leaves_the_parent_instance_readable() {
         refusal, first_refusal,
         "expected the cascaded sibling bot to earn the same refusal \
          ({first_refusal:?}), got {refusal:?}"
+    );
+}
+
+/// The response header a REST+JSON client resolves a failure's error SHAPE from.
+///
+/// The shape name is what an SDK reports as the error class, in this header and in the
+/// body's `__type`; the body's `Code` member is this service's own narrower enum
+/// (`smithy_query(query="shape",shape="ErrorCode")`: `Forbidden`, `NotFound`, …), so the
+/// class a caller branches on cannot be asserted from `Code` alone.
+const ERROR_SHAPE_HEADER: &str = "x-amzn-errortype";
+
+/// The shape name `ForbiddenException` carries on the wire.
+const FORBIDDEN_SHAPE: &str = "ForbiddenException";
+
+/// The shape name a report of absence would carry — the class this read must never serve.
+const NOT_FOUND_SHAPE: &str = "NotFoundException";
+
+/// `GET /app-instance-bots/{AppInstanceBotArn}`, with the error shape the wire named.
+async fn describe_bot_with_shape(
+    emulator: &Emulator,
+    app_instance_bot_arn: &str,
+) -> (u16, Option<String>, Value) {
+    let (status, headers, body) = emulator
+        .call_with_headers(
+            "GET",
+            &format!("/app-instance-bots/{}", uri_encode(app_instance_bot_arn)),
+            None,
+        )
+        .await;
+    let shape = headers.get(ERROR_SHAPE_HEADER).map(|value| {
+        value
+            .to_str()
+            .expect("the error-shape header is a shape name")
+            .to_string()
+    });
+    (status, shape, body)
+}
+
+/// RULE: a `DescribeAppInstanceBot` addressed to an `AppInstanceBotArn` this service
+/// resolves no bot for is REFUSED as a request the caller may not make, never reported as
+/// an absence — the class an SDK reads off the wire is the modelled `ForbiddenException`
+/// (403, that shape in `x-amzn-errortype` and in the body's `__type`, `Code` the
+/// `Forbidden` enum value, and the fixed forbidden-request sentence), never the
+/// `NotFoundException` class, and nothing in the answer repeats the addressed ARN — so a
+/// caller branching on the error class takes the refusal branch and learns nothing about
+/// which bot ARNs this service holds.
+///
+/// The rows span every way a well-formed `ChimeArn` reaches this read without resolving to
+/// a bot (a bot id the live parent never minted, at several shapes and sizes; a bot deleted
+/// from it; a bot cascaded away with its parent; the same ARN in another region or
+/// account; an ARN naming another resource kind), and the live bot beside them is the
+/// control that the read still serves what it holds.
+#[tokio::test]
+async fn the_bot_read_refusal_names_the_forbidden_shape_an_sdk_reads() {
+    let emulator = Emulator::new();
+    let instance = emulator.app_instance("wire-class", "tok-wire-class").await;
+    let user = emulator
+        .user(&instance, "wire-class-user", "tok-wire-class-user")
+        .await;
+    let live = create_bot(
+        &emulator,
+        &instance,
+        "tok-wire-class-live",
+        Some("live"),
+        Some("held"),
+        &responds_to_configuration("BOTIDLIVEA", "en_US"),
+    )
+    .await;
+    let deleted = create_bot(
+        &emulator,
+        &instance,
+        "tok-wire-class-deleted",
+        Some("deleted"),
+        None,
+        &invoked_by_configuration("BOTIDDELEB", "de_DE", "ALL", "NONE", None),
+    )
+    .await;
+    delete_bot(&emulator, &deleted).await;
+
+    let doomed = emulator
+        .app_instance("wire-class-doomed", "tok-wire-class-doomed")
+        .await;
+    let cascaded = create_bot(
+        &emulator,
+        &doomed,
+        "tok-wire-class-cascaded",
+        None,
+        None,
+        &responds_to_configuration("BOTIDCASCB", "ja_JP"),
+    )
+    .await;
+    delete_app_instance(&emulator, &doomed).await;
+
+    // Bot ids of several shapes and sizes under the LIVE parent, so the refusal is pinned
+    // over the class of unresolvable ARNs rather than over one id. Each ARN stays inside
+    // the modelled bounds of the input (`smithy_query(query="shape",shape="ChimeArn")`:
+    // len 5..1600, pattern `^arn:...:[^/].{0,1023}$`), so what is under test is the
+    // refusal and not input validation.
+    let long_id = "9".repeat(128);
+    let unresolvable: Vec<(&str, String)> = vec![
+        (
+            "a uuid-shaped bot id the parent never minted",
+            format!("{instance}/bot/7c4a1f20-9d3b-4e55-8a01-5c2d9b7e4f30"),
+        ),
+        (
+            "a single-character bot id",
+            format!("{instance}/bot/z"),
+        ),
+        ("a long numeric bot id", format!("{instance}/bot/{long_id}")),
+        (
+            "a bot id carrying non-ASCII characters",
+            format!("{instance}/bot/ロボット"),
+        ),
+        ("a bot deleted from the live parent", deleted.clone()),
+        ("a bot cascaded away with its parent", cascaded.clone()),
+        (
+            "the live bot's ARN in another region",
+            in_another_region(&live),
+        ),
+        (
+            "the live bot's ARN in another account",
+            in_another_account(&live),
+        ),
+        ("an AppInstanceUser ARN", user.clone()),
+    ];
+
+    for (label, arn) in &unresolvable {
+        let (status, shape, body) = describe_bot_with_shape(&emulator, arn).await;
+        assert_eq!(
+            (status, shape.as_deref()),
+            (403, Some(FORBIDDEN_SHAPE)),
+            "case {label:?}: expected {arn:?} to be refused with the {FORBIDDEN_SHAPE} \
+             class, got {status} {shape:?} {body:?}"
+        );
+        assert_eq!(
+            (
+                body["__type"].as_str(),
+                body["Code"].as_str(),
+                body["Message"].as_str()
+            ),
+            (
+                Some(FORBIDDEN_SHAPE),
+                Some("Forbidden"),
+                Some(FORBIDDEN_MESSAGE)
+            ),
+            "case {label:?}: expected the refusal body to name the forbidden shape and \
+             carry the fixed sentence, got {body:?}"
+        );
+        let rendered = body.to_string();
+        assert!(
+            !rendered.contains(NOT_FOUND_SHAPE) && !rendered.contains("NotFound"),
+            "case {label:?}: expected no absence class anywhere in the answer, got \
+             {rendered}"
+        );
+        assert!(
+            !rendered.contains(arn.as_str()),
+            "case {label:?}: expected the answer to repeat the addressed ARN nowhere, got \
+             {rendered}"
+        );
+        assert!(
+            body.get("AppInstanceBot").is_none(),
+            "case {label:?}: expected the refusal to report no bot, got {body:?}"
+        );
+
+        // The controls that make this a per-resource refusal: the same caller still reads
+        // the parent instance and still lists its bots, which hold no row for the ARN just
+        // refused.
+        let (status, described) = emulator
+            .call(
+                "GET",
+                &format!("/app-instances/{}", uri_encode(&instance)),
+                None,
+            )
+            .await;
+        assert_eq!(
+            (status, described["AppInstance"]["AppInstanceArn"].as_str()),
+            (200, Some(instance.as_str())),
+            "case {label:?}: expected the parent AppInstance to stay readable, got \
+             {status} {described:?}"
+        );
+        assert_eq!(
+            listed_bot(&emulator, &instance, arn).await,
+            Value::Null,
+            "case {label:?}: expected the listing to hold no row for {arn:?}"
+        );
+    }
+
+    // The control: the bot this service DOES hold is still reported, with no error shape
+    // on the wire at all, so the refusal above is the answer for an unresolvable ARN and
+    // not for every read.
+    let (status, shape, body) = describe_bot_with_shape(&emulator, &live).await;
+    assert_eq!(
+        (status, shape.as_deref(), member(&body, "Name").as_str()),
+        (200, None, Some("live")),
+        "expected the live bot to be reported with no error shape, got {status} {shape:?} \
+         {body:?}"
     );
 }

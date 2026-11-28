@@ -112,6 +112,22 @@ impl Emulator {
         path_and_query: &str,
         body: Option<Value>,
     ) -> (u16, Value) {
+        let (status, _headers, parsed) = self.call_with_headers(method, path_and_query, body).await;
+        (status, parsed)
+    }
+
+    /// The same dispatch [`Emulator::call`] makes, with the response HEADERS kept.
+    ///
+    /// A REST+JSON client resolves the error SHAPE of a failure from `x-amzn-errortype`
+    /// rather than from a body member, so the error class an SDK reports is only
+    /// assertable with the headers in hand. `pub(crate)` so the suites beside this one
+    /// read the wire through this one harness.
+    pub(crate) async fn call_with_headers(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        body: Option<Value>,
+    ) -> (u16, http::HeaderMap, Value) {
         let payload = body
             .map(|b| Bytes::from(serde_json::to_vec(&b).expect("a serializable request body")))
             .unwrap_or_default();
@@ -129,9 +145,10 @@ impl Emulator {
 
         let response = self.router.dispatch(request).await;
         let status = response.status().as_u16();
+        let headers = response.headers().clone();
         let raw = response.into_body();
         if raw.is_empty() {
-            return (status, Value::Null);
+            return (status, headers, Value::Null);
         }
         let parsed = serde_json::from_slice(&raw).unwrap_or_else(|_| {
             panic!(
@@ -139,7 +156,7 @@ impl Emulator {
                 String::from_utf8_lossy(&raw)
             )
         });
-        (status, parsed)
+        (status, headers, parsed)
     }
 
     async fn create_app_instance(

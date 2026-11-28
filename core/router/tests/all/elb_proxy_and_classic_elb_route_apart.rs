@@ -20,6 +20,13 @@
 //! host label instead, on each of the two endpoint hosts of that family. The claim must
 //! still rest on the path, so an unsigned registry-style client reaches ELB Proxy and an
 //! unsigned query client reaches the front door that owns the shared name.
+//!
+//! A host label resolves to a routing key of its own, and a service answers on the
+//! endpoint its model publishes: an unsigned request whose host names ELB Proxy's own
+//! `endpointPrefix` therefore reaches ELB Proxy, which is why its claim seam reads that
+//! prefix beside the shared signing name
+//! (`services/service-com-amazonaws-elbproxy-elbproxy/src/service.rs`). Either host, one
+//! claimant: that is the invariant every row below asserts.
 
 use std::sync::Arc;
 
@@ -91,6 +98,18 @@ const ROWS: &[Row] = &[
         ],
         body: CBOR_EMPTY_MAP,
         claimed_by: &["elbproxy"],
+    },
+    Row {
+        // And the other wire on that same endpoint host: `POST /` with an `Action` form
+        // field is the Elastic Load Balancing front door's surface, which no host label
+        // makes ELB Proxy's — so this row stays claimed by nobody, and the row above is a
+        // claim the PATH earned rather than the host.
+        case: "an unsigned awsQuery envelope on the ELB Proxy endpoint host",
+        host: PROXY_HOST,
+        uri: "/",
+        headers: &[("content-type", "application/x-www-form-urlencoded")],
+        body: QUERY_BODY,
+        claimed_by: &[],
     },
     Row {
         // The other wire, unsigned on the same host: the query front door that owns the
