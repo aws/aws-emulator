@@ -175,21 +175,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The bounds the model puts on this request, enforced here so the work this
-        // handler does is explicitly limited by the request's own modelled limits
-        // (the boundary validator refuses a violation before `handle` runs; these
-        // checks keep the bound local and readable rather than implicit). With
-        // `registryIds` pinned to one, the candidate set is one registry's records.
-        if input.registry_ids.len() != REGISTRY_IDS_PER_REQUEST {
-            return Err(field_validation(
-                "registryIds",
-                &format!(
-                    "exactly {REGISTRY_IDS_PER_REQUEST} registry identifier must be supplied, got {}.",
-                    input.registry_ids.len()
-                ),
-            ));
-        }
-
         // Which ranking method answers this request: the one it asked for, or the
         // default this Region applies to a request that names none. The method decides
         // which records are results, in what order they are ranked, how large a page may
@@ -313,11 +298,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })
     }
 }
-
-/// `SearchDiscoverableRegistryRecordsRequest$registryIds` is modelled
-/// `@length{min:1,max:1}` — "Currently, you must specify exactly one registry
-/// identifier". This is what bounds the candidate set to one registry's records.
-const REGISTRY_IDS_PER_REQUEST: usize = 1;
 
 /// `SearchDiscoverableRegistryRecordsRequest$maxResults` is modelled
 /// `@range{min:1,max:50}` with `@default: 10`, and its doc narrows the range by ranking

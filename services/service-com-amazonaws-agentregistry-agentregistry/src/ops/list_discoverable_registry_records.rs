@@ -155,15 +155,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let filters = input.filters.unwrap_or_default();
-        if filters.len() > MAX_FILTERS {
-            return Err(field_validation(
-                "filters",
-                &format!(
-                    "at most {MAX_FILTERS} filters may be applied, got {}.",
-                    filters.len()
-                ),
-            ));
-        }
         for filter in &filters {
             if !REGISTRY_RECORD_FILTER_NAME_VALUES.contains(&filter.name.as_str()) {
                 return Err(field_validation(
@@ -296,9 +287,6 @@ const PAGE_SIZE_BOUNDS: crate::state::PageSizeBounds = crate::state::PageSizeBou
     max: MAX_MAX_RESULTS,
     default: DEFAULT_MAX_RESULTS,
 };
-
-/// `ListDiscoverableRegistryRecordsRequest$filters` is modelled `@length{max:10}`.
-const MAX_FILTERS: usize = 10;
 
 /// How many values ONE filter narrows its dimension to.
 ///

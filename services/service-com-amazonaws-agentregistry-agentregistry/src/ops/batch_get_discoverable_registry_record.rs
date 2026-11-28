@@ -148,31 +148,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
 
-        // The bounds the model puts on this request, enforced here so the work this
-        // handler does is explicitly limited by the request's own modelled limits
-        // (the boundary validator refuses a violation before `handle` runs; these
-        // checks keep the bound local and readable rather than implicit).
-        if input.entries.len() != ENTRIES_PER_REQUEST {
-            return Err(field_validation(
-                "entries",
-                &format!(
-                    "exactly {ENTRIES_PER_REQUEST} entry must be supplied, got {}.",
-                    input.entries.len()
-                ),
-            ));
-        }
-        for entry in &input.entries {
-            let requested = entry.record_ids.len();
-            if !(MIN_RECORD_IDS_PER_ENTRY..=MAX_RECORD_IDS_PER_ENTRY).contains(&requested) {
-                return Err(field_validation(
-                    "recordIds",
-                    &format!(
-                        "between {MIN_RECORD_IDS_PER_ENTRY} and {MAX_RECORD_IDS_PER_ENTRY} record IDs must be supplied, got {requested}."
-                    ),
-                ));
-            }
-        }
-
         let requested_total: usize = input
             .entries
             .iter()
@@ -257,25 +232,6 @@ fn record_not_found(registry_id: &str, requested: &str) -> BatchGetDiscoverableR
         error_code: ERROR_CODE_RESOURCE_NOT_FOUND.to_string(),
         message: None,
     }
-}
-
-/// `BatchGetDiscoverableRegistryRecordRequest$entries` is modelled
-/// `@length{min:1,max:1}` — "Currently, you can specify exactly one entry".
-const ENTRIES_PER_REQUEST: usize = 1;
-
-/// `RegistryRecordsEntry$recordIds` is modelled `@length{min:1,max:100}` — "You
-/// can specify 1 through 100 record IDs". This is what bounds the response: one
-/// summary or one error per requested id.
-const MIN_RECORD_IDS_PER_ENTRY: usize = 1;
-const MAX_RECORD_IDS_PER_ENTRY: usize = 100;
-
-/// A 400 `ValidationException` naming the member that failed and why, in this
-/// service's own modelled error shape.
-fn field_validation(member: &str, message: &str) -> BatchGetDiscoverableRegistryRecordError {
-    BatchGetDiscoverableRegistryRecordErrorModeled::ValidationException(
-        crate::state::field_validation(member, message),
-    )
-    .into()
 }
 
 /// The modelled 404 `ResourceNotFoundException` for an entry naming a registry
