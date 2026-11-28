@@ -271,7 +271,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
                 return Err(
                     CreateTopicErrorModeled::NotFoundException(NotFoundException {
-                        invalid_parameter: Some("ClusterArn".to_string()),
+                        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                         message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                     })
                     .into(),
@@ -283,7 +283,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(reason) = crate::state::topic_name_error(&input.topic_name) {
                 return Err(
                     CreateTopicErrorModeled::BadRequestException(BadRequestException {
-                        invalid_parameter: Some("TopicName".to_string()),
+                        invalid_parameter: Some(crate::state::TOPIC_NAME_MEMBER.to_string()),
                         message: Some(reason),
                     })
                     .into(),
@@ -310,7 +310,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ) {
                 return Err(
                     CreateTopicErrorModeled::BadRequestException(BadRequestException {
-                        invalid_parameter: Some("ReplicationFactor".to_string()),
+                        invalid_parameter: Some("replicationFactor".to_string()),
                         message: Some(message),
                     })
                     .into(),
@@ -338,7 +338,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(match rejected {
                     crate::state::TopicRejected::DuplicateName => {
                         CreateTopicErrorModeled::TopicExistsException(TopicExistsException {
-                            invalid_parameter: Some("TopicName".to_string()),
+                            invalid_parameter: Some(crate::state::TOPIC_NAME_MEMBER.to_string()),
                             // The service's one fixed sentence for this condition:
                             // the name the request submitted and the cluster it
                             // addressed are the caller's own, so neither is echoed
@@ -382,7 +382,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // reports rather than as a topic filed on nothing.
                     crate::state::TopicRejected::NoSuchCluster => {
                         CreateTopicErrorModeled::NotFoundException(NotFoundException {
-                            invalid_parameter: Some("ClusterArn".to_string()),
+                            invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                             message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                         })
                         .into()

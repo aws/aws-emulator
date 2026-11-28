@@ -263,7 +263,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // has none of its own: MSK Serverless scales the brokers itself.
         if is_serverless {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
@@ -367,7 +367,7 @@ const TARGET_NUMBER_OF_BROKER_NODES_MEMBER: &str = "targetNumberOfBrokerNodes";
 /// filed with.
 fn cluster_not_found() -> UpdateBrokerCountError {
     UpdateBrokerCountErrorModeled::NotFoundException(NotFoundException {
-        invalid_parameter: Some("ClusterArn".to_string()),
+        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
         message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
     })
     .into()

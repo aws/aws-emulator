@@ -605,7 +605,7 @@ async fn an_update_that_names_no_setting_is_refused_and_changes_nothing() {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some("ClientAuthentication"),
+        Some("clientAuthentication"),
         "the refusal must name the member at fault, got {}",
         reply.body
     );

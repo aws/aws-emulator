@@ -217,7 +217,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
                 RebootBrokerErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -248,7 +248,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // none of its own: MSK Serverless patches and restarts the brokers itself.
         if is_serverless {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
@@ -311,9 +311,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// The member a refusal about the brokers to reboot names, spelled as this crate's
-/// refusals spell a request member.
-const BROKER_IDS_MEMBER: &str = "BrokerIds";
+/// The member a refusal about the brokers to reboot names, by the name the API
+/// documents it on the wire (`BrokerIds`'s `jsonName`), as every refusal of this
+/// crate names a request member.
+const BROKER_IDS_MEMBER: &str = "brokerIds";
 
 /// The broker node `broker_id`, as the request spelled it, names among the ones
 /// `held` lists — and `None` when it names none of them.

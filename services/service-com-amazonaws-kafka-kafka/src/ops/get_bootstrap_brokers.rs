@@ -326,7 +326,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let cluster_state = cluster.state.clone();
                 return Err(GetBootstrapBrokersErrorModeled::BadRequestException(
                     BadRequestException {
-                        invalid_parameter: Some("ClusterArn".to_string()),
+                        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                         message: Some(crate::state::bootstrap_brokers_unavailable_message(
                             &cluster_state,
                         )),

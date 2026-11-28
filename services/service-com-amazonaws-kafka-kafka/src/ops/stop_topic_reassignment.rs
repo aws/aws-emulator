@@ -200,7 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(
                 StopTopicReassignmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -214,7 +214,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) else {
             return Err(
                 StopTopicReassignmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("TopicReassignmentOperationArn".to_string()),
+                    invalid_parameter: Some(
+                        crate::state::TOPIC_REASSIGNMENT_OPERATION_ARN_MEMBER.to_string(),
+                    ),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -232,7 +234,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ];
             return Err(
                 StopTopicReassignmentErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("TopicReassignmentOperationArn".to_string()),
+                    invalid_parameter: Some(
+                        crate::state::TOPIC_REASSIGNMENT_OPERATION_ARN_MEMBER.to_string(),
+                    ),
                     message: Some(crate::state::state_gate::not_in_accepted_state_message(
                         &accepted,
                     )),

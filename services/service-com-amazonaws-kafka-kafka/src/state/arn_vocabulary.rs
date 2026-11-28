@@ -4,11 +4,14 @@
 //!
 //! One concern, in one place: the single parse of a caller-supplied ARN
 //! ([`arn_resource_of`]), the predicate for each kind of resource this service
-//! mints an ARN for, the member names those ARNs travel in as the wire spells
-//! them, and the `BadRequestException` envelopes a value that is not an ARN of
-//! the kind its member carries is refused with. Keeping them together is what
-//! makes one value a bad request to every operation that reads it rather than a
-//! bad request to one and a miss to the next.
+//! mints an ARN for, the names the WIRE gives the members those references (and
+//! the handful of plain values beside them) travel in — which is what every
+//! refusal of this service reports as the parameter at fault — and the
+//! `BadRequestException` envelopes a value that is not an ARN of the kind its
+//! member carries is refused with. Keeping them together is what makes one value
+//! a bad request to every operation that reads it rather than a bad request to
+//! one and a miss to the next, and keeps one member from being named two ways by
+//! two refusals.
 
 use super::*;
 
@@ -145,6 +148,17 @@ pub const CLUSTER_OPERATION_ARN_MEMBER: &str = "clusterOperationArn";
 /// `DeleteVpcConnection`, whose label is spelled `Arn`) name the connection by
 /// this same name, which is the one the API documents it under.
 pub const VPC_CONNECTION_ARN_MEMBER: &str = "vpcConnectionArn";
+
+/// The member the channel-scoped operations carry a channel's ARN in, named the
+/// same way: the API documents the label `ChannelArn` as `channelArn`, which is
+/// the spelling a refusal reports whether the value travelled in the URI or in
+/// the body.
+pub const CHANNEL_ARN_MEMBER: &str = "channelArn";
+
+/// The member the Topic Management operations carry a topic's name in, named the
+/// same way (`topicName`, the wire spelling of `TopicName` whether the request
+/// binds it as a path label or sends it in the body).
+pub const TOPIC_NAME_MEMBER: &str = "topicName";
 
 /// The cluster-ARN-SPECIFIC refusal wording, which the SCRAM-secret surface and
 /// the client-VPC-connection listing answer a cluster ARN they cannot parse with

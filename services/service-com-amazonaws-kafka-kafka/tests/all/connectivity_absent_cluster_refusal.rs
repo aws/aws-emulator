@@ -4,17 +4,13 @@
 //! cluster ARN this endpoint holds no cluster for, driven end to end over the same
 //! `MultiServiceRouter` the emulator serves from (the shared `kafka_harness`).
 //!
-//! RULE under test: the surface clients REACH a cluster over — its public access and
-//! its multi-VPC private connectivity — is the surface a cluster's own
-//! resource-based policy is attached for, so the only document that can grant a call
-//! on it lives ON the target cluster; an ARN this endpoint's Region holds no cluster
-//! under carries no such document, so the call reaches no grant and is refused as
-//! UNAUTHORIZED (HTTP 403 `AccessDeniedException`) in IAM's sentence for a request no
-//! resource-based policy allows, naming the calling principal, this operation's IAM
-//! action and the ARN exactly as submitted — and never telling the caller whether
-//! this registry holds anything under it. `UpdateConnectivity` is the call that
-//! CONFIGURES that surface; `RejectClientVpcConnection`, which manages a connection
-//! made over it, is pinned in `client_vpc_connection_rejection.rs`.
+//! RULE under test: a cluster-scoped call handed a well-formed cluster ARN this
+//! endpoint's Region holds no cluster under reports that absence as the absence it
+//! is — HTTP 404 `NotFoundException`, the service's one fixed not-found sentence,
+//! and the member that carried the reference named in `invalidParameter` by its WIRE
+//! name (`clusterArn`) — and the call that CONFIGURES the connectivity surface
+//! (`UpdateConnectivity`) is no exception: its grant rests on the caller's own
+//! identity-based documents, which are in force whether or not the cluster exists.
 //!
 //! The rows differ along what the rule generalises over: the way this endpoint comes
 //! to hold no cluster under the submitted ARN (a name never created, an ARN of the
@@ -23,41 +19,27 @@
 //! cluster's own ARN seen from another region's endpoint), and the BODY the request
 //! carries (each connectivity member the operation can change, a version token the
 //! cluster would refuse, and a body naming nothing to change at all), since the
-//! decision over the target precedes every member of the body.
+//! target is resolved before every member of the body.
 //!
 //! The boundaries are pinned too: a value that is no cluster ARN at all is left to
 //! the operation's own parameter refusal (HTTP 400), a mutation of any OTHER part of
-//! a cluster rests on the caller's own identity documents and so reports the same
-//! ARNs as merely absent (HTTP 404), the REPORTING side of those ARNs reports the
-//! absence as well, and the cluster this endpoint DOES hold has its connectivity
-//! update accepted and applied — so the rows above are refusals about the target
-//! rather than about the caller or the request.
+//! a cluster reports the same ARNs as absent, the REPORTING side of those ARNs
+//! reports the absence as well, and the cluster this endpoint DOES hold has its
+//! connectivity update accepted and applied — so the rows above are answers about
+//! the target rather than about the caller or the request.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_kafka_kafka::state::authorization::caller_principal;
+use service_com_amazonaws_kafka_kafka::state::{CLUSTER_ARN_MEMBER, RESOURCE_NOT_FOUND_MESSAGE};
 
 use crate::kafka_harness::{
     pct, poll_until_active, ClusterRequest, Emulator, Reply, ACCOUNT, REGION,
 };
 
-/// The status and wire code an authorization refusal carries, spelled out here
-/// rather than read from the service so a drift in its own constants fails this
-/// suite.
-const ACCESS_DENIED_STATUS: u16 = 403;
-const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
-
-/// The IAM action a call to this operation asks for: `kafka:` plus the API name,
-/// which is how every control-plane action of this service is published.
-const ACTION: &str = "kafka:UpdateConnectivity";
-
 /// The status and wire code the service reports a resource it does not hold with,
-/// which the boundary controls below pin for the surfaces the rule does not cover.
+/// spelled out here rather than read from the service so a drift in its own
+/// constants fails this suite.
 const NOT_FOUND_STATUS: u16 = 404;
 const NOT_FOUND_CODE: &str = "NotFoundException";
-
-/// The whole sentence that refusal carries: fixed text, naming nothing of the
-/// request.
-const NOT_FOUND_MESSAGE: &str = "The requested resource doesn\u{2019}t exist.";
 
 /// The status and wire code of the parameter refusal `UpdateConnectivity` answers a
 /// value that is no cluster ARN at all with, which the control below pins.
@@ -81,39 +63,22 @@ async fn update_connectivity_in(
         .await
 }
 
-/// The sentence IAM refuses a request no RESOURCE-based policy allows with: fixed
-/// text around the principal that signed, the action asked for and the resource the
-/// decision was taken over.
-fn denial_message(resource: &str) -> String {
-    format!(
-        "User: {} is not authorized to perform: {ACTION} on resource: {resource} \
-         because no resource-based policy allows the {ACTION} action",
-        caller_principal()
-    )
-}
-
-/// Assert `reply` refused the call as unauthorized over `target` as submitted, and
-/// disclosed nothing about what this registry holds.
-fn assert_refused_as_unauthorized(reply: &Reply, case: &str, target: &str) {
-    let expected = denial_message(target);
+/// Assert `reply` reported the absence of `target` as the absence it is, naming the
+/// member that carried the reference by its wire name and nothing of the request in
+/// its sentence.
+fn assert_reported_absent(reply: &Reply, case: &str) {
     assert_eq!(
         (reply.status, reply.error_code(), reply.error_message()),
-        (
-            ACCESS_DENIED_STATUS,
-            ACCESS_DENIED_CODE,
-            expected.as_str()
-        ),
-        "case {case:?}: expected {ACCESS_DENIED_STATUS} {ACCESS_DENIED_CODE} {expected:?}, \
-         got {} {}",
+        (NOT_FOUND_STATUS, NOT_FOUND_CODE, RESOURCE_NOT_FOUND_MESSAGE),
+        "case {case:?}: expected {NOT_FOUND_STATUS} {NOT_FOUND_CODE} \
+         {RESOURCE_NOT_FOUND_MESSAGE:?}, got {} {}",
         reply.status,
         reply.body
     );
-    // An authorization refusal is decided from the request alone, so it complains
-    // about no parameter — and it says nothing about the resource either way.
     assert_eq!(
-        reply.at("/invalidParameter"),
-        &Value::Null,
-        "case {case:?}: an authorization refusal names no parameter at fault, got {}",
+        reply.at("/invalidParameter").as_str(),
+        Some(CLUSTER_ARN_MEMBER),
+        "case {case:?}: expected the refusal to name {CLUSTER_ARN_MEMBER} at fault, got {}",
         reply.body
     );
 }
@@ -122,10 +87,10 @@ fn assert_refused_as_unauthorized(reply: &Reply, case: &str, target: &str) {
 /// endpoint that does not hold it.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// Every body `UpdateConnectivity` can carry while the TARGET is decided before any
+/// Every body `UpdateConnectivity` can carry while the TARGET is resolved before any
 /// of it is read: each member the operation can change, a version token the cluster
 /// would refuse, and a body that names nothing to change at all — which is a defect
-/// of the REQUEST, answered only for a target the call reaches a grant on.
+/// of the REQUEST, answered only for a target this endpoint holds.
 fn connectivity_bodies(version: &str) -> Vec<(&'static str, Value)> {
     vec![
         (
@@ -178,10 +143,9 @@ fn connectivity_bodies(version: &str) -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// Mutations of any OTHER part of a cluster, which rest on the caller's own
-/// identity-based documents rather than on a document attached to the cluster:
-/// `(case, method, URI suffix, body members)`, each one legal so the row exercises
-/// the target rather than the request.
+/// Mutations of any OTHER part of a cluster, which rest on the same identity-based
+/// documents: `(case, method, URI suffix, body members)`, each one legal so the row
+/// exercises the target rather than the request.
 fn other_cluster_mutations(version: &str) -> Vec<(&'static str, &'static str, &'static str, Value)> {
     vec![
         (
@@ -206,11 +170,10 @@ fn other_cluster_mutations(version: &str) -> Vec<(&'static str, &'static str, &'
 }
 
 /// RULE: a connectivity mutation handed a well-formed cluster ARN this endpoint
-/// holds no cluster for reaches no grant, so it is refused as unauthorized over that
-/// ARN — whatever the body carries and however the endpoint came to hold no cluster
-/// under it.
+/// holds no cluster for reports the absence — whatever the body carries and however
+/// the endpoint came to hold no cluster under it.
 #[tokio::test]
-async fn an_absent_cluster_refuses_a_connectivity_mutation_as_unauthorized() {
+async fn an_absent_cluster_is_reported_absent_by_a_connectivity_mutation() {
     let emulator = Emulator::new();
     // A cluster this endpoint really holds, so the version the rows quote is one a
     // request could otherwise be accepted at, and the controls at the end have a
@@ -277,13 +240,13 @@ async fn an_absent_cluster_refuses_a_connectivity_mutation_as_unauthorized() {
     for (case, target, region) in &targets {
         for (body_case, body) in connectivity_bodies(&version) {
             let reply = update_connectivity_in(&emulator, region, target, &body).await;
-            assert_refused_as_unauthorized(&reply, &format!("{case}/{body_case}"), target);
+            assert_reported_absent(&reply, &format!("{case}/{body_case}"));
         }
     }
 
     // CONTROL (the boundary below the rule): a value that is no cluster reference at
-    // all names no cluster whose document could have granted the call, so it is left
-    // to the operation's own parameter refusal.
+    // all is a request this service cannot parse, which is the operation's own
+    // parameter refusal rather than a resource it cannot find.
     for (case, value) in [
         ("not-an-arn", "kafka-cluster".to_string()),
         (
@@ -311,8 +274,8 @@ async fn an_absent_cluster_refuses_a_connectivity_mutation_as_unauthorized() {
     }
 
     // CONTROL (the boundary beside the rule): a mutation of any other part of the
-    // same clusters rests on the caller's own identity documents, which are in force
-    // whether or not the cluster exists, so those report the absence instead.
+    // same clusters reports the same absence, so the rule is the service's rather
+    // than this one operation's.
     for (case, target, region) in &targets {
         for (operation, method, suffix, body) in other_cluster_mutations(&version) {
             let reply = emulator
@@ -323,13 +286,7 @@ async fn an_absent_cluster_refuses_a_connectivity_mutation_as_unauthorized() {
                     Some(body),
                 )
                 .await;
-            assert_eq!(
-                (reply.status, reply.error_code(), reply.error_message()),
-                (NOT_FOUND_STATUS, NOT_FOUND_CODE, NOT_FOUND_MESSAGE),
-                "case {case:?}/{operation}: expected the absence to be reported, got {} {}",
-                reply.status,
-                reply.body
-            );
+            assert_reported_absent(&reply, &format!("{case}/{operation}"));
         }
     }
 
@@ -339,19 +296,12 @@ async fn an_absent_cluster_refuses_a_connectivity_mutation_as_unauthorized() {
         let reply = emulator
             .call_in(region, "GET", &format!("/v1/clusters/{}", pct(target)), None)
             .await;
-        assert_eq!(
-            (reply.status, reply.error_code()),
-            (NOT_FOUND_STATUS, NOT_FOUND_CODE),
-            "case {case:?}/DescribeCluster: expected the absence to be reported, got {} {}",
-            reply.status,
-            reply.body
-        );
+        assert_reported_absent(&reply, &format!("{case}/DescribeCluster"));
     }
 
-    // CONTROL (the boundary above the rule): the cluster this endpoint DOES hold
-    // carries the document the decision could rest on, so its connectivity update is
-    // reached — accepted at the version the rows quoted, and refused on the REQUEST
-    // alone when the body names nothing to change.
+    // CONTROL (the boundary above the rule): the cluster this endpoint DOES hold has
+    // its connectivity update reached — accepted at the version the rows quoted, and
+    // refused on the REQUEST alone when the body names nothing to change.
     let empty = update_connectivity_in(
         &emulator,
         REGION,

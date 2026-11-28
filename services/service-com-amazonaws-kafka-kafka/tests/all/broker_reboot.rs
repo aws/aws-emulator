@@ -446,8 +446,8 @@ async fn a_reboot_names_exactly_one_broker_the_cluster_holds() {
         );
         assert_eq!(
             reply.at("/invalidParameter").as_str(),
-            Some("BrokerIds"),
-            "case {case:?}: expected the refusal to name BrokerIds, got {}",
+            Some("brokerIds"),
+            "case {case:?}: expected the refusal to name brokerIds, got {}",
             reply.body
         );
         let described = emulator.describe(&arn).await;

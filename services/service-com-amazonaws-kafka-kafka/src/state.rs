@@ -261,6 +261,11 @@ pub use arn_vocabulary::*;
 /// version rather than of anything this module holds, so it sits beside this one.
 mod cluster_policy;
 pub use cluster_policy::*;
+/// WHICH member a reader of one cluster OPERATION names when its reference resolves
+/// to nothing — the resource that is missing — given what that reader read off the
+/// request.
+mod cluster_operation_reference;
+pub use cluster_operation_reference::*;
 pub use kafka_versions::*;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -1894,8 +1899,10 @@ pub const CONFIGURATION_STATES_A_CHANGE_IS_ACCEPTED_FROM: [&str; 1] =
 pub fn configuration_not_in_accepted_state(accepted: &[&str]) -> BadRequestException {
     BadRequestException {
         // The configuration the `Arn` names is what the call was refused on, as
-        // the cluster refusals name the cluster's own ARN member.
-        invalid_parameter: Some("Arn".to_string()),
+        // the cluster refusals name the cluster's own ARN member — by the wire
+        // name the configuration family's label carries
+        // ([`configuration_arn::CONFIGURATION_ARN_MEMBER`]).
+        invalid_parameter: Some(configuration_arn::CONFIGURATION_ARN_MEMBER.to_string()),
         message: Some(state_gate::not_in_accepted_state_message(accepted)),
     }
 }
@@ -2320,9 +2327,10 @@ pub fn channel_name_already_exists(name: &str) -> BadRequestException {
 /// here, in one place, rather than per handler.
 pub fn invalid_channel_arn() -> BadRequestException {
     BadRequestException {
-        // The member at fault, by the name the request carries it under — an
-        // `@httpLabel`, so the wire name and the member name are the same.
-        invalid_parameter: Some("ChannelArn".to_string()),
+        // The member at fault, by the name the API documents it under — the
+        // camelCase spelling of the `ChannelArn` label, as every refusal of this
+        // service names a parameter.
+        invalid_parameter: Some(CHANNEL_ARN_MEMBER.to_string()),
         message: Some(
             "The specified link ARN isn\u{2019}t valid. Specify a valid link ARN, and try again."
                 .to_string(),
@@ -2342,7 +2350,7 @@ pub fn invalid_channel_arn() -> BadRequestException {
 /// one run.
 pub fn channel_not_updatable(status: &str) -> BadRequestException {
     BadRequestException {
-        invalid_parameter: Some("ChannelArn".to_string()),
+        invalid_parameter: Some(CHANNEL_ARN_MEMBER.to_string()),
         message: Some(format!(
             "Channel cannot be updated in state {status}. Channel must be in \
              {CHANNEL_STATUS_ACTIVE} state to be updated."

@@ -242,7 +242,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if state.cluster_in(&region, &input.cluster_arn).is_none() {
             return Err(
                 UpdateChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -321,8 +321,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 UpdateChannelErrorModeled::BadRequestException(BadRequestException {
                     invalid_parameter: Some(match asked_for {
-                        crate::state::DESTINATION_TYPE_ICEBERG => "IcebergDestinationUpdate",
-                        _ => "S3DestinationUpdate",
+                        crate::state::DESTINATION_TYPE_ICEBERG => "icebergDestinationUpdate",
+                        _ => "s3DestinationUpdate",
                     }
                     .to_string()),
                     // No recording of this refusal was available, so the sentence is
@@ -400,7 +400,7 @@ fn unresolved_channel(
 ) -> UpdateChannelError {
     if state.channel_was_held(cluster_arn, channel_arn) {
         UpdateChannelErrorModeled::NotFoundException(NotFoundException {
-            invalid_parameter: Some("ChannelArn".to_string()),
+            invalid_parameter: Some(crate::state::CHANNEL_ARN_MEMBER.to_string()),
             message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
         })
         .into()

@@ -32,24 +32,13 @@ use super::*;
 /// DOCUMENT, and the one it names when the fault is the VERSION the request
 /// quoted (or did not quote).
 ///
-/// Spelled as the MODEL names the member, which is how every refusal of the
-/// three cluster-policy operations already reports its parameter — the
-/// unresolved-reference refusal of the put, the reader's and the delete's
-/// not-found refusals, and the document ceiling all name `ClusterArn` and
-/// `Policy` — and what this crate's suites pin for this surface. It is
-/// deliberately NOT the wire spelling [`CURRENT_VERSION_MEMBER`] carries, which
-/// is the convention of the refusals shared by the whole service: the
-/// version-FORM refusal ([`malformed_current_version`]) is one envelope every
-/// version-quoting operation answers, so it keeps that shared spelling, while
-/// the two sentences below belong to this surface alone. Nothing recorded for
-/// these operations pins `invalidParameter`, so neither spelling is rewritten on
-/// a guess; the SENTENCES, which the recordings do pin, are the same whichever
-/// member name travels beside them.
-pub const CLUSTER_POLICY_MEMBER: &str = "Policy";
-
-/// See [`CLUSTER_POLICY_MEMBER`]: the same convention, for the member that
-/// carries the version a put quotes.
-pub const CLUSTER_POLICY_CURRENT_VERSION_MEMBER: &str = "CurrentVersion";
+/// Named as the API documents the member on the wire — `Policy`'s `jsonName` —
+/// which is how every refusal of this service reports the parameter at fault,
+/// whether the value travelled in the body or in a path label. The version a put
+/// quotes is named by the one spelling every version-quoting operation of this
+/// service answers with ([`CURRENT_VERSION_MEMBER`]), so one member is never
+/// named two ways by two refusals of the same request.
+pub const CLUSTER_POLICY_MEMBER: &str = "policy";
 
 /// How Amazon MSK opens the refusal of a document that is not a valid cluster
 /// policy. The clause the document broke follows it, in the words AWS's policy
@@ -174,7 +163,7 @@ fn not_valid(clause: &str) -> String {
 /// that carries the version it did not quote.
 pub fn cluster_policy_version_required() -> BadRequestException {
     parameter_refusal(
-        CLUSTER_POLICY_CURRENT_VERSION_MEMBER,
+        CURRENT_VERSION_MEMBER,
         CLUSTER_POLICY_VERSION_REQUIRED_MESSAGE,
     )
 }
@@ -188,7 +177,7 @@ pub fn cluster_policy_version_required() -> BadRequestException {
 /// the text through a sentence composed per case.
 pub fn cluster_policy_version_not_current() -> BadRequestException {
     parameter_refusal(
-        CLUSTER_POLICY_CURRENT_VERSION_MEMBER,
+        CURRENT_VERSION_MEMBER,
         CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE,
     )
 }

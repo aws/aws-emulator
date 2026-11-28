@@ -26,12 +26,12 @@ use serde_json::{json, Value};
 // The service's own spans, wordings and accepted-state sets, so the suite and the
 // handlers cannot drift apart on what the service does or says.
 use service_com_amazonaws_kafka_kafka::state::state_gate::{
-    not_in_accepted_state_message, TOPIC_NAME_PARAMETER, TOPIC_STATES_A_CHANGE_IS_ACCEPTED_FROM,
+    not_in_accepted_state_message, TOPIC_STATES_A_CHANGE_IS_ACCEPTED_FROM,
 };
 use service_com_amazonaws_kafka_kafka::state::{
     BAD_REQUEST_MESSAGE, CLUSTER_ARN_MEMBER, RESOURCE_NOT_FOUND_MESSAGE,
     SERVERLESS_TOPIC_APIS_CODE, SERVERLESS_TOPIC_APIS_MESSAGE, TOPIC_ACTIVATION_DELAY,
-    TOPIC_STATE_ACTIVE, TOPIC_STATE_UPDATING,
+    TOPIC_NAME_MEMBER, TOPIC_STATE_ACTIVE, TOPIC_STATE_UPDATING,
 };
 
 use crate::kafka_harness::{
@@ -208,8 +208,8 @@ fn assert_topic_state_refusal(reply: &Reply, case: &str) {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some(TOPIC_NAME_PARAMETER),
-        "case {case}: the refusal must name {TOPIC_NAME_PARAMETER} at fault, got {}",
+        Some(TOPIC_NAME_MEMBER),
+        "case {case}: the refusal must name {TOPIC_NAME_MEMBER} at fault, got {}",
         reply.body
     );
 }
@@ -462,8 +462,8 @@ async fn a_count_that_does_not_grow_the_topic_is_refused() {
         );
         assert_eq!(
             reply.at("/invalidParameter").as_str(),
-            Some("PartitionCount"),
-            "case partitionCount={wanted}: expected PartitionCount named at fault, got {}",
+            Some("partitionCount"),
+            "case partitionCount={wanted}: expected partitionCount named at fault, got {}",
             reply.body
         );
     }
@@ -491,8 +491,8 @@ async fn a_count_that_does_not_grow_the_topic_is_refused() {
     );
     assert_eq!(
         empty.at("/invalidParameter").as_str(),
-        Some("PartitionCount"),
-        "case no member: expected PartitionCount named at fault, got {}",
+        Some("partitionCount"),
+        "case no member: expected partitionCount named at fault, got {}",
         empty.body
     );
 
@@ -575,7 +575,7 @@ async fn a_change_is_accepted_only_for_a_held_topic_in_an_accepting_state() {
     );
     assert_eq!(
         absent.at("/invalidParameter").as_str(),
-        Some(TOPIC_NAME_PARAMETER),
+        Some(TOPIC_NAME_MEMBER),
         "case absent topic: expected TopicName named at fault, got {}",
         absent.body
     );
@@ -599,8 +599,8 @@ async fn a_change_is_accepted_only_for_a_held_topic_in_an_accepting_state() {
     );
     assert_eq!(
         no_cluster.at("/invalidParameter").as_str(),
-        Some("ClusterArn"),
-        "case absent cluster: expected ClusterArn named at fault, got {}",
+        Some(CLUSTER_ARN_MEMBER),
+        "case absent cluster: expected {CLUSTER_ARN_MEMBER} named at fault, got {}",
         no_cluster.body
     );
 
@@ -637,7 +637,7 @@ async fn a_change_is_accepted_only_for_a_held_topic_in_an_accepting_state() {
     );
     assert_eq!(
         illegal.at("/invalidParameter").as_str(),
-        Some(TOPIC_NAME_PARAMETER),
+        Some(TOPIC_NAME_MEMBER),
         "case illegal name: expected TopicName named at fault, got {}",
         illegal.body
     );

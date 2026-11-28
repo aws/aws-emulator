@@ -516,9 +516,9 @@ async fn the_listing_is_regional() {
             );
             assert_eq!(
                 reply.at("/invalidParameter").as_str(),
-                Some("ClusterArn"),
+                Some(CLUSTER_ARN_MEMBER),
                 "case {other} listing {region}'s cluster: expected the refusal to name \
-                 ClusterArn, got {}",
+                 {CLUSTER_ARN_MEMBER}, got {}",
                 reply.body
             );
         }
@@ -606,7 +606,7 @@ async fn an_unresolvable_request_is_refused() {
                  11111111-2222-3333-4444-555555555555-1"
             ),
             String::new(),
-            "ClusterArn",
+            CLUSTER_ARN_MEMBER,
         ),
         (
             "a token minted for another cluster",

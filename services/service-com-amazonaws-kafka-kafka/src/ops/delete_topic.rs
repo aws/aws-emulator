@@ -215,7 +215,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(reason) = crate::state::topic_name_error(&input.topic_name) {
             return Err(
                 DeleteTopicErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("TopicName".to_string()),
+                    invalid_parameter: Some(crate::state::TOPIC_NAME_MEMBER.to_string()),
                     message: Some(reason),
                 })
                 .into(),
@@ -229,7 +229,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.cluster_in(&region, &input.cluster_arn) else {
             return Err(
                 DeleteTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -258,7 +258,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) else {
             return Err(
                 DeleteTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("TopicName".to_string()),
+                    invalid_parameter: Some(crate::state::TOPIC_NAME_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),

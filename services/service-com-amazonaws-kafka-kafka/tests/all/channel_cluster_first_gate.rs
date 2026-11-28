@@ -30,7 +30,7 @@
 //! writes — which destination the update names and what freshness it asks for.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_kafka_kafka::state::RESOURCE_NOT_FOUND_MESSAGE;
+use service_com_amazonaws_kafka_kafka::state::{CHANNEL_ARN_MEMBER, RESOURCE_NOT_FOUND_MESSAGE};
 
 use crate::kafka_harness::{
     pct, sleep_past_channel_activation, ClusterRequest, Emulator, Reply,
@@ -341,8 +341,9 @@ async fn a_delete_under_a_real_cluster_separates_a_bad_reference_from_a_removed_
         );
         assert_eq!(
             reply.at("/invalidParameter").as_str(),
-            Some("ChannelArn"),
-            "case {case:?}: the refusal must name ChannelArn as the parameter at fault, got {}",
+            Some(CHANNEL_ARN_MEMBER),
+            "case {case:?}: the refusal must name {CHANNEL_ARN_MEMBER} as the parameter at fault, \
+             got {}",
             reply.body
         );
     }
@@ -536,9 +537,9 @@ async fn every_channel_write_separates_a_bad_reference_from_a_removed_channel() 
             );
             assert_eq!(
                 reply.at("/invalidParameter").as_str(),
-                Some("ChannelArn"),
-                "case {case:?}: the refusal must name ChannelArn as the parameter at fault, \
-                 got {}",
+                Some(CHANNEL_ARN_MEMBER),
+                "case {case:?}: the refusal must name {CHANNEL_ARN_MEMBER} as the parameter at \
+                 fault, got {}",
                 reply.body
             );
         }
@@ -601,9 +602,9 @@ async fn every_channel_write_separates_a_bad_reference_from_a_removed_channel() 
             );
             assert_eq!(
                 reply.at("/invalidParameter").as_str(),
-                Some("ChannelArn"),
-                "case {probe:?}: the refusal must name ChannelArn as the parameter at fault, \
-                 got {}",
+                Some(CHANNEL_ARN_MEMBER),
+                "case {probe:?}: the refusal must name {CHANNEL_ARN_MEMBER} as the parameter at \
+                 fault, got {}",
                 reply.body
             );
         }

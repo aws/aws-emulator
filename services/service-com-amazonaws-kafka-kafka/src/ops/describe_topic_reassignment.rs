@@ -221,7 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(
                 DescribeTopicReassignmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -235,7 +235,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) else {
             return Err(
                 DescribeTopicReassignmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("TopicReassignmentOperationArn".to_string()),
+                    invalid_parameter: Some(
+                        crate::state::TOPIC_REASSIGNMENT_OPERATION_ARN_MEMBER.to_string(),
+                    ),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),

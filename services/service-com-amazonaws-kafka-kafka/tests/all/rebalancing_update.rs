@@ -440,7 +440,7 @@ async fn an_update_this_cluster_cannot_take_is_refused_and_changes_nothing() {
     );
     assert_eq!(
         no_status.at("/invalidParameter").as_str(),
-        Some("Rebalancing.Status"),
+        Some("rebalancing.status"),
         "case no status: expected the status member named at fault, got {}",
         no_status.body
     );

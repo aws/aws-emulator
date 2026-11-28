@@ -542,8 +542,8 @@ async fn an_illegal_topic_name_is_refused() {
         );
         assert_eq!(
             created.at("/invalidParameter").as_str(),
-            Some("TopicName"),
-            "case name={name:?}: expected the refusal to name TopicName, got {}",
+            Some("topicName"),
+            "case name={name:?}: expected the refusal to name topicName, got {}",
             created.body
         );
     }
@@ -635,8 +635,8 @@ async fn create_bounds_the_replication_factor_by_the_broker_count() {
         );
         assert_eq!(
             refused.at("/invalidParameter").as_str(),
-            Some("ReplicationFactor"),
-            "case brokers={brokers}: expected the refusal to name ReplicationFactor, got {}",
+            Some("replicationFactor"),
+            "case brokers={brokers}: expected the refusal to name replicationFactor, got {}",
             refused.body
         );
         let described = emulator.describe_topic(&cluster, "past-bound").await;

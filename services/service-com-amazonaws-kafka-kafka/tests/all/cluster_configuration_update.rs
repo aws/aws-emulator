@@ -562,19 +562,13 @@ async fn the_cluster_is_resolved_before_the_body() {
                 reply.status,
                 reply.body
             );
-            // A malformed ARN names the member by its WIRE name, with the
-            // service's one fixed parameter sentence; the not-found refusal of a
-            // well-formed ARN is a different condition, so it keeps its own
-            // wording and token; and the authorization refusal names neither a
+            // Every refusal names the member by its WIRE name, whichever
+            // condition it answers; the authorization refusal names neither a
             // member nor what the registry holds.
             if expected == 403 {
                 continue;
             }
-            let member = if expected == 404 {
-                "ClusterArn"
-            } else {
-                CLUSTER_ARN_MEMBER
-            };
+            let member = CLUSTER_ARN_MEMBER;
             assert_eq!(
                 reply.at("/invalidParameter").as_str(),
                 Some(member),

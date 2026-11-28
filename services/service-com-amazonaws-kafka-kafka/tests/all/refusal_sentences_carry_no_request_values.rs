@@ -204,7 +204,7 @@ async fn a_repeated_topic_name_is_refused_in_the_service_s_fixed_sentence() {
                 refused.error_message(),
                 refused.at("/invalidParameter").as_str(),
             ),
-            (409, "TopicExistsException", TOPIC_EXISTS_MESSAGE, Some("TopicName")),
+            (409, "TopicExistsException", TOPIC_EXISTS_MESSAGE, Some("topicName")),
             "case {case}: expected MSK's fixed duplicate-topic refusal, got {} {}",
             refused.status,
             refused.body

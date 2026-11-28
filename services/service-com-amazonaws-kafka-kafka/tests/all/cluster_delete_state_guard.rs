@@ -25,6 +25,7 @@
 //! shape's.
 
 use serde_json::{json, Value};
+use service_com_amazonaws_kafka_kafka::state::CLUSTER_ARN_MEMBER;
 
 use crate::kafka_harness::{
     pct, sleep_past_activation, sleep_past_update, ClusterRequest, Emulator, Reply,
@@ -110,8 +111,8 @@ async fn assert_delete_refused(
     );
     assert_eq!(
         reply.body["invalidParameter"].as_str(),
-        Some("ClusterArn"),
-        "case {case}: expected the refusal to name ClusterArn, got {}",
+        Some(CLUSTER_ARN_MEMBER),
+        "case {case}: expected the refusal to name {CLUSTER_ARN_MEMBER}, got {}",
         reply.body
     );
     assert_eq!(
@@ -408,8 +409,8 @@ async fn the_broker_level_reads_are_refused_until_the_cluster_has_brokers() {
             );
             assert_eq!(
                 reply.body["invalidParameter"].as_str(),
-                Some("ClusterArn"),
-                "case {case}: expected the refusal to name ClusterArn, got {}",
+                Some(CLUSTER_ARN_MEMBER),
+                "case {case}: expected the refusal to name {CLUSTER_ARN_MEMBER}, got {}",
                 reply.body
             );
             assert_eq!(
@@ -688,8 +689,8 @@ async fn each_state_guard_answers_the_sentence_its_own_operation_answers() {
         );
         assert_eq!(
             reply.body["invalidParameter"].as_str(),
-            Some("ClusterArn"),
-            "case {} while CREATING: expected the refusal to name ClusterArn, got {}",
+            Some(CLUSTER_ARN_MEMBER),
+            "case {} while CREATING: expected the refusal to name {CLUSTER_ARN_MEMBER}, got {}",
             row.case,
             reply.body
         );

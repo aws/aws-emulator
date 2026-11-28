@@ -243,14 +243,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // region — is a resource that does not exist here.
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
-                UpdateRebalancingErrorModeled::NotFoundException(NotFoundException {
+                UpdateRebalancingErrorModeled::NotFoundException(
                     // The member that named the resource, as the other readers of a
                     // cluster ARN report it.
-                    invalid_parameter: Some(
-                        crate::state::state_gate::CLUSTER_ARN_PARAMETER.to_string(),
-                    ),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
+                    crate::state::resource_not_found(crate::state::CLUSTER_ARN_MEMBER),
+                )
                 .into(),
             );
         };
@@ -279,7 +276,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // rebalancing member for that cluster kind at all.
         if serverless {
             return Err(bad_request(
-                crate::state::state_gate::CLUSTER_ARN_PARAMETER,
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
@@ -331,7 +328,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// The member a refusal of the submitted rebalancing status names as the
 /// parameter at fault: the request's own member path, as the model nests the
 /// status inside the `Rebalancing` shape.
-const REBALANCING_STATUS_PARAMETER: &str = "Rebalancing.Status";
+const REBALANCING_STATUS_PARAMETER: &str = "rebalancing.status";
 
 /// Refuse the request with the modeled `BadRequestException`, naming the member
 /// at fault and what was wrong with it — the caller has to fix the request from

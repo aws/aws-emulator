@@ -420,8 +420,8 @@ async fn a_target_that_could_not_be_a_broker_type_is_refused() {
         );
         assert_eq!(
             reply.body["invalidParameter"].as_str(),
-            Some("TargetInstanceType"),
-            "case {case}: expected the refusal to name TargetInstanceType, got {}",
+            Some("targetInstanceType"),
+            "case {case}: expected the refusal to name targetInstanceType, got {}",
             reply.body
         );
 

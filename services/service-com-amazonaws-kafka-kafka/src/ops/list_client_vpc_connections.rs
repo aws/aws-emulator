@@ -253,7 +253,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // is refused as a bad parameter, in the service's one fixed
             // sentence for one.
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::UNRESOLVED_REFERENCE_MESSAGE.to_string(),
             ));
         };

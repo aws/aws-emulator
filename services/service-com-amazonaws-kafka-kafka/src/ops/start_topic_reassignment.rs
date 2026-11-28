@@ -219,7 +219,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
                 StartTopicReassignmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -230,7 +230,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the words every reader of a provisioned-only attribute refuses it with.
         if cluster.is_serverless() {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
@@ -284,7 +284,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if state.topic_reassignment_in_flight(&input.cluster_arn, now) {
             return Err(
                 StartTopicReassignmentErrorModeled::ConflictException(ConflictException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(
                         "The cluster already has a topic reassignment in progress.".to_string(),
                     ),

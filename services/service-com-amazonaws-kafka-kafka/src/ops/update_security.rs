@@ -223,7 +223,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.client_authentication.is_none() && input.encryption_info.is_none() {
             return Err(
                 UpdateSecurityErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ClientAuthentication".to_string()),
+                    invalid_parameter: Some("clientAuthentication".to_string()),
                     message: Some(
                         "An UpdateSecurity request must specify ClientAuthentication, \
                          EncryptionInfo, or both."
@@ -246,7 +246,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 UpdateSecurityErrorModeled::NotFoundException(NotFoundException {
                     // The member that named the resource, as the other readers of a
                     // cluster ARN report it.
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -273,7 +273,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // neither: its authentication is the one its create submitted.
             return Err(
                 UpdateSecurityErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::PROVISIONED_ONLY_MESSAGE.to_string()),
                 })
                 .into(),

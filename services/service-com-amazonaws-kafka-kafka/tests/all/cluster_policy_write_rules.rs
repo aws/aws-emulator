@@ -31,8 +31,9 @@ use serde_json::{json, Value};
 // The service's own sentences and version-token predicate, so this suite and the
 // handlers cannot drift apart on what the service says or on what a version is.
 use service_com_amazonaws_kafka_kafka::state::{
-    is_current_version_token, BAD_REQUEST_MESSAGE, CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE,
-    CLUSTER_POLICY_VERSION_REQUIRED_MESSAGE, CURRENT_VERSION_MEMBER, RESOURCE_NOT_FOUND_MESSAGE,
+    is_current_version_token, BAD_REQUEST_MESSAGE, CLUSTER_POLICY_MEMBER,
+    CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE, CLUSTER_POLICY_VERSION_REQUIRED_MESSAGE,
+    CURRENT_VERSION_MEMBER, RESOURCE_NOT_FOUND_MESSAGE,
 };
 
 use super::kafka_harness::{pct, ClusterRequest, Emulator, Reply};
@@ -310,7 +311,7 @@ async fn a_document_that_is_not_a_policy_is_refused_and_attaches_nothing() {
         {
             let case = format!("{case} (attached={attached})");
             let reply = put(&emulator, &cluster, &document, None).await;
-            assert_refused(&reply, &case, "Policy", message);
+            assert_refused(&reply, &case, CLUSTER_POLICY_MEMBER, message);
             // Nothing of the submitted document reaches the sentence: the
             // statement ids above are the values a composed message would quote.
             for quoted in ["no-effect", "second", "nothing-stated", "Permit", PRINCIPAL] {
@@ -420,7 +421,7 @@ async fn a_replacement_must_quote_the_version_the_stored_policy_is_at() {
             assert_refused(
                 &versionless,
                 &case,
-                "CurrentVersion",
+                CURRENT_VERSION_MEMBER,
                 CLUSTER_POLICY_VERSION_REQUIRED_MESSAGE,
             );
             let (held, at) = stored(&emulator, &case, &cluster).await;
@@ -481,7 +482,7 @@ async fn a_version_that_is_not_the_stored_one_is_refused_in_the_services_fixed_w
     assert_refused(
         &premature,
         "no policy attached",
-        "CurrentVersion",
+        CURRENT_VERSION_MEMBER,
         CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE,
     );
     let read = get(&emulator, &cluster).await;
@@ -529,7 +530,7 @@ async fn a_version_that_is_not_the_stored_one_is_refused_in_the_services_fixed_w
         assert_refused(
             &reply,
             case,
-            "CurrentVersion",
+            CURRENT_VERSION_MEMBER,
             CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE,
         );
         for leaked in [quoted.as_str(), second.as_str(), first.as_str()] {
@@ -622,7 +623,7 @@ async fn concurrent_replacements_leave_one_winner_and_every_loser_one_sentence()
         assert_refused(
             reply,
             &format!("loser {writer}"),
-            "CurrentVersion",
+            CURRENT_VERSION_MEMBER,
             CLUSTER_POLICY_VERSION_NOT_CURRENT_MESSAGE,
         );
     }

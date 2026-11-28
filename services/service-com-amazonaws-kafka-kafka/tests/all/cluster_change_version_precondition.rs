@@ -67,8 +67,9 @@ const PARAMETER_REFUSAL: &str = "One or more of the parameters are not valid.";
 /// spells it on every request of the family.
 const VERSION_MEMBER: &str = "currentVersion";
 
-/// The member a state refusal names, as the cluster requests spell it.
-const CLUSTER_MEMBER: &str = "ClusterArn";
+/// The member a state refusal names, as the wire spells the cluster's own ARN
+/// member on every request of the family.
+const CLUSTER_MEMBER: &str = "clusterArn";
 
 /// One operation of the cluster-update family: the name the model gives it, the
 /// route the model binds it to under the cluster, and the body it submits beside

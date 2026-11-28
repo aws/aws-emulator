@@ -217,7 +217,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
                 UpdateBrokerTypeErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -233,7 +233,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // value that could not be a broker type is refused rather than stored.
         if !crate::state::is_broker_instance_type(&input.target_instance_type) {
             return Err(bad_request(
-                "TargetInstanceType",
+                "targetInstanceType",
                 format!(
                     "'{}' is not an Amazon MSK broker type: a broker type is \
                      <prefix>.<family>.<size>, between {} and {} characters long.",
@@ -278,7 +278,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cluster has no brokers to change.
         if cluster.is_serverless() {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }

@@ -52,12 +52,12 @@ const WINDOW_ATTEMPTS: usize = 6;
 /// The `ClusterState` a cluster whose broker is restarting reports.
 const REBOOTING: &str = "REBOOTING_BROKER";
 
-/// The member a refusal of this call names as the parameter at fault, as the model
-/// spells it on the `UpdateTopic` request.
-const PARTITION_COUNT_PARAMETER: &str = "PartitionCount";
+/// The member a refusal of this call names as the parameter at fault, as the wire
+/// spells it on the `UpdateTopic` request (`PartitionCount`'s `jsonName`).
+const PARTITION_COUNT_PARAMETER: &str = "partitionCount";
 
-/// The member `CreateTopic`'s own refusal names.
-const REPLICATION_FACTOR_PARAMETER: &str = "ReplicationFactor";
+/// The member `CreateTopic`'s own refusal names, spelled the same way.
+const REPLICATION_FACTOR_PARAMETER: &str = "replicationFactor";
 
 /// Apache Kafka's sentence for a replica assignment it cannot place: fixed text
 /// around the factor asked for and the brokers that were available for it.

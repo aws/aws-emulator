@@ -24,21 +24,12 @@
 //! on the cluster its `ClusterArn` names, and that decision is taken on the ARN as
 //! submitted, before anything is resolved ([`crate::state::authorization`]).
 //!
-//! A `ClusterArn` this endpoint's Region holds no cluster for is refused as
-//! UNAUTHORIZED rather than reported absent
-//! ([`crate::state::authorization::no_resource_policy_for_cluster`]). What this call
-//! configures is the surface clients REACH the cluster over — its public access and
-//! the multi-VPC private connectivity a cluster's own resource-based policy is
-//! attached for — so the document that can grant it lives ON the target cluster, and
-//! a cluster this endpoint holds no record of carries no document at all: the call
-//! reaches no grant, and the answer is the authorization refusal naming the ARN as
-//! submitted, so a caller it refuses learns nothing about what this registry holds.
-//! That is this operation's recorded answer for such an ARN, and the one
-//! `RejectClientVpcConnection` and `CreateVpcConnection`'s target are decided by for
-//! the same reason. A call that changes or reports any OTHER part of a cluster rests
-//! on the caller's own identity-based documents, which are in force whether or not
-//! the cluster exists, so those answer the absence as the absence it is — which is
-//! why the modelled `NotFoundException` is not what this handler reaches for.
+//! A `ClusterArn` this endpoint's Region holds no cluster for is reported ABSENT —
+//! the modelled `NotFoundException`, naming the member that carried the reference —
+//! which is this operation's recorded answer for such an ARN. The call rests on the
+//! caller's own identity-based documents, which are in force whether or not the
+//! cluster exists, so the absence is answered as the absence it is, exactly as every
+//! other cluster-scoped mutation of this service answers it.
 //!
 //! The decision over the target therefore comes before any member of the BODY is
 //! read, as every authorization decision of this service does.
@@ -228,24 +219,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut state = state.lock();
         let now = std::time::SystemTime::now();
-        // The TARGET first, before any member of the body is read: this call
-        // configures the surface clients reach the cluster over, which is the
-        // surface a cluster's own resource-based policy is attached for, so the
-        // grant for it can only rest on a document that lives ON the target
-        // cluster. Resolved through the settling lookup every other operation uses,
-        // so the transitions the clock already owed this cluster are materialised
-        // before its state and version are judged. An ARN this endpoint's Region
-        // holds no cluster for — absent, or belonging to another Region — carries no
-        // document at all, so the call reaches no grant and is refused as
-        // unauthorized naming the ARN as submitted, rather than told whether the
-        // cluster is there.
+        // The TARGET first, before any member of the body is read, through the
+        // settling lookup every other operation uses, so the transitions the clock
+        // already owed this cluster are materialised before its state and version
+        // are judged. An ARN this endpoint's Region holds no cluster for — absent,
+        // or belonging to another Region — names a resource that is not there, and
+        // that is what the recorded answer reports: the modelled
+        // `NotFoundException`, naming the member that carried the reference, as
+        // every other cluster-scoped call of this service answers the same absence.
         let Some(cluster) = state.settled_cluster_in_mut(&region, &input.cluster_arn, now) else {
-            return Err(crate::state::authorization::no_resource_policy_for_cluster(
-                &*self.engine,
-                ctx,
-                Self::NAME,
-                &input.cluster_arn,
-            ));
+            return Err(UpdateConnectivityErrorModeled::NotFoundException(
+                crate::state::resource_not_found(crate::state::CLUSTER_ARN_MEMBER),
+            )
+            .into());
         };
 
         // Both members the operation can change are optional in the model, so a
@@ -263,7 +249,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.connectivity_info.is_none() && input.zookeeper_access.is_none() {
             return Err(
                 UpdateConnectivityErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ConnectivityInfo".to_string()),
+                    invalid_parameter: Some("connectivityInfo".to_string()),
                     message: Some(
                         "An UpdateConnectivity request must specify ConnectivityInfo, \
                          ZookeeperAccess, or both."
@@ -294,7 +280,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // configuration its create submitted.
             return Err(
                 UpdateConnectivityErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::PROVISIONED_ONLY_MESSAGE.to_string()),
                 })
                 .into(),

@@ -22,7 +22,7 @@
 //! which endpoints the new configuration exposes.
 
 use serde_json::{json, Value};
-use service_com_amazonaws_kafka_kafka::state::authorization::caller_principal;
+use service_com_amazonaws_kafka_kafka::state::{CLUSTER_ARN_MEMBER, RESOURCE_NOT_FOUND_MESSAGE};
 
 use crate::cluster_lifecycle::BOOTSTRAP_MEMBERS;
 use crate::kafka_harness::{
@@ -455,13 +455,9 @@ async fn a_connectivity_update_lands_once_the_clock_makes_it_due() {
 
 /// RULE: the `NotFoundException` a request gets for a resource the service does
 /// not hold carries ONE wording, the service's own, whichever operation answers
-/// it and however the resource came to be missing.
-///
-/// `UpdateConnectivity` is not among the operations driven here: it changes how
-/// clients reach the cluster, the surface a cluster's own resource-based policy is
-/// attached for, so an ARN this endpoint holds no cluster for is refused as
-/// unauthorized there rather than reported as absent
-/// (`connectivity_absent_cluster_refusal.rs`).
+/// it and however the resource came to be missing — `UpdateConnectivity` among
+/// them, which is driven over its own table in
+/// `connectivity_absent_cluster_refusal.rs`.
 #[tokio::test]
 async fn an_absent_cluster_gets_one_wording_from_every_operation() {
     let emulator = Emulator::new();
@@ -516,10 +512,10 @@ async fn an_absent_cluster_gets_one_wording_from_every_operation() {
 
 /// RULE: a connectivity update is refused — changing nothing — for a `ClusterArn`
 /// this endpoint cannot parse (`BadRequestException`), for a well-formed one its
-/// region holds no cluster for (the authorization refusal: nothing can grant an
-/// action on a cluster this endpoint holds no record of), for a cluster that is not
-/// `ACTIVE`, for a `CurrentVersion` that is not the one the cluster is at, and
-/// for a request that names neither thing the operation can change.
+/// region holds no cluster for (`NotFoundException`: the absence reported as the
+/// absence it is), for a cluster that is not `ACTIVE`, for a `CurrentVersion` that
+/// is not the one the cluster is at, and for a request that names neither thing the
+/// operation can change.
 #[tokio::test]
 async fn update_connectivity_refuses_what_it_cannot_apply() {
     let emulator = Emulator::new();
@@ -567,9 +563,8 @@ async fn update_connectivity_refuses_what_it_cannot_apply() {
     // empty region are cluster references identifying no cluster, which
     // authorization refuses before anything resolves; then a well-formed ARN no
     // cluster holds, and this cluster's own ARN seen from another region's
-    // endpoint — which this surface answers with the authorization refusal too,
-    // a cluster this endpoint holds no record of carrying no document for the
-    // action to be granted by.
+    // endpoint — which this surface reports as the absence it is, the grant for
+    // the action resting on the caller's own documents.
     let rows: Vec<(&str, String, &str, Value, u16, &str)> = vec![
         (
             "not-an-arn",
@@ -618,16 +613,16 @@ async fn update_connectivity_refuses_what_it_cannot_apply() {
             ),
             REGION,
             json!({ "currentVersion": version, "connectivityInfo": connectivity }),
-            403,
-            "AccessDeniedException",
+            404,
+            "NotFoundException",
         ),
         (
             "another-region",
             arn.clone(),
             "us-east-1",
             json!({ "currentVersion": version, "connectivityInfo": connectivity }),
-            403,
-            "AccessDeniedException",
+            404,
+            "NotFoundException",
         ),
         (
             "stale-version",
@@ -682,11 +677,9 @@ async fn update_connectivity_refuses_what_it_cannot_apply() {
         }
     }
 
-    // A cluster this endpoint holds no record of carries no document that could
-    // have granted a call on the surface clients reach it over, so the refusal is
-    // IAM's own sentence for a request no resource-based policy allows — naming the
-    // principal that signed, the action asked for and the ARN exactly as submitted,
-    // and saying nothing about what this registry holds.
+    // A cluster this endpoint holds no record of is reported as the absence it is:
+    // the service's one fixed not-found sentence, with the member that carried the
+    // reference named by its wire name.
     let absent_arn = format!(
         "arn:aws:kafka:{REGION}:{ACCOUNT}:cluster/absent/11111111-2222-4333-8444-555555555555-1"
     );
@@ -697,16 +690,17 @@ async fn update_connectivity_refuses_what_it_cannot_apply() {
         json!({ "currentVersion": version, "connectivityInfo": connectivity }),
     )
     .await;
-    let expected = format!(
-        "User: {} is not authorized to perform: kafka:UpdateConnectivity on resource: \
-         {absent_arn} because no resource-based policy allows the kafka:UpdateConnectivity \
-         action",
-        caller_principal()
-    );
     assert_eq!(
-        absent.body["message"].as_str(),
-        Some(expected.as_str()),
-        "case absent-cluster: expected {expected:?}, got {}",
+        (
+            absent.body["message"].as_str(),
+            absent.body["invalidParameter"].as_str()
+        ),
+        (
+            Some(RESOURCE_NOT_FOUND_MESSAGE),
+            Some(CLUSTER_ARN_MEMBER)
+        ),
+        "case absent-cluster: expected {RESOURCE_NOT_FOUND_MESSAGE:?} naming \
+         {CLUSTER_ARN_MEMBER}, got {}",
         absent.body
     );
 

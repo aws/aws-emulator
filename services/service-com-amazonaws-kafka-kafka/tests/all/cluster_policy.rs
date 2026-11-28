@@ -19,7 +19,8 @@ use serde_json::{json, Value};
 // The service's own refusal wordings, so the suite and the handlers cannot drift
 // apart on what the service says.
 use service_com_amazonaws_kafka_kafka::state::{
-    BAD_REQUEST_MESSAGE, CLUSTER_ARN_MEMBER, MAX_CLUSTER_POLICY_BYTES, RESOURCE_NOT_FOUND_MESSAGE,
+    BAD_REQUEST_MESSAGE, CLUSTER_ARN_MEMBER, CLUSTER_POLICY_MEMBER, CURRENT_VERSION_MEMBER,
+    MAX_CLUSTER_POLICY_BYTES, RESOURCE_NOT_FOUND_MESSAGE,
 };
 
 // The router harness, the signing region, the account id and the URI encoder
@@ -108,8 +109,8 @@ fn assert_policy_not_found(reply: &Reply, case: &str) {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some("ClusterArn"),
-        "case {case}: the refusal must name ClusterArn as the parameter at fault, got {}",
+        Some(CLUSTER_ARN_MEMBER),
+        "case {case}: the refusal must name {CLUSTER_ARN_MEMBER} as the parameter at fault, got {}",
         reply.body
     );
 }
@@ -388,8 +389,8 @@ async fn each_put_is_a_new_version_and_a_stale_one_is_refused() {
         );
         assert_eq!(
             premature.at("/invalidParameter").as_str(),
-            Some("CurrentVersion"),
-            "case {kind}: the refusal must name CurrentVersion, got {}",
+            Some(CURRENT_VERSION_MEMBER),
+            "case {kind}: the refusal must name {CURRENT_VERSION_MEMBER}, got {}",
             premature.body
         );
         assert_policy_not_found(
@@ -485,8 +486,9 @@ async fn a_body_that_is_not_a_policy_document_is_refused() {
                 );
                 assert_eq!(
                     reply.at("/invalidParameter").as_str(),
-                    Some("Policy"),
-                    "case {case}: the refusal must name Policy as the parameter at fault, got {}",
+                    Some(CLUSTER_POLICY_MEMBER),
+                    "case {case}: the refusal must name {CLUSTER_POLICY_MEMBER} as the parameter \
+                     at fault, got {}",
                     reply.body
                 );
 
@@ -579,8 +581,8 @@ async fn a_policy_document_is_bounded_at_the_stored_ceiling() {
     );
     assert_eq!(
         refused.at("/invalidParameter").as_str(),
-        Some("Policy"),
-        "case past-bound: the refusal must name Policy, got {}",
+        Some(CLUSTER_POLICY_MEMBER),
+        "case past-bound: the refusal must name {CLUSTER_POLICY_MEMBER}, got {}",
         refused.body
     );
     let after = get(&emulator, &cluster).await;

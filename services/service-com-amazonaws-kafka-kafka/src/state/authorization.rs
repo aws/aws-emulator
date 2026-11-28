@@ -79,27 +79,27 @@
 //! ARN names ([`TargetReading::decided_by_the_targets_account`]). The caller's own
 //! identity-based decision is taken for it exactly as for every other target.
 //!
-//! An operation that acts on the surface clients REACH a cluster over is decided
-//! one step further ([`no_resource_policy_for_cluster`]). Public access and
-//! multi-VPC private connectivity are the surface a cluster's own resource-based
-//! policy is attached for, and the document that can grant such a call lives ON the
-//! target cluster: a cluster this endpoint holds no record of carries no document at
-//! all, so the call reaches no grant and the answer is the authorization refusal
-//! naming the ARN as submitted, rather than a report of what this registry holds.
-//! That is the recorded answer for the call that CONFIGURES that surface
-//! (`UpdateConnectivity`) and for one that MANAGES a client VPC connection made over
-//! it (`RejectClientVpcConnection`), and the one `CreateVpcConnection`'s target has
+//! An operation that MANAGES a client VPC connection made over the surface clients
+//! REACH a cluster over is decided one step further
+//! ([`no_resource_policy_for_cluster`]). Multi-VPC private connectivity is the
+//! surface a cluster's own resource-based policy is attached for, and the document
+//! that can grant such a call lives ON the target cluster: a cluster this endpoint
+//! holds no record of carries no document at all, so the call reaches no grant and
+//! the answer is the authorization refusal naming the ARN as submitted, rather than
+//! a report of what this registry holds. That is the recorded answer for
+//! `RejectClientVpcConnection`, and the one `CreateVpcConnection`'s target has
 //! always been decided by for a value it can hold no document on
 //! ([`authorize_target_cluster`]).
 //!
 //! A call that CHANGES or REPORTS any other part of a cluster — its storage, its
-//! brokers, its monitoring, its security, its version, its own description — rests on
-//! the caller's own identity-based documents, which are in force whether or not the
-//! cluster exists, so an absence there is answered as the absence it is: the modelled
-//! `NotFoundException` with this service's fixed sentence, which is what this
-//! service's recorded answers for an absent cluster on those surfaces show. So does a
-//! call that REPORTS the connections made over the connectivity surface, which
-//! describes rather than reaches the cluster.
+//! brokers, its monitoring, its security, its version, the surface clients reach it
+//! over, its own description — rests on the caller's own identity-based documents,
+//! which are in force whether or not the cluster exists, so an absence there is
+//! answered as the absence it is: the modelled `NotFoundException` with this
+//! service's fixed sentence, which is what this service's recorded answers for an
+//! absent cluster on those surfaces show — the recorded `UpdateConnectivity`, which
+//! CONFIGURES that surface, among them. So does a call that REPORTS the connections
+//! made over it, which describes rather than reaches the cluster.
 //!
 //! What the CALLER's own identity-based policies say about the action is the other
 //! half of the same question, and it is asked FIRST, inside
@@ -676,11 +676,11 @@ fn no_grant_for_cluster<Eng: Send + Sync + 'static, E>(
     )
 }
 
-/// The refusal a call on the surface clients REACH a cluster over earns when this
-/// endpoint holds no cluster under the ARN it named.
+/// The refusal a call that MANAGES a client VPC connection of a cluster earns when
+/// this endpoint holds no cluster under the ARN it named.
 ///
-/// That surface — the cluster's public access and its multi-VPC private
-/// connectivity — is the one a cluster's own resource-based policy is attached for,
+/// Multi-VPC private connectivity is the surface a cluster's own resource-based
+/// policy is attached for,
 /// so the grant for such a call can rest on a document that lives ON the target
 /// cluster — and a cluster this service holds no record of carries no document at
 /// all. There is therefore nothing for the decision to rest on: the call reaches no

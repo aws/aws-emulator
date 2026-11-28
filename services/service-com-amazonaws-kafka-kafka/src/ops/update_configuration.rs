@@ -308,7 +308,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Err(crate::state::RevisionRejected::BodyTooLarge) => {
                 return Err(
                     UpdateConfigurationErrorModeled::BadRequestException(BadRequestException {
-                        invalid_parameter: Some("ServerProperties".to_string()),
+                        invalid_parameter: Some(
+                            crate::state::server_properties::SERVER_PROPERTIES_MEMBER.to_string(),
+                        ),
                         message: Some(format!(
                             "ServerProperties must be at most {} bytes.",
                             crate::state::MAX_SERVER_PROPERTIES_BYTES

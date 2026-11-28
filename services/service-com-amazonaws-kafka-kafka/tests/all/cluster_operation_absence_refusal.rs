@@ -6,20 +6,26 @@
 //! RULE: a read whose target is one cluster OPERATION is answered out of the
 //! operation registry. The record of work done on a cluster is not a resource a
 //! policy is attached to, so no account holds or withholds a document over it and
-//! the ARN's account segment decides nothing: whichever account, region or cluster
-//! a well-formed cluster-operation ARN names, an operation this endpoint does not
-//! hold is reported ABSENT — HTTP 404 `NotFoundException`, the service's single
-//! not-found sentence as the whole message, and the cluster member in
-//! `invalidParameter` — never as an authorization failure, which would tell a
-//! client polling for an operation to go and fix its permissions. The caller's own
-//! identity-based decision is untouched, and an operation this endpoint DOES hold
-//! is still served.
+//! the ARN's account segment decides nothing about PERMISSION: whichever account,
+//! region or cluster a well-formed cluster-operation ARN names, an operation this
+//! endpoint does not hold is reported ABSENT — HTTP 404 `NotFoundException` and the
+//! service's single not-found sentence as the whole message — never as an
+//! authorization failure, which would tell a client polling for an operation to go
+//! and fix its permissions. The caller's own identity-based decision is untouched,
+//! and an operation this endpoint DOES hold is still served.
+//!
+//! WHICH member such a refusal blames in `invalidParameter` is the resource that is
+//! missing: a record of work on a cluster could only live here for the account and
+//! the Region this endpoint serves, so an ARN naming another account or another
+//! Region refers to a CLUSTER no registry here could hold (`clusterArn`), while an
+//! ARN of this endpoint's own account and Region names an operation that could have
+//! been recorded and was not (`clusterOperationArn`).
 //!
 //! Asserted over a TABLE whose rows differ along what the rule generalises over:
-//! the account segment (the caller's own, another account, an empty one), the
-//! region the ARN names against the endpoint it is read at, the cluster name and
-//! id the operation is scoped to, and the operation id itself — across both
-//! readers (`DescribeClusterOperation` and `DescribeClusterOperationV2`).
+//! the account segment (the caller's own, another account), the region the ARN names
+//! against the endpoint it is read at, the cluster name and id the operation is
+//! scoped to, and the operation id itself — across both readers
+//! (`DescribeClusterOperation` and `DescribeClusterOperationV2`).
 //!
 //! Driven end to end over the same `MultiServiceRouter` the emulator serves from
 //! (the shared harness in `tests/all/kafka_harness.rs`).
@@ -35,10 +41,12 @@ use crate::kafka_harness::{
 /// wording a client sees.
 const RESOURCE_NOT_FOUND_MESSAGE: &str = "The requested resource doesn\u{2019}t exist.";
 
-/// The member a cluster-operation reader blames when it holds no such operation:
-/// the cluster the operation ARN is scoped to, in the service's own lowerCamel
-/// wire vocabulary.
-const BLAMED_MEMBER: &str = "clusterArn";
+/// The members a cluster-operation reader blames when it holds no such operation,
+/// in the service's own lowerCamel wire vocabulary: the cluster the operation ARN
+/// is scoped to where no record for it could live here, and the operation reference
+/// itself where one could have.
+const BLAMED_CLUSTER: &str = "clusterArn";
+const BLAMED_OPERATION: &str = "clusterOperationArn";
 
 /// An account that is not the one this emulator serves, so nothing it holds could
 /// grant a call over a resource of it.
@@ -69,10 +77,10 @@ fn operation_arn(region: &str, account: &str, cluster: &str, cluster_id: &str, i
 }
 
 /// Assert `reply` is the absence a cluster-operation reader reports: the modelled
-/// `NotFoundException`, the service's fixed sentence as the WHOLE message, the
-/// cluster member at fault, and nothing of the submitted value — nor any
+/// `NotFoundException`, the service's fixed sentence as the WHOLE message, `blamed`
+/// as the member at fault, and nothing of the submitted value — nor any
 /// authorization verdict — in the text.
-fn assert_operation_absent(reply: &Reply, case: &str, submitted: &str) {
+fn assert_operation_absent(reply: &Reply, case: &str, submitted: &str, blamed: &str) {
     assert_eq!(
         (reply.status, reply.error_code(), reply.error_message()),
         (404, "NotFoundException", RESOURCE_NOT_FOUND_MESSAGE),
@@ -82,8 +90,8 @@ fn assert_operation_absent(reply: &Reply, case: &str, submitted: &str) {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some(BLAMED_MEMBER),
-        "case {case}: expected the refusal to name {BLAMED_MEMBER}, got {}",
+        Some(blamed),
+        "case {case}: expected the refusal to name {blamed}, got {}",
         reply.body
     );
     assert!(
@@ -112,7 +120,7 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
         .await;
     poll_until_active(&emulator, &live, "the created cluster").await;
 
-    let rows: Vec<(&str, String)> = vec![
+    let rows: Vec<(&str, String, &str)> = vec![
         (
             "this account, never minted",
             operation_arn(
@@ -122,6 +130,18 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 UNISSUED_OPERATION_ID,
             ),
+            BLAMED_OPERATION,
+        ),
+        (
+            "this account, a cluster name this endpoint holds",
+            operation_arn(
+                REGION,
+                ACCOUNT,
+                "operation-absence",
+                UNISSUED_CLUSTER_ID,
+                UNISSUED_OPERATION_ID,
+            ),
+            BLAMED_OPERATION,
         ),
         (
             "another account",
@@ -132,6 +152,7 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 UNISSUED_OPERATION_ID,
             ),
+            BLAMED_CLUSTER,
         ),
         (
             "another account, a cluster name this endpoint holds",
@@ -142,6 +163,7 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 UNISSUED_OPERATION_ID,
             ),
+            BLAMED_CLUSTER,
         ),
         (
             "another account, another region",
@@ -152,6 +174,7 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 UNISSUED_OPERATION_ID,
             ),
+            BLAMED_CLUSTER,
         ),
         (
             "another region of this account",
@@ -162,6 +185,7 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 UNISSUED_OPERATION_ID,
             ),
+            BLAMED_CLUSTER,
         ),
         (
             "another account, an operation id of another shape",
@@ -172,14 +196,15 @@ async fn an_unheld_cluster_operation_arn_is_absent_whichever_account_it_names() 
                 UNISSUED_CLUSTER_ID,
                 "ffffffff-1111-2222-3333-444444444444",
             ),
+            BLAMED_CLUSTER,
         ),
     ];
 
-    for (row, arn) in &rows {
+    for (row, arn, blamed) in &rows {
         for (reader, prefix) in READERS {
             let case = format!("{row} / {reader}");
             let reply = describe_at(&emulator, REGION, prefix, arn).await;
-            assert_operation_absent(&reply, &case, arn);
+            assert_operation_absent(&reply, &case, arn, blamed);
         }
     }
 
@@ -248,8 +273,18 @@ async fn an_operation_this_endpoint_filed_is_served_only_where_it_was_filed() {
             "case {reader}: this row needs an ARN of another account to probe with"
         );
         let reply = describe_at(&emulator, REGION, prefix, &elsewhere).await;
-        assert_operation_absent(&reply, &format!("another account / {reader}"), &elsewhere);
+        assert_operation_absent(
+            &reply,
+            &format!("another account / {reader}"),
+            &elsewhere,
+            BLAMED_CLUSTER,
+        );
         let reply = describe_at(&emulator, "eu-west-1", prefix, &filed).await;
-        assert_operation_absent(&reply, &format!("another endpoint / {reader}"), &filed);
+        assert_operation_absent(
+            &reply,
+            &format!("another endpoint / {reader}"),
+            &filed,
+            BLAMED_CLUSTER,
+        );
     }
 }

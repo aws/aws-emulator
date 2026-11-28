@@ -187,7 +187,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 _ => {
                     return Err(ListKafkaVersionsErrorModeled::BadRequestException(
                         BadRequestException {
-                            invalid_parameter: Some("MaxResults".to_string()),
+                            invalid_parameter: Some("maxResults".to_string()),
                             message: Some(format!(
                                 "MaxResults must be between 1 and {}, not {requested}.",
                                 crate::state::MAX_RESULTS_LIMIT

@@ -177,7 +177,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if !CLUSTER_TYPE_VALUES.contains(&kind) {
                 return Err(ListClustersV2ErrorModeled::BadRequestException(
                     BadRequestException {
-                        invalid_parameter: Some("ClusterTypeFilter".to_string()),
+                        invalid_parameter: Some("clusterTypeFilter".to_string()),
                         message: Some(format!(
                             "The value of parameter ClusterTypeFilter must be one of {}.",
                             CLUSTER_TYPE_VALUES.join(", ")

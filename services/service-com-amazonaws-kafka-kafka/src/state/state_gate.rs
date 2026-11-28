@@ -32,7 +32,8 @@ pub fn cluster_accepts_change(state: &str) -> bool {
 /// The refusal every such call answers for a cluster that is in some other state:
 /// a `BadRequestException` (HTTP 400) carrying the fixed sentence over
 /// [`CLUSTER_STATES_A_CHANGE_IS_ACCEPTED_FROM`] and naming the member the request
-/// addressed the cluster by as the parameter at fault.
+/// addressed the cluster by as the parameter at fault, by the one wire spelling of
+/// it this service keeps ([`CLUSTER_ARN_MEMBER`]).
 ///
 /// One envelope, so the state gate of one update operation cannot drift from
 /// another's, and a caller can tell "wait for the cluster to settle" from a
@@ -40,16 +41,12 @@ pub fn cluster_accepts_change(state: &str) -> bool {
 /// ([`RESOURCE_NOT_FOUND_MESSAGE`]).
 pub fn cluster_not_in_accepted_state() -> BadRequestException {
     BadRequestException {
-        invalid_parameter: Some(CLUSTER_ARN_PARAMETER.to_string()),
+        invalid_parameter: Some(CLUSTER_ARN_MEMBER.to_string()),
         message: Some(not_in_accepted_state_message(
             &CLUSTER_STATES_A_CHANGE_IS_ACCEPTED_FROM,
         )),
     }
 }
-
-/// The member a cluster-scoped refusal names as the parameter at fault, as the
-/// model spells it on this service's cluster requests.
-pub const CLUSTER_ARN_PARAMETER: &str = "ClusterArn";
 
 /// The refusal a call that CHANGES a cluster answers when the version it quotes
 /// is not the one the cluster will accept its next change from: a
@@ -127,16 +124,12 @@ pub fn topic_accepts_change(state: &str) -> bool {
 /// The refusal such a call answers for a topic that is in some other state, in the
 /// same envelope the cluster gate answers: the fixed sentence over
 /// [`TOPIC_STATES_A_CHANGE_IS_ACCEPTED_FROM`], naming the member the request
-/// addressed the topic by.
+/// addressed the topic by ([`TOPIC_NAME_MEMBER`]).
 pub fn topic_not_in_accepted_state() -> BadRequestException {
     BadRequestException {
-        invalid_parameter: Some(TOPIC_NAME_PARAMETER.to_string()),
+        invalid_parameter: Some(TOPIC_NAME_MEMBER.to_string()),
         message: Some(not_in_accepted_state_message(
             &TOPIC_STATES_A_CHANGE_IS_ACCEPTED_FROM,
         )),
     }
 }
-
-/// The member a topic-scoped refusal names as the parameter at fault, as the model
-/// spells it on this service's topic requests.
-pub const TOPIC_NAME_PARAMETER: &str = "TopicName";

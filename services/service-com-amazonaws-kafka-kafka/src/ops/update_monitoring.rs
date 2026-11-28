@@ -237,7 +237,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             && input.logging_info.is_none()
         {
             return Err(bad_request(
-                "EnhancedMonitoring",
+                "enhancedMonitoring",
                 "An UpdateMonitoring request must specify EnhancedMonitoring, OpenMonitoring, \
                  LoggingInfo, or any combination of them."
                     .to_string(),
@@ -257,7 +257,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 UpdateMonitoringErrorModeled::NotFoundException(NotFoundException {
                     // The member that named the resource, as the other readers of a
                     // cluster ARN report it.
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -288,7 +288,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cluster kind at all.
         if serverless {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }

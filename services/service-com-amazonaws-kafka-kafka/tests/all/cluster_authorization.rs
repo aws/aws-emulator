@@ -28,12 +28,7 @@
 //! caller's OWN account are never answered with the denial — they reach the checks
 //! and the lookups they always did, and a cluster the caller owns is served — and a
 //! request body that is invalid is still refused with the denial when the cluster is
-//! foreign, because the decision precedes body validation. The own-account control
-//! leaves out the one call whose grant could only have rested on a document attached
-//! to the target cluster — `UpdateConnectivity`, which acts on the surface clients
-//! reach the cluster over — because an ARN this endpoint holds no cluster under
-//! carries no such document and that call is refused there whatever account the ARN
-//! names (`connectivity_absent_cluster_refusal.rs`).
+//! foreign, because the decision precedes body validation.
 //!
 //! The router, the `Reply` wrapper, the percent-encoder and the request builders
 //! come from [`crate::kafka_harness`], the crate's shared harness.
@@ -490,23 +485,13 @@ async fn the_decision_precedes_body_validation() {
 /// RULE (the other boundary): the decision rests on the ARN's ACCOUNT, so a cluster
 /// ARN of the caller's own account is never refused by it — the call reaches the
 /// checks and the lookups it always did, and a cluster the caller owns is served.
-/// What this endpoint holds under such an ARN is then each operation's own to answer,
-/// apart from the mutation of the cluster's client-connectivity surface, whose grant
-/// only a document attached to the cluster could have been: that one
-/// `connectivity_absent_cluster_refusal.rs` drives over its own table.
+/// What this endpoint holds under such an ARN is then each operation's own to answer.
 #[tokio::test]
 async fn a_cluster_arn_of_the_callers_own_account_is_never_denied() {
     let emulator = Emulator::new();
     let absent = format!("arn:aws:kafka:{REGION}:{ACCOUNT}:cluster/absent/{GHOST_ID}");
 
     for call in cluster_calls() {
-        // The one call this control leaves out: `UpdateConnectivity` acts on the
-        // surface a cluster's own resource-based policy is attached for, so an ARN
-        // this endpoint holds no cluster under reaches no grant and is refused as
-        // unauthorized however its account reads.
-        if call.case == "UpdateConnectivity" {
-            continue;
-        }
         let (uri, body) = call.request(&absent);
         let reply = emulator.call(call.method, &uri, body).await;
         assert_ne!(

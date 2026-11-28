@@ -12,9 +12,12 @@
 //!
 //! A well-formed operation ARN this region holds no operation for is a
 //! `NotFoundException` — whichever account the ARN names, since the record of a
-//! cluster's work is no resource an account holds a policy over — and it names the
-//! cluster whose operation was looked for in `InvalidParameter`; a value that is
-//! not an operation ARN at all is a `BadRequestException`.
+//! cluster's work is no resource an account holds a policy over — and it names in
+//! `InvalidParameter` the resource that is MISSING: the cluster the work was done
+//! on where the ARN names an account or a Region this endpoint does not serve, and
+//! the operation reference itself where it names this endpoint's own
+//! ([`crate::state::missed_cluster_operation_member`]);
+//! a value that is not an operation ARN at all is a `BadRequestException`.
 //!
 //! PARTIAL SCOPE, deliberately: the registry this reads
 //! ([`crate::state::ComAmazonawsKafkaKafkaState::cluster_operations`]) holds the
@@ -190,17 +193,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
         let now = std::time::SystemTime::now();
+        // WHICH member a miss blames, decided from the REQUEST alone and before
+        // the registry lock is taken: a cluster-operation ARN references work done
+        // on a cluster of the account and Region it names, and an endpoint serves
+        // one of each, so a reference naming another account or Region stands for a
+        // CLUSTER no record here could belong to, while one of this endpoint's own
+        // names an operation that could have been recorded and was not. The ARN's
+        // fields are read through the tree's one caller-supplied-ARN parse, which
+        // answers `None` for a value that carries none — nothing is indexed,
+        // sliced or unwrapped, so no shape of the submitted value can fail it. The
+        // member that reading names is the service's own
+        // ([`crate::state::missed_cluster_operation_member`]), which the V2 reader
+        // names from the same reading over its own input.
+        let records_could_live_here = ::service_common::arn::parse(&input.cluster_operation_arn)
+            .is_some_and(|parsed| {
+                parsed.region == region
+                    && parsed.account == crate::state::authorization::caller_account()
+            });
+        let blamed = crate::state::missed_cluster_operation_member(records_could_live_here);
         let state = state.lock();
         let Some(operation) =
             state.cluster_operation_in(&region, &input.cluster_operation_arn)
         else {
             return Err(DescribeClusterOperationErrorModeled::NotFoundException(
-                // The CLUSTER is the member this refusal blames: a
-                // cluster-operation ARN is a reference to work done on one, and
-                // what the lookup could not find is that cluster's operation, so
-                // the parameter at fault is named in the service's own wire
-                // vocabulary ([`crate::state::CLUSTER_ARN_MEMBER`]).
-                crate::state::resource_not_found(crate::state::CLUSTER_ARN_MEMBER),
+                crate::state::resource_not_found(blamed),
             )
             .into());
         };

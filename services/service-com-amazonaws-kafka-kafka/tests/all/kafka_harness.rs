@@ -21,9 +21,10 @@ use serde_json::{json, Map, Value};
 use service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam;
 use service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts;
 use service_com_amazonaws_kafka_kafka::state::state_gate::{
-    not_in_accepted_state_message, CLUSTER_ARN_PARAMETER,
-    CLUSTER_STATES_A_CHANGE_IS_ACCEPTED_FROM,
+    not_in_accepted_state_message, CLUSTER_STATES_A_CHANGE_IS_ACCEPTED_FROM,
 };
+use service_com_amazonaws_kafka_kafka::state::configuration_arn::CONFIGURATION_ARN_MEMBER;
+use service_com_amazonaws_kafka_kafka::state::CLUSTER_ARN_MEMBER;
 use service_com_amazonaws_kafka_kafka::state::{
     BROKER_REBOOT_DELAY, CHANNEL_ACTIVATION_DELAY, CLUSTER_ACTIVATION_DELAY,
     CLUSTER_UPDATE_DELAY, CONFIGURATION_ARN_NOT_FOUND_MESSAGE, CONFIGURATION_DELETION_DELAY,
@@ -1004,8 +1005,9 @@ pub fn assert_configuration_state_refusal(reply: &Reply, case: &str) {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some("Arn"),
-        "case {case}: the refusal must name Arn as the parameter at fault, got {}",
+        Some(CONFIGURATION_ARN_MEMBER),
+        "case {case}: the refusal must name {CONFIGURATION_ARN_MEMBER} as the parameter at fault, \
+         got {}",
         reply.body
     );
 }
@@ -1037,8 +1039,8 @@ pub fn assert_cluster_state_refusal(reply: &Reply, case: &str) {
     );
     assert_eq!(
         reply.at("/invalidParameter").as_str(),
-        Some(CLUSTER_ARN_PARAMETER),
-        "case {case}: the refusal must name {CLUSTER_ARN_PARAMETER} as the parameter at fault, \
+        Some(CLUSTER_ARN_MEMBER),
+        "case {case}: the refusal must name {CLUSTER_ARN_MEMBER} as the parameter at fault, \
          got {}",
         reply.body
     );

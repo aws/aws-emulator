@@ -284,7 +284,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(
                 ListAssessmentFindingsErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -296,7 +296,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         else {
             return Err(
                 ListAssessmentFindingsErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("AssessmentArn".to_string()),
+                    invalid_parameter: Some(crate::state::ASSESSMENT_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -310,7 +310,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let status = assessment.status.clone();
             return Err(
                 ListAssessmentFindingsErrorModeled::ConflictException(ConflictException {
-                    invalid_parameter: Some("AssessmentArn".to_string()),
+                    invalid_parameter: Some(crate::state::ASSESSMENT_ARN_MEMBER.to_string()),
                     message: Some(format!(
                         "The assessment is in the {status} state. Findings are returned for an \
                          assessment in the {} state.",

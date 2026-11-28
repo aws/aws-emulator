@@ -220,7 +220,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
                 UpdateBrokerStorageErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -234,7 +234,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // second one could only contradict it.
         let [target] = input.target_broker_ebs_volume_info.as_slice() else {
             return Err(bad_request(
-                "TargetBrokerEBSVolumeInfo",
+                "targetBrokerEBSVolumeInfo",
                 format!(
                     "TargetBrokerEBSVolumeInfo must carry exactly one entry, for broker {}, not {}.",
                     crate::state::ALL_BROKERS,
@@ -244,7 +244,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         if target.volume_size_gb.is_none() && target.provisioned_throughput.is_none() {
             return Err(bad_request(
-                "TargetBrokerEBSVolumeInfo",
+                "targetBrokerEBSVolumeInfo",
                 "a broker storage update must set VolumeSizeGB, ProvisionedThroughput or both."
                     .to_string(),
             ));
@@ -255,7 +255,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is answered as a missing resource whatever volume the request asks for.
         if target.kafka_broker_node_id != crate::state::ALL_BROKERS {
             return Err(bad_request(
-                "TargetBrokerEBSVolumeInfo",
+                "targetBrokerEBSVolumeInfo",
                 format!(
                     "KafkaBrokerNodeId must be the keyword {}, not '{}': a broker storage update \
                      applies to every broker in the cluster.",
@@ -272,7 +272,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .contains(&volume_size)
             {
                 return Err(bad_request(
-                    "TargetBrokerEBSVolumeInfo",
+                    "targetBrokerEBSVolumeInfo",
                     format!(
                         "VolumeSizeGB must be between {} and {}, not {volume_size}.",
                         crate::state::MIN_VOLUME_SIZE_GB,
@@ -300,7 +300,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cluster has no brokers to reconfigure.
         if cluster.is_serverless() {
             return Err(bad_request(
-                "ClusterArn",
+                crate::state::CLUSTER_ARN_MEMBER,
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
@@ -323,7 +323,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let (Some(target_size), Some(current)) = (target.volume_size_gb, current_volume_size) {
             if target_size < current {
                 return Err(bad_request(
-                    "TargetBrokerEBSVolumeInfo",
+                    "targetBrokerEBSVolumeInfo",
                     format!(
                         "VolumeSizeGB can only be increased: the cluster's volumes are {current} \
                          GiB, so {target_size} GiB is not allowed."

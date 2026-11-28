@@ -241,7 +241,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if state.cluster_in(&region, &input.cluster_arn).is_none() {
             return Err(
                 CreateChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -254,7 +254,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if input.topic_configuration_list.len() != crate::state::TOPIC_CONFIGURATIONS_PER_CHANNEL {
             return Err(
                 CreateChannelErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("TopicConfigurationList".to_string()),
+                    invalid_parameter: Some("topicConfigurationList".to_string()),
                     message: Some(format!(
                         "Exactly {} topic configuration must be specified, not {}.",
                         crate::state::TOPIC_CONFIGURATIONS_PER_CHANNEL,
@@ -271,7 +271,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if destinations != 1 {
             return Err(
                 CreateChannelErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("S3DestinationConfiguration".to_string()),
+                    invalid_parameter: Some("s3DestinationConfiguration".to_string()),
                     message: Some(format!(
                         "Exactly one of s3DestinationConfiguration and \
                          icebergDestinationConfiguration must be specified, not {destinations}."
@@ -321,7 +321,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(
                 CreateChannelErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("Tags".to_string()),
+                    invalid_parameter: Some("tags".to_string()),
                     message: Some(reason),
                 })
                 .into(),
@@ -333,7 +333,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(cluster) = state.cluster_in(&region, &input.cluster_arn) else {
             return Err(
                 CreateChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -373,7 +373,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(match rejected {
                 crate::state::ChannelRejected::ClusterQuota => {
                     CreateChannelErrorModeled::TooManyRequestsException(TooManyRequestsException {
-                        invalid_parameter: Some("ChannelName".to_string()),
+                        invalid_parameter: Some("channelName".to_string()),
                         message: Some(format!(
                             "This emulator holds its maximum of {} channels for one cluster.",
                             crate::state::MAX_CHANNELS_PER_CLUSTER
@@ -386,7 +386,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // side both are "this service will not hold another channel".
                 crate::state::ChannelRejected::RegistryCeiling => {
                     CreateChannelErrorModeled::TooManyRequestsException(TooManyRequestsException {
-                        invalid_parameter: Some("ChannelName".to_string()),
+                        invalid_parameter: Some("channelName".to_string()),
                         message: Some(format!(
                             "This emulator holds its maximum of {} channels.",
                             crate::state::MAX_CHANNELS_IN_REGISTRY
@@ -399,7 +399,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // reports rather than as a channel filed on nothing.
                 crate::state::ChannelRejected::NoSuchCluster => {
                     CreateChannelErrorModeled::NotFoundException(NotFoundException {
-                        invalid_parameter: Some("ClusterArn".to_string()),
+                        invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                         message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                     })
                     .into()

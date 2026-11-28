@@ -234,9 +234,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(reason) = crate::state::topic_name_error(&input.topic_name) {
             return Err(
                 UpdateTopicErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some(
-                        crate::state::state_gate::TOPIC_NAME_PARAMETER.to_string(),
-                    ),
+                    invalid_parameter: Some(crate::state::TOPIC_NAME_MEMBER.to_string()),
                     message: Some(reason),
                 })
                 .into(),
@@ -269,12 +267,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cluster offers AT `now`.
         let Some(cluster) = state.settled_cluster_in(&region, &input.cluster_arn, now) else {
             return Err(
-                UpdateTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some(
-                        crate::state::state_gate::CLUSTER_ARN_PARAMETER.to_string(),
-                    ),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
+                UpdateTopicErrorModeled::NotFoundException(
+                    crate::state::resource_not_found(crate::state::CLUSTER_ARN_MEMBER),
+                )
                 .into(),
             );
         };
@@ -301,12 +296,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cluster's own to change.
         let Some(topic) = state.settled_topic_in(&input.cluster_arn, &input.topic_name, now) else {
             return Err(
-                UpdateTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some(
-                        crate::state::state_gate::TOPIC_NAME_PARAMETER.to_string(),
-                    ),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
+                UpdateTopicErrorModeled::NotFoundException(
+                    crate::state::resource_not_found(crate::state::TOPIC_NAME_MEMBER),
+                )
                 .into(),
             );
         };
@@ -381,12 +373,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // the same absence that lookup reports rather than as a change nothing
             // was applied to.
             return Err(
-                UpdateTopicErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some(
-                        crate::state::state_gate::TOPIC_NAME_PARAMETER.to_string(),
-                    ),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
+                UpdateTopicErrorModeled::NotFoundException(
+                    crate::state::resource_not_found(crate::state::TOPIC_NAME_MEMBER),
+                )
                 .into(),
             );
         };
@@ -401,7 +390,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The member a refusal of the submitted partition count names as the parameter
 /// at fault, as the model spells it on this request.
-const PARTITION_COUNT_PARAMETER: &str = "PartitionCount";
+const PARTITION_COUNT_PARAMETER: &str = "partitionCount";
 
 /// Refuse the request with the modeled `BadRequestException`, naming the member
 /// at fault and what was wrong with it — the caller has to fix the request from

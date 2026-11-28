@@ -199,7 +199,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(
                 DeleteAssessmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
+                    invalid_parameter: Some(crate::state::CLUSTER_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
@@ -218,7 +218,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if in_progress {
             return Err(
                 DeleteAssessmentErrorModeled::ConflictException(ConflictException {
-                    invalid_parameter: Some("AssessmentArn".to_string()),
+                    invalid_parameter: Some(crate::state::ASSESSMENT_ARN_MEMBER.to_string()),
                     message: Some(
                         "The assessment is still scanning the cluster. Wait for it to complete, \
                          and try again."
@@ -237,7 +237,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) else {
             return Err(
                 DeleteAssessmentErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("AssessmentArn".to_string()),
+                    invalid_parameter: Some(crate::state::ASSESSMENT_ARN_MEMBER.to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
