@@ -32,6 +32,8 @@
 //! one shared helper: recognising a page is the work of reading its every mark, so a test
 //! that read a whole family's table would hold up every build and every merge it runs in for
 //! as long as all of those pages take, while the tests of one family run beside each other.
+//! Two or three pages a test is what that comes to: the rows are the same rows and each is
+//! asserted the same way, and no one of them holds a build up for the rest.
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
@@ -307,8 +309,8 @@ async fn pixel_pages_read_the_characters_they_were_drawn_with(
     }
 }
 
-/// A page set in one of the SMALLER pixel faces is read character for character, at every
-/// raster those faces are cut at.
+/// A page set in one of the SMALLEST pixel faces asserted here is read character for
+/// character.
 ///
 /// The rasters are the X11 fixed faces' own (`embedded_graphics::mono_font::ascii`): a page
 /// set in one of them is what a document rendered at a dozen pixels to the line carries.
@@ -317,6 +319,15 @@ async fn a_page_set_in_a_pixel_face_reads_the_characters_it_was_drawn_with() {
     pixel_pages_read_the_characters_they_were_drawn_with(&[
         ("6x9", &ascii::FONT_6X9, dark_on_light(), ImageFormat::Png),
         ("6x10", &ascii::FONT_6X10, dark_on_light(), ImageFormat::Png),
+    ])
+    .await;
+}
+
+/// The same of the MIDDLING rasters those faces are cut at: twelve and thirteen pixels to
+/// the line, where a capital stands nine or ten pixels tall.
+#[tokio::test]
+async fn a_page_set_in_a_middling_pixel_face_reads_the_characters_it_was_drawn_with() {
+    pixel_pages_read_the_characters_they_were_drawn_with(&[
         ("6x12", &ascii::FONT_6X12, dark_on_light(), ImageFormat::Png),
         ("6x13", &ascii::FONT_6X13, dark_on_light(), ImageFormat::Png),
         ("7x13", &ascii::FONT_7X13, dark_on_light(), ImageFormat::Png),

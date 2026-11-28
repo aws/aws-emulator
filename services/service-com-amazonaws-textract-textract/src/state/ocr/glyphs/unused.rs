@@ -19,12 +19,19 @@ use super::*;
 pub(super) fn ranked(ink: &Ink, glyph: &GlyphBox, line: Line) -> Vec<(char, f32)> {
     let page = |x: isize, y: isize| ink.coverage(x, y);
     let mark = Mark::measure(&page, (glyph.x0, glyph.x1, glyph.y0, glyph.y1), line);
+    // Every character measured EXACTLY, floor zero: what this is for is to be the answer the
+    // ladder's own floors and shortlists are held against.
     let mut scored: Vec<Candidate> = bank()
         .iter()
-        .map(|candidate| scored_against(&mark, candidate))
+        .enumerate()
+        .map(|(held, candidate)| Candidate {
+            ch: candidate.ch,
+            held,
+            score: score_against(&mark, candidate, 0.0, 0),
+        })
         .collect();
     scored.sort_by(|one, other| other.score.total_cmp(&one.score));
-    if let Some(chosen) = settled(&scored) {
+    if let Some(chosen) = settled(&mark, &scored) {
         if let Some(at) = scored.iter().position(|held| held.ch == chosen.ch) {
             let chosen = scored.remove(at);
             scored.insert(0, chosen);

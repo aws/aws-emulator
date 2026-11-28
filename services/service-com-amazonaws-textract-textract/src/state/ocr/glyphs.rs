@@ -5,7 +5,7 @@
 //!
 //! A mark is named by comparing it against a BANK of templates — every printable ASCII
 //! glyph of four typeface families, at several sizes and weights — and taking the character
-//! of the template whose ink it shares most of ([`Mark::agreement`], the Sørensen-Dice
+//! of the template whose ink it shares most of ([`Mark::agreement_above`], the Sørensen-Dice
 //! coefficient of the two). Nothing here looks at the request, at a digest or at the text
 //! of anything: a character is reported only because the ink the page carries is shaped
 //! like that character's.
@@ -57,6 +57,14 @@
 //! compared on the fine grid, which keeps the work per mark a small multiple of the bank's
 //! size. How many marks one page may hold is bounded by its caller
 //! ([`super::MAX_GLYPHS_PER_PAGE`]).
+//!
+//! Each stage is also measured only as far as its answer can still change. Every comparison
+//! carries the agreement it has to beat to matter — the best face found so far, the poorest
+//! character the shortlist still holds, or the floor below which a character cannot enter the
+//! reading at all ([`NAMING_FLOOR`]) — and a template whose remaining cells cannot carry it
+//! past that is dropped where it stands ([`Grid::best_shifted_above`]). What the comparison
+//! ANSWERS is untouched by this: a template is only ever dropped once the ink it has left is
+//! too little to overtake the one that is winning.
 
 use std::sync::OnceLock;
 
@@ -76,6 +84,12 @@ use super::{GlyphBox, Ink};
 #[cfg(test)]
 mod unused;
 
+/// Why a comparison measured only as far as it can still change the answer gives the answer
+/// an unbounded one gives.
+#[cfg(test)]
+#[path = "zprof.rs"]
+mod bounds;
+
 /// The side of the grid a mark and a template are compared on.
 const FINE: usize = 16;
 
@@ -85,7 +99,7 @@ const FINE: usize = 16;
 const SHORTLIST: usize = 40;
 
 /// How many characters the grids themselves keep for the one-cell search of
-/// [`Mark::agreement`], the last and closest step of the comparison.
+/// [`Mark::agreement_above`], the last and closest step of the comparison.
 const CLOSE_LOOK: usize = 10;
 
 /// How far above its line's baseline a frame reaches, in capital heights: over the top of
@@ -131,6 +145,23 @@ const SHAPE_APART: f32 = 0.05;
 /// two readings stand — so the window has to cover the spread a single stroke of difference
 /// accounts for at any of those sizes, and the sharp ink then settles which character it is.
 const TIED: f32 = 0.05;
+
+/// How much ink a mark and a template may have shared in the cells a comparison has not
+/// reached, over and above what the rows left hold, before it gives up on that template: a
+/// hair, so that a bound rounded a fraction of a cell short can never drop a template that
+/// was about to win.
+const BOUND_SLACK: f32 = 1e-6;
+
+/// How well a character has to agree with a mark's ink for that agreement to be worth
+/// measuring exactly.
+///
+/// A character agreeing less well than this is named no differently from one that agrees not
+/// at all: the reading is taken from the character whose agreement is the best of them and
+/// at least [`MIN_MATCH`], and from the ones standing within [`TIED`] or [`STEM_MARGIN`] of
+/// it, so a character this far below the poorest reading there can be enters none of those.
+/// The comparison therefore stops measuring a character the moment its agreement cannot
+/// reach this.
+const NAMING_FLOOR: f32 = MIN_MATCH - TIED - STEM_MARGIN;
 
 /// The side of one glyph cell of the embedded 8x8 bitmap font.
 pub(super) const FONT_CELL: usize = 8;
@@ -284,8 +315,7 @@ fn own_ink<'a>(
 /// One mark measured in the frame of its line: its PROPORTIONS in that frame, and how much
 /// ink it puts in each cell of the frame's grid.
 struct Mark {
-    fine: [f32; FINE * FINE],
-    fine_ink: f32,
+    fine: Grid,
     /// The same grid before it was blurred: the ink exactly where the mark lays it down.
     ///
     /// What the blurred grid cannot see, because the blur is what lets a stroke that lands
@@ -293,8 +323,7 @@ struct Mark {
     /// stem of an `l`, the flat side of a `D` against the bowl of an `O`. Two characters
     /// whose blurred grids a mark agrees with equally well are therefore settled on this one
     /// ([`name_mark`]).
-    sharp: [f32; FINE * FINE],
-    sharp_ink: f32,
+    sharp: Grid,
     /// How wide the mark's own ink is, in capital heights.
     width: f32,
     /// How tall it is, in capital heights.
@@ -306,6 +335,134 @@ struct Mark {
     /// How many SEPARATE strokes its ink falls into, and how many holes they enclose: see
     /// [`shape_of`].
     shape: Shape,
+}
+
+/// One measurement of ink on the grid of a frame: the cells, how much ink they hold in all,
+/// and how much of it the rows from each row down hold.
+///
+/// The row totals are what lets a comparison STOP once its answer cannot change: the ink
+/// left in the rows it has not reached bounds everything those rows can still contribute, so
+/// a template already behind the best one found is dropped where it stands rather than
+/// measured to the end ([`Self::best_shifted_above`]).
+struct Grid {
+    cells: [f32; FINE * FINE],
+    /// How much ink each row of the grid holds.
+    rows: [f32; FINE],
+    /// How much ink the whole grid holds.
+    ink: f32,
+}
+
+impl Grid {
+    /// The grid `cells` hold, with the totals a bounded comparison measures against.
+    fn of(cells: [f32; FINE * FINE]) -> Self {
+        let ink = cells.iter().sum();
+        let mut rows = [0f32; FINE];
+        for (row, holds) in rows.iter_mut().enumerate() {
+            *holds = cells[row * FINE..(row + 1) * FINE].iter().sum();
+        }
+        Self { cells, rows, ink }
+    }
+
+    /// How much of this grid's ink and `other`'s is the same ink, with `other` moved
+    /// `across` cells right and `down` cells down — or any amount at most `need`, once the
+    /// rows left cannot carry the total past it.
+    ///
+    /// Two rows laid against each other share no more ink than the lesser of them holds, so
+    /// the rows alone say how much the grids can still share below the row reached. That
+    /// bound is taken before a single cell is measured — a shift that cannot reach `need` at
+    /// all then costs a row's worth of comparisons rather than a grid's — and again at each
+    /// row, so a comparison that has fallen too far behind to matter stops there.
+    fn shared_shifted(&self, other: &Self, across: isize, down: isize, need: f32) -> f32 {
+        let mut most = [0f32; FINE + 1];
+        for row in (0..FINE).rev() {
+            let other_row = row as isize + down;
+            let theirs = if (0..FINE as isize).contains(&other_row) {
+                other.rows[other_row as usize]
+            } else {
+                0.0
+            };
+            most[row] = most[row + 1] + self.rows[row].min(theirs);
+        }
+        if most[0] + BOUND_SLACK <= need {
+            return 0.0;
+        }
+        let mut shared = 0f32;
+        for row in 0..FINE {
+            let other_row = row as isize + down;
+            if (0..FINE as isize).contains(&other_row) {
+                let ours = &self.cells[row * FINE..(row + 1) * FINE];
+                let theirs =
+                    &other.cells[other_row as usize * FINE..(other_row as usize + 1) * FINE];
+                let from = (-across).max(0) as usize;
+                let to = (FINE as isize - across).clamp(0, FINE as isize) as usize;
+                for column in from..to {
+                    shared += ours[column].min(theirs[(column as isize + across) as usize]);
+                }
+            }
+            if shared + most[row + 1] + BOUND_SLACK <= need {
+                return shared;
+            }
+        }
+        shared
+    }
+
+    /// How much of the two grids' ink is the same ink over a ONE-CELL search, as the
+    /// Sørensen-Dice coefficient — which is 1 for two grids inked alike and 0 for two that
+    /// share no cell — or `floor` where no shift of them agrees better than that.
+    ///
+    /// The best agreement over a one-cell search, because where a mark sits in its frame is
+    /// measured off its line and a line's baseline and capital height are themselves read
+    /// off the marks it carries: a stroke the width of a cell, and a mark of a cell or two
+    /// altogether — a full stop, a colon, a hyphen — would otherwise miss the glyph it is
+    /// drawn as over a fraction of a pixel. Ink shifted out of the frame still counts
+    /// against the match, since the denominator is both grids' whole ink.
+    ///
+    /// `floor` is the agreement the answer has to beat to be worth having exactly: two grids
+    /// can share no more than all of the ink of the lesser of them, so one that cannot reach
+    /// `floor` on that count alone is answered without measuring a cell, and one that falls
+    /// behind part way through is answered without measuring the rest.
+    fn best_shifted_above(&self, other: &Self, floor: f32) -> f32 {
+        let total = self.ink + other.ink;
+        if total <= 0.0 {
+            return 0.0;
+        }
+        if 2.0 * self.ink.min(other.ink) / total <= floor {
+            return floor;
+        }
+        let mut best = floor;
+        // The grids as they STAND first, and the eight shifts of them after: a stroke lands
+        // where the template lays it far more often than a cell off it, so measuring that
+        // one first leaves the others a figure to beat that is usually already the answer.
+        for (across, down) in [
+            (0, 0),
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        ] {
+            let shared = self.shared_shifted(other, across, down, best * total / 2.0);
+            best = best.max(2.0 * shared / total);
+        }
+        best
+    }
+
+    /// The same measure without that search, which is what narrows the shortlist to the
+    /// characters worth taking it over.
+    fn dice_above(&self, other: &Self, floor: f32) -> f32 {
+        let total = self.ink + other.ink;
+        if total <= 0.0 {
+            return 0.0;
+        }
+        if 2.0 * self.ink.min(other.ink) / total <= floor {
+            return floor;
+        }
+        let shared = self.shared_shifted(other, 0, 0, floor * total / 2.0);
+        floor.max(2.0 * shared / total)
+    }
 }
 
 /// What a mark's ink is made of, in the counts that survive every size it is drawn at: see
@@ -357,9 +514,7 @@ impl Mark {
         }
         let sampled = (stride_x * stride_y) as f32;
         Self {
-            fine_ink: fine.iter().sum(),
-            sharp_ink: sharp.iter().sum(),
-            sharp,
+            sharp: Grid::of(sharp),
             // Saturating: a mark is the rectangle its own ink occupies, so the narrowest and
             // the shortest one there can be is a single pixel.
             width: (x1.saturating_sub(x0) + 1) as f32 / line.cap,
@@ -367,7 +522,7 @@ impl Mark {
             top: (line.baseline - y0 as f32) / line.cap,
             mass: ink * sampled / (line.cap * line.cap),
             shape: shape_of(coverage, (x0, x1, y0, y1)),
-            fine,
+            fine: Grid::of(fine),
         }
     }
 
@@ -387,17 +542,10 @@ impl Mark {
     }
 
     /// How much of this mark's ink and `other`'s is the same ink, on the grid of their
-    /// frames: the Sørensen-Dice coefficient, which is 1 for two marks inked alike and 0
-    /// for two that share no cell.
-    ///
-    /// The best agreement over a ONE-CELL search, because where a mark sits in its frame is
-    /// measured off its line and a line's baseline and capital height are themselves read
-    /// off the marks it carries: a stroke the width of a cell, and a mark of a cell or two
-    /// altogether — a full stop, a colon, a hyphen — would otherwise miss the glyph it is
-    /// drawn as over a fraction of a pixel. Ink shifted out of the frame still counts
-    /// against the match, since the denominator is both marks' whole ink.
-    fn agreement(&self, other: &Self) -> f32 {
-        best_shifted(&self.fine, self.fine_ink, &other.fine, other.fine_ink)
+    /// frames, or `floor` where they share no more of it than that
+    /// ([`Grid::best_shifted_above`]).
+    fn agreement_above(&self, other: &Self, floor: f32) -> f32 {
+        self.fine.best_shifted_above(&other.fine, floor)
     }
 
     /// The same over the grids BEFORE they were blurred: how much of the two marks' ink is
@@ -408,14 +556,14 @@ impl Mark {
     /// `l`, the flat side of a `D` beside the bowl of an `O`, the one counter of a `6`
     /// beside the two of an `8`. Two characters whose blurred grids a mark agrees with
     /// equally are told apart on this ([`settled`]).
-    fn sharp_agreement(&self, other: &Self) -> f32 {
-        best_shifted(&self.sharp, self.sharp_ink, &other.sharp, other.sharp_ink)
+    fn sharp_agreement_above(&self, other: &Self, floor: f32) -> f32 {
+        self.sharp.best_shifted_above(&other.sharp, floor)
     }
 
     /// The same measure without that search: what narrows the shortlist to the characters
     /// worth taking it over.
-    fn unshifted_agreement(&self, other: &Self) -> f32 {
-        dice(&self.fine, self.fine_ink, &other.fine, other.fine_ink)
+    fn unshifted_agreement_above(&self, other: &Self, floor: f32) -> f32 {
+        self.fine.dice_above(&other.fine, floor)
     }
 
     /// How far this mark's ink stands from `other`'s in what it is MADE of: see
@@ -423,67 +571,6 @@ impl Mark {
     fn shape_apart(&self, other: &Self) -> f32 {
         self.shape.apart(&other.shape)
     }
-}
-
-/// The best agreement of two grids of ink over a ONE-CELL search: see [`Mark::agreement`].
-fn best_shifted(left: &[f32], left_ink: f32, right: &[f32], right_ink: f32) -> f32 {
-    let mut best = 0f32;
-    for down in -1..=1 {
-        for across in -1..=1 {
-            let scored = dice_shifted(left, left_ink, right, right_ink, FINE, across, down);
-            best = best.max(scored);
-        }
-    }
-    best
-}
-
-/// The Sørensen-Dice coefficient of two grids of ink, the right one moved `across` cells
-/// right and `down` cells down: the ink of both counts in the denominator, so ink one grid
-/// carries where the other has no cell left to carry it tells against the agreement.
-fn dice_shifted(
-    left: &[f32],
-    left_ink: f32,
-    right: &[f32],
-    right_ink: f32,
-    grid: usize,
-    across: isize,
-    down: isize,
-) -> f32 {
-    let total = left_ink + right_ink;
-    if total <= 0.0 {
-        return 0.0;
-    }
-    let mut shared = 0f32;
-    for row in 0..grid as isize {
-        let other_row = row + down;
-        if other_row < 0 || other_row >= grid as isize {
-            continue;
-        }
-        for column in 0..grid as isize {
-            let other_column = column + across;
-            if other_column < 0 || other_column >= grid as isize {
-                continue;
-            }
-            let one = left[row as usize * grid + column as usize];
-            let another = right[other_row as usize * grid + other_column as usize];
-            shared += one.min(another);
-        }
-    }
-    2.0 * shared / total
-}
-
-/// The Sørensen-Dice coefficient of two grids of ink.
-fn dice(left: &[f32], left_ink: f32, right: &[f32], right_ink: f32) -> f32 {
-    let total = left_ink + right_ink;
-    if total <= 0.0 {
-        return 0.0;
-    }
-    let shared: f32 = left
-        .iter()
-        .zip(right.iter())
-        .map(|(one, other)| one.min(*other))
-        .sum();
-    2.0 * shared / total
 }
 
 /// Resample the ink `coverage` reports into a `grid` x `grid` measurement of the frame
@@ -1053,38 +1140,64 @@ pub(super) fn recognise_region(
     name_mark(&mark)
 }
 
-/// What a mark could be: one character of the bank, how well the mark's ink agreed with the
-/// closest face of that character, and how much of it is the same ink as each lays it down.
+/// What a mark could be: one character of the bank, and how well the mark's ink agreed with
+/// the closest face of that character.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
     ch: char,
+    /// Which character of the bank this is, so the ink as that character lays it down can
+    /// settle a reading the blurred grids left tied without measuring every candidate's.
+    held: usize,
     /// The agreement the answer is scored by, on the blurred grids and less what the two
-    /// marks' shapes stand apart.
+    /// marks' shapes stand apart — or the floor it was measured against, where the character
+    /// agrees no better than that ([`score_against`]).
     score: f32,
-    /// The agreement of the same face on the grids before they were blurred.
-    sharp: f32,
 }
 
-/// How well `mark`'s ink agrees with the character `glyph`: its closest face by the measure
-/// the answer is scored by, and its closest face on the grids before they were blurred.
+/// How well `mark`'s ink agrees with the character `glyph`, by the measure the answer is
+/// scored by: its closest face, or `floor` where no face of it agrees better than that.
 ///
-/// Each measure takes the character's OWN best face, because a character is held in the
-/// bank at several sizes and weights and the face whose blurred grid a mark meets best is
-/// not always the one whose strokes land exactly where the mark's do: asking one face for
-/// both would score a character on a face that is a size away from the page's, which is
-/// evidence about the bank rather than about the ink.
-fn scored_against(mark: &Mark, glyph: &Glyph) -> Candidate {
-    let mut score = 0.0f32;
-    let mut sharp = 0.0f32;
+/// The measure takes the character's OWN best face, because a character is held in the bank
+/// at several sizes and weights and the face whose blurred grid a mark meets best is not
+/// always the one whose strokes land exactly where the mark's do: asking one face for both
+/// this and [`sharp_against`] would score a character on a face that is a size away from the
+/// page's, which is evidence about the bank rather than about the ink.
+///
+/// A face is measured only while it can still raise the answer: the best found so far is
+/// what the next face has to beat, `floor` is what the first of them has to beat, and
+/// `likeliest` — the face whose ink the mark shares most of as the grids stand — is measured
+/// before the rest, so the figure the others are held against is nearly the answer from the
+/// start (see [`Grid::best_shifted_above`]).
+fn score_against(mark: &Mark, glyph: &Glyph, floor: f32, likeliest: usize) -> f32 {
+    let mut best = floor;
+    for face in glyph
+        .faces
+        .get(likeliest)
+        .into_iter()
+        .chain(glyph.faces.iter())
+    {
+        let apart = SHAPE_APART * mark.shape_apart(face);
+        // What this face has to beat is the best found so far and the shapes' own distance
+        // on top of it, and the answer is raised only where it really was beaten: a floor a
+        // face failed to reach is reported as the floor itself rather than as what adding
+        // and subtracting that distance rounded it to.
+        let agreed = mark.agreement_above(face, best + apart);
+        if agreed > best + apart {
+            best = agreed - apart;
+        }
+    }
+    best
+}
+
+/// The same on the grids BEFORE they were blurred: how much of the mark's ink and the
+/// character's is the same ink exactly where each lays it down, over that character's own
+/// closest face, or `floor` where no face of it shares more than that.
+fn sharp_against(mark: &Mark, glyph: &Glyph, floor: f32) -> f32 {
+    let mut best = floor;
     for face in &glyph.faces {
-        score = score.max(mark.agreement(face) - SHAPE_APART * mark.shape_apart(face));
-        sharp = sharp.max(mark.sharp_agreement(face));
+        best = best.max(mark.sharp_agreement_above(face, best));
     }
-    Candidate {
-        ch: glyph.ch,
-        score,
-        sharp,
-    }
+    best
 }
 
 /// Which of `candidates` a mark is named as: the character its ink agrees with most, and
@@ -1094,30 +1207,40 @@ fn scored_against(mark: &Mark, glyph: &Glyph) -> Candidate {
 /// The blur is what lets a stroke that lands half a cell off its template's meet it at all,
 /// and it is also what makes a `t` and an `l`, a `D` and an `O`, a `6` and an `8` the same
 /// ink: so where it cannot separate two characters, the ink as each of them lays it down
-/// does ([`Mark::sharp_agreement`]). The score reported is the agreement itself, which is
-/// what every threshold downstream of the naming is measured in.
-fn settled(candidates: &[Candidate]) -> Option<Candidate> {
+/// does ([`sharp_against`]). The score reported is the agreement itself, which is what every
+/// threshold downstream of the naming is measured in.
+///
+/// Only the characters the blurred grids left TIED are measured on their sharp ink, and each
+/// of those only while it can still beat the sharpest found: what the ink as drawn is asked
+/// is which of the tied characters it shares most of, and a character the blur already
+/// separated is not one of them.
+fn settled(mark: &Mark, candidates: &[Candidate]) -> Option<Candidate> {
     let best = candidates
         .iter()
         .copied()
         .reduce(|held, found| if found.score > held.score { found } else { held })?;
-    Some(
-        candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.score >= best.score - TIED)
-            .reduce(|held, found| if found.sharp > held.sharp { found } else { held })
-            .unwrap_or(best),
-    )
+    let mut chosen: Option<Candidate> = None;
+    let mut sharpest = 0.0f32;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.score >= best.score - TIED)
+    {
+        let sharp = sharp_against(mark, &bank()[candidate.held], sharpest);
+        if chosen.is_none() || sharp > sharpest {
+            chosen = Some(*candidate);
+            sharpest = sharp;
+        }
+    }
+    Some(chosen.unwrap_or(best))
 }
 
 /// The character `mark` is drawn with, over the bank, by the three steps of [`recognise`].
 fn name_mark(mark: &Mark) -> Option<Named> {
-    if mark.fine_ink <= 0.0 {
+    if mark.fine.ink <= 0.0 {
         return None;
     }
     let named = candidates(mark);
-    let best = settled(&named)?;
+    let best = settled(mark, &named)?;
     if best.score < MIN_MATCH {
         return None;
     }
@@ -1149,9 +1272,14 @@ fn name_mark(mark: &Mark) -> Option<Named> {
 
 /// The characters `mark` could be, each with how well its ink agreed with that character's
 /// closest face: the [`CLOSE_LOOK`] the two narrowing steps keep.
+///
+/// Each step measures a character only while it can still change the step's answer: the
+/// poorest character the shortlist holds is what the next one has to beat to enter it, and a
+/// character that cannot reach [`NAMING_FLOOR`] enters no reading at all, so the agreement
+/// kept for it is that floor rather than the exact figure.
 fn candidates(mark: &Mark) -> Vec<Candidate> {
     let bank = bank();
-    let mut shortlist = Ranking::<SHORTLIST>::new();
+    let mut shortlist = Ranking::<usize, SHORTLIST>::new();
     for (index, candidate) in bank.iter().enumerate() {
         let apart = candidate
             .faces
@@ -1160,20 +1288,31 @@ fn candidates(mark: &Mark) -> Vec<Candidate> {
             .fold(f32::MAX, f32::min);
         shortlist.offer(-apart, index);
     }
-    let mut close = Ranking::<CLOSE_LOOK>::new();
+    let mut close = Ranking::<(usize, usize), CLOSE_LOOK>::new();
     for index in shortlist.taken() {
-        let scored = bank[index]
-            .faces
-            .iter()
-            .map(|face| mark.unshifted_agreement(face))
-            .fold(0.0f32, f32::max);
-        close.offer(scored, index);
+        let mut scored = close.poorest().unwrap_or(0.0);
+        // Which of the character's faces the mark's ink is closest to, as the grids stand:
+        // the face the close look below measures FIRST, so that what every other face of
+        // that character has to beat is already nearly the answer when it is measured.
+        let mut closest = 0usize;
+        for (at, face) in bank[index].faces.iter().enumerate() {
+            let agreed = mark.unshifted_agreement_above(face, scored);
+            if agreed > scored {
+                scored = agreed;
+                closest = at;
+            }
+        }
+        close.offer(scored, (index, closest));
     }
-    let mut named: Vec<Candidate> = Vec::with_capacity(CLOSE_LOOK);
-    for index in close.taken() {
-        named.push(scored_against(mark, &bank[index]));
-    }
-    named
+    close
+        .taken()
+        .into_iter()
+        .map(|(index, closest)| Candidate {
+            ch: bank[index].ch,
+            held: index,
+            score: score_against(mark, &bank[index], NAMING_FLOOR, closest),
+        })
+        .collect()
 }
 
 /// What one mark was named: the character, how well its ink agreed with that character's,
@@ -1210,18 +1349,18 @@ const NEAR_CAP: f32 = 0.9;
 
 /// The `N` best-scoring items offered to it, best first: how each step of [`recognise`]
 /// hands the next one the characters worth a closer look.
-struct Ranking<const N: usize> {
-    held: Vec<(f32, usize)>,
+struct Ranking<T, const N: usize> {
+    held: Vec<(f32, T)>,
 }
 
-impl<const N: usize> Ranking<N> {
+impl<T, const N: usize> Ranking<T, N> {
     fn new() -> Self {
         Self {
             held: Vec::with_capacity(N + 1),
         }
     }
 
-    fn offer(&mut self, score: f32, item: usize) {
+    fn offer(&mut self, score: f32, item: T) {
         if self.held.len() == N && self.held.last().is_some_and(|(worst, _)| score <= *worst) {
             return;
         }
@@ -1230,7 +1369,15 @@ impl<const N: usize> Ranking<N> {
         self.held.truncate(N);
     }
 
-    fn taken(self) -> Vec<usize> {
+    /// The score of the POOREST item held, once the ranking is full: what an item has to
+    /// beat to enter it at all, so a comparison that cannot reach this need not be finished.
+    fn poorest(&self) -> Option<f32> {
+        (self.held.len() == N)
+            .then(|| self.held.last().map(|(score, _)| *score))
+            .flatten()
+    }
+
+    fn taken(self) -> Vec<T> {
         self.held.into_iter().map(|(_, item)| item).collect()
     }
 }
@@ -1375,14 +1522,17 @@ mod tests {
                         continue;
                     }
                     for other_drawn in &other.faces {
-                        let scored = drawn.agreement(other_drawn);
+                        // Measured only as far as it can still be the closest of the other
+                        // characters, which is all this asks of it: `best` is what it has to
+                        // beat ([`Grid::best_shifted_above`]).
+                        let scored = drawn.agreement_above(other_drawn, best);
                         if scored > best {
                             best = scored;
                             best_ch = other.ch;
                         }
                     }
                 }
-                let own = drawn.agreement(drawn);
+                let own = drawn.agreement_above(drawn, 0.0);
                 assert!(
                     own > best,
                     "case {:?}: a face must agree with its own character ({own:.3}) more \
