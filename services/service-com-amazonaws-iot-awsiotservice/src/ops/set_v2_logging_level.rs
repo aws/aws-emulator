@@ -8,6 +8,11 @@
 //! options holds nothing to override and the set is refused with the modelled
 //! `NotConfiguredException`.
 //!
+//! The `logTarget`'s `targetType` is held to the value set the wire admits, which is wider
+//! than the published snapshot's `LogTargetType`: this operation's input is declared from
+//! this crate's overlay model (see `smithy-model/LOCAL-ADDITIONS.md` and
+//! `super::types::set_v2_logging_level_types`).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements

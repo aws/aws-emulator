@@ -40,21 +40,21 @@
 //!   corpus shows the real service answering with every add-on that matches and
 //!   no `nextToken`, whatever those two members say. So neither member narrows
 //!   anything here, nothing is truncated and no token is minted; there is no
-//!   page after the first to resume from. Because this listing never pages, it
-//!   publishes no MAXIMUM page size either: the recorded corpus shows a
+//!   page after the first to resume from. Because this listing never pages, the
+//!   page size is not a bound it applies at all: the recorded corpus shows a
 //!   `maxResults` ABOVE the bound the AWS documentation prints for the member
-//!   ("This value can be between 1 and 100") served like any other. The published
-//!   model snapshot states that maximum on `DescribeAddonVersionsRequestMaxResults`
-//!   and is kept exactly as shipped, so this operation's input is declared from the
-//!   overlay model beside it instead, carrying the page size's minimum alone
+//!   ("This value can be between 1 and 100") served like any other, and a value
+//!   below that documented minimum served like any other too — the member names
+//!   no page this answer could be cut at, so there is nothing for a bound to
+//!   protect. The published model snapshot states that range on
+//!   `DescribeAddonVersionsRequestMaxResults` and is kept exactly as shipped, so
+//!   this operation's input is declared from the overlay model beside it instead,
+//!   carrying no page-size range
 //!   (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md` and
 //!   `super::types::describe_addon_versions_types`).
-//!   A page size of less than one is still no page size at all and is refused by
-//!   the centralized walk before this handler runs, in this API's own page-size
-//!   sentence (`crate::state::max_results_range_message`); every value at or
-//!   above the minimum reaches here and is ignored. The listings that DO page —
-//!   `ListClusters`, `ListAddons` and the rest — keep the published maximum their
-//!   own model shapes declare, and refuse a page size past it.
+//!   The listings that DO page — `ListClusters`, `ListAddons` and the rest —
+//!   keep the published bounds their own model shapes declare, and refuse a page
+//!   size outside them.
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
 //!

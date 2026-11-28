@@ -13,6 +13,12 @@
 //! "View names must be unique within the account and region" — so a second view under a
 //! live name conflicts with it instead of replacing it.
 //!
+//! The `name` is held to the `ViewName` class the wire admits, which carries the period
+//! among its trailing characters where the published snapshot's class does not: this
+//! operation's input is declared from this crate's overlay model (see
+//! `smithy-model/LOCAL-ADDITIONS.md` and `super::types::create_view_types`), and the
+//! expression a refusal advertises follows that declaration.
+//!
 //! `ViewName`'s own `@pattern` is what decides whether a name is a view name at all, and
 //! the boundary both enforces it and quotes it back in the constraint-violation message.
 //! Its trailing character class admits the period, so a dotted name (`view.<a>.<b>`) is a

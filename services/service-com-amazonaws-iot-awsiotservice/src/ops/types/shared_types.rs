@@ -1401,7 +1401,13 @@ pub struct SecurityProfileTarget {
     pub arn: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.iot#LogTarget")]
+// Declared from this crate's overlay model rather than from the snapshot: the wire admits
+// log target types the snapshot's `LogTargetType` does not declare (see
+// `smithy-model/LOCAL-ADDITIONS.md`).
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.iot#LogTarget",
+    model = "smithy-model/local-additions.json"
+)]
 #[derive(Debug, Clone, Default)]
 pub struct LogTarget {
     pub target_type: String,
@@ -1659,7 +1665,12 @@ pub const LOG_LEVEL_VALUES: &[&str] = &["DEBUG", "DISABLED", "ERROR", "INFO", "W
 
 
 /// The values `LogTargetType` accepts on the wire.
-pub const LOG_TARGET_TYPE_VALUES: &[&str] = &["CLIENT_ID", "DEFAULT", "PRINCIPAL_ID", "SOURCE_IP", "THING_GROUP"];
+///
+/// From this crate's overlay model (`smithy-model/local-additions.json`, see
+/// `smithy-model/LOCAL-ADDITIONS.md`): the wire admits a target type the published
+/// snapshot does not declare, so the set is the overlay's, listed here as the generated
+/// constants are — alphabetically, which is not the order a refusal states them in.
+pub const LOG_TARGET_TYPE_VALUES: &[&str] = &["CLIENT_ID", "DEFAULT", "DEVICE_DEFENDER", "PRINCIPAL_ID", "SOURCE_IP", "THING_GROUP"];
 
 
 /// The values `MessageFormat` accepts on the wire.

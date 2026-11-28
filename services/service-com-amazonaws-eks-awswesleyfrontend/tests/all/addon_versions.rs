@@ -816,12 +816,15 @@ async fn the_catalog_is_served_whole_whatever_the_page_size() {
         addon_names(&filtered)
     );
 
-    // This listing never pages, so it publishes no MAXIMUM page size: the recorded
+    // This listing never pages, so the page size is not a bound it applies: the recorded
     // service answers a `maxResults` ABOVE the bound the member's documentation prints
-    // with the whole catalog, exactly as it answers one inside it. What a page size can
-    // never be is less than one, and that is refused. The rows are the published
-    // minimum, a value between, the documented maximum and values past it.
+    // with the whole catalog, and one BELOW the documented minimum the same way — there is
+    // no page for the member to cut. The rows are a negative page size, one below the
+    // documented minimum, the minimum, a value between, the documented maximum and values
+    // past it.
     for page_size in [
+        -MIN_LIST_MAX_RESULTS,
+        MIN_LIST_MAX_RESULTS - 1,
         MIN_LIST_MAX_RESULTS,
         2,
         MAX_LIST_MAX_RESULTS,
@@ -839,27 +842,6 @@ async fn the_catalog_is_served_whole_whatever_the_page_size() {
             whole,
             "case maxResults={page_size}: expected the whole catalog, got {:?}",
             answer.body["addons"]
-        );
-    }
-    for page_size in [MIN_LIST_MAX_RESULTS - 1, -MIN_LIST_MAX_RESULTS] {
-        let answer = describe_addon_versions(&router, &format!("maxResults={page_size}")).await;
-        assert_eq!(
-            answer.status, 400,
-            "case maxResults={page_size}: a page size below the published minimum expected \
-             HTTP 400, got {answer:?}"
-        );
-        let code = error_code(&answer);
-        assert_eq!(
-            code, "InvalidParameterException",
-            "case maxResults={page_size}: expected InvalidParameterException, got {code:?}"
-        );
-        // The sentence the whole service refuses a page size outside those bounds
-        // with: fixed text whose two numbers are the bounds themselves.
-        assert_eq!(
-            answer.message(),
-            state::max_results_range_message(),
-            "case maxResults={page_size}: expected the range sentence, got {:?}",
-            answer.message()
         );
     }
 }

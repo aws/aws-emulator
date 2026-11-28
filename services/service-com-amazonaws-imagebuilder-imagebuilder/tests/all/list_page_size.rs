@@ -35,14 +35,15 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The Region every case signs for; the ARNs it builds carry it.
 const REGION: &str = "us-west-2";
 
-/// The smallest page size a request may ask for: the modelled `maxResults` range's minimum
-/// (`smithy_query(query="shape",shape="RestrictedInteger")` reports `range 1..100`, the
-/// target of every list operation's `maxResults` in this service).
+/// The smallest page size a request may ask for: the `maxResults` range's minimum (the
+/// shape every list operation's `maxResults` targets, `RestrictedInteger`, which this
+/// crate declares with the maximum the service enforces —
+/// `smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`).
 const MIN_PAGE_SIZE: usize = 1;
 
-/// The largest page size a request may ask for: that same range's maximum, which the member
-/// documents as "The largest page size that you can request is 100 items."
-const MAX_PAGE_SIZE: usize = 100;
+/// The largest page size a request may ask for: that same range's maximum, the page size
+/// Image Builder refuses anything above.
+const MAX_PAGE_SIZE: usize = 25;
 
 /// The page size a request that names none gets, from the same member's documentation: "If
 /// you don't specify a value, Image Builder returns up to 25 items."
@@ -54,15 +55,13 @@ const DEFAULT_PAGE_SIZE: usize = 25;
 const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
 
 /// The page sizes a case asks for: each published bound, the documented default and one
-/// either side of it, and two sizes between the default and the maximum — every one of them
-/// a size the modelled range admits.
+/// below it, and a size between — every one of them a size the declared range admits. The
+/// default IS the maximum here, so there is no size above it to ask for.
 const SERVED_PAGE_SIZES: &[usize] = &[
     MIN_PAGE_SIZE,
     2,
     DEFAULT_PAGE_SIZE - 1,
     DEFAULT_PAGE_SIZE,
-    DEFAULT_PAGE_SIZE + 1,
-    50,
     MAX_PAGE_SIZE - 1,
     MAX_PAGE_SIZE,
 ];

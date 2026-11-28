@@ -40,11 +40,11 @@ const REGION: &str = "us-west-2";
 /// Region's resources.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// The largest page size a request may ask for: the modelled `maxResults` range's own
-/// maximum (`smithy_query(query="operation",operation="ListImagePackages")` reports
-/// `maxResults` range 1..100, and the member documents "The largest page size that you can
-/// request is 100 items").
-const MAX_PACKAGES_PER_PAGE: usize = 100;
+/// The largest page size a request may ask for: the declared `maxResults` range's own
+/// maximum — `RestrictedInteger`, which this crate declares as `range 1..25` in
+/// `smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md`), because
+/// Image Builder refuses a larger page size.
+const MAX_PACKAGES_PER_PAGE: usize = 25;
 
 /// The most packages one page carries when the request asks for no page size, from the same
 /// member's documentation: "If you don't specify a value, Image Builder returns up to 25

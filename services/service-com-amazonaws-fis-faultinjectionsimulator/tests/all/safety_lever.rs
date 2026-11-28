@@ -240,12 +240,14 @@ async fn an_untouched_lever_is_disengaged_and_names_itself() {
     }
 }
 
-/// The member names `SafetyLever` declares, and nothing else.
+/// The member names `SafetyLever` is declared with, and nothing else.
 ///
-/// SOURCE: the model's `com.amazonaws.fis#SafetyLever` structure
-/// (`smithy_query(query="shape",shape="SafetyLever")`), whose members are `id`, `arn` and
-/// `state`.
-const SAFETY_LEVER_MEMBERS: [&str; 3] = ["id", "arn", "state"];
+/// SOURCE: `com.amazonaws.fis#SafetyLever` in this crate's overlay model
+/// (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`), which
+/// restates the snapshot's `id`, `arn` and `state`
+/// (`smithy_query(query="shape",shape="SafetyLever")`) with the `accountId` the recorded
+/// wire carries beside them.
+const SAFETY_LEVER_MEMBERS: [&str; 4] = ["id", "arn", "state", "accountId"];
 
 /// The member names `SafetyLeverState` declares.
 ///
@@ -261,7 +263,7 @@ fn keys(case: &str, what: &str, value: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn the_reported_lever_carries_only_the_members_the_model_declares() {
+async fn the_reported_lever_carries_only_the_members_it_is_declared_with() {
     // The rows differ along what the lever has been asked for, which is what decides
     // whether `reason` is carried and which status is reported: an untouched lever, one
     // whose engage is still taking effect, and a disengaged one. The disengage is asked of
@@ -298,7 +300,8 @@ async fn the_reported_lever_carries_only_the_members_the_model_declares() {
         for member in keys(case, "the safetyLever", &reported) {
             assert!(
                 SAFETY_LEVER_MEMBERS.contains(&member.as_str()),
-                "case {case:?}: {member:?} is not a member SafetyLever declares, got {reported:?}"
+                "case {case:?}: {member:?} is not a member SafetyLever is declared with, got \
+                 {reported:?}"
             );
         }
         for member in SAFETY_LEVER_MEMBERS {

@@ -523,8 +523,8 @@ async fn a_page_carries_at_most_the_size_the_request_asked_for() {
     ];
 
     // The page sizes a row asks for: below the listing's size, at it, past it, and the
-    // modelled maximum (`maxResults` range 1..100).
-    for page_size in [1_u32, 2, 3, 4, 100] {
+    // declared maximum (`maxResults` range 1..25, see `smithy-model/LOCAL-ADDITIONS.md`).
+    for page_size in [1_u32, 2, 3, 4, 25] {
         let case = format!("pages of {page_size}");
         let mut walked: Vec<String> = Vec::new();
         let mut token: Option<String> = None;

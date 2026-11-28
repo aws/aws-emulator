@@ -6,6 +6,11 @@
 //! `SetV2LoggingLevel` persisted ([`crate::state::LoggedTarget`]) — one page at a time,
 //! narrowed to the target type the request names when it names one.
 //!
+//! The `targetType` is held to the value set the wire admits, which is wider than the
+//! published snapshot's `LogTargetType`: this operation's input is declared from this
+//! crate's overlay model (see `smithy-model/LOCAL-ADDITIONS.md` and
+//! `super::types::list_v2_logging_levels_types`).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements

@@ -13,7 +13,7 @@
 //!   step the store holds for the calling Region is reported, in the step-execution-id order
 //!   the index holds them in, whatever order they were filed in, and a step whose build
 //!   version this Region does not hold is reported by no Region;
-//! * `maxResults` bounds the page at 1..100, with the documented default of 25 entries when
+//! * `maxResults` bounds the page at 1..25, with the documented default of 25 entries when
 //!   the request names none, and a page that does not exhaust the set answers a
 //!   `nextToken` that continues THAT listing alone — a token this store did not issue, or one
 //!   issued for another Region's endpoint, is refused as the value of the parameter it
@@ -49,11 +49,10 @@ const REGION: &str = "us-west-2";
 /// Region's resources.
 const OTHER_REGION: &str = "eu-west-1";
 
-/// The largest page size a request may ask for: the modelled `maxResults` range's own
-/// maximum (`smithy_query(query="operation",operation="ListWaitingWorkflowSteps")` reports
-/// `maxResults` range 1..100, and the member documents "The largest page size that you can
-/// request is 100 items").
-const MAX_STEPS_PER_PAGE: usize = 100;
+/// The largest page the declared `maxResults` admits: the maximum Image Builder enforces,
+/// declared in `smithy-model/local-additions.json` (see `smithy-model/LOCAL-ADDITIONS.md`)
+/// as `range 1..25`.
+const MAX_STEPS_PER_PAGE: usize = 25;
 
 /// The most steps one page carries when the request asks for no page size, from the same
 /// member's documentation: "If you don't specify a value, Image Builder returns up to 25

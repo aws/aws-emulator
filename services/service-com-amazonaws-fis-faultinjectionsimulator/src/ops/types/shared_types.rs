@@ -384,13 +384,9 @@ pub struct ExperimentReportS3Report {
     pub report_type: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.fis#SafetyLever")]
-#[derive(Debug, Clone, Default)]
-pub struct SafetyLever {
-    pub id: Option<String>,
-    pub arn: Option<String>,
-    pub state: Option<SafetyLeverState>,
-}
+// `SafetyLever` is NOT declared here: the wire carries a member the snapshot does not
+// declare, so it is generated from this crate's overlay model instead (see
+// `super::safety_lever_wire` and `smithy-model/LOCAL-ADDITIONS.md`).
 
 #[smithy_macros::smithy(shape = "com.amazonaws.fis#SafetyLeverState")]
 #[derive(Debug, Clone, Default)]

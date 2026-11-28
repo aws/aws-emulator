@@ -6,6 +6,12 @@
 //! ([`crate::state::LoggedTarget`]), so `ListV2LoggingLevels` no longer reports that
 //! target.
 //!
+//! The `targetType` is held to the value set the wire admits, which is wider than the
+//! published snapshot's `LogTargetType`: this operation's input is declared from this
+//! crate's overlay model (see `smithy-model/LOCAL-ADDITIONS.md` and
+//! `super::types::delete_v2_logging_level_types`), so the value the snapshot omits is
+//! served here and listed in the refusal of a value outside the set.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements

@@ -22,7 +22,7 @@ use crate::ops::types::{
     AccountSetting, Check, ConnectivityInfo, Connector, ConnectorCheck, EipAssociation, Environment,
     EnvironmentSummary, Host, InstanceTypeEsxVersionsInfo, LicenseInfo, NetworkInterface,
     ResourceNotFoundException, ServiceAccessSecurityGroups, ValidationException, VcfHostnames,
-    VcfVersionInfo, Vlan, VmEntitlement, INSTANCE_TYPE_VALUES,
+    VcfVersionInfo, Vlan, VmEntitlement,
 };
 
 /// Whether IAM lets a request to this service perform the action it asks for — the
@@ -2968,13 +2968,27 @@ pub struct ProvidedVcfVersion {
     /// provided by Amazon EVS for this VCF version for creating environments"
     /// (`VcfVersionInfo$instanceTypes`), stated PER version: a version is offered a subset
     /// of the modelled `InstanceType` values, which is the whole of
-    /// [`INSTANCE_TYPE_VALUES`] for a version offered on every type Amazon EVS provides
+    /// [`PROVIDED_INSTANCE_TYPES`] for a version offered on every type Amazon EVS provides
     /// and a narrower list for one it does not. Published AND applied: a host is built on
     /// one of the types its environment's version names here
     /// ([`unprovided_instance_type_failure`]), so the discovery call does not report a
     /// restriction the create paths let through.
     pub instance_types: &'static [&'static str],
 }
+
+/// The EC2 instance types Amazon EVS PROVIDES, in the order its version catalogue states
+/// them.
+///
+/// Service-catalogue data, like [`OFFERED_ESX_BUILDS`]: which hardware Amazon EVS offers is
+/// a fact it publishes per instance type, so this list moves as it adds hardware while its
+/// FORM does not. It is NOT the `InstanceType` enum: that enum is every value the API can
+/// SPELL — a value a request may carry and a response may name — while this is the hardware
+/// the service offers environments on, which is what `GetVersions` reports
+/// ([`instance_type_esx_versions`]) and what the create paths hold a host to
+/// ([`unprovided_instance_type_failure`]). Every entry is a modelled `InstanceType`
+/// ([`crate::ops::types::INSTANCE_TYPE_VALUES`]), because a type the API cannot spell
+/// cannot be asked for.
+pub const PROVIDED_INSTANCE_TYPES: &[&str] = &["i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl"];
 
 /// The VCF versions Amazon EVS provides, in the order its catalogue states them (the
 /// order the `VcfVersion` enum declares them).
@@ -2999,14 +3013,14 @@ pub const PROVIDED_VCF_VERSIONS: &[ProvidedVcfVersion] = &[
         status: VERSION_STATUS_AVAILABLE,
         esx_line: ESX_LINE_8_0_U3,
         default_esx_version: "ESXi-8.0U3g-24859861",
-        instance_types: INSTANCE_TYPE_VALUES,
+        instance_types: PROVIDED_INSTANCE_TYPES,
     },
     ProvidedVcfVersion {
         vcf_version: VCF_VERSION_SELF_DEPLOYED,
         status: VERSION_STATUS_AVAILABLE,
         esx_line: ESX_LINE_9,
         default_esx_version: "ESXi-9.0.2.0.25148076",
-        instance_types: INSTANCE_TYPE_VALUES,
+        instance_types: PROVIDED_INSTANCE_TYPES,
     },
 ];
 
@@ -3154,7 +3168,11 @@ pub fn provided_vcf_versions() -> Vec<VcfVersionInfo> {
 /// The ESX versions offered for each EC2 instance type — what `GetVersions` reports as
 /// `instanceTypeEsxVersions`.
 ///
-/// One entry per `InstanceType` the model declares, each carrying every build of
+/// One entry per EC2 instance type Amazon EVS PROVIDES ([`PROVIDED_INSTANCE_TYPES`]) rather
+/// than one per `InstanceType` the model declares: "Information about ESX versions offered
+/// for each EC2 instance type" states the hardware the service offers, and a type it offers
+/// no environment on is hardware it does not provide, so reporting one would offer ESX
+/// builds on hardware no version can be created on. Each entry carries every build of
 /// [`OFFERED_ESX_BUILDS`] in catalogue order: "The list of ESX versions offered for this
 /// instance type" is what Amazon EVS can install on that hardware, and neither the model
 /// nor this service ties a build to an instance type — which build a host runs is decided
@@ -3167,11 +3185,12 @@ pub fn provided_vcf_versions() -> Vec<VcfVersionInfo> {
 ///
 /// Consistent with [`provided_vcf_versions`] BY CONSTRUCTION, because a version's default
 /// is an entry of that same build catalogue, on the release line its own entry names
-/// ([`ProvidedVcfVersion::esx_line`]): every provided VCF version's `defaultEsxVersion`
-/// appears among the `esxVersions` of every instance type it lists, so the two halves of
-/// one response cannot disagree.
+/// ([`ProvidedVcfVersion::esx_line`]), and every type a version lists is one this catalogue
+/// provides: every provided VCF version's `defaultEsxVersion` appears among the
+/// `esxVersions` of every instance type it lists, so the two halves of one response cannot
+/// disagree.
 pub fn instance_type_esx_versions() -> Vec<InstanceTypeEsxVersionsInfo> {
-    INSTANCE_TYPE_VALUES
+    PROVIDED_INSTANCE_TYPES
         .iter()
         .map(|instance_type| InstanceTypeEsxVersionsInfo {
             instance_type: (*instance_type).to_string(),

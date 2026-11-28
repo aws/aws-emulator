@@ -1,0 +1,96 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.cloudwatchomni#ViewName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 6, "max": 256 },
+        "smithy.api#pattern": "^view\\.[a-z0-9][a-z0-9._-]{0,250}$"
+      }
+    },
+    "com.amazonaws.cloudwatchomni#CreateViewRequest": {
+      "type": "structure",
+      "members": {
+        "name": {
+          "target": "com.amazonaws.cloudwatchomni#ViewName",
+          "traits": { "smithy.api#required": {} }
+        },
+        "definition": {
+          "target": "com.amazonaws.cloudwatchomni#ViewDefinition",
+          "traits": { "smithy.api#required": {} }
+        },
+        "description": { "target": "com.amazonaws.cloudwatchomni#ViewDescription" },
+        "tags": { "target": "com.amazonaws.cloudwatchomni#TagMap" },
+        "clientToken": {
+          "target": "smithy.api#String",
+          "traits": {
+            "smithy.api#length": { "min": 1, "max": 64 },
+            "smithy.api#pattern": "^[!-~]+$",
+            "smithy.api#idempotencyToken": {}
+          }
+        }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#GetViewRequest": {
+      "type": "structure",
+      "members": {
+        "name": {
+          "target": "com.amazonaws.cloudwatchomni#ViewName",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#UpdateViewRequest": {
+      "type": "structure",
+      "members": {
+        "name": {
+          "target": "com.amazonaws.cloudwatchomni#ViewName",
+          "traits": { "smithy.api#required": {} }
+        },
+        "definition": { "target": "com.amazonaws.cloudwatchomni#ViewDefinition" },
+        "description": { "target": "com.amazonaws.cloudwatchomni#ViewDescription" }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#DeleteViewRequest": {
+      "type": "structure",
+      "members": {
+        "name": {
+          "target": "com.amazonaws.cloudwatchomni#ViewName",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#ViewDefinition": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 10000 }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#ViewDescription": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "max": 1024 }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#TagMap": {
+      "type": "map",
+      "key": { "target": "com.amazonaws.cloudwatchomni#TagKey" },
+      "value": { "target": "com.amazonaws.cloudwatchomni#TagValue" },
+      "traits": {
+        "smithy.api#length": { "max": 50 }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#TagKey": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 128 }
+      }
+    },
+    "com.amazonaws.cloudwatchomni#TagValue": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 256 }
+      }
+    }
+  }
+}

@@ -2,26 +2,26 @@
 
 //! WHICH page size each listing of this service refuses, end to end over the wire.
 //!
-//! RULE under test: **a page size is held to the bound the LISTING publishes, and a
-//! listing that never pages publishes no maximum — the listings that page refuse a
-//! `maxResults` past their published maximum, while the add-on version CATALOG, which
+//! RULE under test: **a page size is held to the bounds the LISTING publishes, and a
+//! listing that never pages publishes none — the listings that page refuse a `maxResults`
+//! outside their published range, at either end, while the add-on version CATALOG, which
 //! the recorded service answers WHOLE whatever the request asks for, serves every page
-//! size at or above the published minimum and ignores it. Below that minimum there is no
-//! page to serve at all, so every listing alike refuses it. Every one of these refusals
-//! is HTTP 400 `InvalidParameterException` in this API's own page-size sentence, and it
-//! is answered before the request's resource is resolved, so the complaint is about the
-//! page the caller asked for and not about any cluster.**
+//! size and ignores it: a listing with no page after the first cuts nothing at a page
+//! size, so the member bounds nothing. Every one of the paging listings' refusals is HTTP
+//! 400 `InvalidParameterException` in this API's own page-size sentence, and it is answered
+//! before the request's resource is resolved, so the complaint is about the page the caller
+//! asked for and not about any cluster.**
 //!
 //! The recorded corpus is what says which half a listing is in: `DescribeAddonVersions`
-//! answers a `maxResults` above the bound its member's documentation prints ("This value
-//! can be between 1 and 100") with the whole catalog, so the published maximum is not a
-//! bound this listing enforces; the paging listings answer one past their maximum with
-//! the sentence. The rows below span both halves and, inside each, what the rule
-//! generalises over: which listing (the catalog, two listings of a cluster's children
-//! addressed by a cluster NAME, and two whose whole address is a query string), and how
-//! far outside the published bound the asked-for page is — one past the maximum, far
-//! past it, the largest value a page size can be spelled as, one below the minimum and a
-//! negative page size.
+//! answers a `maxResults` outside the range its member's documentation prints ("This value
+//! can be between 1 and 100") with the whole catalog, above the maximum and below the
+//! minimum alike, so that range is not one this listing enforces; the paging listings
+//! answer one outside theirs with the sentence. The rows below span both halves and, inside
+//! each, what the rule generalises over: which listing (the catalog, two listings of a
+//! cluster's children addressed by a cluster NAME, and two whose whole address is a query
+//! string), and how far outside the published bound the asked-for page is — one past the
+//! maximum, far past it, the largest value a page size can be spelled as, one below the
+//! minimum and a negative page size.
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
     self, MAX_LIST_MAX_RESULTS, MIN_LIST_MAX_RESULTS,
@@ -43,13 +43,13 @@ const INVALID_PARAMETER: &str = "InvalidParameterException";
 const ABSENT_CLUSTER: &str = "page-size-no-such-cluster";
 
 /// One listing: the case it is named by, the path it is addressed at, and whether the
-/// maximum its model shape declares is one the listing ENFORCES.
+/// range its model shape declares is one the listing ENFORCES.
 struct Listing {
     case: &'static str,
     path: &'static str,
     /// `false` for a listing the recorded service answers whole whatever the page size
     /// says — the add-on version catalog, which has no page after the first.
-    enforces_maximum: bool,
+    enforces_range: bool,
 }
 
 /// Every listing of this service that takes a `maxResults`, with the half of the rule it
@@ -58,27 +58,27 @@ const LISTINGS: &[Listing] = &[
     Listing {
         case: "the add-on version catalog",
         path: "/addons/supported-versions",
-        enforces_maximum: false,
+        enforces_range: false,
     },
     Listing {
         case: "the cluster listing",
         path: "/clusters",
-        enforces_maximum: true,
+        enforces_range: true,
     },
     Listing {
         case: "the published cluster-version calendar",
         path: "/cluster-versions",
-        enforces_maximum: true,
+        enforces_range: true,
     },
     Listing {
         case: "a cluster's add-on listing",
         path: concat!("/clusters/", "page-size-no-such-cluster", "/addons"),
-        enforces_maximum: true,
+        enforces_range: true,
     },
     Listing {
         case: "a cluster's node-group listing",
         path: concat!("/clusters/", "page-size-no-such-cluster", "/node-groups"),
-        enforces_maximum: true,
+        enforces_range: true,
     },
 ];
 
@@ -129,29 +129,37 @@ async fn a_page_size_past_the_maximum_is_refused_only_where_the_listing_pages() 
         ] {
             let case = format!("{} at maxResults={page_size}", listing.case);
             let answer = listed(&router, listing, page_size).await;
-            if listing.enforces_maximum {
+            if listing.enforces_range {
                 assert_page_size_refusal(&case, &answer);
                 continue;
             }
             assert_eq!(
                 answer.status, 200,
-                "case {case:?}: a listing that never pages serves every page size at or above \
-                 the minimum, got {answer:?}"
+                "case {case:?}: a listing that never pages serves every page size, got \
+                 {answer:?}"
             );
         }
     }
 }
 
 #[tokio::test]
-async fn a_page_size_below_the_minimum_is_refused_by_every_listing() {
+async fn a_page_size_below_the_minimum_is_refused_only_where_the_listing_pages() {
     let router = emulator();
 
     // Rows: every listing, at every size below the published minimum — the value one
-    // below it and a negative page size, neither of which names a page at all.
+    // below it, a negative page size and a far negative one, none of which names a page.
     for listing in LISTINGS {
         for page_size in [MIN_LIST_MAX_RESULTS - 1, -MIN_LIST_MAX_RESULTS, -100] {
             let case = format!("{} at maxResults={page_size}", listing.case);
             let answer = listed(&router, listing, page_size).await;
+            if !listing.enforces_range {
+                assert_eq!(
+                    answer.status, 200,
+                    "case {case:?}: a listing that never pages serves every page size, got \
+                     {answer:?}"
+                );
+                continue;
+            }
             assert_page_size_refusal(&case, &answer);
             // The complaint is about the page, not about the resource: the two listings
             // addressed by a cluster NAME name a cluster this suite never created, and the
@@ -166,7 +174,7 @@ async fn a_page_size_below_the_minimum_is_refused_by_every_listing() {
 }
 
 #[tokio::test]
-async fn the_catalog_serves_the_same_listing_at_every_page_size_it_admits() {
+async fn the_catalog_serves_the_same_listing_at_every_page_size() {
     let router = emulator();
 
     /// The add-on names one answer reports, in the order it reports them.
@@ -196,10 +204,12 @@ async fn the_catalog_serves_the_same_listing_at_every_page_size_it_admits() {
         unbounded.body
     );
 
-    // Rows: the published minimum, a size between the bounds, the documented maximum and
-    // sizes past it — the catalog is answered WHOLE at every one of them, and no page
-    // token is minted, because there is no page after the first.
+    // Rows: below the published minimum, the minimum itself, a size between the bounds,
+    // the documented maximum and sizes past it — the catalog is answered WHOLE at every
+    // one of them, and no page token is minted, because there is no page after the first.
     for page_size in [
+        -1,
+        MIN_LIST_MAX_RESULTS - 1,
         MIN_LIST_MAX_RESULTS,
         2,
         MAX_LIST_MAX_RESULTS,

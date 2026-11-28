@@ -2376,9 +2376,9 @@ impl SafetyLeverRecord {
     /// The `SafetyLever` every safety-lever operation reports for this record, named by
     /// `id` and carrying its ARN in `region`.
     ///
-    /// The lever belongs to the account this emulator serves, and `SafetyLever` carries
-    /// that account in exactly one place — its ARN ([`safety_lever_arn`]) — so the report
-    /// names the account there and nowhere else.
+    /// The lever belongs to the account this emulator serves, and the report names that
+    /// account in both places that carry it: the lever's own `accountId` and its ARN
+    /// ([`safety_lever_arn`]).
     pub fn to_safety_lever(&self, id: &str, region: &str) -> SafetyLever {
         SafetyLever {
             id: Some(id.to_string()),
@@ -2387,6 +2387,7 @@ impl SafetyLeverRecord {
                 status: Some(self.status.as_wire().to_string()),
                 reason: self.reason.clone(),
             }),
+            account_id: Some(::engine::emulator_account_id().to_string()),
         }
     }
 }

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! The `SafetyLever` every safety-lever operation reports carries EXACTLY the members the
-//! service's model declares for it — no more, no fewer — whichever operation reports it,
+//! shape it is declared from gives it — no more, no fewer — whichever operation reports it,
 //! whichever Region it is signed for and whatever state the lever is in.
 //!
-//! A reported structure is the model's structure: a member the model does not declare is
-//! not something a client can read, and a member it does declare has to be filled.
-//! `SafetyLever` declares `id`, `arn` and `state` only, so the account the lever belongs to
-//! is named by its ARN and nowhere else.
+//! A reported structure is the declared structure: a member outside it is not something a
+//! client can read, and a member inside it has to be filled. The shape is declared from
+//! this crate's overlay model (`smithy-model/local-additions.json`, see
+//! `smithy-model/LOCAL-ADDITIONS.md`), which carries the account the lever belongs to
+//! beside the snapshot's own `id`, `arn` and `state` — so the account is reported in both
+//! places that name it, the lever's `accountId` and its ARN.
 //!
 //! Both operations that report a lever — `GetSafetyLever` and `UpdateSafetyLeverState` —
 //! are driven over HTTP through the router, so each case exercises routing,
@@ -31,16 +33,18 @@ const ACCOUNT_ID: &str = "000000000000";
 /// publishes no API that creates or enumerates one.
 const LEVER_ID: &str = "default";
 
-/// The member names `SafetyLever` declares, and nothing else.
+/// The member names `SafetyLever` is declared with, and nothing else.
 ///
-/// SOURCE: the model's `com.amazonaws.fis#SafetyLever` structure
-/// (`smithy_query(query="shape",shape="SafetyLever")`), whose members are `id`, `arn` and
-/// `state`.
-const SAFETY_LEVER_MEMBERS: [&str; 3] = ["id", "arn", "state"];
+/// SOURCE: `com.amazonaws.fis#SafetyLever` in this crate's overlay model
+/// (`smithy-model/local-additions.json`), which restates the snapshot's `id`, `arn` and
+/// `state` (`smithy_query(query="shape",shape="SafetyLever")`) with the `accountId` the
+/// recorded wire carries beside them.
+const SAFETY_LEVER_MEMBERS: [&str; 4] = ["id", "arn", "state", "accountId"];
 
 /// The member names `SafetyLeverState` declares, and nothing else.
 ///
-/// SOURCE: the model's `com.amazonaws.fis#SafetyLeverState` structure.
+/// SOURCE: the model's `com.amazonaws.fis#SafetyLeverState` structure, restated unchanged
+/// in the overlay.
 const SAFETY_LEVER_STATE_MEMBERS: [&str; 2] = ["status", "reason"];
 
 /// The values `SafetyLeverStatus` admits — what a lever can REPORT.
@@ -158,9 +162,9 @@ fn expected(members: &[&str]) -> Vec<String> {
     names
 }
 
-/// Assert that the `safetyLever` of a 200 answer is the model's structure: exactly the
+/// Assert that the `safetyLever` of a 200 answer is the declared structure: exactly the
 /// declared members, each filled, the state exactly the declared state members, a status
-/// the enum admits, and the account named only by the ARN.
+/// the enum admits, and the account named by both members that carry it.
 fn assert_is_the_modelled_lever(case: &str, answer: &Answer, region: &str) -> Value {
     assert_eq!(
         answer.status, 200,
@@ -178,15 +182,21 @@ fn assert_is_the_modelled_lever(case: &str, answer: &Answer, region: &str) -> Va
     assert_eq!(
         keys(case, "the safetyLever", &lever),
         expected(&SAFETY_LEVER_MEMBERS),
-        "case {case:?}: expected exactly the members SafetyLever declares, got {lever:?}"
+        "case {case:?}: expected exactly the members SafetyLever is declared with, got \
+         {lever:?}"
     );
     assert_eq!(
         lever["id"].as_str().unwrap_or_default(),
         LEVER_ID,
         "case {case:?}: expected the lever to name the account's one lever, got {lever:?}"
     );
-    // The account the lever belongs to is named by its ARN, which is the only member that
-    // carries it.
+    // The account the lever belongs to is named by both members that carry it: the lever's
+    // own `accountId` and its ARN.
+    assert_eq!(
+        lever["accountId"].as_str().unwrap_or_default(),
+        ACCOUNT_ID,
+        "case {case:?}: expected the lever to name the account it belongs to, got {lever:?}"
+    );
     assert_eq!(
         lever["arn"].as_str().unwrap_or_default(),
         format!("arn:aws:fis:{region}:{ACCOUNT_ID}:safety-lever/{LEVER_ID}"),
@@ -197,7 +207,8 @@ fn assert_is_the_modelled_lever(case: &str, answer: &Answer, region: &str) -> Va
     assert_eq!(
         keys(case, "the lever state", &state),
         expected(&SAFETY_LEVER_STATE_MEMBERS),
-        "case {case:?}: expected exactly the members SafetyLeverState declares, got {state:?}"
+        "case {case:?}: expected exactly the members SafetyLeverState is declared with, \
+         got {state:?}"
     );
     let status = state["status"].as_str().unwrap_or_default();
     assert!(

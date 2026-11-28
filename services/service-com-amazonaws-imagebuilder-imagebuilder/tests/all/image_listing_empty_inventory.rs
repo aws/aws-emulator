@@ -49,12 +49,12 @@ const EMPTY_OWNERSHIPS: &[&str] = &["Self", "Shared", "ThirdParty", "AWSMarketpl
 /// platform type version").
 const FILTER_MEMBERS: &[&str] = &["name", "osVersion", "platform", "type", "version"];
 
-/// The largest page size the modelled `maxResults` admits, which the member documents as
-/// "The largest page size that you can request is 100 items."
-const MAX_PAGE_SIZE: usize = 100;
+/// The largest page size the declared `maxResults` admits: the maximum Image Builder
+/// enforces, declared in `smithy-model/local-additions.json` (see
+/// `smithy-model/LOCAL-ADDITIONS.md`).
+const MAX_PAGE_SIZE: usize = 25;
 
-/// The published bounds of `maxResults`
-/// (`smithy_query(query="operation",operation="ListImages")` reports `range 1..100`).
+/// The declared bounds of `maxResults` (that same `range 1..25`).
 const PAGE_SIZE_BOUNDS: &[usize] = &[1, MAX_PAGE_SIZE];
 
 /// One emulator with an empty store, mounted exactly as the router mounts it, beside the

@@ -1,0 +1,359 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.imagebuilder#RestrictedInteger": {
+      "type": "integer",
+      "traits": {
+        "smithy.api#range": { "min": 1, "max": 25 }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListComponentsRequest": {
+      "type": "structure",
+      "members": {
+        "owner": { "target": "com.amazonaws.imagebuilder#Ownership" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "byName": {
+          "target": "com.amazonaws.imagebuilder#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListComponentBuildVersionsRequest": {
+      "type": "structure",
+      "members": {
+        "componentVersionArn": { "target": "com.amazonaws.imagebuilder#ComponentVersionArn" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListContainerRecipesRequest": {
+      "type": "structure",
+      "members": {
+        "owner": { "target": "com.amazonaws.imagebuilder#Ownership" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListDistributionConfigurationsRequest": {
+      "type": "structure",
+      "members": {
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImageBuildVersionsRequest": {
+      "type": "structure",
+      "members": {
+        "imageVersionArn": { "target": "com.amazonaws.imagebuilder#ImageVersionArn" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImagePackagesRequest": {
+      "type": "structure",
+      "members": {
+        "imageBuildVersionArn": {
+          "target": "com.amazonaws.imagebuilder#ImageBuildVersionArn",
+          "traits": { "smithy.api#required": {} }
+        },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImagePipelineImagesRequest": {
+      "type": "structure",
+      "members": {
+        "imagePipelineArn": {
+          "target": "com.amazonaws.imagebuilder#ImagePipelineArn",
+          "traits": { "smithy.api#required": {} }
+        },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImagePipelinesRequest": {
+      "type": "structure",
+      "members": {
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImageRecipesRequest": {
+      "type": "structure",
+      "members": {
+        "owner": { "target": "com.amazonaws.imagebuilder#Ownership" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImageScanFindingsRequest": {
+      "type": "structure",
+      "members": {
+        "filters": { "target": "com.amazonaws.imagebuilder#ImageScanFindingsFilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListImagesRequest": {
+      "type": "structure",
+      "members": {
+        "owner": { "target": "com.amazonaws.imagebuilder#Ownership" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "byName": {
+          "target": "com.amazonaws.imagebuilder#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" },
+        "includeDeprecated": { "target": "com.amazonaws.imagebuilder#NullableBoolean" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListInfrastructureConfigurationsRequest": {
+      "type": "structure",
+      "members": {
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListLifecycleExecutionResourcesRequest": {
+      "type": "structure",
+      "members": {
+        "lifecycleExecutionId": {
+          "target": "com.amazonaws.imagebuilder#LifecycleExecutionId",
+          "traits": { "smithy.api#required": {} }
+        },
+        "parentResourceId": { "target": "com.amazonaws.imagebuilder#NonEmptyString" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListLifecycleExecutionsRequest": {
+      "type": "structure",
+      "members": {
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" },
+        "resourceArn": {
+          "target": "com.amazonaws.imagebuilder#ImageBuilderArn",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListLifecyclePoliciesRequest": {
+      "type": "structure",
+      "members": {
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListWaitingWorkflowStepsRequest": {
+      "type": "structure",
+      "members": {
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListWorkflowBuildVersionsRequest": {
+      "type": "structure",
+      "members": {
+        "workflowVersionArn": {
+          "target": "com.amazonaws.imagebuilder#WorkflowWildcardVersionArn"
+        },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListWorkflowExecutionsRequest": {
+      "type": "structure",
+      "members": {
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" },
+        "imageBuildVersionArn": {
+          "target": "com.amazonaws.imagebuilder#ImageBuildVersionArn",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListWorkflowStepExecutionsRequest": {
+      "type": "structure",
+      "members": {
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" },
+        "workflowExecutionId": {
+          "target": "com.amazonaws.imagebuilder#WorkflowExecutionId",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.imagebuilder#ListWorkflowsRequest": {
+      "type": "structure",
+      "members": {
+        "owner": { "target": "com.amazonaws.imagebuilder#Ownership" },
+        "filters": { "target": "com.amazonaws.imagebuilder#FilterList" },
+        "byName": {
+          "target": "com.amazonaws.imagebuilder#Boolean",
+          "traits": { "smithy.api#default": false }
+        },
+        "maxResults": { "target": "com.amazonaws.imagebuilder#RestrictedInteger" },
+        "nextToken": { "target": "com.amazonaws.imagebuilder#PaginationToken" }
+      }
+    },
+    "com.amazonaws.imagebuilder#PaginationToken": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 65535 }
+      }
+    },
+    "com.amazonaws.imagebuilder#NonEmptyString": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1024 }
+      }
+    },
+    "com.amazonaws.imagebuilder#Boolean": {
+      "type": "boolean",
+      "traits": {
+        "smithy.api#default": false
+      }
+    },
+    "com.amazonaws.imagebuilder#NullableBoolean": {
+      "type": "boolean"
+    },
+    "com.amazonaws.imagebuilder#Ownership": {
+      "type": "enum",
+      "members": {
+        "SELF": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "Self" }
+        },
+        "SHARED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "Shared" }
+        },
+        "AMAZON": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "Amazon" }
+        },
+        "THIRDPARTY": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ThirdParty" }
+        },
+        "AWS_MARKETPLACE": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "AWSMarketplace" }
+        }
+      }
+    },
+    "com.amazonaws.imagebuilder#FilterList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.imagebuilder#Filter" },
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 10 }
+      }
+    },
+    "com.amazonaws.imagebuilder#Filter": {
+      "type": "structure",
+      "members": {
+        "name": { "target": "com.amazonaws.imagebuilder#FilterName" },
+        "values": { "target": "com.amazonaws.imagebuilder#FilterValues" }
+      }
+    },
+    "com.amazonaws.imagebuilder#FilterName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[a-zA-Z]{1,1024}$"
+      }
+    },
+    "com.amazonaws.imagebuilder#FilterValues": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.imagebuilder#FilterValue" },
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 10 }
+      }
+    },
+    "com.amazonaws.imagebuilder#FilterValue": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[0-9a-zA-Z./_ :,{}\"*-]{1,1024}$"
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageScanFindingsFilterList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.imagebuilder#ImageScanFindingsFilter" },
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1 }
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageScanFindingsFilter": {
+      "type": "structure",
+      "members": {
+        "name": { "target": "com.amazonaws.imagebuilder#FilterName" },
+        "values": { "target": "com.amazonaws.imagebuilder#ImageScanFindingsFilterValues" }
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageScanFindingsFilterValues": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.imagebuilder#FilterValue" },
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 1 }
+      }
+    },
+    "com.amazonaws.imagebuilder#ComponentVersionArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):component/[a-z0-9-_]+/[0-9]+\\.[0-9]+\\.[0-9]+$"
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageVersionArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\\.[0-9]+\\.[0-9]+$"
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageBuildVersionArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):image/[a-z0-9-_]+/[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]+$"
+      }
+    },
+    "com.amazonaws.imagebuilder#ImagePipelineArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws):image-pipeline/[a-z0-9-_]+$"
+      }
+    },
+    "com.amazonaws.imagebuilder#LifecycleExecutionId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^lce-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+      }
+    },
+    "com.amazonaws.imagebuilder#ImageBuilderArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws[^:]*:imagebuilder:[^:]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?|third-party):(?:image-recipe|container-recipe|infrastructure-configuration|distribution-configuration|component|image|image-pipeline|lifecycle-policy|workflow\\/(?:build|test|distribution))/[a-z0-9-_]+(?:/(?:(?:x|[0-9]+)\\.(?:x|[0-9]+)\\.(?:x|[0-9]+))(?:/[0-9]+)?)?$"
+      }
+    },
+    "com.amazonaws.imagebuilder#WorkflowWildcardVersionArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^arn:aws(?:-[a-z]+)*:imagebuilder:[a-z]{2,}(?:-[a-z]+)+-[0-9]+:(?:[0-9]{12}|aws(?:-[a-z-]+)?):workflow/(build|test|distribution)/[a-z0-9-_]+/(?:[0-9]+|x)\\.(?:[0-9]+|x)\\.(?:[0-9]+|x)$"
+      }
+    },
+    "com.amazonaws.imagebuilder#WorkflowExecutionId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^wf-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+      }
+    }
+  }
+}

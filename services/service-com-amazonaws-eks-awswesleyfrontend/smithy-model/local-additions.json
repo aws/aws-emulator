@@ -38,10 +38,7 @@
       }
     },
     "com.amazonaws.eks#DescribeAddonVersionsRequestMaxResults": {
-      "type": "integer",
-      "traits": {
-        "smithy.api#range": { "min": 1 }
-      }
+      "type": "integer"
     },
     "com.amazonaws.eks#StringList": {
       "type": "list",

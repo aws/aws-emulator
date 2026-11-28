@@ -5,15 +5,16 @@
 //! The `@generated` marker is absent on purpose, and this file is HAND-WRITTEN at a
 //! generated path: the published model snapshot beside it is kept EXACTLY as shipped, and
 //! the one member whose published constraint is not the one the service enforces —
-//! `DescribeAddonVersionsRequest$maxResults`, whose target shape carries a `@range`
-//! maximum of a hundred where the recorded service answers a larger page size with the
-//! whole catalog — is declared from the small overlay model
-//! `smithy-model/local-additions.json` instead (see `smithy-model/LOCAL-ADDITIONS.md`).
+//! `DescribeAddonVersionsRequest$maxResults`, whose target shape carries a `@range` of one
+//! to a hundred where the recorded service answers the whole catalog at every page size,
+//! above that maximum and below that minimum alike — is declared from the small overlay
+//! model `smithy-model/local-additions.json` instead (see
+//! `smithy-model/LOCAL-ADDITIONS.md`).
 //! The overlay restates that structure against the snapshot's own members and query
 //! bindings, so the request is read exactly as the snapshot binds it, and only the page
-//! size's maximum is dropped — its minimum of one stays, because a page size below one
-//! names no page. Nothing about the wire is hand-written: the member names, the shape ids,
-//! the query bindings and the remaining constraints all come from a model file.
+//! size's range is dropped — a listing that never pages cuts nothing at a page size, so the
+//! member bounds nothing. Nothing about the wire is hand-written: the member names, the
+//! shape ids, the query bindings and the remaining constraints all come from a model file.
 //!
 //! Each structure/union is declared exactly once across this service's `types/`
 //! modules, and `types/mod.rs` re-exports them all.

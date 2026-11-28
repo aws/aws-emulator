@@ -43,8 +43,10 @@ const BUILD_DOCUMENT: &str = "name: Probe\nschemaVersion: 1.0\nphases:\n  - name
 // the test timeout, the page size, and the EBS volume size, IOPS and throughput.
 /// `ImageTestsConfiguration.timeoutMinutes` -> `ImageTestsTimeoutMinutes`.
 const TIMEOUT_RANGE: (i64, i64) = (60, 1440);
-/// A list operation's `maxResults` -> `RestrictedInteger`.
-const PAGE_SIZE_RANGE: (i64, i64) = (1, 100);
+/// A list operation's `maxResults` -> `RestrictedInteger`, as this crate declares it: the
+/// page-size maximum Image Builder enforces, which is narrower than the published snapshot's
+/// (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`).
+const PAGE_SIZE_RANGE: (i64, i64) = (1, 25);
 /// `EbsInstanceBlockDeviceSpecification.volumeSize` -> `EbsVolumeSizeInteger`.
 const VOLUME_SIZE_RANGE: (i64, i64) = (1, 16000);
 /// `EbsInstanceBlockDeviceSpecification.iops` -> `EbsIopsInteger`.

@@ -405,14 +405,22 @@ async fn create_environment_refuses_every_hosts_entry_on_a_type_its_version_is_n
                     })
                 })
                 .collect();
-            let expected_members: Vec<String> = asked_for
-                .iter()
-                .enumerate()
-                .filter(|(_, instance_type)| {
-                    !provided.iter().any(|listed| listed == *instance_type)
-                })
-                .map(|(ordinal, _)| format!("hosts[{ordinal}].instanceType"))
-                .collect();
+            let expected_members: Vec<String> = if evs::installs_vcf(vcf_version) {
+                asked_for
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, instance_type)| {
+                        !provided.iter().any(|listed| listed == *instance_type)
+                    })
+                    .map(|(ordinal, _)| format!("hosts[{ordinal}].instanceType"))
+                    .collect()
+            } else {
+                // "no hosts are added and no VCF installation is performed" for the
+                // self-deployed mode: a mode that builds no host names no hardware, so an
+                // inert entry's instance type is not held to the catalogue (see
+                // `CreateEnvironment`).
+                Vec::new()
+            };
             let (vpc_id, subnet_id) = router.fresh_network();
             let environment_name = format!("entry-types-{index}-{chunk}");
             let request = json!({

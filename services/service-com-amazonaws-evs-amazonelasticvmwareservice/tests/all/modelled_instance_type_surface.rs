@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The hardware surface of Amazon EVS is the MODEL's `InstanceType` value set, end to end
-//! over awsJson1_0.
+//! The hardware surface of Amazon EVS is the hardware its version catalogue PROVIDES, end
+//! to end over awsJson1_0.
 //!
-//! The rule under test: every EC2 instance type the model declares is hardware this
-//! service PUBLISHES and SERVES, and no string outside that set is either — `GetVersions`
-//! reports one `instanceTypeEsxVersions` entry per declared value and for nothing else,
-//! each of those types is provided for at least one VCF version the same response reports,
-//! a host asked for on it at such a version is created and read back reporting it (running
-//! on a bare metal instance of exactly that type in the account's own Amazon EC2 store),
-//! and a string outside the declared set is refused with a `ValidationException` naming
-//! the member and the value set the model declares, storing nothing.
+//! The rule under test: every EC2 instance type the catalogue provides is hardware this
+//! service PUBLISHES and SERVES, and no string outside the model's `InstanceType` value set
+//! is either — `GetVersions` reports one `instanceTypeEsxVersions` entry per provided type
+//! and for nothing else, each of those types is a declared `InstanceType` provided for at
+//! least one VCF version the same response reports, a host asked for on it at such a version
+//! is created and read back reporting it (running on a bare metal instance of exactly that
+//! type in the account's own Amazon EC2 store), and a string outside the declared set is
+//! refused with a `ValidationException` naming the member and the value set the model
+//! declares, storing nothing. Which declared types the catalogue provides — and that a
+//! declared type it provides on no version is published nowhere — is
+//! `tests/all/provided_instance_types.rs`.
 //!
 //! Where each clause comes from (`smithy_query(query="shape",
 //! shape="InstanceType,VcfVersionInfo,InstanceTypeEsxVersionsInfo,HostInfoForCreate")` and
@@ -35,10 +38,10 @@
 //!   IS that instance, so the instance the account's own Amazon EC2 store holds for it runs
 //!   the type that was asked for.
 //!
-//! The positive rows are the declared values themselves, read from the enum this crate
-//! GENERATES from the model rather than written out here, so a model that gains or loses an
-//! instance type moves this suite with it instead of leaving it behind: each row differs in
-//! which instance type is asked for and, with it, which VCF version the environment runs.
+//! The positive rows are the types the catalogue provides, read from the WIRE rather than
+//! written out here, so a catalogue that gains or loses an instance type moves this suite
+//! with it instead of leaving it behind: each row differs in which instance type is asked
+//! for and, with it, which VCF version the environment runs.
 //! The negative rows differ along the FORM a string outside the set takes: hardware Amazon
 //! EC2 offers but Amazon EVS does not, another case of a declared value, and a near-miss
 //! spelling of one.
@@ -212,30 +215,40 @@ fn held_instance_type(router: &Emulator, instance_id: &str) -> Option<String> {
 }
 
 #[tokio::test]
-async fn the_catalogue_publishes_the_modelled_instance_types_and_nothing_else() {
+async fn the_catalogue_publishes_the_instance_types_it_provides_and_nothing_else() {
     let router = emulator();
     let body = get_versions(&router).await;
     let published = published_instance_types(&body);
+    let providing = providing_versions(&body);
 
-    // The set is the `InstanceType` enum this crate generates FROM the model: the discovery
-    // call describes every type a create may ask for, and nothing a request could not name.
-    let modelled: BTreeSet<&str> = evs_types::INSTANCE_TYPE_VALUES.iter().copied().collect();
+    // The set is the hardware the catalogue's own per-version lists provide: the discovery
+    // call describes the hardware a create may ask for, and nothing a create could not be
+    // served on.
+    let provided: BTreeSet<&str> = providing.keys().map(String::as_str).collect();
     let reported: BTreeSet<&str> = published.iter().map(String::as_str).collect();
     assert_eq!(
-        reported, modelled,
-        "case \"the modelled InstanceType values\": expected {modelled:?}, got {reported:?}"
+        reported, provided,
+        "case \"the provided instance types\": expected {provided:?}, got {reported:?}"
     );
     assert_eq!(
         published.len(),
         reported.len(),
-        "case \"the modelled InstanceType values\": no instance type may be reported twice, \
+        "case \"the provided instance types\": no instance type may be reported twice, \
          got {published:?}"
+    );
+
+    // And every published type is one the API can SPELL: a value outside the model's enum
+    // could never be asked for.
+    let modelled: BTreeSet<&str> = evs_types::INSTANCE_TYPE_VALUES.iter().copied().collect();
+    assert!(
+        reported.is_subset(&modelled),
+        "case \"the provided instance types\": every published type must be a declared \
+         InstanceType {modelled:?}, got {reported:?}"
     );
 
     // And every published type is hardware an environment can actually be created on: the
     // two halves of one response agree, so the builds offered for a type are not offered on
     // hardware no provided VCF version runs.
-    let providing = providing_versions(&body);
     for instance_type in &published {
         let versions = providing.get(instance_type).map(Vec::as_slice).unwrap_or(&[]);
         assert!(
@@ -247,22 +260,22 @@ async fn the_catalogue_publishes_the_modelled_instance_types_and_nothing_else() 
 }
 
 #[tokio::test]
-async fn a_host_is_created_on_every_modelled_instance_type_and_read_back_on_it() {
+async fn a_host_is_created_on_every_provided_instance_type_and_read_back_on_it() {
     let router = emulator();
     let body = get_versions(&router).await;
     let providing = providing_versions(&body);
 
-    // One row per modelled instance type, each at a VCF version the catalogue provides that
-    // type for — a host is built only on hardware its environment's version is provided on.
-    for (index, instance_type) in evs_types::INSTANCE_TYPE_VALUES.iter().enumerate() {
+    // One row per instance type the catalogue provides, each at a VCF version it provides
+    // that type for — a host is built only on hardware its environment's version is
+    // provided on.
+    for (index, (instance_type, versions)) in providing.iter().enumerate() {
         let case = format!("a host on {instance_type}");
-        let vcf_version = providing
-            .get(*instance_type)
-            .and_then(|versions| versions.first())
+        let vcf_version = versions
+            .first()
             .unwrap_or_else(|| {
                 panic!(
-                    "case {case:?}: every modelled instance type is provided for some VCF \
-                     version, got {providing:?}"
+                    "case {case:?}: a provided instance type names the version providing it, \
+                     got {providing:?}"
                 )
             })
             .clone();
@@ -321,7 +334,7 @@ async fn a_host_is_created_on_every_modelled_instance_type_and_read_back_on_it()
         let held = held_instance_type(&router, &ec2_instance_id);
         assert_eq!(
             held.as_deref(),
-            Some(*instance_type),
+            Some(instance_type.as_str()),
             "case {case:?}: Amazon EC2 must hold the instance {ec2_instance_id} on the type \
              the host was built on, got {held:?}"
         );

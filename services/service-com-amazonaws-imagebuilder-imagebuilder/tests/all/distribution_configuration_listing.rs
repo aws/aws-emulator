@@ -42,13 +42,13 @@ const ACCOUNT: &str = "000000000000";
 /// `@httpError` 400).
 const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
 
-/// The smallest page the modelled `maxResults` admits
-/// (`smithy_query(query="operation",operation="ListDistributionConfigurations")` reports
-/// `range 1..100`).
+/// The smallest page the declared `maxResults` admits (the `RestrictedInteger` this crate
+/// declares in `smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`,
+/// carries `range 1..25`).
 const MIN_PAGE_SIZE: i64 = 1;
 
-/// The largest page the modelled `maxResults` admits (same `range 1..100`).
-const MAX_PAGE_SIZE: i64 = 100;
+/// The largest page the declared `maxResults` admits (same `range 1..25`).
+const MAX_PAGE_SIZE: i64 = 25;
 
 /// One emulator with an empty store, mounted exactly as the router mounts it.
 fn emulator() -> MultiServiceRouter {

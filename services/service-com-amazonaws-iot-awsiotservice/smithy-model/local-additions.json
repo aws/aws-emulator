@@ -1,0 +1,130 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.iot#LogTargetType": {
+      "type": "enum",
+      "members": {
+        "DEFAULT": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DEFAULT" }
+        },
+        "THING_GROUP": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "THING_GROUP" }
+        },
+        "CLIENT_ID": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "CLIENT_ID" }
+        },
+        "SOURCE_IP": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "SOURCE_IP" }
+        },
+        "PRINCIPAL_ID": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "PRINCIPAL_ID" }
+        },
+        "DEVICE_DEFENDER": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DEVICE_DEFENDER" }
+        }
+      }
+    },
+    "com.amazonaws.iot#LogTarget": {
+      "type": "structure",
+      "members": {
+        "targetType": {
+          "target": "com.amazonaws.iot#LogTargetType",
+          "traits": { "smithy.api#required": {} }
+        },
+        "targetName": { "target": "com.amazonaws.iot#LogTargetName" }
+      }
+    },
+    "com.amazonaws.iot#DeleteV2LoggingLevelRequest": {
+      "type": "structure",
+      "members": {
+        "targetType": {
+          "target": "com.amazonaws.iot#LogTargetType",
+          "traits": {
+            "smithy.api#httpQuery": "targetType",
+            "smithy.api#required": {}
+          }
+        },
+        "targetName": {
+          "target": "com.amazonaws.iot#LogTargetName",
+          "traits": {
+            "smithy.api#httpQuery": "targetName",
+            "smithy.api#required": {}
+          }
+        }
+      }
+    },
+    "com.amazonaws.iot#ListV2LoggingLevelsRequest": {
+      "type": "structure",
+      "members": {
+        "targetType": {
+          "target": "com.amazonaws.iot#LogTargetType",
+          "traits": { "smithy.api#httpQuery": "targetType" }
+        },
+        "nextToken": {
+          "target": "com.amazonaws.iot#NextToken",
+          "traits": { "smithy.api#httpQuery": "nextToken" }
+        },
+        "maxResults": {
+          "target": "com.amazonaws.iot#SkyfallMaxResults",
+          "traits": { "smithy.api#httpQuery": "maxResults" }
+        }
+      }
+    },
+    "com.amazonaws.iot#SetV2LoggingLevelRequest": {
+      "type": "structure",
+      "members": {
+        "logTarget": {
+          "target": "com.amazonaws.iot#LogTarget",
+          "traits": { "smithy.api#required": {} }
+        },
+        "logLevel": {
+          "target": "com.amazonaws.iot#LogLevel",
+          "traits": { "smithy.api#required": {} }
+        }
+      }
+    },
+    "com.amazonaws.iot#LogTargetName": {
+      "type": "string"
+    },
+    "com.amazonaws.iot#NextToken": {
+      "type": "string"
+    },
+    "com.amazonaws.iot#SkyfallMaxResults": {
+      "type": "integer",
+      "traits": {
+        "smithy.api#range": { "min": 1, "max": 250 }
+      }
+    },
+    "com.amazonaws.iot#LogLevel": {
+      "type": "enum",
+      "members": {
+        "DEBUG": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DEBUG" }
+        },
+        "INFO": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "INFO" }
+        },
+        "ERROR": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "ERROR" }
+        },
+        "WARN": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "WARN" }
+        },
+        "DISABLED": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "DISABLED" }
+        }
+      }
+    }
+  }
+}

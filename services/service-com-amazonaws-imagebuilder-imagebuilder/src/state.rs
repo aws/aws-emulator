@@ -441,14 +441,17 @@ pub const IMAGE_RECIPE_FILTER_NAMES: &[&str] = &["name", "parentImage", "platfor
 /// to 25 items."
 pub const DEFAULT_LIST_PAGE_SIZE: usize = 25;
 
-/// The largest page any of this service's listings answers with: the modelled `maxResults`
-/// range's own maximum, which every one of them shares (`RestrictedInteger`, `range
-/// 1..100`), stated by the member's documentation as "The largest page size that you can
-/// request is 100 items."
+/// The largest page any of this service's listings answers with: the page-size maximum
+/// Image Builder enforces for `maxResults`, which every one of them shares — the shape they
+/// all target (`RestrictedInteger`) is declared with that maximum in this crate's overlay
+/// model (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`),
+/// because the published snapshot states a range the service does not apply.
 ///
 /// A request naming a page size past that range is refused by the centralized walk before a
-/// handler runs, so this is the bound the page a handler builds is held to.
-pub const MAX_LIST_PAGE_SIZE: usize = 100;
+/// handler runs, so this is the bound the page a handler builds is held to. It is the same
+/// number as [`DEFAULT_LIST_PAGE_SIZE`], and for a different reason: that one is what a
+/// request naming NO page size gets, this one is the largest a request may ask for.
+pub const MAX_LIST_PAGE_SIZE: usize = 25;
 
 /// The filter names `ListInfrastructureConfigurations` accepts, from the `filters`
 /// member's own documentation: "You can filter on name to streamline results."

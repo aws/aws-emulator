@@ -457,20 +457,20 @@ async fn every_failure_answers_the_modelled_error_and_names_the_request_it_answe
                 "The provided token does not meet the required format.",
             )),
         },
-        // A page size outside the modelled range, which the same sentence states.
+        // A page size outside the declared range, which the same sentence states.
         Failure {
-            case: "a package listing asking for more than the modelled page maximum".to_string(),
+            case: "a package listing asking for more than the page maximum".to_string(),
             method: "POST",
             uri: "/ListImagePackages".to_string(),
             body: Some(json!({
                 "imageBuildVersionArn": absent_image.clone(),
-                "maxResults": 101,
+                "maxResults": 26,
             })),
             status: 400,
             code: INVALID_PARAMETER_VALUE,
             message: Some(refusal_message(
                 "maxResults",
-                "maxResults must be smaller than or equal to 100",
+                "maxResults must be smaller than or equal to 25",
             )),
         },
         // A member the shape REQUIRES and the request omits is refused about the request as

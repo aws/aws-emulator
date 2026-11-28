@@ -1,0 +1,55 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.fis#SafetyLever": {
+      "type": "structure",
+      "members": {
+        "id": { "target": "com.amazonaws.fis#SafetyLeverId" },
+        "arn": { "target": "com.amazonaws.fis#ResourceArn" },
+        "state": { "target": "com.amazonaws.fis#SafetyLeverState" },
+        "accountId": { "target": "smithy.api#String" }
+      }
+    },
+    "com.amazonaws.fis#SafetyLeverId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 64 },
+        "smithy.api#pattern": "^[\\S]+$"
+      }
+    },
+    "com.amazonaws.fis#ResourceArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 20, "max": 2048 },
+        "smithy.api#pattern": "^[\\S]+$"
+      }
+    },
+    "com.amazonaws.fis#SafetyLeverState": {
+      "type": "structure",
+      "members": {
+        "status": { "target": "com.amazonaws.fis#SafetyLeverStatus" },
+        "reason": { "target": "com.amazonaws.fis#SafetyLeverStatusReason" }
+      }
+    },
+    "com.amazonaws.fis#SafetyLeverStatus": {
+      "type": "enum",
+      "members": {
+        "disengaged": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "disengaged" }
+        },
+        "engaged": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "engaged" }
+        },
+        "engaging": {
+          "target": "smithy.api#Unit",
+          "traits": { "smithy.api#enumValue": "engaging" }
+        }
+      }
+    },
+    "com.amazonaws.fis#SafetyLeverStatusReason": {
+      "type": "string"
+    }
+  }
+}
