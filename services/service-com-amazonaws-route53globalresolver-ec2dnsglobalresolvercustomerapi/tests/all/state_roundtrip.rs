@@ -27,6 +27,13 @@ mod firewall_domain_lists;
 #[path = "state_roundtrip/idempotency_tokens.rs"]
 mod idempotency_tokens;
 
+// The DNS Firewall RULE half of the same contract: what `CreateFirewallRule` mints,
+// what `GetFirewallRule` reads back, and which refusals a rule's own definition
+// settles before any id it names is resolved. Another child module of this suite,
+// declared here for the same reason as the ones above.
+#[path = "state_roundtrip/firewall_rules.rs"]
+mod firewall_rules;
+
 /// A probe type owned by this test. `state::<T>()` is keyed by TYPE, so a test can use
 /// its own without touching `ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState`.
 #[derive(Default)]

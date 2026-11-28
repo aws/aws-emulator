@@ -2,9 +2,9 @@
 
 //! Engine state for the com-amazonaws-route53globalresolver-ec2dnsglobalresolvercustomerapi service.
 //!
-//! The records here are the ONLY place a Route 53 Global Resolver, a DNS View or
-//! a DNS Firewall domain list exists: every handler in `src/ops/` mints into this
-//! store or reads out of it, so
+//! The records here are the ONLY place a Route 53 Global Resolver, a DNS View, a
+//! DNS Firewall domain list or a DNS Firewall rule exists: every handler in
+//! `src/ops/` mints into this store or reads out of it, so
 //! a create is observable by the next get/list and a delete by the next reader.
 //!
 //! Two things this slice deliberately does NOT emulate, so a reader does not
@@ -19,6 +19,11 @@
 /// refusals that reading settles.
 mod tagging;
 pub use tagging::*;
+
+/// The DNS Firewall rule record, the ids it is minted under, and the refusals a
+/// rule's own definition settles.
+mod firewall_rules;
+pub use firewall_rules::*;
 
 /// The core network endpoint resource: the record, and the reading of a request's DNS IP
 /// address entries.
@@ -593,6 +598,8 @@ pub struct ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState
     pub dns_views: BTreeMap<String, DnsView>,
     /// Every firewall domain list, keyed by id, for the same reason.
     pub firewall_domain_lists: BTreeMap<String, FirewallDomainList>,
+    /// Every DNS Firewall rule, keyed by id, for the same reason.
+    pub firewall_rules: BTreeMap<String, FirewallRule>,
     /// Every core network endpoint, keyed by id, for the same reason.
     pub core_network_endpoints: BTreeMap<String, CoreNetworkEndpoint>,
     /// `clientToken` -> resolver id, so an `@idempotent` create replayed with the
@@ -606,6 +613,9 @@ pub struct ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState
     /// `clientToken` -> firewall domain list id, for the same reason and kept
     /// separate for the same one.
     pub firewall_domain_list_idempotency: HashMap<String, String>,
+    /// `clientToken` -> DNS Firewall rule id, for the same reason and kept separate
+    /// for the same one.
+    pub firewall_rule_idempotency: HashMap<String, String>,
     /// `clientToken` -> core network endpoint id, for the same reason and kept separate
     /// for the same one.
     pub core_network_endpoint_idempotency: HashMap<String, String>,
@@ -628,6 +638,9 @@ impl ComAmazonawsRoute53globalresolverEc2dnsglobalresolvercustomerapiState {
         }
         for list in self.firewall_domain_lists.values_mut() {
             list.settle(now);
+        }
+        for rule in self.firewall_rules.values_mut() {
+            rule.settle(now);
         }
         for endpoint in self.core_network_endpoints.values_mut() {
             endpoint.settle(now);

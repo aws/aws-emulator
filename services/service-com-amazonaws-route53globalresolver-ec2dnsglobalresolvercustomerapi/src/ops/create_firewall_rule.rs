@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateFirewallRule
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateFirewallRule`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateFirewallRule::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -233,18 +224,171 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateFirewallRule` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateFirewallRuleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateFirewallRule"))
+        // A rule carries no `arn` member, so nothing here needs the request's Region.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateFirewallRuleErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        let invalid = |refusal| -> CreateFirewallRuleError {
+            CreateFirewallRuleErrorModeled::ValidationException(refusal).into()
+        };
+
+        // The rule-level layer: what the request SAYS, before any id it names is resolved —
+        // a request that does not describe a rule is refused for its own combination of
+        // members rather than for the DNS View it points at. The per-member layer is already
+        // behind us: the framework's pre-handler walk refuses a value outside an enum
+        // shape's set, outside a `@range` or a `@length`, and an absent `@required` member.
+        crate::state::validate_rule_definition(&input).map_err(invalid)?;
+
+        let now = ::std::time::SystemTime::now();
+        let mut state = state.lock();
+        state.settle(now);
+
+        // A rule only exists under a DNS View, so an unknown parent is a 404 — and it is
+        // answered BEFORE the idempotency record is consulted or written, so a refused
+        // create persists nothing for a later call carrying the same `clientToken` to be
+        // answered from.
+        if !state.dns_views.contains_key(&input.dns_view_id) {
+            return Err(CreateFirewallRuleErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::DNS_VIEW_KIND, &input.dns_view_id),
+            )
+            .into());
+        }
+
+        // A rule that matches on a firewall domain list matches on one this store holds: the
+        // reference is resolved here, so no rule names a list that never existed.
+        if let Some(list_id) = input.firewall_domain_list_id.as_deref() {
+            if !state.firewall_domain_lists.contains_key(list_id) {
+                return Err(CreateFirewallRuleErrorModeled::ResourceNotFoundException(
+                    crate::state::not_found(crate::state::FIREWALL_DOMAIN_LIST_KIND, list_id),
+                )
+                .into());
+            }
+        }
+
+        // The `@idempotent` replay: the same `clientToken` answers with the rule it already
+        // minted, and only when this request asks for the same rule — a token reused with
+        // different parameters is a conflict.
+        if let Some(token) = input.client_token.as_deref() {
+            let minted = state.firewall_rule_idempotency.get(token).cloned();
+            if let Some(rule) = minted.and_then(|id| state.firewall_rules.get(&id)) {
+                if rule.matches_create(&input) {
+                    return Ok(output(rule));
+                }
+                return Err(CreateFirewallRuleErrorModeled::ConflictException(
+                    crate::state::idempotency_conflict(
+                        crate::state::FIREWALL_RULE_RESOURCE,
+                        &rule.id,
+                    ),
+                )
+                .into());
+            }
+        }
+
+        // Not a replay, so this request would add a rule: refuse it when the view is already
+        // at its ceiling, rather than growing without limit.
+        let rules_held = state.firewall_rules_of_view(&input.dns_view_id).count();
+        if rules_held >= crate::state::MAX_FIREWALL_RULES_PER_DNS_VIEW {
+            return Err(
+                CreateFirewallRuleErrorModeled::ServiceQuotaExceededException(
+                    crate::state::quota_exceeded(
+                        crate::state::FIREWALL_RULE_RESOURCE,
+                        Some(&input.dns_view_id),
+                        crate::state::MAX_FIREWALL_RULES_PER_DNS_VIEW,
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        // `priority` is optional on the request and `@required` on the answer, so a request
+        // that names none is given the next one in the view.
+        let priority = match input.priority {
+            Some(priority) => priority,
+            None => state
+                .next_firewall_rule_priority(&input.dns_view_id)
+                .ok_or_else(|| {
+                    invalid(crate::state::field_validation(
+                        "priority",
+                        format!(
+                            "cannot be assigned: this DNS view already holds a rule at priority \
+                             {}, the highest one a rule may carry, so a rule of this view must \
+                             name its own",
+                            crate::state::MAX_FIREWALL_RULE_PRIORITY
+                        ),
+                    ))
+                })?,
+        };
+
+        let sequence = state.next_sequence();
+        let id = crate::state::firewall_rule_id(sequence);
+        let client_token = input
+            .client_token
+            .clone()
+            .unwrap_or_else(|| crate::state::minted_client_token(sequence));
+        let rule = crate::state::FirewallRule {
+            id: id.clone(),
+            dns_view_id: input.dns_view_id.clone(),
+            name: input.name.clone(),
+            description: input.description.clone(),
+            client_token: client_token.clone(),
+            action: input.action.clone(),
+            block_response: input.block_response.clone(),
+            block_override_domain: input.block_override_domain.clone(),
+            block_override_dns_type: input.block_override_dns_type.clone(),
+            block_override_ttl: input.block_override_ttl,
+            confidence_threshold: input.confidence_threshold.clone(),
+            dns_advanced_protection: input.dns_advanced_protection.clone(),
+            firewall_domain_list_id: input.firewall_domain_list_id.clone(),
+            priority,
+            query_type: input.q_type.clone(),
+            // A rule is being provisioned, not ready: it reports CREATING until the clock
+            // owes it OPERATIONAL.
+            status: crate::state::CrResourceStatus::Creating,
+            created_at: now,
+            updated_at: now,
+            operational_at: now + crate::state::PROVISIONING_DELAY,
+        };
+
+        state
+            .firewall_rule_idempotency
+            .insert(client_token, id.clone());
+        state.firewall_rules.insert(id.clone(), rule);
+        // Read the stored record back, so the response is the state rather than the value
+        // that went into it.
+        let stored = state.firewall_rules.get(&id).ok_or_else(|| {
+            CreateFirewallRuleErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+        })?;
+        Ok(output(stored))
+    }
+}
+
+/// This operation's output for a stored rule — every member read off the record, so a create
+/// answers exactly what the following get answers.
+fn output(rule: &crate::state::FirewallRule) -> CreateFirewallRuleOutput {
+    CreateFirewallRuleOutput {
+        id: rule.id.clone(),
+        dns_view_id: rule.dns_view_id.clone(),
+        name: rule.name.clone(),
+        description: rule.description.clone(),
+        action: rule.action.clone(),
+        block_response: rule.block_response.clone(),
+        block_override_domain: rule.block_override_domain.clone(),
+        block_override_dns_type: rule.block_override_dns_type.clone(),
+        block_override_ttl: rule.block_override_ttl,
+        confidence_threshold: rule.confidence_threshold.clone(),
+        dns_advanced_protection: rule.dns_advanced_protection.clone(),
+        firewall_domain_list_id: rule.firewall_domain_list_id.clone(),
+        priority: rule.priority,
+        query_type: rule.query_type.clone(),
+        created_at: ::aws_smithy_types::DateTime::from(rule.created_at),
+        updated_at: ::aws_smithy_types::DateTime::from(rule.updated_at),
+        status: rule.status.as_wire().to_string(),
     }
 }

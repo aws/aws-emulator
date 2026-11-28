@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetFirewallRule
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetFirewallRule`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetFirewallRule::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -194,18 +185,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetFirewallRule` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetFirewallRuleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetFirewallRule"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(GetFirewallRuleErrorModeled::InternalServerException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+
+        let mut state = state.lock();
+        // A read reports what a caller would see at this instant: the status change the
+        // clock has already made due is materialized, and nothing else is written.
+        state.settle(::std::time::SystemTime::now());
+
+        let Some(rule) = state.firewall_rules.get(&input.firewall_rule_id) else {
+            return Err(GetFirewallRuleErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(
+                    crate::state::FIREWALL_RULE_KIND,
+                    &input.firewall_rule_id,
+                ),
+            )
+            .into());
+        };
+
+        Ok(GetFirewallRuleOutput {
+            id: rule.id.clone(),
+            dns_view_id: rule.dns_view_id.clone(),
+            name: rule.name.clone(),
+            description: rule.description.clone(),
+            action: rule.action.clone(),
+            block_response: rule.block_response.clone(),
+            block_override_domain: rule.block_override_domain.clone(),
+            block_override_dns_type: rule.block_override_dns_type.clone(),
+            block_override_ttl: rule.block_override_ttl,
+            confidence_threshold: rule.confidence_threshold.clone(),
+            dns_advanced_protection: rule.dns_advanced_protection.clone(),
+            firewall_domain_list_id: rule.firewall_domain_list_id.clone(),
+            priority: rule.priority,
+            query_type: rule.query_type.clone(),
+            created_at: ::aws_smithy_types::DateTime::from(rule.created_at),
+            updated_at: ::aws_smithy_types::DateTime::from(rule.updated_at),
+            status: rule.status.as_wire().to_string(),
+        })
     }
 }

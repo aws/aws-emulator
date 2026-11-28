@@ -209,14 +209,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `CreateDNSView` appends to it — so the sweep needs no scan of the view
         // map. The firewall domain lists under this resolver go the same way: they
         // carry their parentage on the record itself, so that sweep is a filter
-        // over them. The sentence also names access sources, tokens and firewall
-        // rules: none of those can exist yet, because every operation that creates
-        // one is still a 501, and their cascade belongs here when they are
-        // implemented.
+        // over them, and so do the firewall rules of the views that are going. The
+        // sentence also names access sources and tokens: neither can exist yet,
+        // because every operation that creates one is still a 501, and their
+        // cascade belongs here when they are implemented.
         let orphaned: ::std::collections::BTreeSet<String> =
             resolver.dns_view_ids.iter().cloned().collect();
         for view_id in &orphaned {
             state.dns_views.remove(view_id);
+        }
+        let orphaned_rules: ::std::collections::BTreeSet<String> = state
+            .firewall_rules
+            .iter()
+            .filter(|(_, rule)| orphaned.contains(&rule.dns_view_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for rule_id in &orphaned_rules {
+            state.firewall_rules.remove(rule_id);
         }
         let orphaned_lists: ::std::collections::BTreeSet<String> = state
             .firewall_domain_lists
@@ -245,6 +254,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         state
             .dns_view_idempotency
             .retain(|_, view_id| !orphaned.contains(view_id));
+        state
+            .firewall_rule_idempotency
+            .retain(|_, rule_id| !orphaned_rules.contains(rule_id));
         state
             .firewall_domain_list_idempotency
             .retain(|_, list_id| !orphaned_lists.contains(list_id));
