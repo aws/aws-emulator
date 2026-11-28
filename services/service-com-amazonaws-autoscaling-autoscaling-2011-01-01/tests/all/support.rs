@@ -815,6 +815,40 @@ pub async fn activity_causes(router: &MultiServiceRouter, group: &str) -> Vec<St
         .collect()
 }
 
+/// The body `DescribeAutoScalingGroups` answers for ONE group name.
+///
+/// THE ONE COPY of that read for the suites here whose subject is what a request STORED: a
+/// group is read back the way a client reads it, so how the read is made cannot drift between
+/// the suites that assert on what it reports.
+pub async fn described_groups(router: &MultiServiceRouter, name: &str) -> String {
+    let (status, body) = query(
+        router,
+        "DescribeAutoScalingGroups",
+        &[("AutoScalingGroupNames.member.1", name)],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "DescribeAutoScalingGroups for {name:?} expected 200, got {status}: {body}"
+    );
+    body
+}
+
+/// Whether `DescribeAutoScalingGroups` reports a group under `name` — what a suite asserting
+/// that a REFUSED request stored nothing reads.
+pub async fn group_exists(router: &MultiServiceRouter, name: &str) -> bool {
+    let body = described_groups(router, name).await;
+    !tag_values(&body, "AutoScalingGroupName").is_empty()
+}
+
+/// The `LaunchTemplateId` the group under `name` reports, read back through
+/// `DescribeAutoScalingGroups` — what a suite asserting which launch template a group resolved
+/// reads.
+pub async fn reported_launch_template_id(router: &MultiServiceRouter, name: &str) -> String {
+    let body = described_groups(router, name).await;
+    tag_value(&body, "LaunchTemplateId")
+}
+
 /// POST one `awsJson` RPC call against a service mounted BESIDE Auto Scaling, the way a
 /// client makes it: `POST /` with `X-Amz-Target: <target_prefix>.<operation>` and a
 /// credential scoped to `signing_name`, which is what the router picks the service from.

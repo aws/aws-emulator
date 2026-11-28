@@ -441,42 +441,37 @@ async fn a_reference_that_resolves_to_no_template_is_refused_by_the_half_it_stat
     }
 }
 
-/// The id FORMS that resolve to no launch template, each paired with whether Amazon EC2
-/// reports it MALFORMED rather than absent: that service's LONG id form is an obfuscated
-/// identifier it decodes before it resolves anything
-/// ([`ec2::ComAmazonawsEc2Amazonec2State::long_form_id_was_never_issued`], where that clause
-/// lives), so a long-form value above its mint's counter is an identifier it never issued,
-/// while a value in any other form carries no identifier to decode and is looked up like any
-/// other reference.
-const UNRESOLVABLE_IDS: &[(&str, &str, bool)] = &[
+/// The id FORMS no mint of the launch-template service can have produced, each of which that
+/// service reports MALFORMED rather than absent.
+///
+/// SOURCE: that service's own screen of a launch template id
+/// ([`ec2::ComAmazonawsEc2Amazonec2State::id_was_issued`], where the clause lives) — an id is
+/// an obfuscated identifier it decodes before it resolves anything, printed as `lt-` and 17
+/// lowercase hexadecimal digits under a leading `0`, and the identifier it carries is one the
+/// service's single counter has reached. A value outside that printed form, and one carrying an
+/// identifier above the counter, is no launch template id at all.
+const UNRESOLVABLE_IDS: &[(&str, &str)] = &[
     (
         "a long-form id far above every value the mint can reach",
         "lt-0123456789abcdef0",
-        true,
     ),
+    ("a short-form id, a form the mint never writes", "lt-0fedcba9"),
     (
-        "a short-form id, a form the mint never writes",
-        "lt-0fedcba9",
-        false,
-    ),
-    (
-        "the all-zero placeholder, which carries no identifier at all",
+        "the all-zero placeholder, which a mint counting from one cannot write",
         "lt-00000000000000000",
-        false,
     ),
-    ("an id that is not hexadecimal", "lt-zzzzzzzzzzzzzzzzz", false),
+    ("an id that is not hexadecimal", "lt-zzzzzzzzzzzzzzzzz"),
     (
         "an id carrying another resource kind's prefix",
         "sg-00000000000000001",
-        false,
     ),
 ];
 
-/// RULE: a `LaunchTemplateId` in the long form Amazon EC2 decodes whose identifier its mint
-/// never issued is reported as that service reports it — `Malformed launch template Id: <id>`
-/// — by every request that configures a group against it, while an id outside that form, and
-/// one the mint DID issue, is looked up: the template it names is launched from, or reported
-/// as not existing when the account holds none under it.
+/// RULE: a `LaunchTemplateId` that Amazon EC2's own screen of the member cannot read is
+/// reported as that service reports it — `Malformed launch template Id: <id>` — by every
+/// request that configures a group against it, while an id that screen admits, one the mint
+/// DID issue, is looked up: the template it names is launched from, or reported as not
+/// existing when the account holds none under it.
 ///
 /// The rows differ along the FORM of the id (its printed length, its digits, its prefix and
 /// the all-zero placeholder) and along what the mint did with it (never issued, issued and
@@ -494,17 +489,11 @@ async fn an_id_that_resolves_to_nothing_is_reported_as_amazon_ec2_reports_it() {
     // (case, the id, the sentence it earns, or `None` where the create must be served)
     let mut rows: Vec<(String, String, Option<String>)> = UNRESOLVABLE_IDS
         .iter()
-        .map(|(case, id, malformed)| {
+        .map(|(case, id)| {
             (
                 (*case).to_string(),
                 (*id).to_string(),
-                Some(if *malformed {
-                    format!("Malformed launch template Id: {id}")
-                } else {
-                    format!(
-                        "The specified launch template, with template ID {id}, does not exist."
-                    )
-                }),
+                Some(format!("Malformed launch template Id: {id}")),
             )
         })
         .collect();

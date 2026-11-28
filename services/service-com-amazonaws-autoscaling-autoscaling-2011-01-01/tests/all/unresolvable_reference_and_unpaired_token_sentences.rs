@@ -88,9 +88,10 @@ async fn groups_named(router: &MultiServiceRouter, name: &str) -> Vec<String> {
 }
 
 /// Launch template id FORMS the mint cannot have produced, from that service's own screen of
-/// the member: its LONG id form is an obfuscated identifier the service decodes before it
-/// resolves anything, so a long-form value (`lt-` and 17 lowercase hexadecimal digits) above
-/// the value its one counter has reached is an identifier it never issued. Each reads like a
+/// the member: an id of that service is an obfuscated identifier it decodes before it resolves
+/// anything, printed as `lt-` and 17 lowercase hexadecimal digits under a leading `0`, so a
+/// value above the one its counter has reached — and the all-zero placeholder a counter
+/// starting at one can never write — is an identifier it never issued. Each reads like a
 /// printed id and names no launch template.
 const UNISSUED_IDS: &[(&str, &str)] = &[
     (
@@ -104,6 +105,10 @@ const UNISSUED_IDS: &[(&str, &str)] = &[
     (
         "an id of the documentation shape no mint ever answered with",
         "lt-0123456789abcdef0",
+    ),
+    (
+        "the all-zero placeholder, which a mint counting from one cannot write",
+        "lt-00000000000000000",
     ),
 ];
 
@@ -138,15 +143,6 @@ async fn an_unissued_launch_template_id_is_refused_as_unreadable_before_any_vers
             )
         })
         .collect();
-    rows.push((
-        "the all-zero placeholder, which carries no identifier to decode".to_string(),
-        "lt-00000000000000000".to_string(),
-        Some(
-            "The specified launch template, with template ID lt-00000000000000000, does not \
-             exist."
-                .to_string(),
-        ),
-    ));
     rows.push((
         "an id the mint issued, whose template a client has deleted".to_string(),
         deleted_id.clone(),

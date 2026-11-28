@@ -874,26 +874,29 @@ impl TemplateIdentity {
     }
 
     /// Amazon EC2's own sentence for the id half of this identity where that service cannot
-    /// READ it, or `None` for an identity it can read — every name, and every id it resolves
-    /// by looking it up.
+    /// READ it, or `None` for an identity it can read — every name, and every id that service
+    /// could have issued and therefore resolves by looking it up.
     ///
-    /// Amazon EC2's LONG id form is an obfuscated identifier that service decodes before it
-    /// resolves anything ([`ec2::ComAmazonawsEc2Amazonec2State::long_form_id_was_never_issued`],
-    /// where that clause and its reasoning live), so a value in that form whose identifier its
-    /// mint never issued names no launch template at all and is refused as unreadable BEFORE
-    /// any lookup — ahead of the template an issued id names and may since have been deleted.
-    /// Amazon EC2 Auto Scaling resolves a group's reference through that service, so a caller
-    /// naming such an id is told what Amazon EC2 tells a caller naming it there
+    /// A launch template id is a value the service that OWNS launch templates minted, in the
+    /// one printed form its mint writes, and that service screens an id against its own mint
+    /// before it resolves anything ([`ec2::resolve_launch_template_id`], whose screen is
+    /// [`ec2::ComAmazonawsEc2Amazonec2State::id_was_issued`]): a value outside that form, or
+    /// one carrying an identifier the mint never counted to, is no launch template id at all
+    /// and is refused as unreadable BEFORE any lookup — ahead of the template an issued id
+    /// names and may since have been deleted.
+    ///
+    /// Amazon EC2 Auto Scaling resolves a group's reference THROUGH that service, so the
+    /// screen it applies is that service's own, read here rather than restated: a caller
+    /// naming such an id is told what a caller naming it there is told
     /// ([`ec2::malformed_launch_template_id_message`]) rather than that a template of that id
-    /// does not exist.
+    /// does not exist, and the two services cannot disagree about which ids are readable.
     ///
-    /// A value OUTSIDE that form carries no identifier to decode, so it is not unreadable: it
-    /// is looked up like any other reference and reported as a template that does not exist —
-    /// the recorded answer for an id too short to be one. A NAME has no shape to be wrong
-    /// either, so nothing is screened for the name half.
+    /// Only an id that screen admits is looked up, which is what keeps the absent half of the
+    /// pair reachable. A NAME has no shape to be wrong, so nothing is screened for the name
+    /// half.
     fn unreadable(&self, store: &ec2::ComAmazonawsEc2Amazonec2State) -> Option<String> {
         match self {
-            Self::Id(id) if store.long_form_id_was_never_issued(id) => {
+            Self::Id(id) if !store.id_was_issued(ec2::LAUNCH_TEMPLATE_ID_PREFIX, id) => {
                 Some(ec2::malformed_launch_template_id_message(id))
             }
             Self::Id(_) | Self::Name(_) => None,
