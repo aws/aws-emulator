@@ -36,5 +36,11 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
+[dev-dependencies]
+# The CBOR implementation the framework's own codec is built on, at the version that
+# codec uses: the wire suite writes and reads the bodies of this service's Smithy RPC v2
+# CBOR framing with it, so no second CBOR implementation enters the tree.
+aws-smithy-cbor = "0.62.2"
+
 [lints]
 workspace = true

@@ -180,13 +180,17 @@ impl SerializableStruct for ValidationException {
 /// The HTTP status this service answers a MODELED fault with, given the status the
 /// fault's shape declares.
 ///
-/// MemoryDB speaks `awsJson1_1`: every call is a `POST /` whose operation is named in
-/// the `X-Amz-Target` header, so the request URI identifies the ENDPOINT and never a
-/// resource. A `404` from such an endpoint says the endpoint itself did not resolve the
-/// request — which is how clients, proxies and SDK classifiers read it — while a fault
-/// about the request's CONTENT is a client fault and is carried as `400` with the
-/// fault's `__type` in the body. That is what the recorded MemoryDB endpoint answers
-/// for the whole `*NotFoundFault` family: `ClusterNotFoundFault`, `ACLNotFoundFault`,
+/// MemoryDB's model declares two RPC protocols side by side (`smithy_query
+/// query="service_info"`): `awsJson1_1`, whose call is a `POST /` naming its operation in
+/// the `X-Amz-Target` header, and `rpcv2Cbor`, whose call is a `POST
+/// /service/AmazonMemoryDB/operation/{Operation}`. In EITHER framing the request URI
+/// identifies the ENDPOINT and the OPERATION, never a resource. A `404` from such an
+/// endpoint says the endpoint itself did not resolve the request — which is how clients,
+/// proxies and SDK classifiers read it, and the status both framings reserve for a
+/// request that named no operation — while a fault about the request's CONTENT is a
+/// client fault and is carried as `400` with the fault's `__type` in the body. That is
+/// what the recorded MemoryDB endpoint answers for the whole `*NotFoundFault` family:
+/// `ClusterNotFoundFault`, `ACLNotFoundFault`,
 /// `UserNotFoundFault`, `ParameterGroupNotFoundFault`, `SnapshotNotFoundFault`,
 /// `SubnetGroupNotFoundFault`, `MultiRegionClusterNotFoundFault`,
 /// `MultiRegionParameterGroupNotFoundFault`, `ShardNotFoundFault`, `TagNotFoundFault`,
@@ -315,8 +319,8 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
     /// retryable, so a client would retry an operation that can never succeed.
     ///
     /// A modeled fault's status goes through [`modeled_wire_status`], which is where
-    /// this service states what its `awsJson1_1` wire answers rather than taking
-    /// `@httpError` verbatim. It is here, on the one error channel EVERY operation of
+    /// this service states what its wire answers — in either framing the model declares
+    /// — rather than taking `@httpError` verbatim. It is here, on the one error channel EVERY operation of
     /// this service shares, so one mapping covers every fault of every operation.
     fn http_status(&self) -> u16 {
         match self {

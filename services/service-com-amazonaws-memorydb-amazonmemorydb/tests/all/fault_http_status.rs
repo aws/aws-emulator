@@ -7,12 +7,12 @@
 //! shared harness in `cluster_lifecycle`), so what is asserted is the emulator's HTTP
 //! behaviour and not a handler called directly.
 //!
-//! The rule under test, over a SET of inputs rather than one recorded request: on this
-//! `awsJson1_1` service the request URI names the ENDPOINT and never a resource, so a
-//! fault about the request's CONTENT is a client fault and answers **HTTP 400** with the
-//! fault's own `__type` in the body — NO modelled fault answers 404, whatever
-//! `@httpError` its shape declares. The table spans that class along what it
-//! generalises over:
+//! The rule under test, over a SET of inputs rather than one recorded request: both wire
+//! protocols this service's model declares are RPC protocols whose request URI names the
+//! ENDPOINT and the OPERATION and never a resource, so a fault about the request's
+//! CONTENT is a client fault and answers **HTTP 400** with the fault's own `__type` in
+//! the body — NO modelled fault answers 404, whatever `@httpError` its shape declares.
+//! The table spans that class along what it generalises over:
 //!
 //! * the kind of resource the reference misses (cluster, ACL, user, parameter group,
 //!   tag key) and so the `__type` the fault carries;
