@@ -57,8 +57,10 @@
 //!   Business Accounts linked to your Amazon Web Services account.
 //! * `nextToken` (NextToken, len 1..600) — The next token for pagination.
 //! * `setupEnabled` (Boolean) — Whether WhatsApp setup is enabled for your Amazon Web
-//!   Services account. Added to this service's model copy from the recorded responses;
-//!   see the note in `super::types::list_linked_whats_app_business_accounts_types`.
+//!   Services account. Recorded behaviour the published snapshot does not declare, so it
+//!   is declared from this crate's own overlay model `smithy-model/local-additions.json`;
+//!   see `smithy-model/LOCAL-ADDITIONS.md` and the note in
+//!   `super::types::list_linked_whats_app_business_accounts_types`.
 //!
 //! ## Errors
 //!

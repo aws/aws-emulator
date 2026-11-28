@@ -73,7 +73,7 @@ contents — read that shape in the model above when you need its own members.
 - **Route:** `GET /v1/whatsapp/waba/list -> 200`
 - **Traits:** @paginated(inputToken=?, outputToken=?, items=linkedAccounts), @readonly
 - **Input:** `nextToken` (string, len 1..600, @httpQuery(nextToken)), `maxResults` (integer, range 1..100, @httpQuery(maxResults))
-- **Output:** `setupEnabled` (boolean), `linkedAccounts` (list<LinkedWhatsAppBusinessAccountSummary>), `nextToken` (string, len 1..600)
+- **Output:** `linkedAccounts` (list<LinkedWhatsAppBusinessAccountSummary>), `nextToken` (string, len 1..600)
 - **Errors:** `InternalServiceException (HTTP 500)`, `InvalidParametersException (HTTP 400)`, `ResourceNotFoundException (HTTP 404)`, `ThrottledRequestException (HTTP 429)`
 
 ## CreateWhatsAppDataset

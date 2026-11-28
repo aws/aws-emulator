@@ -1,0 +1,29 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.socialmessaging#ListLinkedWhatsAppBusinessAccountsOutput": {
+      "type": "structure",
+      "members": {
+        "linkedAccounts": {
+          "target": "com.amazonaws.socialmessaging#LinkedWhatsAppBusinessAccountSummaryList"
+        },
+        "nextToken": { "target": "com.amazonaws.socialmessaging#NextToken" },
+        "setupEnabled": { "target": "smithy.api#Boolean" }
+      },
+      "traits": {
+        "smithy.api#output": {}
+      }
+    },
+    "com.amazonaws.socialmessaging#LinkedWhatsAppBusinessAccountSummaryList": {
+      "type": "list",
+      "member": {
+        "target": "com.amazonaws.socialmessaging#LinkedWhatsAppBusinessAccountSummary"
+      }
+    },
+    "com.amazonaws.socialmessaging#LinkedWhatsAppBusinessAccountSummary": {
+      "type": "structure",
+      "members": {}
+    },
+    "com.amazonaws.socialmessaging#NextToken": { "type": "string" }
+  }
+}
