@@ -113,13 +113,30 @@ pub const DB_CLUSTER_ENDPOINT_TYPE_WRITER: &str = "WRITER";
 /// "load-balances connections across the Aurora Replicas".
 pub const DB_CLUSTER_ENDPOINT_TYPE_READER: &str = "READER";
 
+/// `CustomEndpointType` for an endpoint that admits EITHER kind of member, the third value
+/// `CreateDBClusterEndpointMessage$EndpointType` publishes.
+pub const DB_CLUSTER_ENDPOINT_TYPE_ANY: &str = "ANY";
+
 /// The values `CreateDBClusterEndpointMessage$EndpointType` documents: "the type of the
 /// endpoint, one of: READER, WRITER, ANY", which is what a custom endpoint reports as its
 /// `CustomEndpointType`.
 pub const CUSTOM_ENDPOINT_TYPES: [&str; 3] = [
     DB_CLUSTER_ENDPOINT_TYPE_READER,
     DB_CLUSTER_ENDPOINT_TYPE_WRITER,
-    "ANY",
+    DB_CLUSTER_ENDPOINT_TYPE_ANY,
+];
+
+/// The same three values in the order the REFUSAL of a value outside them writes them — the
+/// writer, the reader, then the type that admits either ([`check_custom_endpoint_type`]).
+///
+/// A sentence states its own list: this front door words that refusal with the writer first,
+/// where the create's documentation lists the reader first ([`CUSTOM_ENDPOINT_TYPES`]), and
+/// the domain itself is the same three values — so the order lives beside the sentence that
+/// writes it rather than reordering the domain every other reader of it shares.
+pub const CUSTOM_ENDPOINT_TYPES_AS_REFUSED: [&str; 3] = [
+    DB_CLUSTER_ENDPOINT_TYPE_WRITER,
+    DB_CLUSTER_ENDPOINT_TYPE_READER,
+    DB_CLUSTER_ENDPOINT_TYPE_ANY,
 ];
 
 /// The `EndpointType` a request asked for, as the endpoint reports it, or the message the
@@ -130,6 +147,12 @@ pub const CUSTOM_ENDPOINT_TYPES: [&str; 3] = [
 /// to case and reported back in the upper case `CustomEndpointType`'s published values are
 /// written in. A value outside the domain is what the Query API's `InvalidParameterValue`
 /// reports, which is the error the caller answers it with.
+///
+/// The refusal is the sentence this front door states that domain with: that the type is
+/// invalid, and then the types that are valid, comma-separated in the order it writes them
+/// ([`CUSTOM_ENDPOINT_TYPES_AS_REFUSED`]). It echoes the REJECTED value nowhere — the whole
+/// sentence is fixed text about the member's domain — so it is stated from the domain rather
+/// than formatted from the request.
 pub fn check_custom_endpoint_type(value: &str) -> Result<String, String> {
     match CUSTOM_ENDPOINT_TYPES
         .into_iter()
@@ -137,8 +160,8 @@ pub fn check_custom_endpoint_type(value: &str) -> Result<String, String> {
     {
         Some(published) => Ok(published.to_string()),
         None => Err(format!(
-            "invalid value '{value}' for EndpointType: must be one of {}",
-            CUSTOM_ENDPOINT_TYPES.join(", ")
+            "Invalid endpoint type. The valid endpoint types are: {}",
+            CUSTOM_ENDPOINT_TYPES_AS_REFUSED.join(",")
         )),
     }
 }

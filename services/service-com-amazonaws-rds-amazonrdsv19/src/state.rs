@@ -4382,6 +4382,15 @@ fn identifier_wording(member: &str) -> IdentifierWording {
         "DBClusterIdentifier" | "NewDBClusterIdentifier" => {
             IdentifierWording::SubjectForAValueFromTheAlphabet("database cluster identifier")
         }
+        // The identifier of a CUSTOM ENDPOINT of a DB cluster, which this front door words
+        // by the subject it calls that member by — "cluster endpoint identifier" — for every
+        // clause of the identifier rule, the way a DB subnet group's and an option group's
+        // name are worded: the cluster-endpoint API answers the short sentence that echoes
+        // the value, including for a value carrying a character the identifier alphabet
+        // excludes, where the DB cluster's own identifier states the rule instead.
+        "DBClusterEndpointIdentifier" => {
+            IdentifierWording::Subject("cluster endpoint identifier")
+        }
         // The name of a DB SUBNET group, which RDS words by its own subject — the one it
         // calls that member by, which names neither the resource type's `DB` nor the member
         // — for every clause of the name rule, the way a DB cluster's identifier is worded.
