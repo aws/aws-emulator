@@ -21,6 +21,21 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# The content sniffer the `rule.evidence.content_type_mismatch` submission requirement is
+# decided with: it tells what an evidence item's decoded payload IS from its own bytes.
+infer = "0.22"
+# The URL reader the `rule.source_identifier.malformed` submission requirement admits a
+# source identifier under.
+url = "2.5.9"
+# Hex, for rendering the authenticated pagination token a listing hands back.
+hex = { workspace = true }
+# `clock`: the ONE clock this emulator's owed status transitions are decided against.
+# `page_tokens`: the ONE authenticated continuation-token codec, so a `nextToken` this
+# store did not mint names no page. `stable_hex_id` / `minted_base36`: the ONE stable
+# derivations behind a payload digest and a minted `reportId`. `rfc3339`: the ONE reading
+# of the UTC offset an RFC 3339 timestamp declares. `email_address::is_domain_name`: the
+# ONE reading of the domain-name grammar.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -28,7 +43,6 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 automod = { workspace = true }
 sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true

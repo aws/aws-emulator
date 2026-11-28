@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateAbuseReport
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateAbuseReport`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateAbuseReport::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Submits a report: the XARF document is read ([`crate::state::schema_violations`] for
+//! the core fields it has to declare, [`crate::state::unmet_requirements`] for the
+//! submission requirements the model publishes), the submission is answered under its
+//! idempotency token, and a report that is new is STORED with a minted `reportId` that
+//! `GetAbuseReportStatus` and `ListAbuseReportStatuses` then read.
 //!
 //! ## Shape of an operation
 //!
@@ -103,15 +100,23 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-abusesignal-abusereportapi.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `CreateAbuseReportError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.abusesignal#CreateAbuseReport")]
+// model declares for this operation, plus any widened in with `extra_errors` — here the
+// two shapes the SERVICE models that this operation's own `errors` list does not name:
+// the `InternalServerException` (500) that is the only answer a request which cannot
+// reach the store can be given, and the `ValidationException` (400) a report that is not
+// well-formed is refused with (`SubmissionRequirementException`: "This error is distinct
+// from ValidationException (HTTP 400), which indicates that the report is not
+// well-formed").
+#[smithy_macros::operation_error(
+    "com.amazonaws.abusesignal#CreateAbuseReport",
+    extra_errors = ["InternalServerException", "ValidationException"]
+)]
 #[derive(Debug)]
 pub enum CreateAbuseReportErrorModeled {
     ConflictException(ConflictException),
+    InternalServerException(InternalServerException),
     SubmissionRequirementException(SubmissionRequirementException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -128,6 +133,19 @@ impl From<CreateAbuseReportErrorModeled> for CreateAbuseReportError {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
+
+/// How this operation words a report that is well-formed but does not meet one or more
+/// submission requirements. The wording is the model's own for
+/// `SubmissionRequirementException`, and `unmetRequirements` carries the clauses.
+const UNMET_SUBMISSION_REQUIREMENTS: &str =
+    "The report is well-formed and satisfies the XARF schema, but it does not meet one or more \
+     submission requirements. Retrying the same report will not succeed; the report content must \
+     change.";
+
+/// How this operation words an idempotency token reused with a different payload. The
+/// wording is the model's own for `ConflictException`.
+const TOKEN_REUSED: &str = "The request conflicts with the current state of the resource. An \
+                            idempotency token was reused with a different payload.";
 
 /// The `CreateAbuseReport` operation.
 ///
@@ -165,18 +183,119 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateAbuseReport` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateAbuseReportErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateAbuseReport"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateAbuseReportErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+
+        // `ReportData` is a union whose one member is the XARF document.
+        let ReportData::Xarf(report) = &input.report;
+
+        // A document that does not satisfy the XARF schema is not well-formed, which the
+        // model distinguishes from a report that is well-formed and fails a submission
+        // requirement: the first is the 400, the second the 422.
+        let violations = crate::state::schema_violations(report);
+        if !violations.is_empty() {
+            return Err(CreateAbuseReportErrorModeled::ValidationException(
+                ValidationException {
+                    message: crate::state::VALIDATION_MESSAGE.to_string(),
+                    field_list: Some(
+                        violations
+                            .into_iter()
+                            .map(|defect| ValidationExceptionField {
+                                path: defect.path,
+                                message: defect.message,
+                            })
+                            .collect(),
+                    ),
+                },
+            )
+            .into());
+        }
+
+        let submitted_at = ::std::time::SystemTime::now();
+        let unmet = crate::state::unmet_requirements(report, submitted_at);
+        if !unmet.is_empty() {
+            return Err(CreateAbuseReportErrorModeled::SubmissionRequirementException(
+                SubmissionRequirementException {
+                    message: UNMET_SUBMISSION_REQUIREMENTS.to_string(),
+                    unmet_requirements: Some(
+                        unmet
+                            .into_iter()
+                            .map(|defect| SubmissionRequirement {
+                                code: defect.code,
+                                path: defect.path,
+                                message: defect.message,
+                            })
+                            .collect(),
+                    ),
+                },
+            )
+            .into());
+        }
+
+        // The instant this report's lifecycle steps are measured from, on the emulator's
+        // own clock.
+        let submitted_instant = ::service_common::clock::now(&*self.engine);
+        let fingerprint =
+            crate::state::payload_fingerprint(report, input.correlation_id.as_deref());
+        let client_token = input.client_token.as_deref();
+        let key = crate::state::idempotency_key(client_token, &fingerprint);
+
+        let mut store = state.lock();
+        match store.idempotency_outcome(&key, &fingerprint, submitted_instant) {
+            // A duplicate request inside the token's window is answered with the report
+            // the first one created, read out of the store rather than re-derived from
+            // this request.
+            crate::state::IdempotencyOutcome::Replay(report_id) => {
+                let correlation_id = store
+                    .reports
+                    .get(&report_id)
+                    .and_then(|report| report.correlation_id.clone());
+                return Ok(CreateAbuseReportOutput {
+                    report_id,
+                    correlation_id,
+                });
+            }
+            crate::state::IdempotencyOutcome::Conflict => {
+                return Err(CreateAbuseReportErrorModeled::ConflictException(
+                    ConflictException {
+                        message: TOKEN_REUSED.to_string(),
+                    },
+                )
+                .into());
+            }
+            crate::state::IdempotencyOutcome::Fresh => {}
+        }
+
+        let report_id = store.mint_report_id(&fingerprint, submitted_at);
+        store.insert(crate::state::AbuseReport::new(
+            report_id.clone(),
+            input.correlation_id.clone(),
+            report.clone(),
+            submitted_at,
+            submitted_instant,
+        ));
+        store.record_idempotency(
+            key,
+            fingerprint,
+            report_id.clone(),
+            submitted_instant,
+            crate::state::idempotency_window(client_token),
+        );
+
+        // Echoed from the STORED record, so the create and every later read of this
+        // report agree about it.
+        let correlation_id = store
+            .reports
+            .get(&report_id)
+            .and_then(|report| report.correlation_id.clone());
+        Ok(CreateAbuseReportOutput {
+            report_id,
+            correlation_id,
+        })
     }
 }

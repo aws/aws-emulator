@@ -539,6 +539,11 @@ pub mod date_time_json;
 /// the wire, so without this a response reports the empty string where the member's own
 /// `@length` admits no empty value at all.
 pub mod unset_string_members;
+/// The ONE digest two caller-supplied JSON DOCUMENTS are told apart by, for every service
+/// that has to answer whether two calls carried the same opaque `document` — an idempotency
+/// token's payload, say — so two services asked that question of one pair of documents
+/// cannot answer differently.
+pub mod document_fingerprint;
 /// The ONE free-text search over a stored document's text — the terms a query names, which
 /// of them a text carries, the window of that text to report with the matches inside it, and
 /// the match of one whole document — for every service whose API answers a caller's query

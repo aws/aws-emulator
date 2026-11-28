@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListAbuseReportStatuses
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListAbuseReportStatuses`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListAbuseReportStatuses::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the stored reports of this account in submission order, filtered to one
+//! `correlationId` when the caller names one and cut into pages of `maxResults`, resuming
+//! at the opaque `nextToken` cursor. Reporting-only, except that it materialises the
+//! lifecycle steps the clock already owes the reports it reports on
+//! ([`crate::state::ComAmazonawsAbusesignalAbusereportapiState::advance_all`]) — changes
+//! that were due at that same instant whether or not anybody asked.
 //!
 //! ## Shape of an operation
 //!
@@ -82,13 +80,19 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-abusesignal-abusereportapi.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListAbuseReportStatusesError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.abusesignal#ListAbuseReportStatuses")]
+// model declares for this operation, plus any widened in with `extra_errors`. This
+// operation's own `errors` list is empty, so both shapes come from the ones the SERVICE
+// models: the `InternalServerException` (500) that is the only answer a request which
+// cannot reach the store can be given, and the `ValidationException` (400) a `nextToken`
+// this listing never issued is refused with.
+#[smithy_macros::operation_error(
+    "com.amazonaws.abusesignal#ListAbuseReportStatuses",
+    extra_errors = ["InternalServerException", "ValidationException"]
+)]
 #[derive(Debug)]
 pub enum ListAbuseReportStatusesErrorModeled {
+    InternalServerException(InternalServerException),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -105,6 +109,10 @@ impl From<ListAbuseReportStatusesErrorModeled> for ListAbuseReportStatusesError 
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
+
+/// How this listing words a `nextToken` it did not issue.
+const INVALID_NEXT_TOKEN: &str =
+    "The nextToken value is not a pagination token that this service issued.";
 
 /// The `ListAbuseReportStatuses` operation.
 ///
@@ -142,18 +150,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListAbuseReportStatuses` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListAbuseReportStatusesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListAbuseReportStatuses"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListAbuseReportStatusesErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: crate::state::STORE_UNAVAILABLE.to_string(),
+                    retry_after_seconds: None,
+                },
+            )
+        })?;
+        let now = ::service_common::clock::now(&*self.engine);
+        let correlation_id = input.correlation_id.as_deref();
+
+        let mut store = state.lock();
+        store.advance_all(now);
+
+        // A `nextToken` carries a cursor only this store's secret authenticates, and one
+        // minted for a listing under another filter names no position in THIS sequence,
+        // so neither is treated as somewhere to resume from.
+        let resume_after = match input.next_token.as_deref() {
+            Some(token) => Some(store.resume_cursor(token, correlation_id).ok_or_else(|| {
+                ListAbuseReportStatusesErrorModeled::ValidationException(ValidationException {
+                    message: INVALID_NEXT_TOKEN.to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        path: "nextToken".to_string(),
+                        message: INVALID_NEXT_TOKEN.to_string(),
+                    }]),
+                })
+            })?),
+            None => None,
+        };
+
+        let (reports, next_token) = store.page_reports(
+            correlation_id,
+            resume_after.as_deref(),
+            crate::state::page_size(input.max_results),
+        );
+        Ok(ListAbuseReportStatusesOutput {
+            reports,
+            next_token,
+        })
     }
 }

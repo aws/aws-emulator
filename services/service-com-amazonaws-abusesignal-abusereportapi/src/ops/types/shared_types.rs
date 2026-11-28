@@ -11,6 +11,32 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-abusesignal-abusereportapi.json");
 
+// `InternalServerException` and `ValidationException` are shapes the SERVICE models (its
+// `errors` list carries both for every operation), widened into an operation's error
+// channel with `#[operation_error]`'s `extra_errors`: the 500 is the only answer a request
+// that cannot reach the store can be given, and the 400 is how a report that is not
+// well-formed, and a `nextToken` this service never issued, are refused.
+#[smithy_macros::smithy(shape = "com.amazonaws.abusesignal#InternalServerException")]
+#[derive(Debug, Clone, Default)]
+pub struct InternalServerException {
+    pub message: String,
+    pub retry_after_seconds: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.abusesignal#ValidationException")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationException {
+    pub message: String,
+    pub field_list: Option<Vec<ValidationExceptionField>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.abusesignal#ValidationExceptionField")]
+#[derive(Debug, Clone, Default)]
+pub struct ValidationExceptionField {
+    pub path: String,
+    pub message: String,
+}
+
 /// The values `ReasonCode` accepts on the wire.
 pub const REASON_CODE_VALUES: &[&str] = &["ACTIONED", "CONTENT_DOWN_OR_INACCESSIBLE", "NEED_MORE_INFORMATION", "NOT_RESOLVABLE_TO_AWS", "REVIEWED_NO_AWS_ACTION"];
 

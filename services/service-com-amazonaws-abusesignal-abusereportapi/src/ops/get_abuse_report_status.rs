@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetAbuseReportStatus
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetAbuseReportStatus`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetAbuseReportStatus::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reads the stored report the `reportId` addresses and reports where it stands: an id no
+//! submission minted is the modelled 404. Reporting-only, except that it materialises the
+//! lifecycle steps the clock already owes the report it reads
+//! ([`crate::state::AbuseReport::advance`]) — a change that was due at that same instant
+//! whether or not anybody asked.
 //!
 //! ## Shape of an operation
 //!
@@ -101,13 +98,16 @@ use super::types::*;
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-abusesignal-abusereportapi.json");
 
 // The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `GetAbuseReportStatusError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.abusesignal#GetAbuseReportStatus")]
+// model declares for this operation, plus any widened in with `extra_errors` — here the
+// `InternalServerException` (500) the SERVICE models, which is the only answer a request
+// that cannot reach the store can be given.
+#[smithy_macros::operation_error(
+    "com.amazonaws.abusesignal#GetAbuseReportStatus",
+    extra_errors = ["InternalServerException"]
+)]
 #[derive(Debug)]
 pub enum GetAbuseReportStatusErrorModeled {
+    InternalServerException(InternalServerException),
     ResourceNotFoundException(ResourceNotFoundException),
 }
 
@@ -125,6 +125,11 @@ impl From<GetAbuseReportStatusErrorModeled> for GetAbuseReportStatusError {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
 }
+
+/// How this operation words an id no submission minted. The wording is the model's own
+/// for `ResourceNotFoundException`, and `resourceId` carries the id that was looked up.
+const REPORT_NOT_FOUND: &str =
+    "The specified resource was not found. Verify that the reportId is correct.";
 
 /// The `GetAbuseReportStatus` operation.
 ///
@@ -162,18 +167,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetAbuseReportStatus` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetAbuseReportStatusErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetAbuseReportStatus"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            GetAbuseReportStatusErrorModeled::InternalServerException(InternalServerException {
+                message: crate::state::STORE_UNAVAILABLE.to_string(),
+                retry_after_seconds: None,
+            })
+        })?;
+        let now = ::service_common::clock::now(&*self.engine);
+
+        let mut store = state.lock();
+        let Some(report) = store.reports.get_mut(&input.report_id) else {
+            return Err(GetAbuseReportStatusErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: REPORT_NOT_FOUND.to_string(),
+                    resource_id: input.report_id.clone(),
+                },
+            )
+            .into());
+        };
+        // Everything the clock already owes this report, so what is reported is where the
+        // report stands NOW rather than where the last call left it.
+        report.advance(now);
+        Ok(report.status_output())
     }
 }
