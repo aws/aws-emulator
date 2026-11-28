@@ -43,11 +43,18 @@
 //! A sixth seam, `override_protocol`, is the one this service DOES take: every timestamp
 //! member of this model declares `@timestampFormat("date-time")`, so each instant it
 //! reports is an RFC 3339 string rather than the protocol's default epoch-seconds number.
+//!
+//! `override_refusal` is taken too, and its whole body is [`validation`]: the two renderings
+//! this service's constraint-violation messages differ from the framework's by are stated
+//! there, for a constraint CLASS rather than for an operation or a member.
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
 };
 use std::sync::Arc;
+
+/// How a request the framework refused before any handler ran is worded.
+mod validation;
 
 /// The `com-amazonaws-omics-omics` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -106,15 +113,10 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
         // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // service reword it. The whole choice lives in `validation`, which keeps the
+        // modelled `ValidationException` code the message travels with and restates only
+        // the renderings this service's own refusals differ from the framework's by.
+        validation::refused(refusal)
     }
 
     fn override_routing_error(

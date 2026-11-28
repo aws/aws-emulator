@@ -80,7 +80,7 @@ const AKID: &str = "AKIDOMICSTEST";
 /// That is the one wire form this operation binds: `payload` is an `@httpPayload`
 /// streaming blob, and `partSource`/`partNumber` are `@httpQuery`, so the body carries
 /// bytes rather than JSON and the harness's JSON `call` cannot express it.
-async fn upload_part(
+pub(crate) async fn upload_part(
     router: &MultiServiceRouter,
     sequence_store_id: &str,
     upload_id: &str,
@@ -3665,7 +3665,7 @@ async fn a_read_set_id_the_named_store_does_not_hold_is_not_found() {
 /// blob, so a success carries bytes rather than JSON and the harness's JSON `call` cannot
 /// express it. A refusal still carries the modelled error document, which is parsed beside
 /// those bytes so one helper serves both.
-async fn get_read_set(
+pub(crate) async fn get_read_set(
     router: &MultiServiceRouter,
     sequence_store_id: &str,
     read_set_id: &str,
