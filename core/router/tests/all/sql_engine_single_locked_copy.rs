@@ -26,14 +26,15 @@
 //! copies a build may contain at all.
 //!
 //! The lock and manifest readers come from `workspace_lockfile_covers_every_manifest`,
-//! which already pairs these two files.
+//! which already pairs these two files, and so do the two checks themselves: this suite
+//! brings the crates, the bound and the refused release, and `python_guest_arithmetic_single_locked_copy`
+//! states the same rule for the Python guest's arithmetic through the same pair of readings.
 
-use std::collections::BTreeSet;
-use std::fs;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::workspace_lockfile_covers_every_manifest::{
-    accepts, dependencies_in, is_member_dependency_table, locked_packages, parse_version,
-    workspace_members, workspace_root, Locked,
+    committed_lock, locked_copy_reports, locked_packages, pinned_requirement_reports,
+    root_and_member_manifests, workspace_dependency_table, Declared, Locked, ReleaseBound,
 };
 
 /// The name the lock knows the engine binding by: the crate every SQL data plane here
@@ -75,118 +76,26 @@ const ENGINE_CRATES: [EngineCrate; 2] = [
     },
 ];
 
-/// Whether `version` is at or past `floor`, compared component by component as
-/// `major.minor.patch`.
-///
-/// `None` where either is not written as numbers — which a caller FAILS on rather than
-/// passes over, so an unreadable release can never be read as an acceptable one.
-fn at_or_past(floor: &str, version: &str) -> Option<bool> {
-    let (floor, _) = parse_version(floor)?;
-    let (version, _) = parse_version(version)?;
-    Some(version >= floor)
+/// The bound this suite holds each engine crate's locked release to: the release it is pinned
+/// at, and everything past it.
+fn bound(engine: &EngineCrate) -> ReleaseBound {
+    ReleaseBound::AtOrPast(engine.floor)
 }
 
-/// One report per way `locked` fails the rule for `engine`: the lock carries no copy of
-/// it, it carries more than one, or the copy it carries is below the pinned release (or is
-/// written in a form no release comparison can read).
-fn copy_reports(locked: &Locked, engine: &EngineCrate) -> Vec<String> {
-    let EngineCrate {
-        case,
-        name,
-        floor,
-        refused: _,
-    } = engine;
-    let Some(versions) = locked.get(*name) else {
-        return vec![format!(
-            "case {case:?}: expected Cargo.lock to carry {name:?}, got no [[package]] with \
-             that name"
-        )];
-    };
-    let mut reports = Vec::new();
-    if versions.len() != 1 {
-        reports.push(format!(
-            "case {case:?}: expected exactly 1 locked copy of {name:?}, got {} \
-             ({versions:?}) — a second copy puts another engine in the build",
-            versions.len()
-        ));
-    }
-    for version in versions {
-        match at_or_past(floor, version) {
-            Some(true) => {}
-            Some(false) => reports.push(format!(
-                "case {case:?}: expected the locked {name:?} to be at or past {floor}, got \
-                 {version:?}"
-            )),
-            None => reports.push(format!(
-                "case {case:?}: expected the locked {name:?} to name a release that can be \
-                 compared to {floor}, got {version:?}"
-            )),
-        }
-    }
-    reports
-}
-
-/// How many requirements on the engine binding `manifest` declares, and one report per
-/// requirement that does not accept `locked_version` or that would admit `refused`.
-fn requirement_reports(
-    manifest_path: &str,
-    manifest: &str,
-    locked_version: &str,
-    refused: &str,
-) -> (usize, Vec<String>) {
-    let mut declared = 0usize;
-    let mut reports = Vec::new();
-    for (table, key, spec) in dependencies_in(manifest, is_member_dependency_table) {
-        // The crate the key resolves to, so a binding declared under an alias is read by
-        // the crate the lock knows rather than by the name the manifest chose.
-        let crate_name = spec.package.clone().unwrap_or(key);
-        if crate_name != ENGINE_BINDING {
-            continue;
-        }
-        declared += 1;
-        let Some(req) = &spec.req else {
-            reports.push(format!(
-                "case {manifest_path:?} {table}: expected the engine binding to carry a \
-                 version requirement, got {spec:?}"
-            ));
-            continue;
-        };
-        if !accepts(req, locked_version) {
-            reports.push(format!(
-                "case {manifest_path:?} {table}: expected the requirement {req:?} to accept \
-                 the locked {ENGINE_BINDING} {locked_version}, it does not"
-            ));
-        }
-        if accepts(req, refused) {
-            reports.push(format!(
-                "case {manifest_path:?} {table}: expected the requirement {req:?} to refuse \
-                 {ENGINE_BINDING} {refused}, the release the pin replaced, it accepts it"
-            ));
-        }
-    }
-    (declared, reports)
-}
-
-/// The committed lock's packages, and the manifest text of every member under
-/// `services/` — the crates that declare the engine themselves.
-fn lock_and_service_manifests() -> (Locked, Vec<(String, String)>) {
-    let root = workspace_root();
-    let locked = locked_packages(
-        &fs::read_to_string(root.join("Cargo.lock")).expect("read the workspace Cargo.lock"),
-    );
-    let root_manifest =
-        fs::read_to_string(root.join("Cargo.toml")).expect("read the workspace Cargo.toml");
-    let manifests = workspace_members(&root_manifest)
+/// The committed lock's packages, the root `[workspace.dependencies]` table a member's
+/// `workspace = true` defers to, and the manifest text of every member under `services/` — the
+/// crates that declare the engine themselves.
+fn lock_and_service_manifests() -> (Locked, BTreeMap<String, Declared>, Vec<(String, String)>) {
+    let (root_manifest, members) = root_and_member_manifests();
+    let manifests = members
         .into_iter()
-        .filter(|member| member.starts_with("services/"))
-        .map(|member| {
-            let path = root.join(&member).join("Cargo.toml");
-            let manifest = fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-            (format!("{member}/Cargo.toml"), manifest)
-        })
+        .filter(|(manifest, _)| manifest.starts_with("services/"))
         .collect();
-    (locked, manifests)
+    (
+        locked_packages(&committed_lock()),
+        workspace_dependency_table(&root_manifest),
+        manifests,
+    )
 }
 
 /// RULE: the committed lock carries exactly ONE copy of the SQL engine binding and one of
@@ -196,9 +105,9 @@ fn lock_and_service_manifests() -> (Locked, Vec<(String, String)>) {
 /// The rows are the two crates a SQL data plane is built out of.
 #[test]
 fn the_lock_carries_one_copy_of_the_sql_engine_at_or_past_its_pinned_release() {
-    let (locked, _) = lock_and_service_manifests();
+    let (locked, _, _) = lock_and_service_manifests();
     for engine in &ENGINE_CRATES {
-        let reports = copy_reports(&locked, engine);
+        let reports = locked_copy_reports(&locked, engine.case, engine.name, bound(engine));
         assert!(
             reports.is_empty(),
             "case {:?}: expected one locked copy of {:?} at or past {}, got {} report(s): \
@@ -254,7 +163,8 @@ fn a_second_or_older_locked_copy_is_reported() {
     ];
     for case in cases {
         let (name, lock, expected) = case;
-        let reports = copy_reports(&locked_packages(lock), engine);
+        let reports =
+            locked_copy_reports(&locked_packages(lock), engine.case, engine.name, bound(engine));
         assert_eq!(
             reports.len(),
             expected,
@@ -288,21 +198,22 @@ fn the_release_comparison_spans_the_pinned_bound() {
     ];
     for case in cases {
         let (name, floor, release, allowed) = case;
+        let bound = ReleaseBound::AtOrPast(floor);
         assert_eq!(
-            at_or_past(floor, release),
+            bound.admits(release),
             Some(allowed),
             "case {name:?}: expected release {release:?} against the floor {floor:?} to be \
              allowed = {allowed}, got {:?}",
-            at_or_past(floor, release)
+            bound.admits(release)
         );
     }
     // A release that is not written as numbers is reported unreadable rather than
     // acceptable, so no check above can pass on one.
     assert_eq!(
-        at_or_past("0.41.0", "not-a-release"),
+        ReleaseBound::AtOrPast("0.41.0").admits("not-a-release"),
         None,
         "case \"an unreadable release\": expected no comparison at all, got {:?}",
-        at_or_past("0.41.0", "not-a-release")
+        ReleaseBound::AtOrPast("0.41.0").admits("not-a-release")
     );
 }
 
@@ -311,10 +222,11 @@ fn the_release_comparison_spans_the_pinned_bound() {
 /// the pinned release replaced.
 ///
 /// Checked for every dependency table a manifest declares it in (`[dependencies]` and
-/// `[dev-dependencies]` both), against the single locked version the check above pins.
+/// `[dev-dependencies]` both), against the single locked version the check above pins, with a
+/// `workspace = true` declaration read through the root table it defers to.
 #[test]
 fn every_service_manifest_requires_the_pinned_engine_release() {
-    let (locked, manifests) = lock_and_service_manifests();
+    let (locked, workspace_deps, manifests) = lock_and_service_manifests();
     let locked_version = locked
         .get(ENGINE_BINDING)
         .and_then(|versions| versions.first())
@@ -325,8 +237,14 @@ fn every_service_manifest_requires_the_pinned_engine_release() {
     let mut declaring: BTreeSet<&str> = BTreeSet::new();
     let mut reports = Vec::new();
     for (manifest_path, text) in &manifests {
-        let (declared, manifest_reports) =
-            requirement_reports(manifest_path, text, &locked_version, refused);
+        let (declared, manifest_reports) = pinned_requirement_reports(
+            manifest_path,
+            text,
+            &workspace_deps,
+            &[ENGINE_BINDING],
+            &locked_version,
+            refused,
+        );
         if declared > 0 {
             declaring.insert(manifest_path.as_str());
         }
@@ -355,8 +273,9 @@ fn every_service_manifest_requires_the_pinned_engine_release() {
 ///
 /// The rows span the declaration forms the tree uses: a bare requirement, an inline table
 /// with features, a requirement spread over several lines, a dev-dependency, an exact pin,
-/// a renamed dependency, and the wide range form the vendored telemetry crate uses — which
-/// a service manifest may not take.
+/// a renamed dependency, the wide range form the vendored telemetry crate uses — which a
+/// service manifest may not take — and a declaration deferred to a root table that does not
+/// declare it, which resolves to nothing to read here.
 #[test]
 fn a_manifest_requirement_admitting_the_replaced_release_is_reported() {
     // (case, the manifest, how many requirements it declares, how many reports it owes)
@@ -421,10 +340,28 @@ fn a_manifest_requirement_admitting_the_replaced_release_is_reported() {
             0,
             0,
         ),
+        (
+            // A declaration deferred to a root `[workspace.dependencies]` table that does
+            // not declare it resolves to nothing to read here, so it is counted as no
+            // requirement rather than reported as one without a version: the unresolvable
+            // state is `every_dependency_a_workspace_manifest_declares_is_locked`'s to
+            // report.
+            "the binding deferred to a root table that does not declare it",
+            "[dependencies]\nrusqlite = { workspace = true }\n",
+            0,
+            0,
+        ),
     ];
     for case in cases {
         let (name, manifest, declared, expected) = case;
-        let (counted, reports) = requirement_reports(name, manifest, "0.41.1", "0.37.0");
+        let (counted, reports) = pinned_requirement_reports(
+            name,
+            manifest,
+            &BTreeMap::new(),
+            &[ENGINE_BINDING],
+            "0.41.1",
+            "0.37.0",
+        );
         assert_eq!(
             counted, declared,
             "case {name:?}: expected {declared} requirement(s) on the engine binding, got \

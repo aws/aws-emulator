@@ -181,6 +181,30 @@ async fn a_refusal_withholds_a_sensitive_members_value_and_states_apostrophes_as
     }
 }
 
+/// The response document with the text of every `<RequestId>` removed.
+///
+/// That id is minted for the response independently of what the request carried — the
+/// `awsQuery` error envelope carries one for every refusal — so a run of characters inside
+/// it is not an echo of a caller's value, while a short value written in the characters an
+/// id is written in can appear inside one by chance. Stripping it leaves the echo check
+/// reading the parts of the document a request's own bytes could reach.
+fn without_request_ids(body: &str) -> String {
+    const OPEN: &str = "<RequestId>";
+    const CLOSE: &str = "</RequestId>";
+    let mut stripped = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(open) = rest.find(OPEN) {
+        let after_open = open + OPEN.len();
+        let Some(close) = rest[after_open..].find(CLOSE) else {
+            break;
+        };
+        stripped.push_str(&rest[..after_open]);
+        rest = &rest[after_open + close..];
+    }
+    stripped.push_str(rest);
+    stripped
+}
+
 /// The value a @sensitive member was handed reaches no part of the response — the clause
 /// that refused it, and the document around it.
 ///
@@ -225,9 +249,18 @@ async fn a_refused_sensitive_member_is_echoed_nowhere_in_the_response() {
             message.starts_with("1 validation error detected: Value at 'webIdentityToken' "),
             "case {case:?}: expected a clause stating no value, got {message:?}"
         );
+        // The document the request's own bytes could reach: the envelope's request id is
+        // minted for the response, so the strip below is what keeps this check about the
+        // echo rather than about which characters that id happened to be written in.
         assert!(
-            !body.contains(&presented),
-            "case {case:?}: the response must carry nothing of a @sensitive value"
+            element(&body, "RequestId").is_some_and(|id| !id.trim().is_empty()),
+            "case {case:?}: the awsQuery envelope must carry a RequestId, got {body}"
+        );
+        let document = without_request_ids(&body);
+        assert!(
+            !document.contains(&presented),
+            "case {case:?}: the response must carry nothing of a @sensitive value, got \
+             {document}"
         );
     }
 }

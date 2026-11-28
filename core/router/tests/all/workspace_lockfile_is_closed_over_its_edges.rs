@@ -31,12 +31,11 @@
 //! what it is there to catch rather than only to pass on the tree as it stands.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 
 use crate::workspace_lockfile_covers_every_manifest::{
-    committed_lock, dependencies_in, is_member_dependency_table, lock_coverage_reports,
-    lock_entries, locked_crate_name, locked_packages, package_name, resolve_declared,
-    root_and_member_manifests, workspace_root, Declared, LockEntry, Locked,
+    committed_lock, crate_manifests_under, dependencies_in, is_member_dependency_table,
+    lock_coverage_reports, lock_entries, locked_crate_name, locked_packages, package_name,
+    resolve_declared, root_and_member_manifests, Declared, LockEntry, Locked,
 };
 use crate::workspace_lockfile_records_each_member_dependency::{
     source_free_entries, LEAST_EXPECTED_PACKAGES,
@@ -199,27 +198,7 @@ fn path_dependency_reports(
 
 /// Every path dependency's manifest in this checkout, as the path to read it by and its text.
 fn path_dependency_manifests() -> Vec<(String, String)> {
-    let directory = workspace_root().join(PATH_DEPENDENCY_DIRECTORY);
-    let mut crates: Vec<String> = fs::read_dir(&directory)
-        .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|error| panic!("read an entry of {}: {error}", directory.display()))
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    crates.sort();
-    crates
-        .into_iter()
-        .filter_map(|name| {
-            let path = format!("{PATH_DEPENDENCY_DIRECTORY}/{name}/Cargo.toml");
-            fs::read_to_string(workspace_root().join(&path))
-                .ok()
-                .map(|text| (path, text))
-        })
-        .collect()
+    crate_manifests_under(PATH_DEPENDENCY_DIRECTORY)
 }
 
 /// The committed lock's `[[package]]` records, and the package name of every workspace member —

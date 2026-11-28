@@ -30,6 +30,13 @@
 //! by a second reader of the same formats. This module owns the ONE reader of each format:
 //! `lock_entries` reads the lock's `[[package]]` records whole, and every other view of it —
 //! `locked_packages`, which is crate name to locked versions — is derived from that one.
+//!
+//! The same holds for the rule those suites state over the two files. A suite that pins ONE
+//! locked copy of a component at a bounded release — `sql_engine_single_locked_copy` for the
+//! SQL engine the data planes link, `python_guest_arithmetic_single_locked_copy` for the
+//! Python guest's arithmetic — brings its crates, its `ReleaseBound` and the release it
+//! refuses, and reads them through `locked_copy_reports` and `pinned_requirement_reports`
+//! here, so a third such suite copies no checker and the existing two cannot drift apart.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -388,6 +395,182 @@ pub(crate) fn accepts(req: &str, version: &str) -> bool {
         *slot = 0;
     }
     actual >= lower && actual < upper
+}
+
+/// The bound a suite that pins ONE locked copy of a component holds that copy's release to:
+/// at or past a floor, or below a ceiling.
+///
+/// Both exist because the two reasons to pin point opposite ways: a release that first carries
+/// a fix is a floor, and the first release this project's toolchain cannot compile is a
+/// ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReleaseBound {
+    AtOrPast(&'static str),
+    Below(&'static str),
+}
+
+impl ReleaseBound {
+    /// The release the bound is written at.
+    pub(crate) fn release(self) -> &'static str {
+        match self {
+            Self::AtOrPast(release) | Self::Below(release) => release,
+        }
+    }
+
+    /// How the bound reads in a report.
+    fn wording(self) -> &'static str {
+        match self {
+            Self::AtOrPast(_) => "at or past",
+            Self::Below(_) => "below",
+        }
+    }
+
+    /// Whether `version` satisfies the bound, compared component by component as
+    /// `major.minor.patch`.
+    ///
+    /// `None` where either side is not written as numbers — which a caller FAILS on rather than
+    /// passes over, so an unreadable release can never be read as one the bound admits.
+    pub(crate) fn admits(self, version: &str) -> Option<bool> {
+        let (bound, _) = parse_version(self.release())?;
+        let (version, _) = parse_version(version)?;
+        Some(match self {
+            Self::AtOrPast(_) => version >= bound,
+            Self::Below(_) => version < bound,
+        })
+    }
+}
+
+/// One report per way the lock fails `bound` for the crate `name`, under the label `case`: the
+/// lock carries no copy of it, it carries more than one, or a copy it carries lies outside the
+/// bound (or is written in a form no release comparison can read).
+///
+/// This is the ONE reading of "how many copies, at which release" in this target: a suite that
+/// pins a single locked copy of a component — the SQL engine the data planes link, the Python
+/// guest's arithmetic — states its crate and its bound and reads them through here, rather than
+/// through a second copy of the rule that could drift from this one.
+pub(crate) fn locked_copy_reports(
+    locked: &Locked,
+    case: &str,
+    name: &str,
+    bound: ReleaseBound,
+) -> Vec<String> {
+    let Some(versions) = locked.get(name) else {
+        return vec![format!(
+            "case {case:?}: expected Cargo.lock to carry {name:?}, got no [[package]] with \
+             that name"
+        )];
+    };
+    let mut reports = Vec::new();
+    if versions.len() != 1 {
+        reports.push(format!(
+            "case {case:?}: expected exactly 1 locked copy of {name:?}, got {} ({versions:?}) \
+             — a second copy puts another one in the build",
+            versions.len()
+        ));
+    }
+    let (wording, release) = (bound.wording(), bound.release());
+    for version in versions {
+        match bound.admits(version) {
+            Some(true) => {}
+            Some(false) => reports.push(format!(
+                "case {case:?}: expected the locked {name:?} to be {wording} {release}, got \
+                 {version:?}"
+            )),
+            None => reports.push(format!(
+                "case {case:?}: expected the locked {name:?} to name a release that can be \
+                 compared to {release}, got {version:?}"
+            )),
+        }
+    }
+    reports
+}
+
+/// How many requirements on the crates in `crates` the manifest declares, and one report per
+/// requirement that carries no version at all, that does not accept `locked_version`, or that
+/// would admit `refused` — the release the pin exists to keep out of the build.
+///
+/// The companion of `locked_copy_reports` on the manifest side, shared for the same reason: a
+/// pin that only the lock states is a pin a re-resolve can undo, so each suite pairs its
+/// crates' requirements with the copy the lock carries through this one reading.
+///
+/// A declaration that defers to the root `[workspace.dependencies]` is read through the entry it
+/// defers to; one that defers to a table not declaring it resolves to nothing to read here and is
+/// left to `every_dependency_a_workspace_manifest_declares_is_locked`, which reports that state.
+pub(crate) fn pinned_requirement_reports(
+    manifest_path: &str,
+    manifest: &str,
+    workspace_deps: &BTreeMap<String, Declared>,
+    crates: &[&str],
+    locked_version: &str,
+    refused: &str,
+) -> (usize, Vec<String>) {
+    let mut declared = 0usize;
+    let mut reports = Vec::new();
+    for (table, key, spec) in dependencies_in(manifest, is_member_dependency_table) {
+        let Some(resolved) = resolve_declared(&key, &spec, workspace_deps) else {
+            continue;
+        };
+        // The crate the key resolves to, so one declared under an alias is read by the name the
+        // lock knows rather than by the name the manifest chose.
+        let crate_name = locked_crate_name(&key, &resolved);
+        if !crates.contains(&crate_name.as_str()) {
+            continue;
+        }
+        declared += 1;
+        let Some(req) = &resolved.req else {
+            reports.push(format!(
+                "case {manifest_path:?} {table} -> {crate_name:?}: expected the pinned crate to \
+                 carry a version requirement, got {resolved:?}"
+            ));
+            continue;
+        };
+        if !accepts(req, locked_version) {
+            reports.push(format!(
+                "case {manifest_path:?} {table} -> {crate_name:?}: expected the requirement \
+                 {req:?} to accept the locked {locked_version}, it does not"
+            ));
+        }
+        if accepts(req, refused) {
+            reports.push(format!(
+                "case {manifest_path:?} {table} -> {crate_name:?}: expected the requirement \
+                 {req:?} to refuse {refused}, it accepts it"
+            ));
+        }
+    }
+    (declared, reports)
+}
+
+/// Every crate directory directly under `directory` (relative to the workspace root) that
+/// holds a manifest, as the path to read it by — relative to that root — and its text, in
+/// path order.
+///
+/// The ONE walk of a crate-holding directory in this target: the suites that read the
+/// manifests of crates the root `members` array does not list — `vendor/`'s path
+/// dependencies, and the crates under `services/` that are path dependencies of a member —
+/// share it rather than each walking a directory the same way.
+pub(crate) fn crate_manifests_under(directory: &str) -> Vec<(String, String)> {
+    let root = workspace_root();
+    let path = root.join(directory);
+    let mut crates: Vec<String> = fs::read_dir(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| panic!("read an entry of {}: {error}", path.display()))
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    crates.sort();
+    crates
+        .into_iter()
+        .filter_map(|name| {
+            let manifest = format!("{directory}/{name}/Cargo.toml");
+            fs::read_to_string(root.join(&manifest))
+                .ok()
+                .map(|text| (manifest, text))
+        })
+        .collect()
 }
 
 /// The declaration the lock is resolved from: the root `[workspace.dependencies]` entry a
