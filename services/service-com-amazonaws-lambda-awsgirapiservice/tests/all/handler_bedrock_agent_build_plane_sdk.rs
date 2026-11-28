@@ -92,7 +92,11 @@ const VALIDATION_STATUS: i64 = 400;
 /// base identifier nothing holds: ten characters of this plane's `Id` alphabet
 /// (`smithy_query(query="operation",operation="GetAgent")` -> `agentId` @pattern
 /// `^[0-9a-zA-Z]{10}$`, the same shape `GetKnowledgeBase`'s `knowledgeBaseId` targets).
-const ID_PATTERN: &str = "^[0-9a-zA-Z]{10}$";
+///
+/// [`STATED_ID_PATTERN`] is that expression as a refusal QUOTES it: without the whole-value
+/// `^` / `$` the model writes around it, which is how that plane states a `@pattern`
+/// requirement.
+const STATED_ID_PATTERN: &str = "[0-9a-zA-Z]{10}";
 const MISSING_AGENT_ID: &str = "ZZZZZZZZZ9";
 const MISSING_KNOWLEDGE_BASE_ID: &str = "ZZZZZZZZZZ";
 
@@ -350,7 +354,7 @@ fn rows() -> Vec<Row> {
                 code: VALIDATION,
                 status: VALIDATION_STATUS,
                 message: Message::Exactly(|| {
-                    pattern_violation(MALFORMED_AGENT_ID, "agentId", ID_PATTERN)
+                    pattern_violation(MALFORMED_AGENT_ID, "agentId", STATED_ID_PATTERN)
                 }),
             },
         },

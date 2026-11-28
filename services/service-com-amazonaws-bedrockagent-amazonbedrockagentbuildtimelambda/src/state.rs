@@ -706,8 +706,8 @@ impl FlowRecord {
     }
 }
 
-/// The modelled `FlowIdentifier` pattern, quoted verbatim so a refusal can name
-/// the constraint the value failed.
+/// The modelled `FlowIdentifier` pattern, as the model writes it. A refusal
+/// quotes it through [`stated_pattern`], which drops the whole-value anchors.
 pub const FLOW_IDENTIFIER_PATTERN: &str =
     "^(arn:aws:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:flow/[0-9a-zA-Z]{10})|([0-9a-zA-Z]{10})$";
 
@@ -760,8 +760,24 @@ fn parse_composite_cursor(token: &str) -> Option<(u128, &str)> {
 pub fn flow_identifier_pattern_message(identifier: &str) -> String {
     format!(
         "Value '{identifier}' at 'flowIdentifier' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {FLOW_IDENTIFIER_PATTERN}"
+         Member must satisfy regular expression pattern: {}",
+        stated_pattern(FLOW_IDENTIFIER_PATTERN)
     )
+}
+
+/// A modelled `@pattern` as a constraint clause of this service QUOTES it: the
+/// expression a value has to satisfy, without the whole-value `^` / `$` the
+/// model writes around it to turn a find into a whole-string match.
+///
+/// The one rendering this service states a `@pattern` requirement through,
+/// whether the clause comes from the boundary walk in front of a handler
+/// (`crate::service::EmulatedService::override_refusal`) or from a handler that
+/// judges the syntax of a member itself — the clause is the same error class
+/// either way, so the expression it advertises is spelled the same way. The drop
+/// itself is `service_common::validation::unanchored`, the tree's one reading of
+/// that pair, called rather than restated.
+pub fn stated_pattern(pattern: &str) -> String {
+    ::service_common::validation::unanchored(pattern)
 }
 
 /// The `flowId` a modelled `FlowIdentifier` names, or `None` when the value is

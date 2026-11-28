@@ -27,7 +27,8 @@
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. This service states them AWS's way: the framework's
 //!   envelope and clauses, with the value dropped from a clause about a `@sensitive`
-//!   member and an enumerated type's value set stated as this front door states it —
+//!   member, a `@pattern` expression quoted without the whole-value anchors the model
+//!   writes around it, and an enumerated type's value set stated as this front door states it —
 //!   the values it publishes for that type, in the order its table of them is walked
 //!   (`crate::state::in_front_door_enum_value_set`). See the inline note
 //!   on that method.
@@ -390,7 +391,8 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // ([`WITHHELD_MEMBERS`]): a server does not echo back what the model says not
         // to disclose. Everything else — the envelope, the member path, the
         // `@pattern` expression and every other requirement — stays exactly as the
-        // framework worded it.
+        // shared renderer words it, `@pattern` included: it quotes the expression a value
+        // has to satisfy, without the whole-value `^` / `$` the model writes around it.
         //
         // One LISTING is this service's too: an enumerated type's admissible values are
         // stated as this front door states them — the values it PUBLISHES for that type,
@@ -416,14 +418,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             // Not a constraint refusal, so it carries no value set to re-order.
             other => std::borrow::Cow::Borrowed(other),
         };
-        service_common::validation_message::aws_validation_refusal_withholding_with(
-            &restated,
-            // The expression a `@pattern` clause advertises is the model's own, as the
-            // framework already quotes it: nothing recorded for this service shows it
-            // quoted any other way, so only the value half below is restated.
-            |pattern| pattern.to_string(),
-            |path| WITHHELD_MEMBERS.withholds_value(path),
-        )
+        // The expression a `@pattern` clause advertises is the one a value has to satisfy,
+        // and the `^` / `$` the model writes around it are how Smithy turns a find into a
+        // whole-string match rather than part of the character grammar — so the clause
+        // quotes the expression WITHOUT that pair, which is what a client lifting it out of
+        // the message and recompiling it needs. That rendering is the shared one every
+        // service states a `@pattern` requirement through
+        // (`service_common::validation_message`'s own default), so this service names no
+        // rendering of its own and only the value half above is restated.
+        service_common::validation_message::aws_validation_refusal_withholding(&restated, |path| {
+            WITHHELD_MEMBERS.withholds_value(path)
+        })
     }
 
     fn override_routing_error(

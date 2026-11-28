@@ -250,8 +250,8 @@ pub fn prompt_version_arn(prompt_arn: &str, version: u32) -> String {
 /// it (`…:prompt/<promptId>`).
 const PROMPT_ARN_RESOURCE_TYPE: &str = "prompt";
 
-/// The modelled `PromptIdentifier` pattern, quoted verbatim so a refusal can name the
-/// constraint the value failed.
+/// The modelled `PromptIdentifier` pattern, as the model writes it. A refusal quotes
+/// it through [`stated_pattern`], which drops the whole-value anchors.
 pub const PROMPT_IDENTIFIER_PATTERN: &str = concat!(
     "^([0-9a-zA-Z]{10})|(arn:aws:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:",
     "prompt/[0-9a-zA-Z]{10})(?::[0-9]{1,5})?$",
@@ -267,7 +267,8 @@ const VERSION_QUALIFIER_DIGITS: usize = 5;
 pub fn prompt_identifier_pattern_message(identifier: &str) -> String {
     format!(
         "Value '{identifier}' at 'promptIdentifier' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {PROMPT_IDENTIFIER_PATTERN}"
+         Member must satisfy regular expression pattern: {}",
+        stated_pattern(PROMPT_IDENTIFIER_PATTERN)
     )
 }
 

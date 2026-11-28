@@ -4,8 +4,8 @@
 //! resource it addresses by that resource's own identifier, end to end over HTTP.
 //!
 //! RULE: the refusal is the sentence "<ResourceType> with id <id> is not found.",
-//! whose only variable parts are the type of the resource that could not be
-//! resolved — spelled as the model spells the shape — and the identifier the
+//! whose only variable parts are the type of the resource the refusal is reported
+//! against — spelled as the model spells the shape — and the identifier the
 //! request carried for THAT resource. The identifiers of the resources enclosing
 //! it are no part of the sentence, however many of them the request had to carry
 //! to address it.
@@ -387,8 +387,11 @@ async fn an_ingestion_job_refusal_names_only_the_job_it_could_not_resolve() {
 }
 
 /// RULE: the refusal names the TYPE of the resource that could not be resolved,
-/// as the model spells the shape, and that resource's own id — whichever part of
-/// the address it is that the store cannot resolve.
+/// as the model spells the shape, and that resource's own id — for a read, the
+/// part of the address its own lookup failed on; for `StopIngestionJob`, whose
+/// triple is one selector of the job it acts on, the addressed job whichever part
+/// of the triple resolves to nothing (pinned over a table by the sibling
+/// `stop_ingestion_job_not_found_scope` suite).
 #[tokio::test]
 async fn a_refusal_names_the_type_of_the_resource_it_could_not_resolve() {
     let emulator = Emulator::new();
@@ -405,45 +408,53 @@ async fn a_refusal_names_the_type_of_the_resource_it_could_not_resolve() {
     // be resolved, and so along the TYPE the refusal has to name: the knowledge
     // base, the data source within it, and the job within that pair — each read
     // through the operation whose path addresses it.
-    let knowledge_base_refusals = [
-        emulator.get_knowledge_base(absent).await,
-        emulator
-            .stop_ingestion_job(absent, &data_source_id, &ingestion_job_id)
-            .await,
-    ];
-    for (index, answer) in knowledge_base_refusals.iter().enumerate() {
-        assert_not_found(
-            &format!("a knowledge base nothing holds, row {index}"),
-            "KnowledgeBase",
-            absent,
-            answer,
-        );
-    }
-
-    let data_source_refusals = [
-        emulator.get_data_source(&knowledge_base_id, absent).await,
-        emulator
-            .stop_ingestion_job(&knowledge_base_id, absent, &ingestion_job_id)
-            .await,
-    ];
-    for (index, answer) in data_source_refusals.iter().enumerate() {
-        assert_not_found(
-            &format!("a data source the knowledge base does not hold, row {index}"),
-            "DataSource",
-            absent,
-            answer,
-        );
-    }
-
-    let job_refusal = emulator
-        .stop_ingestion_job(&knowledge_base_id, &data_source_id, absent)
-        .await;
     assert_not_found(
-        "a job the data source does not hold",
-        "IngestionJob",
+        "a knowledge base nothing holds",
+        "KnowledgeBase",
         absent,
-        &job_refusal,
+        &emulator.get_knowledge_base(absent).await,
     );
+    assert_not_found(
+        "a data source the knowledge base does not hold",
+        "DataSource",
+        absent,
+        &emulator.get_data_source(&knowledge_base_id, absent).await,
+    );
+
+    // `StopIngestionJob` addresses the job itself, so each row of the triple that
+    // resolves to nothing — the knowledge base, the data source, the job id — is
+    // reported as the addressed JOB not being found, with the id the path carried
+    // for it.
+    for (case, requested_knowledge_base, requested_data_source, requested_job) in [
+        (
+            "a knowledge base nothing holds",
+            absent,
+            data_source_id.as_str(),
+            ingestion_job_id.as_str(),
+        ),
+        (
+            "a data source the knowledge base does not hold",
+            knowledge_base_id.as_str(),
+            absent,
+            ingestion_job_id.as_str(),
+        ),
+        (
+            "a job the data source does not hold",
+            knowledge_base_id.as_str(),
+            data_source_id.as_str(),
+            absent,
+        ),
+    ] {
+        let answer = emulator
+            .stop_ingestion_job(requested_knowledge_base, requested_data_source, requested_job)
+            .await;
+        assert_not_found(
+            &format!("StopIngestionJob with {case}"),
+            "IngestionJob",
+            requested_job,
+            &answer,
+        );
+    }
 }
 
 /// RULE applied to the agent plane: an agent operation addressed by an `agentId`

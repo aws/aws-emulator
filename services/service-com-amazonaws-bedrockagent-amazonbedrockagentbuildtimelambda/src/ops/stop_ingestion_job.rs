@@ -12,6 +12,12 @@
 //! exactly as it stands. A stopped job frees its data source, so the caller can
 //! "send a StartIngestionJob request again to ingest the rest of your data".
 //!
+//! The triple is ONE selector of the addressed job, so a request it selects no job
+//! for is refused as THAT job not being found
+//! ([`crate::state::ingestion_job_not_found_message`]), whichever of the three ids
+//! is the one that resolves to nothing; the enclosing knowledge base and data
+//! source are no part of the sentence.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -174,45 +180,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // whether or not anyone had read it since.
         state.materialise_due_transitions(now);
 
-        // A job ingests one data source of one knowledge base, so both have to
-        // exist for this call to address a job at all — and a resource a delete
-        // has already been accepted for is as absent as one nothing holds, which
-        // is the same reading `StartIngestionJob` makes of the pair.
-        if state
+        // The three ids of the path are ONE selector of the job this call acts on:
+        // a job is held under the knowledge base and data source it ran for, so the
+        // triple either selects that job or selects nothing. A request whose triple
+        // selects nothing is refused as the ADDRESSED job not being found —
+        // whichever part of the triple is what failed to resolve — and the enclosing
+        // knowledge base and data source are no part of the sentence. A resource a
+        // delete has already been accepted for is as absent as one nothing holds,
+        // which is the same reading `StartIngestionJob` makes of the pair.
+        let selects_live_scope = state
             .live_knowledge_base(&input.knowledge_base_id)
-            .is_none()
-        {
-            return Err(StopIngestionJobErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::knowledge_base_not_found_message(
-                        &input.knowledge_base_id,
-                    )),
-                },
-            )
-            .into());
-        }
-        if state
-            .live_data_source_of(&input.knowledge_base_id, &input.data_source_id)
-            .is_none()
-        {
-            return Err(StopIngestionJobErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::data_source_not_found_message(
-                        &input.data_source_id,
-                    )),
-                },
-            )
-            .into());
-        }
-
-        // An ingestion job is identified by the knowledge base and data source it
-        // ran for as well as its own id, so an id of another data source's job is
-        // as absent here as one nothing holds.
-        let Some(record) = state.ingestion_job_of_mut(
-            &input.knowledge_base_id,
-            &input.data_source_id,
-            &input.ingestion_job_id,
-        ) else {
+            .is_some()
+            && state
+                .live_data_source_of(&input.knowledge_base_id, &input.data_source_id)
+                .is_some();
+        let addressed = selects_live_scope
+            .then(|| {
+                state.ingestion_job_of_mut(
+                    &input.knowledge_base_id,
+                    &input.data_source_id,
+                    &input.ingestion_job_id,
+                )
+            })
+            .flatten();
+        let Some(record) = addressed else {
             return Err(StopIngestionJobErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(crate::state::ingestion_job_not_found_message(

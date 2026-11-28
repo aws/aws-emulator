@@ -1190,7 +1190,7 @@ async fn a_refusal_withholds_a_sensitive_or_self_describing_value() {
             body: Some(json!({ "definition": malformed_node_name })),
             expected: "1 validation error detected: Value at 'definition.nodes.2.member.name' \
                  failed to satisfy constraint: Member must satisfy regular expression pattern: \
-                 ^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$"
+                 [a-zA-Z]([_]?[0-9a-zA-Z]){1,50}"
                 .to_string(),
             withheld: "not a node name!",
         },
@@ -1213,7 +1213,7 @@ async fn a_refusal_withholds_a_sensitive_or_self_describing_value() {
             body: Some(json!({ "name": "not a flow name!", "executionRoleArn": EXECUTION_ROLE })),
             expected: "1 validation error detected: Value 'not a flow name!' at 'name' failed to \
                  satisfy constraint: Member must satisfy regular expression pattern: \
-                 ^([0-9a-zA-Z][_-]?){1,100}$"
+                 ([0-9a-zA-Z][_-]?){1,100}"
                 .to_string(),
             withheld: "\u{0}",
         },

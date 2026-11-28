@@ -174,8 +174,8 @@ impl FlowAliasRecord {
     }
 }
 
-/// The modelled `FlowAliasIdentifier` pattern, quoted verbatim so a refusal can
-/// name the constraint the value failed.
+/// The modelled `FlowAliasIdentifier` pattern, as the model writes it. A refusal
+/// quotes it through [`stated_pattern`], which drops the whole-value anchors.
 pub const FLOW_ALIAS_IDENTIFIER_PATTERN: &str =
     "^(arn:aws:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:flow/[0-9a-zA-Z]{10}/alias/[0-9a-zA-Z]{10})|(TSTALIASID|[0-9a-zA-Z]{10})$";
 
@@ -185,7 +185,8 @@ pub const FLOW_ALIAS_IDENTIFIER_PATTERN: &str =
 pub fn flow_alias_identifier_pattern_message(identifier: &str) -> String {
     format!(
         "Value '{identifier}' at 'aliasIdentifier' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {FLOW_ALIAS_IDENTIFIER_PATTERN}"
+         Member must satisfy regular expression pattern: {}",
+        stated_pattern(FLOW_ALIAS_IDENTIFIER_PATTERN)
     )
 }
 

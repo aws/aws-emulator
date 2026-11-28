@@ -56,8 +56,14 @@ const REGION: &str = "us-east-1";
 /// shape every `dataSourceId` and `ingestionJobId` member targets (`@pattern ^[0-9a-zA-Z]{10}$`).
 const ID_CHARACTERS: usize = 10;
 
-/// The whole of that pattern, as the refusal of a value outside it quotes it.
+/// The modelled expression, as the model writes it; a refusal quotes it WITHOUT the
+/// whole-value anchors ([`STATED_ID_PATTERN`]), which is how the service advertises the
+/// expression a value has to satisfy.
 const ID_PATTERN: &str = "^[0-9a-zA-Z]{10}$";
+
+/// [`ID_PATTERN`] as a refusal of a value outside it quotes it: the expression minus the
+/// `^` / `$` the model writes around it to demand a whole-string match.
+const STATED_ID_PATTERN: &str = "[0-9a-zA-Z]{10}";
 
 /// How many groups the modelled `Name` pattern admits (`^([0-9a-zA-Z][_-]?){1,100}$`), which is
 /// the longest name of single-character groups a declaration can state.
@@ -202,7 +208,7 @@ fn is_minted_id(value: &str) -> bool {
 fn pattern_refusal(submitted: &str) -> String {
     format!(
         "1 validation error detected: Value '{submitted}' at 'dataSourceId' failed to satisfy \
-         constraint: Member must satisfy regular expression pattern: {ID_PATTERN}"
+         constraint: Member must satisfy regular expression pattern: {STATED_ID_PATTERN}"
     )
 }
 

@@ -206,8 +206,8 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
     }
 }
 
-/// The modelled `ResourceArn` pattern, quoted verbatim so a refusal can name the
-/// constraint the value failed.
+/// The modelled `ResourceArn` pattern, as the model writes it. A refusal quotes it
+/// through [`stated_pattern`], which drops the whole-value anchors.
 pub const RESOURCE_POLICY_ARN_PATTERN: &str =
     "^arn:aws(-[^:]+)?:bedrock:[a-z0-9-]{1,20}:[0-9]{12}:knowledge-base/[0-9a-zA-Z]+$";
 
@@ -221,7 +221,8 @@ pub const RESOURCE_POLICY_ARN_PATTERN: &str =
 pub fn resource_policy_arn_pattern_message(resource_arn: &str) -> String {
     format!(
         "Value '{resource_arn}' at 'resourceArn' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {RESOURCE_POLICY_ARN_PATTERN}"
+         Member must satisfy regular expression pattern: {}",
+        stated_pattern(RESOURCE_POLICY_ARN_PATTERN)
     )
 }
 

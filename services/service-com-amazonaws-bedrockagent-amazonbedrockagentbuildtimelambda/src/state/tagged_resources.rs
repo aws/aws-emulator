@@ -169,12 +169,15 @@ fn is_partition(partition: &str) -> bool {
 pub fn taggable_resource_arn_pattern_message(resource_arn: &str) -> String {
     format!(
         "Value '{resource_arn}' at 'resourceArn' failed to satisfy constraint: \
-         Member must satisfy regular expression pattern: {TAGGABLE_RESOURCES_ARN_PATTERN}"
+         Member must satisfy regular expression pattern: {}",
+        stated_pattern(TAGGABLE_RESOURCES_ARN_PATTERN)
     )
 }
 
 /// The expression the refusal above quotes: the modelled `TaggableResourcesArn`
-/// `@pattern`, as this service's model publishes it.
+/// `@pattern`, as this service's model publishes it. Each of its branches carries its
+/// own anchors inside one group, so the expression opens with no `^` of its own and
+/// [`stated_pattern`] states it exactly as written.
 const TAGGABLE_RESOURCES_ARN_PATTERN: &str = concat!(
     r"(^arn:aws:bedrock:[a-zA-Z0-9-]+:/d{12}:",
     r"(agent|agent-alias|knowledge-base|flow|prompt)/[A-Z0-9]{10}(?:/[A-Z0-9]{10})?$",

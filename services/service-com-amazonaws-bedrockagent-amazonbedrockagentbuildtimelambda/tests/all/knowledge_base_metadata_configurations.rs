@@ -436,7 +436,7 @@ async fn metadata_configurations_outside_their_constraints_are_refused_and_write
             case: "a field name outside the name's pattern",
             metadata_configurations: json!([field("not a field name!", "STRING", "ENABLED")]),
             clause: "failed to satisfy constraint: Member must satisfy regular expression \
-                 pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$"
+                 pattern: [a-zA-Z0-9_][a-zA-Z0-9_-]*"
                 .to_string(),
             admits: Vec::new(),
             // The name targets a `@sensitive` shape, so the refusal does not echo it.
