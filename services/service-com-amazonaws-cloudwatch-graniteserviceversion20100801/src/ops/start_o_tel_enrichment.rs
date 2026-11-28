@@ -43,16 +43,23 @@
 //! Enables enrichment and PromQL access for CloudWatch vended metrics for supported Amazon
 //! Web Services resources in the account. Once enabled, metrics that contain a resource
 //! identifier dimension (for example, EC2 CPUUtilization with an InstanceId dimension) are
-//! enriched with resource ARN and resource tag labels and become queryable using PromQL.
-//! Before calling this operation, you must enable resource tags on telemetry for your
-//! account. For more information, see Enable resource tags on telemetry. Optionally,
-//! IncludeFilters and ExcludeFilters limit enrichment to a subset of the account's metrics.
-//! These filters are stored only when this operation starts enrichment. Calling
-//! StartOTelEnrichment for an account where enrichment is already running has no effect and
-//! does not modify the filters that are applied. To change them, use UpdateOTelEnrichment.
+//! enriched with resource ARN labels and, optionally, resource tag labels, and become queryable
+//! using PromQL. To include resource tag labels, you must also enable resource tags on
+//! telemetry for the account. For more information, see Enable resource tags on telemetry. If
+//! EnableTagEnrichment is false, enrichment reads no resource tags, so it does not require
+//! resource tags on telemetry. Optionally, IncludeFilters and ExcludeFilters limit enrichment
+//! to a subset of the account's metrics, and EnableTagEnrichment controls whether enriched
+//! metrics include resource tag labels. These settings are stored only when this operation
+//! starts enrichment. Calling StartOTelEnrichment for an account where enrichment is already
+//! running has no effect and does not modify the filters or the tag enrichment setting that
+//! are applied. To change them, use UpdateOTelEnrichment.
 //!
 //! ## Input
 //!
+//! * `EnableTagEnrichment` (Boolean) — Specifies whether enriched metrics include resource tag
+//!   labels. If true, enriched metrics include resource tag labels. If false, they include
+//!   resource ARN labels but no resource tag labels. If you omit this parameter, the default is
+//!   true.
 //! * `ExcludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The metric namespaces,
 //!   and the metric names, to leave unenriched. If this parameter is omitted, nothing is
 //!   excluded. Amazon CloudWatch applies ExcludeFilters after IncludeFilters, so a metric
@@ -66,6 +73,8 @@
 //! ## Output
 //!
 //! * `CreatedAt` (Timestamp) — The date and time that enrichment started for the account.
+//! * `EnableTagEnrichment` (Boolean) — Specifies whether enriched metrics include resource tag
+//!   labels for the account.
 //! * `ExcludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The exclude filters
 //!   that are stored for the account.
 //! * `IncludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The include filters
@@ -189,14 +198,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let stored = store.otel_enrichment.get_or_insert_with(Default::default);
 
         // "Calling StartOTelEnrichment for an account where enrichment is already running has
-        // no effect and does not modify the filters that are applied. To change them, use
-        // UpdateOTelEnrichment." — so a repeat call reports the configuration the first one
-        // stored, with its own instants, rather than restating the request.
+        // no effect and does not modify the filters or the tag enrichment setting that are
+        // applied. To change them, use UpdateOTelEnrichment." — so a repeat call reports the
+        // configuration the first one stored, with its own instants, rather than restating the
+        // request.
         if !stored.running {
             stored.running = true;
-            // "These filters are stored only when this operation starts enrichment."
+            // "These settings are stored only when this operation starts enrichment."
             stored.include_filters = input.include_filters.clone().unwrap_or_default();
             stored.exclude_filters = input.exclude_filters.clone().unwrap_or_default();
+            // "If you omit this parameter, the default is true."
+            // (`StartOTelEnrichmentInput$EnableTagEnrichment`)
+            stored.enable_tag_enrichment = input
+                .enable_tag_enrichment
+                .unwrap_or(crate::state::O_TEL_ENRICHMENT_TAG_ENRICHMENT_DEFAULT);
             stored.created_at_secs = Some(now);
             stored.updated_at_secs = now;
         }
@@ -206,6 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             exclude_filters: crate::state::o_tel_enrichment_filters(&stored.exclude_filters),
             created_at: stored.created_at_secs.map(crate::state::to_timestamp),
             updated_at: Some(crate::state::to_timestamp(stored.updated_at_secs)),
+            enable_tag_enrichment: Some(stored.enable_tag_enrichment),
         })
     }
 }

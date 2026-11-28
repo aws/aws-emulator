@@ -143,11 +143,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         let stored = store.otel_enrichment.get_or_insert_with(Default::default);
         stored.running = false;
-        // The filters go with the enrichment they scoped: "These filters are stored only when
-        // this operation starts enrichment" (`StartOTelEnrichment`), so the next start is the
-        // one that decides what is in scope, and until then there is nothing to report.
+        // The filters and the tag-enrichment setting go with the enrichment they configured:
+        // "These settings are stored only when this operation starts enrichment"
+        // (`StartOTelEnrichment`), so the next start is the one that decides what is in scope
+        // and whether resource tag labels are included, and until then there is nothing to
+        // report.
         stored.include_filters.clear();
         stored.exclude_filters.clear();
+        stored.enable_tag_enrichment = crate::state::O_TEL_ENRICHMENT_TAG_ENRICHMENT_DEFAULT;
         stored.created_at_secs = None;
         stored.updated_at_secs = now;
 

@@ -24,5 +24,6 @@ pub struct GetOTelEnrichmentOutput {
     pub exclude_filters: Option<Vec<OTelEnrichmentMetricSelector>>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub enable_tag_enrichment: Option<bool>,
 }
 

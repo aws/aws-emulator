@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-cloudwatch-graniteservi
 pub struct StartOTelEnrichmentInput {
     pub include_filters: Option<Vec<OTelEnrichmentMetricSelector>>,
     pub exclude_filters: Option<Vec<OTelEnrichmentMetricSelector>>,
+    pub enable_tag_enrichment: Option<bool>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.cloudwatch#StartOTelEnrichmentOutput")]
@@ -25,5 +26,6 @@ pub struct StartOTelEnrichmentOutput {
     pub exclude_filters: Option<Vec<OTelEnrichmentMetricSelector>>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
+    pub enable_tag_enrichment: Option<bool>,
 }
 

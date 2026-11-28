@@ -50,6 +50,11 @@
 //!
 //! ## Input
 //!
+//! * `EnableTagEnrichment` (Boolean) — Specifies whether enriched metrics include resource tag
+//!   labels. If true, enriched metrics include resource tag labels. If false, they include
+//!   resource ARN labels but no resource tag labels. If you omit this parameter, the stored
+//!   value is not changed. The operation also replaces the stored filters, so to change only
+//!   this setting, specify the current IncludeFilters and ExcludeFilters in the same request.
 //! * `ExcludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The metric namespaces,
 //!   and the metric names, to leave unenriched. If this parameter is omitted, nothing is
 //!   excluded. Amazon CloudWatch applies ExcludeFilters after IncludeFilters, so a metric
@@ -63,6 +68,9 @@
 //! ## Output
 //!
 //! * `CreatedAt` (Timestamp) — The date and time that enrichment started for the account.
+//! * `EnableTagEnrichment` (Boolean) — Specifies whether enriched metrics include resource tag
+//!   labels for the account after the update. If the request omits EnableTagEnrichment, this is
+//!   the value that was already stored.
 //! * `ExcludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The exclude filters
 //!   that are stored for the account after the replacement. This parameter is omitted when
 //!   the request cleared the exclude filters, which means that nothing is excluded.
@@ -217,6 +225,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // and a request that specifies neither clears both."
         stored.include_filters = input.include_filters.clone().unwrap_or_default();
         stored.exclude_filters = input.exclude_filters.clone().unwrap_or_default();
+        // The tag-enrichment setting is NOT part of that pair: "If you omit this parameter, the
+        // stored value is not changed." (`UpdateOTelEnrichmentInput$EnableTagEnrichment`)
+        if let Some(enable_tag_enrichment) = input.enable_tag_enrichment {
+            stored.enable_tag_enrichment = enable_tag_enrichment;
+        }
         // The enrichment itself is untouched, so `CreatedAt` keeps the instant the start
         // stored and only `UpdatedAt` moves: "The date and time that the enrichment
         // configuration for the account was last stored."
@@ -227,6 +240,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             exclude_filters: crate::state::o_tel_enrichment_filters(&stored.exclude_filters),
             created_at: stored.created_at_secs.map(crate::state::to_timestamp),
             updated_at: Some(crate::state::to_timestamp(stored.updated_at_secs)),
+            enable_tag_enrichment: Some(stored.enable_tag_enrichment),
         })
     }
 }

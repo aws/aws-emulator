@@ -192,7 +192,10 @@ fn rows() -> Vec<Row> {
             method: "start_otel_enrichment",
             parameters: json!({ "IncludeFilters": selector() }),
             expected: Expected::Answered {
-                members: &["CreatedAt", "IncludeFilters", "UpdatedAt"],
+                // A start reports the tag-enrichment setting it stored as well as the filters:
+                // "Specifies whether enriched metrics include resource tag labels for the
+                // account." (`StartOTelEnrichmentOutput$EnableTagEnrichment`)
+                members: &["CreatedAt", "EnableTagEnrichment", "IncludeFilters", "UpdatedAt"],
                 status: None,
             },
         },
@@ -201,7 +204,13 @@ fn rows() -> Vec<Row> {
             method: "get_otel_enrichment",
             parameters: json!({}),
             expected: Expected::Answered {
-                members: &["CreatedAt", "IncludeFilters", "Status", "UpdatedAt"],
+                members: &[
+                    "CreatedAt",
+                    "EnableTagEnrichment",
+                    "IncludeFilters",
+                    "Status",
+                    "UpdatedAt",
+                ],
                 status: Some(RUNNING),
             },
         },
@@ -210,7 +219,7 @@ fn rows() -> Vec<Row> {
             method: "update_otel_enrichment",
             parameters: json!({ "ExcludeFilters": selector() }),
             expected: Expected::Answered {
-                members: &["CreatedAt", "ExcludeFilters", "UpdatedAt"],
+                members: &["CreatedAt", "EnableTagEnrichment", "ExcludeFilters", "UpdatedAt"],
                 status: None,
             },
         },
@@ -228,6 +237,9 @@ fn rows() -> Vec<Row> {
             method: "get_otel_enrichment",
             parameters: json!({}),
             expected: Expected::Answered {
+                // The tag-enrichment setting goes with the enrichment the stop ended: "This
+                // parameter is omitted when enrichment is stopped."
+                // (`GetOTelEnrichmentOutput$EnableTagEnrichment`)
                 members: &["Status", "UpdatedAt"],
                 status: Some(STOPPED),
             },

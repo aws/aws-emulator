@@ -49,6 +49,8 @@
 //!
 //! * `CreatedAt` (Timestamp) — The date and time that enrichment started for the account.
 //!   This parameter is omitted when enrichment is stopped.
+//! * `EnableTagEnrichment` (Boolean) — Specifies whether enriched metrics include resource tag
+//!   labels for the account. This parameter is omitted when enrichment is stopped.
 //! * `ExcludeFilters` (OTelEnrichmentMetricSelectorList, len 0..100) — The metric namespaces,
 //!   and the metric names, that are left unenriched. This parameter is omitted when
 //!   enrichment is stopped, and when enrichment is running with no exclude filters, which
@@ -168,13 +170,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 exclude_filters: None,
                 created_at: None,
                 updated_at: None,
+                enable_tag_enrichment: None,
             });
         };
 
-        // While enrichment is stopped the filters and the start instant are omitted ("This
-        // parameter is omitted when enrichment is stopped", `GetOTelEnrichmentOutput$CreatedAt`
-        // / `$IncludeFilters` / `$ExcludeFilters`); `UpdatedAt` is not, because the stop itself
-        // is the configuration "last stored" for the account.
+        // While enrichment is stopped the filters, the start instant and the tag-enrichment
+        // setting are omitted ("This parameter is omitted when enrichment is stopped",
+        // `GetOTelEnrichmentOutput$CreatedAt` / `$IncludeFilters` / `$ExcludeFilters` /
+        // `$EnableTagEnrichment`); `UpdatedAt` is not, because the stop itself is the
+        // configuration "last stored" for the account.
         let running = stored.running;
         Ok(GetOTelEnrichmentOutput {
             status: if running {
@@ -193,6 +197,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .filter(|_| running)
                 .map(crate::state::to_timestamp),
             updated_at: Some(crate::state::to_timestamp(stored.updated_at_secs)),
+            enable_tag_enrichment: running.then_some(stored.enable_tag_enrichment),
         })
     }
 }

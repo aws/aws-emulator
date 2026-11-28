@@ -216,7 +216,7 @@ contents — read that shape in the model above when you need its own members.
 ## GetOTelEnrichment
 
 - **Input:** (no members)
-- **Output:** `Status` (OTelEnrichmentStatus, one of: Running | Stopped, required), `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp)
+- **Output:** `Status` (OTelEnrichmentStatus, one of: Running | Stopped, required), `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp), `EnableTagEnrichment` (boolean)
 - **Errors:** (none)
 
 ## GetResourceMetricsConfiguration
@@ -354,8 +354,8 @@ contents — read that shape in the model above when you need its own members.
 
 ## StartOTelEnrichment
 
-- **Input:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100)
-- **Output:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp)
+- **Input:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `EnableTagEnrichment` (boolean)
+- **Output:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp), `EnableTagEnrichment` (boolean)
 - **Errors:** `ValidationException (HTTP 400)`
 
 ## StopMetricStreams
@@ -384,8 +384,8 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateOTelEnrichment
 
-- **Input:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100)
-- **Output:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp)
+- **Input:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `EnableTagEnrichment` (boolean)
+- **Output:** `IncludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `ExcludeFilters` (list<OTelEnrichmentMetricSelector>, len 0..100), `CreatedAt` (timestamp), `UpdatedAt` (timestamp), `EnableTagEnrichment` (boolean)
 - **Errors:** `ResourceNotFoundException (HTTP 404)`, `ValidationException (HTTP 400)`
 
 ## UpdateResourceMetricsConfiguration

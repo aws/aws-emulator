@@ -1698,7 +1698,7 @@ pub struct StoredDashboard {
 /// A store with NO record is an account where enrichment has never been configured, which is
 /// not the same as one that has been stopped: both report the stopped status, but only the
 /// latter has a configuration that was ever "last stored" to report an `UpdatedAt` for.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StoredOTelEnrichment {
     /// Whether enrichment is enabled for the account: the `Running` / `Stopped` status
     /// `GetOTelEnrichment` reports.
@@ -1709,6 +1709,14 @@ pub struct StoredOTelEnrichment {
     /// The exclude filters stored for the account, empty when "nothing is excluded"
     /// (`StartOTelEnrichmentInput$ExcludeFilters`).
     pub exclude_filters: Vec<OTelEnrichmentMetricSelector>,
+    /// Whether enriched metrics carry resource tag labels for the account: "If `true`, enriched
+    /// metrics include resource tag labels. If `false`, they include resource ARN labels but no
+    /// resource tag labels." (`StartOTelEnrichmentInput$EnableTagEnrichment`)
+    ///
+    /// Stored as a plain `bool` rather than an `Option`: the setting is part of the
+    /// configuration a start stores, so a request that omits it stores the documented default
+    /// ([`O_TEL_ENRICHMENT_TAG_ENRICHMENT_DEFAULT`]) rather than nothing.
+    pub enable_tag_enrichment: bool,
     /// When enrichment started for the account, as epoch seconds, or `None` while it is
     /// stopped: "The date and time that enrichment started for the account. This parameter is
     /// omitted when enrichment is stopped." (`GetOTelEnrichmentOutput$CreatedAt`)
@@ -1718,6 +1726,27 @@ pub struct StoredOTelEnrichment {
     /// (`GetOTelEnrichmentOutput$UpdatedAt`)
     pub updated_at_secs: f64,
 }
+
+/// A configuration nothing has stored yet, with the tag-enrichment setting at the value a
+/// request that omits it asks for — written out rather than derived, so the default the API
+/// documents is the default this record carries.
+impl Default for StoredOTelEnrichment {
+    fn default() -> Self {
+        Self {
+            running: false,
+            include_filters: Vec::new(),
+            exclude_filters: Vec::new(),
+            enable_tag_enrichment: O_TEL_ENRICHMENT_TAG_ENRICHMENT_DEFAULT,
+            created_at_secs: None,
+            updated_at_secs: 0.0,
+        }
+    }
+}
+
+/// What a start stores for the tag-enrichment setting when the request leaves it out: "If you
+/// omit this parameter, the default is `true`."
+/// (`StartOTelEnrichmentInput$EnableTagEnrichment`)
+pub const O_TEL_ENRICHMENT_TAG_ENRICHMENT_DEFAULT: bool = true;
 
 /// `Running`, one of the two modelled `OTelEnrichmentStatus` values
 /// (`O_TEL_ENRICHMENT_STATUS_VALUES`): "enrichment is enabled"
