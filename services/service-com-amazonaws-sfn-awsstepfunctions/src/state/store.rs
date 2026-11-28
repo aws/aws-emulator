@@ -262,7 +262,12 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
                 continue;
             }
             if let Some(due) = task.closes_at().filter(|due| *due <= now) {
-                timed_out.push((task.token.clone(), due));
+                // A task the state around it ABORTED is closed by that failure, which
+                // the execution's own outcome already carries: its own bounds decide
+                // nothing, so they never fail the execution with a timeout instead.
+                if !task.aborted {
+                    timed_out.push((task.token.clone(), due));
+                }
             }
         }
         for token in orphaned {
@@ -323,6 +328,10 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
             // The concurrent states the scheduling state is nested inside, as the walk
             // recorded them ([`asl::ParkedFrame`]).
             frames: planned.frames,
+            // Whether the state that scheduled it was aborted with the concurrent state
+            // around it, in which case the task was handed over and then stopped: a
+            // poll may still claim it, and nothing it reports resolves anything.
+            aborted: planned.aborted,
             retained_bytes: 0,
         };
         self.store_activity_task(task);
@@ -818,7 +827,7 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
                 .executions
                 .get(&task.execution_arn)
                 .is_some_and(|execution| !execution.is_terminal());
-            (live && self.awaits_timeout_continuation(&task.token, due, now))
+            (live && !task.aborted && self.awaits_timeout_continuation(&task.token, due, now))
                 .then(|| (task.token.clone(), due))
         });
         let (token, due) = claimed?;
@@ -826,21 +835,25 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
         Some((task, due))
     }
 
-    /// Whether the task `token` names has run out of the time its state allowed it, so
-    /// the token answers nothing from that instant on.
+    /// Whether the task `token` names has already been CLOSED, so the token answers
+    /// nothing from here on.
     ///
-    /// The bound is the CLOCK's, and a task whose state answers the timeout ITSELF is
-    /// left in place for the continuation that applies that answer
-    /// ([`Self::awaits_timeout_continuation`]) — so this is what keeps such a task closed
-    /// to replies while it waits: a `SendTask*` quoting its token names a task that has
-    /// already been closed, exactly as it does once the record is gone, and no heartbeat
-    /// can re-open a bound the clock has already reached.
+    /// Either of two things closes one. Its own bound ran out: the bound is the CLOCK's,
+    /// and a task whose state answers the timeout ITSELF is left in place for the
+    /// continuation that applies that answer ([`Self::awaits_timeout_continuation`]) —
+    /// so this is what keeps such a task closed to replies while it waits. Or the
+    /// concurrent state that scheduled it FAILED while it was outstanding
+    /// ([`ActivityTask::aborted`]): the work it carries was stopped with that state, so
+    /// a worker still holding the token is answering for work nothing waits at.
+    ///
+    /// Either way a `SendTask*` quoting the token names a task that has already been
+    /// closed, exactly as it does once the record is gone, and no heartbeat can re-open
+    /// it.
     #[must_use]
-    pub fn task_bound_has_passed(&self, token: &str, now: SystemTime) -> bool {
-        self.activity_tasks
-            .get(token)
-            .and_then(ActivityTask::closes_at)
-            .is_some_and(|due| due <= now)
+    pub fn task_is_closed(&self, token: &str, now: SystemTime) -> bool {
+        self.activity_tasks.get(token).is_some_and(|task| {
+            task.aborted || task.closes_at().is_some_and(|due| due <= now)
+        })
     }
 
     /// Fail the execution `task` was waiting at with [`TASK_TIMEOUT_ERROR`] at `due`:
@@ -2408,8 +2421,9 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
     }
 
     /// Begin deleting the state machine `arn` names: it reports `DELETING` from now
-    /// and is removed once [`DELETE_SETTLE_DELAY`] has passed. `false` when nothing
-    /// matched, which `DeleteStateMachine` answers as a success all the same.
+    /// and is removed once the span its workflow type's deletion takes has passed
+    /// ([`delete_settle_delay`]). `false` when nothing matched, which
+    /// `DeleteStateMachine` answers as a success all the same.
     pub fn begin_delete_state_machine(&mut self, arn: &str, now: SystemTime) -> bool {
         let Some(machine) = self.state_machines.get_mut(arn) else {
             return false;
@@ -2418,7 +2432,7 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
             return true;
         }
         machine.status = STATE_MACHINE_STATUS_DELETING.to_string();
-        machine.delete_due_at = Some(now + DELETE_SETTLE_DELAY);
+        machine.delete_due_at = Some(now + delete_settle_delay(&machine.sm_type));
         self.deleting_state_machines.push(arn.to_string());
         true
     }

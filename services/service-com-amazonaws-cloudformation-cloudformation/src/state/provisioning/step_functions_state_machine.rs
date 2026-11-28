@@ -331,23 +331,32 @@ pub(super) async fn delete(
 
 /// Whether Step Functions has finished removing a deleted state machine.
 ///
-/// `DeleteStateMachine` "sets the state machine's status to DELETING and begins the deletion
-/// process", so the resource is gone only once that service no longer answers for the ARN —
-/// which is its own read, never a span this crate assumed.
+/// `DeleteStateMachine` "is an asynchronous operation. It sets the state machine's status to
+/// DELETING and begins the deletion process", and how long the record then stands is that
+/// service's own business: "a state machine is deleted only when all its executions are
+/// completed", and for an Express machine "the deletion happens eventually (usually in less
+/// than a minute)". So the stack's own work on this resource is done once that service
+/// reports the deletion as BEGUN — the status it set — and the stack does not hold a
+/// deployment open for a span the owning service never bounded. A resource it no longer
+/// answers for is gone too, which is the same read.
+///
+/// What is still PENDING is a machine the delete has not reached at all: one reported
+/// `ACTIVE`, which says the deletion has not begun.
 pub(super) async fn removal(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     physical_resource_id: &str,
 ) -> Result<Removal, Refusal> {
-    match described(ctx, region, physical_resource_id).await? {
-        None => Ok(Removal::Gone),
-        Some(machine) => Ok(Removal::Pending(
-            machine
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or(STATUS_DELETING)
-                .to_string(),
-        )),
+    let Some(machine) = described(ctx, region, physical_resource_id).await? else {
+        return Ok(Removal::Gone);
+    };
+    let status = machine
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or(STATUS_DELETING);
+    match status == STATUS_DELETING {
+        true => Ok(Removal::Gone),
+        false => Ok(Removal::Pending(status.to_string())),
     }
 }
 

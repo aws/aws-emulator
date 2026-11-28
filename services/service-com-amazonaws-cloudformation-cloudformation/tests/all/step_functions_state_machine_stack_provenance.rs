@@ -14,10 +14,12 @@
 //!    that declaration's value, except those three, which are CloudFormation's to set
 //!    whatever a declaration spells;
 //! 2. a stack's deletion REMOVES the resource from the service that owns it, so once the
-//!    stack reports `DELETE_COMPLETE` that service holds nothing under the handle the stack
-//!    published: every read of it is refused with that service's own does-not-exist error,
-//!    which for a state machine is HTTP 400 `StateMachineDoesNotExist` carrying
-//!    `State Machine Does Not Exist: '<stateMachineArn>'`.
+//!    deletion the stack started has gone through, that service holds nothing under the
+//!    handle the stack published: every read of it is refused with that service's own
+//!    does-not-exist error, which for a state machine is HTTP 400
+//!    `StateMachineDoesNotExist` carrying `State Machine Does Not Exist:
+//!    '<stateMachineArn>'`. The stack reaches `DELETE_COMPLETE` once that deletion has
+//!    BEGUN, because how long the record then stands is the owning service's own span.
 //!
 //! A leaked state machine would fail the second rule in a way a client sees: it still answers
 //! `DescribeStateMachine` as `ACTIVE`, it still holds its name against a redeployment, and an
@@ -406,11 +408,18 @@ async fn a_stacks_state_machine_carries_its_provenance_tags_and_goes_with_the_st
     // AFTER it: Step Functions holds no such machine, whichever operation asks — a read of it
     // and a start against it are each refused with that service's own does-not-exist error,
     // naming the ARN the request asked about.
+    //
+    // The stack's own work is done once that service reports the deletion as BEGUN, and how
+    // long the record then stands is the OWNING service's span: "a state machine is deleted
+    // only when all its executions are completed", and an Express machine's deletion "happens
+    // eventually (usually in less than a minute)". So each read is taken until the refusal is
+    // the does-not-exist one, which is what says the record has gone — a wait for the
+    // CONDITION and never for a span of this suite's own.
     for (row, arn) in &published {
         let case = row.case;
         for operation in ["DescribeStateMachine", "StartExecution"] {
             let (status_code, refused) =
-                sfn_json(&router, operation, &json!({"stateMachineArn": arn})).await;
+                refused_as_missing(&router, case, operation, arn).await;
             assert_eq!(
                 (status_code, error_code(case, &refused).as_str()),
                 (400, STATE_MACHINE_DOES_NOT_EXIST),
@@ -424,5 +433,46 @@ async fn a_stacks_state_machine_carries_its_provenance_tags_and_goes_with_the_st
                 "case {case:?}: expected {operation} to state {expected:?}, got {refused}"
             );
         }
+    }
+}
+
+/// How long a read waits for the owning service's own deletion to go through before giving
+/// up: generous, because what the loop waits for is the ANSWER CHANGING and never a span.
+const DELETION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// How long one read pauses before looking again.
+const DELETION_POLL_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Call `operation` on `arn` until Step Functions no longer answers for the record, and
+/// answer `(the status, the body)` it then gave.
+///
+/// A deletion that has BEGUN is what the stack waited for, so the record may still be there:
+/// a read of it answers 200 reporting `DELETING`, and a start against it is refused with that
+/// in-progress code. Either way the read that says the record has GONE is the next one, and
+/// this waits for it.
+async fn refused_as_missing(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    arn: &str,
+) -> (u16, Value) {
+    let deadline = std::time::Instant::now() + DELETION_DEADLINE;
+    loop {
+        let (status_code, answered) =
+            sfn_json(router, operation, &json!({"stateMachineArn": arn})).await;
+        let still_there = status_code == 200
+            || answered
+                .get("__type")
+                .and_then(Value::as_str)
+                .is_some_and(|code| code.ends_with("StateMachineDeleting"));
+        if !still_there {
+            return (status_code, answered);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: expected {operation}({arn:?}) to stop answering for a record the \
+             stack deleted, got {status_code} {answered}"
+        );
+        ::tokio::time::sleep(DELETION_POLL_PAUSE).await;
     }
 }

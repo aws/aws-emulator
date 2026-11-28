@@ -145,9 +145,12 @@ fn first_resumed_step_event_mut(planned: &mut Planned) -> Option<&mut HistoryEve
 
 /// What one planned run of a definition left for the store to record.
 ///
-/// At most one of `pending`, `waiting` and `parked` is set: a walk either reached a
-/// terminal outcome the clock owes, stopped at an activity task the execution is
-/// waiting for, or parked at the job a run-a-job integration started.
+/// At most one of `pending`, `waiting` and `parked` is set, with ONE exception: a walk
+/// either reached a terminal outcome the clock owes, stopped at an activity task the
+/// execution is waiting for, or parked at the job a run-a-job integration started — and
+/// a walk whose concurrent state failed while a task it had already scheduled was
+/// outstanding reports both that outcome and that task, which the clock stops when the
+/// outcome comes due ([`asl::Run::aborted_task`]).
 #[derive(Debug, Clone)]
 pub struct Planned {
     /// The events the attempt has ALREADY produced: the opening event, and — for a
@@ -157,7 +160,8 @@ pub struct Planned {
     pub opening: Vec<HistoryEvent>,
     /// The terminal outcome the walk computed, owed to the clock.
     pub pending: Option<PendingOutcome>,
-    /// The activity task the walk suspended on.
+    /// The activity task the walk suspended on, or the one its concurrent state's
+    /// failure aborted while it was outstanding.
     pub waiting: Option<PlannedActivityTask>,
     /// The job of a run-a-job integration the walk parked at.
     pub parked: Option<PlannedJob>,
@@ -821,39 +825,8 @@ fn plan_from_run(
     if let Some(waiting) = run.waiting {
         let mut history = opened;
         history.extend(events);
-        let scheduled = PlannedActivityTask {
-            activity_arn: waiting.activity_arn,
-            token: waiting.token,
-            state_name: waiting.state_name,
-            input: waiting.input,
-            state_input: waiting.raw_input.to_string(),
-            available_at: after(start, waiting.at),
-            timeout_seconds: waiting.timeout_seconds,
-            heartbeat_seconds: waiting.heartbeat_seconds,
-            retries_taken: waiting.retries_taken,
-            frames: waiting.frames,
-        };
-        // The event that RECORDS the scheduling carries what was scheduled: the walk
-        // computed the activity, the input and the bounds, so the event the history
-        // keeps reports them rather than leaving its detail member unset. A CALLBACK
-        // task records no such event: its own events are the `Task` state's, which
-        // the walk wrote with the work and the document its call carried.
-        let activity_scheduled = scheduled.activity_arn.as_ref().and_then(|activity_arn| {
-            let event = history
-                .iter_mut()
-                .rev()
-                .find(|event| event.event_type == EVENT_ACTIVITY_SCHEDULED)?;
-            Some((event, activity_arn.clone()))
-        });
-        if let Some((event, activity_arn)) = activity_scheduled {
-            event.details = EventDetails {
-                resource: Some(activity_arn),
-                input: Some(scheduled.input.clone()),
-                timeout_seconds: scheduled.timeout_seconds,
-                heartbeat_seconds: scheduled.heartbeat_seconds,
-                ..EventDetails::default()
-            };
-        }
+        let scheduled = planned_activity_task(waiting, start, false);
+        record_what_was_scheduled(&mut history, &scheduled);
         return Planned {
             opening: history,
             pending: None,
@@ -881,8 +854,34 @@ fn plan_from_run(
             stopped_at,
         };
     }
+    // The task a sibling unit's failure ABORTED was already queued under its activity,
+    // so it is recorded beside the outcome the clock owes: a worker polling that
+    // activity is handed it until the outcome comes due, when the task goes with the
+    // execution it belonged to.
+    let mut events = events;
+    let mut opening = opened;
+    let aborted = run
+        .aborted_task
+        .map(|task| planned_activity_task(task, start, true));
+    if let Some(aborted) = &aborted {
+        record_what_was_scheduled(&mut events, aborted);
+        // The events of the states this walk ALREADY RAN have happened, so they are
+        // recorded now rather than left owed, exactly as a walk that suspended at a task
+        // records them ([`Planned::opening`]). That is what makes the ids they carry
+        // final: the one event a worker's claim appends (`ActivityStarted`) is numbered
+        // after them, so no event a diagnosis of this run NAMES can be moved by it
+        // ([`super::Execution::push_state_event`]).
+        let happened = events
+            .iter()
+            .take(super::in_flight::reportable_before_outcome(&events))
+            .take_while(|event| event.timestamp <= super::now())
+            .count();
+        let owed = events.split_off(happened);
+        opening.extend(events);
+        events = owed;
+    }
     Planned {
-        opening: opened,
+        opening,
         pending: Some(PendingOutcome {
             due_at,
             status: run.status.to_string(),
@@ -891,12 +890,64 @@ fn plan_from_run(
             cause: run.cause,
             events,
         }),
-        waiting: None,
+        waiting: aborted,
         parked: None,
         abandoned,
         map_runs,
         stopped_at,
     }
+}
+
+/// One activity task a walk scheduled, ready for the store to queue:
+/// [`asl::ScheduledActivity`] with the walk's offset turned into an instant against the
+/// execution's own start.
+///
+/// `aborted` is whether the concurrent state around the scheduling state has already
+/// failed, so nothing waits at the task any more ([`PlannedActivityTask::aborted`]).
+fn planned_activity_task(
+    scheduled: asl::ScheduledActivity,
+    start: SystemTime,
+    aborted: bool,
+) -> PlannedActivityTask {
+    PlannedActivityTask {
+        activity_arn: scheduled.activity_arn,
+        token: scheduled.token,
+        state_name: scheduled.state_name,
+        input: scheduled.input,
+        state_input: scheduled.raw_input.to_string(),
+        available_at: after(start, scheduled.at),
+        timeout_seconds: scheduled.timeout_seconds,
+        heartbeat_seconds: scheduled.heartbeat_seconds,
+        retries_taken: scheduled.retries_taken,
+        frames: scheduled.frames,
+        aborted,
+    }
+}
+
+/// Write what was scheduled onto the event that RECORDS the scheduling.
+///
+/// The walk computed the activity, the input and the bounds, so the event the history
+/// keeps reports them rather than leaving its detail member unset. A CALLBACK task
+/// records no such event: its own events are the `Task` state's, which the walk wrote
+/// with the work and the document its call carried.
+fn record_what_was_scheduled(events: &mut [HistoryEvent], scheduled: &PlannedActivityTask) {
+    let Some(activity_arn) = scheduled.activity_arn.clone() else {
+        return;
+    };
+    let Some(event) = events
+        .iter_mut()
+        .rev()
+        .find(|event| event.event_type == EVENT_ACTIVITY_SCHEDULED)
+    else {
+        return;
+    };
+    event.details = EventDetails {
+        resource: Some(activity_arn),
+        input: Some(scheduled.input.clone()),
+        timeout_seconds: scheduled.timeout_seconds,
+        heartbeat_seconds: scheduled.heartbeat_seconds,
+        ..EventDetails::default()
+    };
 }
 
 /// One job a walk started, ready for the store to record or for the caller to stop:

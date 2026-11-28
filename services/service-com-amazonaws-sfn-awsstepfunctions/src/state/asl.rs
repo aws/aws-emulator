@@ -216,6 +216,8 @@ mod walk;
 mod variables;
 mod work_events;
 mod work_meter;
+mod retriers;
+pub use retriers::*;
 use members::*;
 use variables::*;
 pub use diagnose::*;
@@ -1506,6 +1508,16 @@ pub struct Run {
     /// integration's stopping call, so a job this emulator cannot resolve is not left
     /// running behind an execution that has already failed.
     pub abandoned: Vec<ParkedJob>,
+    /// The activity task a `Parallel` branch had already SCHEDULED for a worker when a
+    /// sibling branch's failure stopped it.
+    ///
+    /// A task is queued under its activity the moment the state is entered, so one
+    /// scheduled before the failure reached it was really handed over: a worker polling
+    /// the activity is handed it, the execution reports the task as ABORTED rather than
+    /// as never scheduled, and the token answers nothing. The run carries both this and
+    /// its own terminal outcome, which the clock owes at [`Run::elapsed`] — the instant
+    /// the handed-over work was stopped.
+    pub aborted_task: Option<ScheduledActivity>,
     /// The Map Run each Distributed Map state the walk entered started, in the order
     /// they were entered.
     pub map_runs: Vec<StartedMapRun>,
@@ -2123,6 +2135,10 @@ const STATE_EXITED: &str = "StateExited";
 /// that marks the work it stopped as canceled.
 pub const SIBLING_STOP_CAUSE: &str =
     "a branch of the enclosing 'Parallel' state failed, so this branch was stopped";
+
+/// The `Type` of a `Task` state, which is what the aborted event of a hand-over the
+/// enclosing state's failure stopped is read off ([`aborted_event`]).
+const TASK_STATE_TYPE: &str = "Task";
 
 /// The event a state of a given type records when the work around it was aborted,
 /// where the service models one.
@@ -3101,6 +3117,7 @@ fn interpret(
         waiting: None,
         parked: None,
         abandoned: Vec::new(),
+        aborted_task: None,
         // Nothing has failed beside this walk: it is the execution's own, not a branch
         // of a `Parallel` state.
         cancel_after: None,
@@ -3160,6 +3177,7 @@ fn interpret(
     );
     let mut waiting = interpreter.waiting.take();
     let mut parked = interpreter.parked.take();
+    let mut aborted_task = interpreter.aborted_task.take();
     let abandoned = std::mem::take(&mut interpreter.abandoned);
     // Whether the walk STOPPED at the definition's own timeout rather than reaching an
     // outcome of its own, which the reporting below answers for.
@@ -3200,6 +3218,9 @@ fn interpret(
         }
         if let Some(parked) = parked.as_mut() {
             parked.at = parked.at.saturating_sub(resumed.at);
+        }
+        if let Some(aborted) = aborted_task.as_mut() {
+            aborted.at = aborted.at.saturating_sub(resumed.at);
         }
         end = end.saturating_sub(resumed.at);
     }
@@ -3281,6 +3302,9 @@ fn interpret(
                 waiting,
                 parked,
                 abandoned,
+                // A run still waiting at its task has nothing to report as aborted:
+                // nothing has failed around it.
+                aborted_task: None,
                 map_runs,
                 // A run that is WAITING failed at nothing: what happens next is a
                 // worker's reply or the job finishing.
@@ -3309,6 +3333,10 @@ fn interpret(
     // it.
     run.abandoned = abandoned;
     run.abandoned.extend(parked);
+    // And the task a sibling branch's failure stopped was already queued under its
+    // activity: the walk reports it beside its own outcome, so a worker polling that
+    // activity is handed the task the state really scheduled.
+    run.aborted_task = aborted_task;
     (run, applied)
 }
 
@@ -3460,6 +3488,7 @@ fn terminal(
         // Set by `interpret`, which is where the walk's own frame is in scope — as
         // `stopped_at` and the Map Runs are.
         abandoned: Vec::new(),
+        aborted_task: None,
         stopped_at: None,
         // Set by `run`, which is where the walk's Map Runs are in scope.
         map_runs: Vec::new(),
@@ -3691,6 +3720,11 @@ struct Interpreter<'tasks> {
     /// around the task that started one failed before the job could finish: what
     /// [`Run::abandoned`] reports, for the caller to stop.
     abandoned: Vec<ParkedJob>,
+    /// The activity task a `Parallel` branch had already HANDED OVER to a worker when
+    /// a sibling branch's failure stopped it: what [`Run::aborted_task`] reports, so
+    /// the task a worker may still be handed is scheduled rather than unmade. Set at
+    /// most once, because one walk suspends at one task.
+    aborted_task: Option<ScheduledActivity>,
     /// The instant a branch of the `Parallel` state the walk is currently inside
     /// FAILED, for the branches of it that are still to be walked.
     ///
@@ -4145,15 +4179,27 @@ impl Interpreter<'_> {
         if let Some((failure, when)) = failed {
             // A branch of this state failed, so the state has failed — and a sibling
             // suspended at work of its own is not waited for any longer: the job it
-            // started is ABANDONED, which is what stops it, and a task it had scheduled
-            // is one nothing waits at, so the suspension is dropped rather than reported
-            // beside a failure.
+            // started is ABANDONED, which is what stops it.
             if let Some(parked) = self.parked.take() {
                 self.abandoned.push(parked);
             }
-            self.waiting = None;
             self.abort_units(when, &units);
-            return (Err(failure), when);
+            // A task a sibling branch had already SCHEDULED is work this execution
+            // really handed over: it is queued under its activity from the instant the
+            // state was entered, so a worker polling that activity is handed it. The
+            // state is therefore ABORTED rather than never scheduled, and stopping work
+            // somebody else is holding takes a span ([`super::HANDOVER_STOP_DELAY`]) —
+            // so the state's failure is dated at the instant that work was stopped, and
+            // the task stays claimable until then.
+            let Some(aborted) = self.waiting.take() else {
+                return (Err(failure), when);
+            };
+            let stopped = when.max(aborted.at.saturating_add(super::HANDOVER_STOP_DELAY));
+            if let Some(event_type) = aborted_event(TASK_STATE_TYPE) {
+                self.push(event_type, &aborted.state_name, stopped);
+            }
+            self.aborted_task = Some(aborted);
+            return (Err(failure), stopped);
         }
         if let Some(branch) = suspended {
             // The frame this state contributes to the suspended record: which branch is
@@ -4239,331 +4285,6 @@ fn map_processor<'a>(
         .and_then(Value::as_str)
         .is_some_and(|mode| mode.eq_ignore_ascii_case("DISTRIBUTED"));
     Ok((processor, distributed))
-}
-
-/// A retrier's numeric member, when it is a finite, non-negative number.
-///
-/// A member that is absent, is not a number, or is negative or non-finite leaves the
-/// retrier on its documented default rather than reaching the arithmetic below.
-fn finite_seconds(retrier: &Map<String, Value>, member: &str) -> Option<f64> {
-    retrier
-        .get(member)
-        .and_then(Value::as_f64)
-        .filter(|number| number.is_finite() && *number >= 0.0)
-}
-
-/// How long a retrier waits before the attempt after `taken` ones:
-/// "IntervalSeconds" scaled by "BackoffRate" once per attempt already taken, capped
-/// by `MaxDelaySeconds` where the retrier declares one, and — where it asks for full
-/// jitter — drawn uniformly from zero up to that capped figure
-/// ([`jittered_seconds`]).
-///
-/// The figure that arithmetic reaches is TRUNCATED to whole seconds: `BackoffRate` is
-/// "a number which is >= 1.0", so the product of an integer interval and it is a
-/// fraction of a second as often as not, and the service waits the whole seconds of it
-/// — the fraction is dropped rather than rounded up, so a wait is never longer than the
-/// figure the retrier's own members reached. The band full jitter then draws from is
-/// that truncated figure, since what the strategy spreads is the wait the retrier owes.
-///
-/// The product is of two numbers the definition chose, so it can overflow to infinity
-/// (or to NaN, when a zero interval meets an infinite backoff). A wait no longer than
-/// the longest one this service waits for is what such a retrier gets: the figure
-/// this returns is always finite and in range, which is what makes converting it to a
-/// `Duration` total. An attempt count past `i32::MAX` — which `MaxAttempts` and the
-/// step budget both make unreachable — scales to that same maximum rather than to the
-/// bare interval.
-fn retry_delay_seconds(retrier: &Map<String, Value>, taken: u64) -> f64 {
-    let interval =
-        finite_seconds(retrier, "IntervalSeconds").unwrap_or(DEFAULT_RETRY_INTERVAL_SECONDS);
-    let backoff = finite_seconds(retrier, "BackoffRate").unwrap_or(DEFAULT_RETRY_BACKOFF_RATE);
-    let mut delay = interval * backoff.powi(i32::try_from(taken).unwrap_or(i32::MAX));
-    if let Some(cap) = finite_seconds(retrier, "MaxDelaySeconds") {
-        delay = delay.min(cap);
-    }
-    let computed = if delay.is_finite() {
-        delay.clamp(0.0, MAX_WAIT_SECONDS as f64)
-    } else {
-        MAX_WAIT_SECONDS as f64
-    };
-    // The whole seconds of the figure the retrier's own members reached: a computed
-    // wait of 7.5 seconds is waited as 7, and one shorter than a second is not waited
-    // at all.
-    let computed = computed.trunc().max(0.0);
-    if jitters_fully(retrier) {
-        jittered_seconds(computed)
-    } else {
-        computed
-    }
-}
-
-/// Whether `retrier` asks for full jitter on the waits between its attempts, which is
-/// what its `JitterStrategy` names ([`JITTER_STRATEGY_FULL`]).
-///
-/// A retrier that declares no strategy — or any other one — keeps the computed wait,
-/// because `NONE` is the member's documented default.
-fn jitters_fully(retrier: &Map<String, Value>) -> bool {
-    retrier
-        .get("JitterStrategy")
-        .and_then(Value::as_str)
-        .is_some_and(|strategy| strategy == JITTER_STRATEGY_FULL)
-}
-
-/// One wait drawn uniformly from `[0, computed]` seconds, which is what a retrier
-/// asking for full jitter waits instead of `computed` itself.
-///
-/// Jitter only ever SHORTENS a wait: the draw is bounded above by the figure the
-/// retrier's own arithmetic reached, so a capped delay stays capped. A `computed` of
-/// zero — or one that is somehow no usable number — draws nothing, since there is no
-/// span to spread the wait over.
-fn jittered_seconds(computed: f64) -> f64 {
-    if !computed.is_finite() || computed <= 0.0 {
-        return 0.0;
-    }
-    // The 53 bits a double carries exactly, as a fraction in [0, 1).
-    let fraction = (jitter_draw() >> 11) as f64 / (1_u64 << 53) as f64;
-    (computed * fraction).clamp(0.0, computed)
-}
-
-/// The counter behind [`jittered_seconds`]' draws: what makes two draws in the same
-/// nanosecond differ, exactly as it does for every id the store mints.
-static JITTER_DRAWS: AtomicU64 = AtomicU64::new(0);
-
-/// One draw from the generator every value this service samples comes from
-/// ([`super::splitmix64`]), seeded from the process clock mixed with the count of
-/// draws already made. The draw spreads waits apart rather than keeping anything
-/// secret, so the mixer's own non-cryptographic quality is what it needs.
-fn jitter_draw() -> u64 {
-    let drawn = JITTER_DRAWS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    let mut seed = super::now_nanos() ^ drawn.rotate_left(29);
-    super::splitmix64(&mut seed)
-}
-
-/// The state named `state_name` ANYWHERE in `document`, as the Amazon States Language
-/// scopes a state name: "State names must be unique within the scope of the whole state
-/// machine", so one name names one state however deeply the state lists nest.
-///
-/// The search descends into the nested state machines a state declares, through the one
-/// statement of which members carry one ([`NESTED_MACHINE_MEMBERS`]) — a member naming ONE
-/// machine carries it as an object and `Branches` carries a list of them — so a reader
-/// asking what a state DECLARES finds the state a task of a `Parallel` branch belongs to
-/// exactly as it finds one at the top level. Without that, a task scheduled inside a
-/// branch would be judged against no `Retry` and no `Catch` at all.
-///
-/// `pub(in crate::state)`, not private to this module: it is the ONE such reader of this
-/// crate, which the series that names the work a state's event belongs to reads through
-/// too ([`super::observability`]).
-///
-/// `left` is how many levels further it may descend, which bounds the recursion by the
-/// nesting a definition may be RUN at ([`MAX_NESTING_DEPTH`]): the document is a caller's,
-/// so a definition nesting past what any walk of it would run is not descended into here
-/// either — no state past that depth is reachable at run time anyway.
-///
-/// The FIRST state of that name is the answer, which the uniqueness rule above is what
-/// makes unambiguous: within one state list the names are the keys of a JSON object, so
-/// they cannot repeat, and across nested lists it is the definition's own obligation. A
-/// definition that breaks it has one of its same-named states read here rather than both.
-pub(in crate::state) fn declared_state<'a>(
-    document: &'a Value,
-    state_name: &str,
-    left: usize,
-) -> Option<&'a Map<String, Value>> {
-    let states = document.get("States").and_then(Value::as_object)?;
-    if let Some(state) = states.get(state_name).and_then(Value::as_object) {
-        return Some(state);
-    }
-    let left = left.checked_sub(1)?;
-    for state in states.values() {
-        let nested = NESTED_MACHINE_MEMBERS
-            .iter()
-            .filter_map(|member| state.get(*member))
-            .flat_map(|value| match value.as_array() {
-                Some(machines) => machines.iter().collect::<Vec<_>>(),
-                None => vec![value],
-            });
-        for machine in nested {
-            if let Some(found) = declared_state(machine, state_name, left) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-/// Which retrier of the `Task` state `state_name` of `definition` retries an activity
-/// task that failed, and how long after that failure its next attempt is due.
-///
-/// `errors` is every error name that failure answers to — one name for what a worker
-/// reported, and both names the language states for a closure of the task's clock
-/// ([`task_closure_errors`]).
-///
-/// `taken` is how many attempts each retrier of that state has already spent on the
-/// task, in the order the state declares them. The answer is the FIRST retrier whose
-/// `ErrorEquals` names one of those errors, exactly as a retried walk's is, so one rule
-/// decides every retry this service makes.
-///
-/// `None` when the definition declares no such state, when the state declares no
-/// `Retry`, when no retrier names the error, or when the one that does has spent its
-/// `MaxAttempts`: the failure is then the state's own.
-pub fn activity_retry_any(
-    definition: &str,
-    state_name: &str,
-    errors: &[&str],
-    taken: &[u64],
-) -> Option<(usize, Duration)> {
-    let document = serde_json::from_str::<Value>(definition).ok()?;
-    let state = declared_state(&document, state_name, MAX_NESTING_DEPTH)?;
-    let retriers = state.get("Retry").and_then(Value::as_array)?;
-    for (index, retrier) in retriers.iter().enumerate() {
-        let Some(retrier) = retrier.as_object() else {
-            continue;
-        };
-        if !errors_match_any(retrier, errors) {
-            continue;
-        }
-        let max_attempts = retrier
-            .get("MaxAttempts")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_RETRY_MAX_ATTEMPTS);
-        let spent = taken.get(index).copied().unwrap_or(0);
-        if spent >= max_attempts {
-            return None;
-        }
-        return Some((
-            index,
-            // The figure is already finite and inside [`MAX_WAIT_SECONDS`], whatever a
-            // definition writes in the retrier's own members; the conversion is
-            // nevertheless written so it CANNOT panic, because a caller-sized figure
-            // must not be able to take the process down — a delay that somehow left
-            // that range waits no time at all, exactly as the walk's own retry loop
-            // converts it.
-            Duration::try_from_secs_f64(retry_delay_seconds(retrier, spent))
-                .unwrap_or(Duration::ZERO),
-        ));
-    }
-    None
-}
-
-/// Which retrier retries a task that failed with ONE error name: the whole of what a
-/// worker reports, and the one name every failure inside a walk carries
-/// ([`activity_retry_any`] is the same rule over the several names one closure of a
-/// task's clock answers to).
-pub fn activity_retry(
-    definition: &str,
-    state_name: &str,
-    error: &str,
-    taken: &[u64],
-) -> Option<(usize, Duration)> {
-    activity_retry_any(definition, state_name, &[error], taken)
-}
-
-/// Whether any state on the path from `state_name` OUT to the top level of `definition`
-/// catches a failure answering to any of `errors`: the state itself, then each concurrent
-/// state it is nested inside, outermost last ([`ParkedFrame`]).
-///
-/// A failure no catcher of the state's own answers is the failure of the concurrent state
-/// that encloses it — "if any branch fails, the entire Parallel state is considered to have
-/// failed" — so a `Catch` on THAT state answers for it. The question a caller deciding
-/// whether a task's answer needs a WALK has to ask is therefore about the whole path and
-/// not about the state alone: a task inside a `Parallel` whose own `Catch` names the error
-/// is a task whose answer the execution carries on from.
-///
-/// `frames` is the path, as the suspended task carries it
-/// ([`ScheduledActivity::frames`]); empty for a task at the top level, where this is
-/// [`state_catches_error`] on the state itself.
-pub fn path_catches_error(
-    definition: &str,
-    state_name: &str,
-    frames: &[ParkedFrame],
-    errors: &[&str],
-) -> bool {
-    state_catches_error(definition, state_name, errors)
-        || frames.iter().any(|frame| {
-            // An enclosing state's own `Retry` re-runs its whole machine, which only a
-            // walk can do, so either half of its answer needs the continuation.
-            state_answers_error(definition, &frame.state_name, errors, &[])
-        })
-}
-
-/// Whether the state `state_name` of `definition` ANSWERS a failure ITSELF: a `Retry`
-/// whose retrier names it with an attempt left, or a `Catch` whose catcher names it.
-///
-/// "Task states […] can have a field named Catch. […] When a state reports an error and
-/// it matches a catcher, the state's output is the error output" — so such a failure is
-/// not the execution's: the state makes its work's next attempt, or the execution
-/// carries on at the catcher's `Next`. A state that answers neither way fails the
-/// execution with the error.
-///
-/// `errors` is every error name the failure answers to and `taken` how many attempts each
-/// retrier of that state has already spent, both read exactly as [`activity_retry`] reads
-/// them, and the matching is the one rule every retrier and catcher of this service is
-/// decided by ([`errors_match`]) — so this answers the same question the walk itself
-/// would, without walking.
-pub fn state_answers_error(
-    definition: &str,
-    state_name: &str,
-    errors: &[&str],
-    taken: &[u64],
-) -> bool {
-    activity_retry_any(definition, state_name, errors, taken).is_some()
-        || state_catches_error(definition, state_name, errors)
-}
-
-/// Whether the state `state_name` of `definition` CATCHES a failure: a `Catch` whose
-/// catcher names any of `errors`.
-///
-/// The `Catch` half of [`state_answers_error`] on its own, for the caller that has
-/// already answered the `Retry` half itself: an activity task's next attempt is a task
-/// the store queues ([`super::ComAmazonawsSfnAwsstepfunctionsState::retry_failed_activity_task`]),
-/// so only a catcher's branch is left needing a walk.
-pub fn state_catches_error(definition: &str, state_name: &str, errors: &[&str]) -> bool {
-    let Ok(document) = serde_json::from_str::<Value>(definition) else {
-        return false;
-    };
-    let Some(state) = declared_state(&document, state_name, MAX_NESTING_DEPTH) else {
-        return false;
-    };
-    retry_entries(state, "Catch")
-        .iter()
-        .filter_map(Value::as_object)
-        .any(|catcher| errors_match_any(catcher, errors))
-}
-
-/// Whether a retrier's or catcher's `ErrorEquals` names ANY of `errors`: the names one
-/// failure answers to, which is more than one where the language states more than one for
-/// it ([`task_closure_errors`]).
-pub(super) fn errors_match_any(entry: &Map<String, Value>, errors: &[&str]) -> bool {
-    errors.iter().any(|error| errors_match(entry, error))
-}
-
-/// Whether a retrier's or catcher's `ErrorEquals` names `error`.
-///
-/// "States.ALL — A wildcard that matches any known error name", with one documented
-/// exception: "A States.Runtime error isn't retriable, and will always cause the
-/// execution to fail. A retry or catch on States.ALL won't catch States.Runtime
-/// errors." A definition that names `States.Runtime` itself does not catch it
-/// either, because it is not an error the execution can recover from.
-///
-/// [`TASK_FAILED_ERROR`] is the OTHER wildcard the language documents: "States.TaskFailed
-/// […] When used in a retry or catch, States.TaskFailed acts as a wildcard that matches
-/// any known error name except States.Timeout" — so a retrier naming it takes over the
-/// failure a task's own work reported, whatever that work named it, which is how a
-/// definition retries a service call or a function that failed without naming the
-/// service's error itself. The closure of a task's own clock is the one thing it does not
-/// take over, under EITHER of the names the language states for that closure
-/// ([`task_closure_errors`]): a heartbeat window that lapsed is a `States.Timeout` too.
-fn errors_match(entry: &Map<String, Value>, error: &str) -> bool {
-    if error == RUNTIME_ERROR {
-        return false;
-    }
-    let timeout = error == TIMEOUT_ERROR || error == HEARTBEAT_TIMEOUT_ERROR;
-    entry
-        .get("ErrorEquals")
-        .and_then(Value::as_array)
-        .is_some_and(|names| {
-            names.iter().filter_map(Value::as_str).any(|name| {
-                name == error || name == ALL_ERRORS || (name == TASK_FAILED_ERROR && !timeout)
-            })
-        })
 }
 
 /// `context` with `$$.State.RetryCount` set to the attempt the state is on, for an

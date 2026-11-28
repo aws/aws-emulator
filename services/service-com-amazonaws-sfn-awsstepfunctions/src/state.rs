@@ -69,7 +69,8 @@
 //!   settled to hand over ([`run_a_job::stop_abandoned_jobs`]).
 //! * `DeleteStateMachine` is documented as asynchronous: it "sets the state machine's
 //!   status to `DELETING` and begins the deletion process", so the record moves to
-//!   `DELETING` now and is removed once [`DELETE_SETTLE_DELAY`] has passed.
+//!   `DELETING` now and is removed once the span its workflow type's deletion takes has
+//!   passed ([`delete_settle_delay`]).
 //! * a map run a Distributed Map state started is `RUNNING` until the instant its
 //!   items were due, so a caller that lists or describes it straight after the start
 //!   sees it running, exactly as the execution around it is — and so is each child
@@ -442,10 +443,10 @@ pub const EXECUTION_SETTLE_DELAY: Duration = Duration::from_millis(500);
 /// The SOONEST after `DeleteStateMachine` the state machine can be removed.
 ///
 /// EMULATOR-CHOSEN: `DeleteStateMachine` documents only that it "sets the state machine's
-/// status to DELETING and begins the deletion process", with no published duration. It is
-/// deliberately non-zero, so a caller that reads the state machine straight after asking
-/// for its deletion still observes the `DELETING` status the operation documents, and the
-/// refusals every call on it answers while that lasts.
+/// status to DELETING and begins the deletion process", with no published duration for a
+/// STANDARD workflow. It is deliberately non-zero, so a caller that reads the state
+/// machine straight after asking for its deletion still observes the `DELETING` status the
+/// operation documents, and the refusals every call on it answers while that lasts.
 ///
 /// It is a FLOOR rather than the whole span: "a state machine is deleted only when all
 /// its executions are completed", so one whose executions are still running is removed
@@ -458,6 +459,47 @@ pub const EXECUTION_SETTLE_DELAY: Duration = Duration::from_millis(500);
 /// `DescribeStateMachine`, and another service's provisioner polling that same read for
 /// a resource it deleted.
 pub const DELETE_SETTLE_DELAY: Duration = Duration::from_millis(500);
+
+/// How long after `DeleteStateMachine` an EXPRESS state machine's record is removed.
+///
+/// The workflow type is what the service publishes a duration for: "for EXPRESS state
+/// machines, the deletion happens eventually (usually in less than a minute)". An EXPRESS
+/// execution is not a record the deletion can wait for the completion of — nothing of it
+/// is held to be waited on — so this span, and not the executions, is what the record's
+/// `DELETING` status lasts for, and it is inside the published figure.
+///
+/// A client cannot tell "still deleting" from "gone" unless the status it reports outlasts
+/// one poll interval, so this is long enough that a caller polling a deleted EXPRESS
+/// machine reads the in-progress refusal several times over before it changes — which is
+/// what lets a teardown wait for the right one. Whoever WAITS for the record to go waits
+/// this out ([`DELETE_SETTLE_DELAY`]), so a waiter in another service follows the DELETING
+/// status instead.
+pub const EXPRESS_DELETE_SETTLE_DELAY: Duration = Duration::from_secs(10);
+
+/// How long after `DeleteStateMachine` the record of a state machine of `machine_type` is
+/// removed: the span the service publishes for the EXPRESS workflow type
+/// ([`EXPRESS_DELETE_SETTLE_DELAY`]), and the floor every other deletion is held to
+/// ([`DELETE_SETTLE_DELAY`]).
+#[must_use]
+pub fn delete_settle_delay(machine_type: &str) -> Duration {
+    match machine_type == STATE_MACHINE_TYPE_EXPRESS {
+        true => EXPRESS_DELETE_SETTLE_DELAY,
+        false => DELETE_SETTLE_DELAY,
+    }
+}
+
+/// How long after a `Parallel` branch's failure the activity task a SIBLING branch had
+/// already scheduled is stopped.
+///
+/// EMULATOR-CHOSEN: "If any branch fails … the entire Parallel state is considered to
+/// have failed and all the branches are stopped", and the service publishes no figure
+/// for how long stopping work it has already handed to a worker takes. It is
+/// deliberately non-zero, because the task was really queued under its activity before
+/// the failure reached it: a worker polling that activity straight after the start is
+/// handed it and reads the input the state scheduled it with, and the state is reported
+/// as ABORTED — the event `HistoryEventType` models for a `Task` state the work around
+/// it stopped — rather than as a state that scheduled nothing.
+pub const HANDOVER_STOP_DELAY: Duration = Duration::from_secs(3);
 
 // ---------------------------------------------------------------------------
 // Activity tasks
@@ -1311,6 +1353,16 @@ pub struct ActivityTask {
     /// ([`asl::ScheduledActivity::frames`]): what the walk continuing this execution
     /// re-enters to reach that state.
     pub frames: Vec<asl::ParkedFrame>,
+    /// Whether the state that scheduled this task was ABORTED by the failure of a
+    /// sibling unit of the concurrent state around it ([`asl::Run::aborted_task`]).
+    ///
+    /// The task was queued before that failure reached it, so a worker polling the
+    /// activity is still handed it and reads the input it was scheduled with — but the
+    /// work it carries was stopped with the state that asked for it, so the token
+    /// answers nothing ([`ComAmazonawsSfnAwsstepfunctionsState::task_is_closed`]) and
+    /// the execution's outcome is the one the walk already computed rather than
+    /// anything this task's own bounds could reach.
+    pub aborted: bool,
 }
 
 impl ActivityTask {
@@ -1473,6 +1525,9 @@ pub struct PlannedActivityTask {
     pub retries_taken: Vec<u64>,
     /// The concurrent states the task is nested inside; see [`ActivityTask::frames`].
     pub frames: Vec<asl::ParkedFrame>,
+    /// Whether the state that scheduled it was aborted with the concurrent state
+    /// around it; see [`ActivityTask::aborted`].
+    pub aborted: bool,
 }
 
 impl PlannedActivityTask {
@@ -2386,14 +2441,38 @@ impl Execution {
             .map_or(NO_PREVIOUS_EVENT, |event| {
                 follows_event(event.id, &event.event_type)
             });
+        let id = last_id + 1;
+        // The clock may still OWE the tail of a walk ([`PendingOutcome::events`]), whose
+        // ids were numbered when that walk was planned: this event happened before any
+        // of them, so they move up by one and the first of them goes on naming the event
+        // it follows. The ids a history reports therefore stay one unbroken series
+        // whoever appended to it.
+        self.renumber_owed_events(id);
         self.history.push(HistoryEvent {
-            id: last_id + 1,
+            id,
             previous_event_id,
             event_type: event_type.to_string(),
             timestamp,
             state_name,
             details,
         });
+    }
+
+    /// Move the ids of the events the clock still owes up by one, for an event just
+    /// appended to the history under the id the first of them held.
+    fn renumber_owed_events(&mut self, appended: i64) {
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        for (index, event) in pending.events.iter_mut().enumerate() {
+            event.id += 1;
+            // The first owed event now follows the appended one; every other goes on
+            // following the owed event before it, one id further along.
+            event.previous_event_id = match index {
+                0 => appended,
+                _ => event.previous_event_id + 1,
+            };
+        }
     }
 
     /// The id of the last event this execution's history holds, so a later attempt's
@@ -2514,229 +2593,6 @@ impl Execution {
             self.history.push(event);
         }
         self.pending = pending;
-    }
-}
-
-/// One stored Map Run: the resource a Distributed Map state starts, which
-/// `ListMapRuns` reports for the execution that started it.
-///
-/// A Map Run is NOT keyed by its `(execution, label)` pair in the store, because it
-/// is reached by its own ARN; `map_runs_by_execution` is what lists one execution's
-/// Map Runs in the order their states were entered.
-#[derive(Debug, Clone)]
-pub struct MapRun {
-    pub arn: String,
-    /// The execution whose Distributed Map state started it.
-    pub execution_arn: String,
-    /// The state machine that execution ran.
-    pub state_machine_arn: String,
-    /// The label that identifies the Map state ([`map_run_identity::map_state_label`]):
-    /// the field of the ARN that tells two Map Runs of one execution apart.
-    pub label: String,
-    pub status: String,
-    pub start_date: SystemTime,
-    pub stop_date: Option<SystemTime>,
-    /// The terminal status the walk computed and the instant the clock owes it at;
-    /// `None` once it has been applied, or once a stop overtook it.
-    pub pending: Option<PendingMapRunOutcome>,
-    pub max_concurrency: i32,
-    pub tolerated_failure_count: i64,
-    pub tolerated_failure_percentage: f32,
-    pub total_items: i64,
-    /// How many of the items the clock has already finished produced a result, and
-    /// how many failed: the counts GROW as each item comes due, so what a caller
-    /// reads is what the Map Run has done so far rather than what it will have done.
-    pub succeeded_items: i64,
-    pub failed_items: i64,
-    /// The items the clock has NOT finished yet, in the order they finish. Drained by
-    /// [`ComAmazonawsSfnAwsstepfunctionsState::settle`] into the counts above, which
-    /// is also where the failure budget is weighed.
-    pub items: Vec<MapRunItem>,
-    /// How many times the parent execution has been redriven since this Map Run was
-    /// created, which re-ran the Map state this record belongs to.
-    pub redrive_count: i32,
-    pub redrive_date: Option<SystemTime>,
-    /// The bytes the store counts for this record against [`MAX_STORE_BYTES`], set by
-    /// [`ComAmazonawsSfnAwsstepfunctionsState::record_map_runs`] exactly as
-    /// [`Execution::retained_bytes`] is.
-    pub retained_bytes: usize,
-}
-
-/// The terminal status [`asl::run`] computed for a Map Run, owed to the clock: it
-/// becomes the Map Run's reported status at `due_at` and not before.
-#[derive(Debug, Clone)]
-pub struct PendingMapRunOutcome {
-    pub due_at: SystemTime,
-    pub status: String,
-}
-
-/// One item of a Map Run, as the clock owes it: the instant its iteration finished
-/// and whether it failed.
-///
-/// This is [`asl::MapItemOutcome`] with the walk's offset turned into an instant. A
-/// Map Run counts an item from this instant on, so the counts it reports are what its
-/// items have done SO FAR — the item ran in the walk, but nothing it produced is
-/// reported before the clock reaches the instant it produced it at.
-#[derive(Debug, Clone, Copy)]
-pub struct MapRunItem {
-    pub due_at: SystemTime,
-    pub failed: bool,
-}
-
-/// What a Map Run reports as its `maxConcurrency` for a declared limit of `limit`:
-/// the limit itself, and the largest value the modelled integer carries for a limit
-/// of `0`.
-///
-/// `MaxConcurrency`'s own default is `0`, which the Amazon States Language defines as
-/// NO limit, and a Map Run reports its limit through a modelled integer: an unlimited
-/// Map Run therefore reports the largest value that integer carries, rather than a
-/// `0` a client would read as "none at a time". RECORDED: `DescribeMapRun` on a `Map`
-/// state that declares no `MaxConcurrency` answers `2147483647`
-/// (`sfn.describe-map-run-default-fields-and-execution-counts`).
-///
-/// One rule for both the `Map` state that declares the limit ([`asl`]) and the
-/// `UpdateMapRun` that changes it, so one Map Run never reports "no limit" two ways.
-pub fn reported_max_concurrency(limit: i64) -> i32 {
-    if limit <= 0 {
-        i32::MAX
-    } else {
-        i32::try_from(limit).unwrap_or(i32::MAX)
-    }
-}
-
-/// Whether a Map Run whose items turned out this way stayed INSIDE the failure
-/// thresholds it ran under.
-///
-/// `toleratedFailureCount` is "the maximum number of failed items before the Map Run
-/// fails" and `toleratedFailurePercentage` "the maximum percentage of failed items"
-/// before it does, so either threshold on its own is enough to tolerate the
-/// failures: a run is past what it tolerates only when more items failed than the
-/// count AND than that share of them. A percentage of `0` — the member's own default
-/// — is no share at all, so it tolerates nothing by itself.
-///
-/// The interpreter decides a `Map` state's outcome with this ([`asl`]), which is also
-/// what the Map Run's status reports.
-pub fn within_tolerated_failures(
-    failed: i64,
-    total: i64,
-    tolerated_count: i64,
-    tolerated_percentage: f64,
-) -> bool {
-    failed <= tolerated_count
-        || (tolerated_percentage > 0.0
-            && (failed as f64) * 100.0 <= tolerated_percentage * (total as f64))
-}
-
-/// Why an `UpdateMapRun` was not applied; see
-/// [`ComAmazonawsSfnAwsstepfunctionsState::update_map_run`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MapRunUpdateRejection {
-    /// The store holds no Map Run under that ARN — the modelled `ResourceNotFound`.
-    NotFound,
-    /// The Map Run has already reached a terminal status, so it has no in-progress
-    /// configuration to change — the modelled `ValidationException` carrying
-    /// [`VALIDATION_REASON_COMPLETED_MAP_RUN`].
-    Completed,
-}
-
-impl MapRun {
-    /// Whether this Map Run has reached a terminal status.
-    pub fn is_terminal(&self) -> bool {
-        self.status != MAP_RUN_STATUS_RUNNING
-    }
-
-    /// The bytes this record would retain.
-    pub fn measure(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.arn.len()
-            + self.execution_arn.len()
-            + self.state_machine_arn.len()
-            + self.label.len()
-            + self.status.len()
-            + self.items.len().saturating_mul(std::mem::size_of::<MapRunItem>())
-            + self
-                .pending
-                .as_ref()
-                .map_or(0, |pending| pending.status.len())
-    }
-
-    /// Count every item the clock has already finished, and leave `RUNNING` at the
-    /// failure that BREACHES the failure budget this record carries.
-    ///
-    /// Both are owed whether or not anybody called. An item is counted under the
-    /// status its iteration reached from the instant it finished, so a Map Run reports
-    /// what its items have done so far; and the thresholds a Map Run is running under
-    /// are a failure budget, weighed against the failures counted so far
-    /// ([`within_tolerated_failures`]) each time one is counted — the thresholds the
-    /// record carries NOW, which is what `UpdateMapRun` writes. A Map Run whose
-    /// failures are inside that budget keeps running; one whose budget a counted
-    /// failure breaches is FAILED from the instant of that failure, rather than only
-    /// once every one of its items has finished.
-    ///
-    /// The budget decides WHEN this Map Run stopped running, and the status it stops
-    /// at is the one the walk computed for it: the execution around it reached its own
-    /// outcome through the same `Map` state, so the two never come to contradict each
-    /// other.
-    fn advance(&mut self, now: SystemTime) {
-        let fails_on_budget = self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.status == MAP_RUN_STATUS_FAILED);
-        let mut breached_at: Option<SystemTime> = None;
-        let mut counted = 0usize;
-        while let Some(item) = self.items.get(counted).copied() {
-            if item.due_at > now {
-                break;
-            }
-            counted += 1;
-            if !item.failed {
-                self.succeeded_items = self.succeeded_items.saturating_add(1);
-                continue;
-            }
-            self.failed_items = self.failed_items.saturating_add(1);
-            if breached_at.is_none()
-                && fails_on_budget
-                && !within_tolerated_failures(
-                    self.failed_items,
-                    self.total_items,
-                    self.tolerated_failure_count,
-                    f64::from(self.tolerated_failure_percentage),
-                )
-            {
-                breached_at = Some(item.due_at);
-            }
-        }
-        self.items.drain(..counted);
-        if let Some(breached_at) = breached_at.filter(|_| !self.is_terminal()) {
-            self.status = MAP_RUN_STATUS_FAILED.to_string();
-            self.stop_date = Some(breached_at);
-            // The clock owes this Map Run no further status: the budget decided it
-            // here, at the failure that breached it.
-            self.pending = None;
-            return;
-        }
-        // A Map Run no failure took past its budget reaches the status the walk
-        // computed, once its items are all counted and the clock makes it due.
-        if self.items.is_empty()
-            && self
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.due_at <= now)
-        {
-            self.apply_pending();
-        }
-    }
-
-    /// Apply the terminal status the clock now owes.
-    ///
-    /// `stopDate` is the instant the transition was DUE, not the instant somebody
-    /// happened to look, so two callers reading at different times see one value.
-    fn apply_pending(&mut self) {
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        self.status = pending.status;
-        self.stop_date = Some(pending.due_at);
     }
 }
 
@@ -4980,6 +4836,8 @@ pub mod xml_answer;
 pub mod xray_tracing;
 mod pagination;
 mod routing_rules;
+mod map_run_records;
+pub use map_run_records::*;
 pub use routing_rules::*;
 pub use pagination::*;
 

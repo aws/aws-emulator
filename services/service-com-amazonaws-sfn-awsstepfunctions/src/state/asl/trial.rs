@@ -172,6 +172,7 @@ pub fn test_state(test: &StateTest<'_>) -> Trial {
         // park inside, no job of its own to abandon and no sibling branch whose
         // failure could stop it.
         abandoned: Vec::new(),
+        aborted_task: None,
         cancel_after: None,
         resume_frames: Vec::new(),
         map_depth: 0,

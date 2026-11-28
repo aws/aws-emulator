@@ -505,7 +505,11 @@ async fn a_stack_provisions_the_state_machine_its_template_declares() {
             );
         }
 
-        // Deleting the stack deletes the machine Step Functions holds for it.
+        // Deleting the stack deletes the machine Step Functions holds for it. The stack's
+        // own work is done once that service reports the deletion as BEGUN, and how long the
+        // record then stands is the OWNING service's span — an Express machine's deletion
+        // "happens eventually (usually in less than a minute)" — so the read below waits for
+        // the refusal to stop reporting the deletion as in progress.
         let (status, body) =
             cloudformation(&router, region, "DeleteStack", &[("StackName", &stack_name)]).await;
         assert_eq!(
@@ -513,8 +517,7 @@ async fn a_stack_provisions_the_state_machine_its_template_declares() {
             "case {case:?}: expected HTTP 200 from DeleteStack, got {status} with body {body}"
         );
         tokio::time::sleep(PAST_STACK_SPAN).await;
-        let (status, gone) =
-            sfn(&router, region, "DescribeStateMachine", &json!({ "stateMachineArn": arn })).await;
+        let (status, gone) = read_until_gone(&router, region, case, &arn).await;
         assert_eq!(
             status, 400,
             "case {case:?}: expected HTTP 400 from DescribeStateMachine once the stack deleted \
@@ -527,6 +530,40 @@ async fn a_stack_provisions_the_state_machine_its_template_declares() {
             "case {case:?}: expected StateMachineDoesNotExist once the machine was deleted, got \
              {gone}"
         );
+    }
+}
+
+/// How long a read waits for Step Functions' own deletion to go through before giving up:
+/// generous, because what the loop waits for is the ANSWER CHANGING and never a span.
+const DELETION_DEADLINE: Duration = Duration::from_secs(90);
+
+/// How long one read pauses before looking again.
+const DELETION_POLL_PAUSE: Duration = Duration::from_millis(100);
+
+/// `DescribeStateMachine` on `arn` until Step Functions no longer answers for the record,
+/// and `(the status, the body)` it then answered.
+///
+/// A machine whose deletion has BEGUN still answers: the read reports it `DELETING`. That is
+/// what the stack waited for, so the read that says the record has GONE is the next one.
+async fn read_until_gone(
+    router: &MultiServiceRouter,
+    region: &str,
+    case: &str,
+    arn: &str,
+) -> (u16, Value) {
+    let deadline = std::time::Instant::now() + DELETION_DEADLINE;
+    loop {
+        let (status, answered) =
+            sfn(router, region, "DescribeStateMachine", &json!({ "stateMachineArn": arn })).await;
+        if status != 200 {
+            return (status, answered);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: expected DescribeStateMachine({arn:?}) to stop answering for a \
+             record the stack deleted, got {status} with body {answered}"
+        );
+        tokio::time::sleep(DELETION_POLL_PAUSE).await;
     }
 }
 
