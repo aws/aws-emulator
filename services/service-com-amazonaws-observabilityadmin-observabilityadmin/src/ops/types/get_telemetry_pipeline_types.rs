@@ -20,7 +20,7 @@ pub struct GetTelemetryPipelineInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#GetTelemetryPipelineOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct GetTelemetryPipelineOutput {
-    pub pipeline: Option<TelemetryPipelineProjection>,
+    pub pipeline: Option<TelemetryPipeline>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#TelemetryPipeline")]
@@ -34,6 +34,9 @@ pub struct TelemetryPipeline {
     pub status: Option<String>,
     pub status_reason: Option<TelemetryPipelineStatusReason>,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub last_refresh_time_stamp: Option<i64>,
+    pub source_progress: Option<SourceProgress>,
+    pub configuration_summary: Option<ConfigurationSummary>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#TelemetryPipelineStatusReason")]
@@ -42,76 +45,10 @@ pub struct TelemetryPipelineStatusReason {
     pub description: Option<String>,
 }
 
-/// The pipeline a read of one answers: every member `TelemetryPipeline` declares, plus
-/// the `ConfigurationSummary` the recorded responses carry on it.
-///
-/// `ConfigurationSummary` is not a member of the `TelemetryPipeline` shape in this
-/// crate's model snapshot — the snapshot binds that shape only to
-/// `TelemetryPipelineSummary`, the listing shape — and the snapshot is kept exactly as
-/// shipped. So the member rides on this type instead: the members the snapshot DOES
-/// declare are written by the generated [`TelemetryPipeline`] above, and this type adds
-/// the one it does not, under its own member schema. Nothing else about the body
-/// changes: the summary is written as a sibling of the other members, which is where the
-/// recorded response carries it.
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#SourceProgress")]
 #[derive(Debug, Clone, Default)]
-pub struct TelemetryPipelineProjection {
-    /// Every member the model snapshot's `TelemetryPipeline` shape declares.
-    pub pipeline: TelemetryPipeline,
-    /// The member it does not declare: "a summary of the pipeline configuration
-    /// components", derived from the pipeline's stored configuration document by
-    /// [`crate::state::StoredTelemetryPipeline::configuration_summary`].
-    pub configuration_summary: Option<ConfigurationSummary>,
+pub struct SourceProgress {
+    pub active: Option<i32>,
+    pub total: Option<i32>,
 }
 
-/// The schema of the `ConfigurationSummary` member this projection adds: the same member
-/// schema the generated code emits for a structure member, for a member of
-/// `TelemetryPipeline` named `ConfigurationSummary`. Its index follows the eight members
-/// the snapshot's shape declares, so it collides with none of them.
-///
-/// What this relies on is the SERIALIZE contract: a struct writes its members by handing
-/// the serializer each member's own schema ([`::aws_smithy_schema::serde::ShapeSerializer`]
-/// resolves the wire name from that schema, which is how this service's restJson1 body
-/// is written), so a member schema carried beside the generated ones is written exactly
-/// like them. It is NOT in the containing struct's member array, so a codec that resolved
-/// a member by looking it up there would not find it — nothing writes this shape that
-/// way today, and this comment is the place to read if one ever does.
-const M_CONFIGURATION_SUMMARY: ::aws_smithy_schema::Schema =
-    ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.observabilityadmin#TelemetryPipeline$ConfigurationSummary",
-            "com.amazonaws.observabilityadmin",
-            "ConfigurationSummary",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        "ConfigurationSummary",
-        8,
-    );
-
-impl ::aws_smithy_schema::serde::SerializableStruct for TelemetryPipelineProjection {
-    fn serialize_members(
-        &self,
-        serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        self.pipeline.serialize_members(serializer)?;
-        if let Some(summary) = &self.configuration_summary {
-            serializer.write_struct(&M_CONFIGURATION_SUMMARY, summary)?;
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for TelemetryPipelineProjection {
-    /// A pipeline is a member of a RESPONSE, so the emulator only ever writes one; this
-    /// read path exists because the operation's output struct derives it, and it reads
-    /// the members the snapshot's shape declares, through the generated reader for them.
-    fn deserialize(
-        deserializer: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        Ok(Self {
-            pipeline: <TelemetryPipeline as ::aws_smithy_schema_server::DeserializableStruct>::deserialize(
-                deserializer,
-            )?,
-            configuration_summary: None,
-        })
-    }
-}

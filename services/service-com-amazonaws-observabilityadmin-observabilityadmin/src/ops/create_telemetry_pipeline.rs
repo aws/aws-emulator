@@ -273,6 +273,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             active_at_ms: created_at.saturating_add(crate::state::PIPELINE_ACTIVATION_DELAY_MS),
             transition: crate::state::PipelineTransition::Creating,
             tags: input.tags.unwrap_or_default().into_iter().collect(),
+            // No refresh has run on a freshly created pipeline, which is the state
+            // `LastRefreshTimeStamp` and `SourceProgress` are absent for.
+            last_refresh_started_ms: None,
+            refresh_due_ms: 0,
         });
         drop(store);
 

@@ -17,9 +17,3 @@ pub struct DeleteS3TableIntegrationInput {
     pub arn: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#InvalidStateException")]
-#[derive(Debug, Clone, Default)]
-pub struct InvalidStateException {
-    pub message: Option<String>,
-}
-

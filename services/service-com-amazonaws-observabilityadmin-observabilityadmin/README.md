@@ -35,7 +35,14 @@ the generated members first and then adds its own. Every such member is listed h
 
 | Shape | Member | How, and why |
 |---|---|---|
-| `com.amazonaws.observabilityadmin#TelemetryPipeline` | `ConfigurationSummary` (target `com.amazonaws.observabilityadmin#ConfigurationSummary`) | A recorded `GetTelemetryPipeline` for an active pipeline answers `Pipeline.ConfigurationSummary` with the components of the stored configuration document; the snapshot binds that shape only to `TelemetryPipelineSummary`, the LISTING shape. `TelemetryPipelineProjection` in `src/ops/types/get_telemetry_pipeline_types.rs` carries it: the generated `TelemetryPipeline` writes the eight members the snapshot declares, and the projection adds this one under its own member schema. The value is derived from the stored document by `src/state.rs`'s `configuration_summary`; `tests/all/pipeline_configuration_summary.rs` holds the rule it follows. |
+
+There are none today. `com.amazonaws.observabilityadmin#TelemetryPipeline` once needed
+one for `ConfigurationSummary`, which a recorded `GetTelemetryPipeline` carried before
+the snapshot bound that shape to anything but `TelemetryPipelineSummary`; the model
+update that added `Connector` declares the member on `TelemetryPipeline` itself, so the
+generated shape carries it and the projection is gone. The value is still derived from
+the stored document by `src/state.rs`'s `configuration_summary`, and
+`tests/all/pipeline_configuration_summary.rs` still holds the rule it follows.
 
 ## Implementing an operation
 

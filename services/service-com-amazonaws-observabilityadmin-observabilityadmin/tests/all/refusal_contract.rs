@@ -30,7 +30,14 @@
 //!    endpoint's slot is its own, and a delete frees the slot;
 //! 5. a request that supplies BOTH forms of a multi-region scope is refused with one
 //!    fixed sentence wherever this service refuses that pair, naming the two
-//!    parameters in their lowerCamel wire form.
+//!    parameters in their lowerCamel wire form;
+//! 6. the connector and the third-party telemetry enrichment follow rules 1 and 3 too:
+//!    a name already in use in the region is a `ConflictException` naming the input
+//!    member, an identifier naming no record is that operation's fixed 404 whichever
+//!    form it took, a repeated `ClientToken` with different parameters is a
+//!    `ValidationException`, an `ExpectedVersion` the store does not hold is a
+//!    `ConflictException` naming both versions, and every refusal leaves the store
+//!    exactly as it was.
 //!
 //! The sentences and the `ResourceType` values asserted below are written out rather
 //! than read from the service's constants, so a change to either is a failure here.
@@ -704,5 +711,612 @@ async fn both_forms_of_a_multi_region_scope_are_one_sentence() {
                 "case {case:?}: expected Message {expected:?}, got {message:?}"
             );
         }
+    }
+}
+
+// =============================================================================
+// Rule 6 — the connector and enrichment refusals
+// =============================================================================
+
+/// A tenant, an application and a subscription id of the forms the Azure members fix,
+/// so the creates below satisfy the modelled constraints and are refused for the reason
+/// each case is about.
+const TENANT_ID: &str = "11111111-2222-4333-8444-555555555555";
+const CLIENT_ID: &str = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+/// A role ARN every connector create below carries.
+const CONNECTOR_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/CloudWatchAzureConnector";
+
+/// An AWS Config connector ARN of the form `AwsConfigConnectorArn` fixes.
+const CONFIG_CONNECTOR_ARN: &str = "arn:aws:config:us-west-2:000000000000:connector/azure-tenant";
+
+/// The smallest `CreateConnector` the model admits, under `name`.
+fn connector_request(name: &str) -> Value {
+    json!({
+        "Name": name,
+        "RoleArn": CONNECTOR_ROLE_ARN,
+        "ConnectorConfiguration": {
+            "Azure": { "TenantIdentifier": TENANT_ID, "ClientIdentifier": CLIENT_ID },
+        },
+    })
+}
+
+/// The smallest telemetry manifest the model admits, collecting `telemetry_type`.
+fn manifest(telemetry_type: &str) -> Value {
+    json!({
+        "Source": {
+            "Azure": [{
+                "TelemetryTypes": [telemetry_type],
+                "Scope": { "Subscriptions": { "All": {} } },
+            }],
+        },
+    })
+}
+
+/// Create one connector in `region` and answer its id.
+async fn connector_id(emulator: &Emulator, region: &str, name: &str) -> String {
+    let (status, created) =
+        call(emulator, region, "/CreateConnector", &connector_request(name)).await;
+    assert_eq!(
+        status, 201,
+        "creating {name:?}: expected 201, got {status} {created:?}"
+    );
+    created
+        .pointer("/Connector/Arn")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// How many connector records the shared store holds.
+fn stored_connectors(emulator: &Emulator) -> usize {
+    emulator
+        .engine
+        .state::<ComAmazonawsObservabilityadminObservabilityadminState>()
+        .lock()
+        .connectors
+        .len()
+}
+
+/// A connector name is unique per region: a second create of the same name there is a
+/// `ConflictException` with the fixed sentence that names the INPUT MEMBER which
+/// carried it, it stores nothing, and the same name in another region is a different
+/// connector.
+#[tokio::test]
+async fn a_second_connector_of_the_same_name_is_refused_and_stores_nothing() {
+    let case = "the same name twice in one region";
+    let emulator = emulator();
+    connector_id(&emulator, HOME_REGION, "azure-prod").await;
+
+    let (status, error_type, response) = call_with_headers(
+        &emulator,
+        HOME_REGION,
+        "/CreateConnector",
+        &connector_request("azure-prod"),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "case {case:?}: expected 409, got {status} {response:?}"
+    );
+    assert_eq!(
+        error_type.as_deref(),
+        Some("ConflictException"),
+        "case {case:?}: expected the x-amzn-errortype header, got {error_type:?}"
+    );
+    assert_eq!(
+        member(&response, "Message"),
+        "The specified Name already exists",
+        "case {case:?}: expected the fixed sentence, got {response:?}"
+    );
+    assert_eq!(
+        member(&response, "ResourceType"),
+        "Name",
+        "case {case:?}: expected the input member that carried the name, got {response:?}"
+    );
+    assert!(
+        !member(&response, "Message").contains("azure-prod"),
+        "case {case:?}: the submitted value is never spliced into the sentence, got \
+         {response:?}"
+    );
+    assert_eq!(
+        stored_connectors(&emulator),
+        1,
+        "case {case:?}: expected the refused create to store nothing, got {} records",
+        stored_connectors(&emulator)
+    );
+
+    // Another regional endpoint's names are its own.
+    connector_id(&emulator, OTHER_REGION, "azure-prod").await;
+    assert_eq!(
+        stored_connectors(&emulator),
+        2,
+        "case {:?}: expected the other region's create to be stored",
+        "the same name in another region"
+    );
+}
+
+/// A repeated `ClientToken` answers the connector the FIRST request created, and the
+/// same token with different parameters — "including different tags" — is refused.
+#[tokio::test]
+async fn a_repeated_connector_client_token_is_idempotent_or_refused() {
+    let emulator = emulator();
+    let mut first = connector_request("azure-token");
+    first["ClientToken"] = json!("token-one");
+    let (status, created) = call(&emulator, HOME_REGION, "/CreateConnector", &first).await;
+    assert_eq!(status, 201, "expected 201, got {status} {created:?}");
+
+    // The same token with the same parameters is the same connector, not a second one.
+    let (status, replay) = call(&emulator, HOME_REGION, "/CreateConnector", &first).await;
+    assert_eq!(
+        status, 201,
+        "case {:?}: expected 201, got {status} {replay:?}",
+        "the same token and the same parameters"
+    );
+    assert_eq!(
+        replay, created,
+        "case {:?}: expected the connector the first request created, got {replay:?}",
+        "the same token and the same parameters"
+    );
+    assert_eq!(
+        stored_connectors(&emulator),
+        1,
+        "case {:?}: expected one record, got {} records",
+        "the same token and the same parameters",
+        stored_connectors(&emulator)
+    );
+
+    // The rows differ in WHICH parameter the retry changed.
+    let mut renamed = first.clone();
+    renamed["Name"] = json!("azure-token-two");
+    let mut rerolled = first.clone();
+    rerolled["RoleArn"] = json!("arn:aws:iam::000000000000:role/Other");
+    let mut tagged = first.clone();
+    tagged["Tags"] = json!({ "team": "observability" });
+    for (case, request) in [
+        ("a different name", renamed),
+        ("a different role", rerolled),
+        ("different tags", tagged),
+    ] {
+        let (status, response) = call(&emulator, HOME_REGION, "/CreateConnector", &request).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status} {response:?}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ValidationException",
+            "case {case:?}: expected ValidationException, got {response:?}"
+        );
+        assert_eq!(
+            member(&response, "Message"),
+            "The ClientToken was already used with different request parameters",
+            "case {case:?}: expected the fixed sentence, got {response:?}"
+        );
+        assert_eq!(
+            stored_connectors(&emulator),
+            1,
+            "case {case:?}: expected the refused create to store nothing, got {} records",
+            stored_connectors(&emulator)
+        );
+    }
+}
+
+/// `ExpectedVersion` is the optimistic lock the member documents: a put that names a
+/// version the store does not hold is a `ConflictException` naming both versions and
+/// writes nothing, and a repeated `ClientToken` answers the stored version rather than
+/// bumping it.
+#[tokio::test]
+async fn a_manifest_put_that_loses_the_version_race_is_refused_and_writes_nothing() {
+    let emulator = emulator();
+    let id = connector_id(&emulator, HOME_REGION, "azure-versioned").await;
+    let (status, written) = call(
+        &emulator,
+        HOME_REGION,
+        "/PutConnectorTelemetryManifest",
+        &json!({ "ConnectorIdentifier": id, "Manifest": manifest("Metrics") }),
+    )
+    .await;
+    assert_eq!(status, 200, "expected 200, got {status} {written:?}");
+
+    // The rows differ in how far the expected version is from the stored one.
+    for (case, expected) in [
+        ("the version before the first put", 0),
+        ("a version the store is past", 1_i64 - 1),
+        ("a version the store has not reached", 7),
+    ] {
+        let (status, response) = call(
+            &emulator,
+            HOME_REGION,
+            "/PutConnectorTelemetryManifest",
+            &json!({
+                "ConnectorIdentifier": id,
+                "Manifest": manifest("ResourceLogs"),
+                "ExpectedVersion": expected,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 409,
+            "case {case:?}: expected 409, got {status} {response:?}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ConflictException",
+            "case {case:?}: expected ConflictException, got {response:?}"
+        );
+        assert_eq!(
+            member(&response, "Message"),
+            format!("The telemetry manifest version is 1, not the expected {expected}"),
+            "case {case:?}: expected the sentence naming both versions, got {response:?}"
+        );
+        // Nothing was written: the stored manifest is still the first one.
+        let (_, read) = call(
+            &emulator,
+            HOME_REGION,
+            "/GetConnectorTelemetryManifest",
+            &json!({ "ConnectorIdentifier": id }),
+        )
+        .await;
+        assert_eq!(
+            read.get("Version").and_then(Value::as_i64),
+            Some(1),
+            "case {case:?}: expected the refused put to leave the version alone, got {read:?}"
+        );
+        assert_eq!(
+            read.get("Manifest"),
+            Some(&manifest("Metrics")),
+            "case {case:?}: expected the stored manifest to be untouched, got {read:?}"
+        );
+    }
+
+    // A repeated token with the SAME manifest answers the stored version; with a
+    // different one it is refused.
+    let replayed = json!({
+        "ConnectorIdentifier": id,
+        "Manifest": manifest("FlowLogs"),
+        "ClientToken": "manifest-token",
+    });
+    let (status, written) = call(
+        &emulator,
+        HOME_REGION,
+        "/PutConnectorTelemetryManifest",
+        &replayed,
+    )
+    .await;
+    assert_eq!(status, 200, "expected 200, got {status} {written:?}");
+    assert_eq!(
+        written.get("Version").and_then(Value::as_i64),
+        Some(2),
+        "expected the second manifest to be version 2, got {written:?}"
+    );
+    let (status, again) = call(
+        &emulator,
+        HOME_REGION,
+        "/PutConnectorTelemetryManifest",
+        &replayed,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {:?}: expected 200, got {status} {again:?}",
+        "the same token and the same manifest"
+    );
+    assert_eq!(
+        again.get("Version").and_then(Value::as_i64),
+        Some(2),
+        "case {:?}: expected the stored version rather than a bump, got {again:?}",
+        "the same token and the same manifest"
+    );
+    let (status, response) = call(
+        &emulator,
+        HOME_REGION,
+        "/PutConnectorTelemetryManifest",
+        &json!({
+            "ConnectorIdentifier": id,
+            "Manifest": manifest("Metrics"),
+            "ClientToken": "manifest-token",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "case {:?}: expected 400, got {status} {response:?}",
+        "the same token and a different manifest"
+    );
+    assert_eq!(
+        member(&response, "Message"),
+        "The ClientToken was already used with different request parameters",
+        "case {:?}: expected the fixed sentence, got {response:?}",
+        "the same token and a different manifest"
+    );
+}
+
+/// Every connector operation refuses an identifier that names no stored connector in
+/// the region the request was signed for with the same fixed sentence and the same
+/// `ResourceType`, whichever of the two forms `ConnectorIdentifier` admits it took.
+#[tokio::test]
+async fn an_identifier_that_names_no_connector_is_a_404_everywhere() {
+    let emulator = emulator();
+    let id = connector_id(&emulator, HOME_REGION, "azure-present").await;
+    let arn =
+        format!("arn:aws:observabilityadmin:{HOME_REGION}:{ACCOUNT}:connector/azure/{id}");
+
+    // The rows differ in which field of the handle names nothing: the id, the region,
+    // the account, the partition, or the resource type.
+    let identifiers: Vec<(&str, String, &str)> = vec![
+        ("an id nothing was created under", "f".repeat(32), HOME_REGION),
+        ("the connector's own id from another region", id.clone(), OTHER_REGION),
+        ("the connector's own ARN from another region", arn.clone(), OTHER_REGION),
+        (
+            "an ARN naming the id in another region",
+            format!("arn:aws:observabilityadmin:{OTHER_REGION}:{ACCOUNT}:connector/azure/{id}"),
+            HOME_REGION,
+        ),
+        (
+            "an ARN of another account",
+            format!("arn:aws:observabilityadmin:{HOME_REGION}:000000000001:connector/azure/{id}"),
+            HOME_REGION,
+        ),
+        (
+            "an ARN of another partition",
+            format!("arn:aws-us-gov:observabilityadmin:{HOME_REGION}:{ACCOUNT}:connector/azure/{id}"),
+            HOME_REGION,
+        ),
+    ];
+
+    for (case, identifier, region) in identifiers {
+        for uri in [
+            "/GetConnector",
+            "/DeleteConnector",
+            "/GetConnectorTelemetryManifest",
+            "/GetConnectorTelemetrySetup",
+        ] {
+            let (status, response) = call(
+                &emulator,
+                region,
+                uri,
+                &json!({ "ConnectorIdentifier": identifier }),
+            )
+            .await;
+            assert_eq!(
+                status, 404,
+                "case {case:?} at {uri}: expected 404, got {status} {response:?}"
+            );
+            assert_eq!(
+                error_code(&response),
+                "ResourceNotFoundException",
+                "case {case:?} at {uri}: expected ResourceNotFoundException, got {response:?}"
+            );
+            assert_eq!(
+                member(&response, "Message"),
+                "Connector not found",
+                "case {case:?} at {uri}: expected the fixed sentence, got {response:?}"
+            );
+            assert_eq!(
+                member(&response, "ResourceType"),
+                "Connector",
+                "case {case:?} at {uri}: expected the resource's own API name, got {response:?}"
+            );
+            assert_eq!(
+                member(&response, "ResourceId"),
+                identifier,
+                "case {case:?} at {uri}: expected the identifier the request carried, got \
+                 {response:?}"
+            );
+        }
+        let (status, response) = call(
+            &emulator,
+            region,
+            "/PutConnectorTelemetryManifest",
+            &json!({ "ConnectorIdentifier": identifier, "Manifest": manifest("Metrics") }),
+        )
+        .await;
+        assert_eq!(
+            status, 404,
+            "case {case:?} at /PutConnectorTelemetryManifest: expected 404, got {status} \
+             {response:?}"
+        );
+    }
+
+    // The format the provider does not support is a different refusal: a 400 on a
+    // connector that IS there.
+    let (status, response) = call(
+        &emulator,
+        HOME_REGION,
+        "/GetConnectorTelemetrySetup",
+        &json!({ "ConnectorIdentifier": id, "Format": "TERRAFORM" }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "case {:?}: expected 400, got {status} {response:?}",
+        "a format the provider does not support"
+    );
+    assert_eq!(
+        error_code(&response),
+        "ValidationException",
+        "case {:?}: expected ValidationException, got {response:?}",
+        "a format the provider does not support"
+    );
+}
+
+/// An enrichment name is unique per region and each connector is used by one
+/// enrichment, so a start that collides on either is a `ConflictException`; a stop of an
+/// enrichment that is already stopped is one too, and an identifier naming no
+/// enrichment is the modelled 404.
+#[tokio::test]
+async fn an_enrichment_start_or_stop_the_state_forbids_is_refused() {
+    let emulator = emulator();
+    let start = json!({
+        "Name": "azure-enrichment",
+        "TelemetrySourceConfiguration": {
+            "Azure": { "AwsConfigConnectorArn": CONFIG_CONNECTOR_ARN },
+        },
+    });
+    let (status, started) = call(
+        &emulator,
+        HOME_REGION,
+        "/StartThirdPartyTelemetryEnrichment",
+        &start,
+    )
+    .await;
+    assert_eq!(status, 202, "expected 202, got {status} {started:?}");
+
+    // The same name again.
+    let (status, response) = call(
+        &emulator,
+        HOME_REGION,
+        "/StartThirdPartyTelemetryEnrichment",
+        &start,
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "case {:?}: expected 409, got {status} {response:?}",
+        "the same name twice in one region"
+    );
+    assert_eq!(
+        member(&response, "Message"),
+        "The specified Name already exists",
+        "case {:?}: expected the fixed sentence, got {response:?}",
+        "the same name twice in one region"
+    );
+
+    // A different name on the SAME connector: each connector enriches once.
+    let mut second = start.clone();
+    second["Name"] = json!("azure-enrichment-two");
+    let (status, response) = call(
+        &emulator,
+        HOME_REGION,
+        "/StartThirdPartyTelemetryEnrichment",
+        &second,
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "case {:?}: expected 409, got {status} {response:?}",
+        "a second enrichment of one connector"
+    );
+    assert_eq!(
+        member(&response, "Message"),
+        "The specified connector is already used by another telemetry enrichment",
+        "case {:?}: expected the fixed sentence, got {response:?}",
+        "a second enrichment of one connector"
+    );
+    assert_eq!(
+        member(&response, "ResourceId"),
+        CONFIG_CONNECTOR_ARN,
+        "case {:?}: expected the connector the request named, got {response:?}",
+        "a second enrichment of one connector"
+    );
+
+    // A stop, then a second stop of the same enrichment.
+    let (status, stopped) = call(
+        &emulator,
+        HOME_REGION,
+        "/StopThirdPartyTelemetryEnrichment",
+        &json!({ "TelemetryEnrichmentIdentifier": "azure-enrichment" }),
+    )
+    .await;
+    assert_eq!(status, 202, "expected 202, got {status} {stopped:?}");
+    let (status, response) = call(
+        &emulator,
+        HOME_REGION,
+        "/StopThirdPartyTelemetryEnrichment",
+        &json!({ "TelemetryEnrichmentIdentifier": "azure-enrichment" }),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "case {:?}: expected 409, got {status} {response:?}",
+        "a second stop"
+    );
+    assert_eq!(
+        member(&response, "Message"),
+        "The telemetry enrichment is already stopped",
+        "case {:?}: expected the fixed sentence, got {response:?}",
+        "a second stop"
+    );
+
+    // An identifier naming no enrichment, in each form the member admits.
+    let arn = started
+        .get("Arn")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let identifiers: Vec<(&str, String, &str)> = vec![
+        (
+            "a name nothing was started under",
+            "no-such-enrichment".to_string(),
+            HOME_REGION,
+        ),
+        (
+            "the enrichment's own name from another region",
+            "azure-enrichment".to_string(),
+            OTHER_REGION,
+        ),
+        (
+            "the enrichment's own ARN from another region",
+            arn,
+            OTHER_REGION,
+        ),
+    ];
+    for (case, identifier, region) in identifiers {
+        for uri in [
+            "/GetThirdPartyTelemetryEnrichment",
+            "/StopThirdPartyTelemetryEnrichment",
+        ] {
+            let (status, response) = call(
+                &emulator,
+                region,
+                uri,
+                &json!({ "TelemetryEnrichmentIdentifier": identifier }),
+            )
+            .await;
+            assert_eq!(
+                status, 404,
+                "case {case:?} at {uri}: expected 404, got {status} {response:?}"
+            );
+            assert_eq!(
+                member(&response, "Message"),
+                "Telemetry enrichment not found",
+                "case {case:?} at {uri}: expected the fixed sentence, got {response:?}"
+            );
+            assert_eq!(
+                member(&response, "ResourceType"),
+                "TelemetryEnrichment",
+                "case {case:?} at {uri}: expected the resource's own API name, got {response:?}"
+            );
+        }
+    }
+
+    // A filter outside either enum's own value set is the modelled 400.
+    for (case, filter) in [
+        ("a status nothing reports", json!({ "Status": "Halted" })),
+        (
+            "a source the service does not have",
+            json!({ "TelemetrySource": "GCP" }),
+        ),
+    ] {
+        let (status, response) = call(
+            &emulator,
+            HOME_REGION,
+            "/ListThirdPartyTelemetryEnrichments",
+            &filter,
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected 400, got {status} {response:?}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ValidationException",
+            "case {case:?}: expected ValidationException, got {response:?}"
+        );
     }
 }

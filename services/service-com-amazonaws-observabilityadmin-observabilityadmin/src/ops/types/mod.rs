@@ -15,35 +15,48 @@
 //! ambiguous inside `ops` (`E0659`).
 
 pub mod create_centralization_rule_for_organization_types;
+pub mod create_connector_types;
 pub mod create_dataset_integration_types;
 pub mod create_s3_table_integration_types;
 pub mod create_telemetry_pipeline_types;
 pub mod create_telemetry_rule_for_organization_types;
 pub mod create_telemetry_rule_types;
 pub mod delete_centralization_rule_for_organization_types;
+pub mod delete_connector_types;
 pub mod delete_dataset_integration_types;
 pub mod delete_s3_table_integration_types;
 pub mod delete_telemetry_pipeline_types;
 pub mod delete_telemetry_rule_for_organization_types;
 pub mod delete_telemetry_rule_types;
 pub mod get_centralization_rule_for_organization_types;
+pub mod get_connector_telemetry_manifest_types;
+pub mod get_connector_telemetry_setup_types;
+pub mod get_connector_types;
 pub mod get_dataset_integration_types;
 pub mod get_s3_table_integration_types;
 pub mod get_telemetry_pipeline_types;
 pub mod get_telemetry_rule_for_organization_types;
 pub mod get_telemetry_rule_types;
+pub mod get_third_party_telemetry_enrichment_types;
 pub mod list_centralization_rules_for_organization_types;
+pub mod list_connectors_types;
 pub mod list_dataset_integrations_types;
 pub mod list_resource_telemetry_for_organization_types;
 pub mod list_resource_telemetry_types;
+pub mod list_resources_by_connector_types;
 pub mod list_s3_table_integrations_types;
 pub mod list_tags_for_resource_types;
 pub mod list_telemetry_pipelines_types;
 pub mod list_telemetry_rules_for_organization_types;
 pub mod list_telemetry_rules_types;
+pub mod list_third_party_telemetry_enrichments_types;
+pub mod put_connector_telemetry_manifest_types;
 pub mod shared_types;
 pub mod start_telemetry_evaluation_for_organization_types;
 pub mod start_telemetry_evaluation_types;
+pub mod start_telemetry_pipeline_refresh_types;
+pub mod start_third_party_telemetry_enrichment_types;
+pub mod stop_third_party_telemetry_enrichment_types;
 pub mod tag_resource_types;
 pub mod test_telemetry_pipeline_types;
 pub mod untag_resource_types;
@@ -57,6 +70,8 @@ pub mod validate_telemetry_pipeline_configuration_types;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_centralization_rule_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_dataset_integration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_s3_table_integration_types::*;
@@ -68,6 +83,8 @@ pub use create_telemetry_rule_for_organization_types::*;
 pub use create_telemetry_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_centralization_rule_for_organization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_connector_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_dataset_integration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -81,6 +98,12 @@ pub use delete_telemetry_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_centralization_rule_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_connector_telemetry_manifest_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_connector_telemetry_setup_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_connector_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_dataset_integration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_s3_table_integration_types::*;
@@ -91,13 +114,19 @@ pub use get_telemetry_rule_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_telemetry_rule_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_third_party_telemetry_enrichment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_centralization_rules_for_organization_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_connectors_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_dataset_integrations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_resource_telemetry_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_resource_telemetry_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_resources_by_connector_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_s3_table_integrations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -109,11 +138,21 @@ pub use list_telemetry_rules_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_telemetry_rules_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_third_party_telemetry_enrichments_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_connector_telemetry_manifest_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_telemetry_evaluation_for_organization_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_telemetry_evaluation_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_telemetry_pipeline_refresh_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_third_party_telemetry_enrichment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use stop_third_party_telemetry_enrichment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

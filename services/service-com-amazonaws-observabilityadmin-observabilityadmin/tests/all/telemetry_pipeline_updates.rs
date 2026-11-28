@@ -24,7 +24,13 @@
 //! 4. a `ValidationError` PINNED TO A FIELD of a configuration document locates that
 //!    field under the report's own `path` key, whose value is the field's full dotted
 //!    document path; the field's own bare name is never a `FieldMap` key, because it
-//!    cannot tell two fields of that name apart.
+//!    cannot tell two fields of that name apart;
+//! 5. a `StartTelemetryPipelineRefresh` records the refresh on the pipeline it names
+//!    and nothing else, so `GetTelemetryPipeline` — the operation's own way to "track
+//!    the refresh" — reports the instant it started and the progress of the sources the
+//!    stored configuration declares, and a pipeline no refresh has run on reports
+//!    neither; a refresh the pipeline's state does not allow, and one while a refresh
+//!    is already running, are refused and record nothing.
 
 use std::time::Duration;
 
@@ -684,5 +690,348 @@ async fn a_field_pinned_defect_is_located_by_its_document_path() {
                 "case {case:?}: {bare_name:?} is not a FieldMap key, got {response:?}"
             );
         }
+    }
+}
+
+// =============================================================================
+// Rule 5 — a refresh is recorded on the pipeline, and a read is what tracks it
+// =============================================================================
+
+/// Long enough for ANY clock-owed transition this suite waits on to have come due,
+/// whatever load the host is under. It bounds the poll loops below so a condition that
+/// never holds fails instead of hanging; it is deliberately far larger than any span
+/// the service takes, so nothing here passes or fails on how fast the host runs.
+fn poll_deadline() -> Duration {
+    Duration::from_secs(60)
+}
+
+async fn refresh(emulator: &Emulator, region: &str, identifier: &str) -> (u16, Value) {
+    call(
+        emulator,
+        region,
+        "/StartTelemetryPipelineRefresh",
+        &json!({ "PipelineIdentifier": identifier }),
+    )
+    .await
+}
+
+/// Read the pipeline again and again until `holds` is true of the report, answering
+/// that report. Waits for the CONDITION, never for a fixed time.
+async fn read_until<F>(
+    emulator: &Emulator,
+    region: &str,
+    identifier: &str,
+    case: &str,
+    holds: F,
+) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    let deadline = std::time::Instant::now() + poll_deadline();
+    loop {
+        let (status, response) = get(emulator, region, identifier).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the read to answer 200, got {status} {response:?}"
+        );
+        if holds(&response) {
+            return response;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the condition never held; the last read answered {response:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The `Status` a read reports.
+fn reported_status(response: &Value) -> String {
+    member(response, "Status")
+        .and_then(Value::as_str)
+        .unwrap_or("<no Status>")
+        .to_string()
+}
+
+/// `SourceProgress` as `(Active, Total)`, or `None` when the member is absent.
+fn reported_progress(response: &Value) -> Option<(i64, i64)> {
+    let progress = member(response, "SourceProgress")?;
+    Some((
+        progress.get("Active").and_then(Value::as_i64)?,
+        progress.get("Total").and_then(Value::as_i64)?,
+    ))
+}
+
+/// Create a pipeline and wait for the create's own transition to come due, so the
+/// pipeline is `ACTIVE` — the state a refresh may start from.
+async fn active_pipeline(emulator: &Emulator, name: &str, body: &str, case: &str) {
+    let (status, response) = create(emulator, HOME_REGION, name, body).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected the create to answer 200, got {status} {response:?}"
+    );
+    read_until(emulator, HOME_REGION, name, case, |report| {
+        reported_status(report) == "ACTIVE"
+    })
+    .await;
+}
+
+/// A started refresh is recorded on the pipeline record, and `GetTelemetryPipeline` is
+/// what tracks it: `LastRefreshTimeStamp` is the instant the refresh STARTED and
+/// `SourceProgress` counts the sources the configuration declares, none of them active
+/// while the re-discovery is in flight and all of them once it comes due. A pipeline no
+/// refresh has run on reports neither member.
+///
+/// The rows differ along what the rule generalises over: how many sources the stored
+/// configuration declares (which is what `Total` counts) and which of the two forms
+/// `PipelineIdentifier` admits the refresh names the pipeline by.
+#[tokio::test]
+async fn a_refresh_is_recorded_on_the_pipeline_and_tracked_by_a_read() {
+    // `by_arn` picks the identifier form the refresh uses; the number is how many
+    // source plugins the body declares, counted by the same walk the configuration
+    // summary reports (`tests/all/pipeline_configuration_summary.rs`).
+    let rows: Vec<(&str, &str, String, i64, bool)> = vec![
+        (
+            "one source, refreshed by name",
+            "refresh-one-source",
+            "source:\n  http: {}\nsink:\n  - cloudwatch_logs: {}\n".to_string(),
+            1,
+            false,
+        ),
+        (
+            "one source, refreshed by ARN",
+            "refresh-by-arn",
+            "source:\n  http: {}\nsink:\n  - cloudwatch_logs: {}\n".to_string(),
+            1,
+            true,
+        ),
+        (
+            "two sections chained, so two sources",
+            "refresh-two-sources",
+            "entry:\n  \
+               source:\n    http: {}\n  \
+               sink:\n    - pipeline:\n        name: exit\n\
+             exit:\n  \
+               source:\n    pipeline:\n      name: entry\n  \
+               sink:\n    - cloudwatch_logs:\n        log_group: /aws/x\n"
+                .to_string(),
+            2,
+            false,
+        ),
+    ];
+
+    for (case, name, body, sources, by_arn) in rows {
+        let emulator = emulator();
+        active_pipeline(&emulator, name, &body, case).await;
+
+        // Before any refresh both members are absent: there is no refresh to report
+        // and nothing has been discovered.
+        let (status, before_refresh) = get(&emulator, HOME_REGION, name).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status} {before_refresh:?}"
+        );
+        assert!(
+            member(&before_refresh, "LastRefreshTimeStamp").is_none(),
+            "case {case:?}: expected no LastRefreshTimeStamp before a refresh, got \
+             {before_refresh:?}"
+        );
+        assert!(
+            reported_progress(&before_refresh).is_none(),
+            "case {case:?}: expected no SourceProgress before a refresh, got \
+             {before_refresh:?}"
+        );
+
+        let arn = member(&before_refresh, "Arn")
+            .and_then(Value::as_str)
+            .unwrap_or("<no Arn>")
+            .to_string();
+        let identifier = if by_arn { arn.as_str() } else { name };
+
+        let before = now_epoch_millis();
+        let (status, response) = refresh(&emulator, HOME_REGION, identifier).await;
+        let after = now_epoch_millis();
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the refresh to answer 200, got {status} {response:?}"
+        );
+
+        // Straight after the call the refresh is in flight: the span is never zero, so
+        // nothing is active yet, and the total is what the configuration declares.
+        let (status, started) = get(&emulator, HOME_REGION, name).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200, got {status} {started:?}"
+        );
+        let last_refresh = member(&started, "LastRefreshTimeStamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        assert!(
+            (before..=after).contains(&last_refresh),
+            "case {case:?}: expected LastRefreshTimeStamp within [{before}, {after}], got \
+             {last_refresh}"
+        );
+        assert_eq!(
+            reported_progress(&started),
+            Some((0, sources)),
+            "case {case:?}: expected no source active yet out of {sources}, got {started:?}"
+        );
+        // A refresh is not an update: the status stays the pipeline's.
+        assert_eq!(
+            reported_status(&started),
+            "ACTIVE",
+            "case {case:?}: expected a refresh to leave the pipeline ACTIVE, got {started:?}"
+        );
+
+        // Once the re-discovery comes due every discovered source is active, and the
+        // instant the refresh started has not moved.
+        let settled = read_until(&emulator, HOME_REGION, name, case, |report| {
+            reported_progress(report) == Some((sources, sources))
+        })
+        .await;
+        assert_eq!(
+            member(&settled, "LastRefreshTimeStamp").and_then(Value::as_i64),
+            Some(last_refresh),
+            "case {case:?}: expected the instant the refresh started to stay put, got \
+             {settled:?}"
+        );
+
+        // A read reports and changes nothing, so a second read answers what the first
+        // did.
+        let (_, again) = get(&emulator, HOME_REGION, name).await;
+        assert_eq!(
+            again, settled,
+            "case {case:?}: expected two reads of one pipeline to answer identically, got \
+             {settled:?} then {again:?}"
+        );
+    }
+}
+
+/// A refresh of a pipeline whose state does not allow one is refused with the sentence
+/// naming the two states the operation does allow, and records nothing.
+///
+/// The clock is DRIVEN here rather than waited on: the stored record's due instant is
+/// pushed far out, so the case does not depend on how fast the host runs.
+#[tokio::test]
+async fn a_refresh_of_a_pipeline_that_is_not_active_is_refused() {
+    let body = "source:\n  http: {}\nsink:\n  - cloudwatch_logs: {}\n";
+    let emulator = emulator();
+    let case = "a pipeline that is still CREATING";
+    let (status, response) = create(&emulator, HOME_REGION, "refresh-creating", body).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected 200, got {status} {response:?}"
+    );
+    {
+        let state = emulator
+            .engine
+            .state::<ComAmazonawsObservabilityadminObservabilityadminState>();
+        let mut store = state.lock();
+        let record = store
+            .telemetry_pipelines
+            .get_mut(&(HOME_REGION.to_string(), "refresh-creating".to_string()))
+            .unwrap_or_else(|| panic!("case {case:?}: the create stored a record"));
+        record.active_at_ms = now_epoch_millis() + 10 * 60 * 1_000;
+    }
+    let (status, response) = refresh(&emulator, HOME_REGION, "refresh-creating").await;
+    assert_eq!(
+        status, 409,
+        "case {case:?}: expected 409, got {status} {response:?}"
+    );
+    assert_eq!(
+        error_code(&response),
+        "ConflictException",
+        "case {case:?}: expected ConflictException, got {response:?}"
+    );
+    assert_eq!(
+        response.get("Message").and_then(Value::as_str),
+        Some(
+            "The pipeline must be in the ACTIVE or UPDATE_FAILED state to be refreshed, but \
+             it is CREATING"
+        ),
+        "case {case:?}: expected the sentence naming the two states a refresh starts from, \
+         got {response:?}"
+    );
+    let (_, read) = get(&emulator, HOME_REGION, "refresh-creating").await;
+    assert!(
+        member(&read, "LastRefreshTimeStamp").is_none(),
+        "case {case:?}: expected a refused refresh to record nothing, got {read:?}"
+    );
+}
+
+/// A refresh while the one before it is still running is refused, and leaves the
+/// running refresh exactly where it was.
+#[tokio::test]
+async fn a_refresh_while_one_is_already_running_is_refused() {
+    let body = "source:\n  http: {}\nsink:\n  - cloudwatch_logs: {}\n";
+    let emulator = emulator();
+    let case = "a refresh while one is already running";
+    active_pipeline(&emulator, "refresh-twice", body, case).await;
+    let (status, response) = refresh(&emulator, HOME_REGION, "refresh-twice").await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected the first refresh to answer 200, got {status} {response:?}"
+    );
+    let (_, read) = get(&emulator, HOME_REGION, "refresh-twice").await;
+    let first = member(&read, "LastRefreshTimeStamp").and_then(Value::as_i64);
+    let (status, response) = refresh(&emulator, HOME_REGION, "refresh-twice").await;
+    assert_eq!(
+        status, 409,
+        "case {case:?}: expected 409, got {status} {response:?}"
+    );
+    assert_eq!(
+        error_code(&response),
+        "ConflictException",
+        "case {case:?}: expected ConflictException, got {response:?}"
+    );
+    assert_eq!(
+        response.get("Message").and_then(Value::as_str),
+        Some("A refresh of the pipeline is already running"),
+        "case {case:?}: expected the already-running sentence, got {response:?}"
+    );
+    let (_, read) = get(&emulator, HOME_REGION, "refresh-twice").await;
+    assert_eq!(
+        member(&read, "LastRefreshTimeStamp").and_then(Value::as_i64),
+        first,
+        "case {case:?}: expected the refused refresh to leave the running one alone, got \
+         {read:?}"
+    );
+}
+
+/// A refresh of an identifier no stored pipeline answers is the modelled 404, in each
+/// form `PipelineIdentifier` admits.
+#[tokio::test]
+async fn a_refresh_of_an_identifier_no_pipeline_answers_is_a_404() {
+    let body = "source:\n  http: {}\nsink:\n  - cloudwatch_logs: {}\n";
+    let emulator = emulator();
+    active_pipeline(&emulator, "refresh-404", body, "a 404").await;
+    let rows: Vec<(&str, String, &str)> = vec![
+        (
+            "a name nothing was created under",
+            "no-such-pipeline".to_string(),
+            HOME_REGION,
+        ),
+        (
+            "the pipeline's own name from another region",
+            "refresh-404".to_string(),
+            OTHER_REGION,
+        ),
+        (
+            "an ARN naming an id nothing was created under",
+            pipeline_arn(HOME_REGION, &"f".repeat(32)),
+            HOME_REGION,
+        ),
+    ];
+    for (case, identifier, region) in rows {
+        let (status, response) = refresh(&emulator, region, &identifier).await;
+        assert_eq!(
+            status, 404,
+            "case {case:?} ({identifier}): expected 404, got {status} {response:?}"
+        );
+        assert_eq!(
+            error_code(&response),
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {response:?}"
+        );
     }
 }

@@ -10,10 +10,10 @@
 //! `Pipeline.ConfigurationSummary` is DERIVED from the stored configuration document
 //! ([`crate::state::StoredTelemetryPipeline::configuration_summary`]), which is the
 //! whole point of the member: the alternative for a caller rendering the pipeline's
-//! shape is re-parsing the document body itself. The model snapshot does not declare it
-//! on this shape, so it rides on
-//! [`crate::ops::types::TelemetryPipelineProjection`] beside the members the snapshot
-//! does declare — see that type and the crate README.
+//! shape is re-parsing the document body itself. `LastRefreshTimeStamp` and
+//! `SourceProgress` are derived the same way, from the refresh the record records and
+//! the clock, which is how this operation "tracks the refresh" a
+//! `StartTelemetryPipelineRefresh` started.
 //!
 //! The emulator verifies every request's signature centrally and models no IAM policy
 //! evaluation, so the modelled `AccessDeniedException` is deliberately unreachable

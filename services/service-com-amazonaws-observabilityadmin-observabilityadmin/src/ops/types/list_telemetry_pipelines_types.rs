@@ -37,26 +37,3 @@ pub struct TelemetryPipelineSummary {
     pub configuration_summary: Option<ConfigurationSummary>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#ConfigurationSummary")]
-#[derive(Debug, Clone, Default)]
-pub struct ConfigurationSummary {
-    pub sources: Option<Vec<Source>>,
-    pub data_sources: Option<Vec<DataSource>>,
-    pub processors: Option<Vec<String>>,
-    pub processor_count: Option<i32>,
-    pub sinks: Option<Vec<String>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#Source")]
-#[derive(Debug, Clone, Default)]
-pub struct Source {
-    pub r#type: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#DataSource")]
-#[derive(Debug, Clone, Default)]
-pub struct DataSource {
-    pub name: Option<String>,
-    pub r#type: Option<String>,
-}
-

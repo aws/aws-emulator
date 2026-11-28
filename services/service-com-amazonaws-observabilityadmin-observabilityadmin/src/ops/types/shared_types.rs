@@ -25,6 +25,7 @@ pub struct CentralizationRuleSource {
     pub scope: Option<String>,
     pub source_logs_configuration: Option<SourceLogsConfiguration>,
     pub source_metrics_configuration: Option<SourceMetricsConfiguration>,
+    pub source_profiles_configuration: Option<SourceProfilesConfiguration>,
     pub source_context_graph_configuration: Option<SourceContextGraphConfiguration>,
 }
 
@@ -34,12 +35,19 @@ pub struct SourceLogsConfiguration {
     pub log_group_selection_criteria: Option<String>,
     pub data_source_selection_criteria: Option<String>,
     pub encrypted_log_group_strategy: String,
+    pub centralize_with_data_protection: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#SourceMetricsConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct SourceMetricsConfiguration {
     pub metrics_selection_criteria: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#SourceProfilesConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SourceProfilesConfiguration {
+    pub profiles_selection_criteria: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#SourceContextGraphConfiguration")]
@@ -54,6 +62,7 @@ pub struct CentralizationRuleDestination {
     pub account: Option<String>,
     pub destination_logs_configuration: Option<DestinationLogsConfiguration>,
     pub destination_metrics_configuration: Option<DestinationMetricsConfiguration>,
+    pub destination_profiles_configuration: Option<DestinationProfilesConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#DestinationLogsConfiguration")]
@@ -104,6 +113,18 @@ pub struct DestinationMetricsConfiguration {
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#MetricsBackupConfiguration")]
 #[derive(Debug, Clone, Default)]
 pub struct MetricsBackupConfiguration {
+    pub region: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#DestinationProfilesConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct DestinationProfilesConfiguration {
+    pub backup_configuration: Option<ProfilesBackupConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#ProfilesBackupConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ProfilesBackupConfiguration {
     pub region: String,
 }
 
@@ -160,6 +181,31 @@ pub struct ValidationError {
     pub message: Option<String>,
     pub reason: Option<String>,
     pub field_map: Option<std::collections::HashMap<String, String>>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#ConnectorConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ConnectorConfiguration {
+    Azure(AzureConnectorConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureConnectorConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureConnectorConfiguration {
+    pub tenant_identifier: String,
+    pub client_identifier: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#Connector")]
+#[derive(Debug, Clone)]
+pub struct Connector {
+    pub arn: String,
+    pub provider: String,
+    pub connector_configuration: ConnectorConfiguration,
+    pub role_arn: String,
+    pub name: Option<String>,
+    pub created_time_stamp: Option<i64>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#Encryption")]
@@ -315,6 +361,119 @@ pub struct ResourceNotFoundException {
     pub resource_type: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#InvalidStateException")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidStateException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#TelemetryManifest")]
+#[derive(Debug, Clone)]
+pub struct TelemetryManifest {
+    pub source: TelemetryManifestSource,
+    pub infrastructure: Option<TelemetryManifestInfrastructure>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#TelemetryManifestSource")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TelemetryManifestSource {
+    Azure(Vec<AzureScopeItem>),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureScopeItem")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureScopeItem {
+    pub telemetry_types: Vec<String>,
+    pub scope: AzureScope,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureScope")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureScope {
+    pub subscriptions: Option<AzureSubscriptionScope>,
+    pub regions: Option<Vec<String>>,
+    pub resource_types: Option<Vec<String>>,
+    pub tag_filters: Option<Vec<TagFilter>>,
+    pub resources: Option<Vec<AzureResourceIdScope>>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#AzureSubscriptionScope")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AzureSubscriptionScope {
+    All(AllSubscriptions),
+    Ids(Vec<String>),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AllSubscriptions")]
+#[derive(Debug, Clone, Default)]
+pub struct AllSubscriptions {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#TagFilter")]
+#[derive(Debug, Clone, Default)]
+pub struct TagFilter {
+    pub key: String,
+    pub values: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureResourceIdScope")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureResourceIdScope {
+    pub region: String,
+    pub resource_ids: Vec<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#TelemetryManifestInfrastructure")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TelemetryManifestInfrastructure {
+    Azure(AzureInfrastructure),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureInfrastructure")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureInfrastructure {
+    pub subscription_id: Option<String>,
+    pub event_hubs: Option<Vec<AzureEventHubConfiguration>>,
+    pub flow_logs: Option<AzureFlowLogsInfrastructure>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureEventHubConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureEventHubConfiguration {
+    pub tier: String,
+    pub partition_count: i32,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#AzureFlowLogsInfrastructure")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum AzureFlowLogsInfrastructure {
+    CustomerManaged(AzureCustomerManagedFlowLogs),
+    AwsManaged(AzureAwsManagedFlowLogs),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureCustomerManagedFlowLogs")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureCustomerManagedFlowLogs {
+    pub storage_accounts: Vec<AzureFlowLogStorageAccountScope>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureFlowLogStorageAccountScope")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureFlowLogStorageAccountScope {
+    pub region: String,
+    pub storage_account_ids: Vec<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureAwsManagedFlowLogs")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureAwsManagedFlowLogs {
+    pub retention_days: i32,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#RegionStatus")]
 #[derive(Debug, Clone, Default)]
 pub struct RegionStatus {
@@ -322,6 +481,20 @@ pub struct RegionStatus {
     pub status: Option<String>,
     pub failure_reason: Option<String>,
     pub rule_arn: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.observabilityadmin#TelemetrySourceConfigurationOutput")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TelemetrySourceConfigurationOutput {
+    Azure(AzureTelemetrySourceConfigurationOutput),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#AzureTelemetrySourceConfigurationOutput")]
+#[derive(Debug, Clone, Default)]
+pub struct AzureTelemetrySourceConfigurationOutput {
+    pub aws_config_connector_arn: Option<String>,
+    pub service_linked_recorder_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#TelemetryConfiguration")]
@@ -354,12 +527,51 @@ pub struct TelemetryPipelineConfiguration {
     pub body: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#ConfigurationSummary")]
+#[derive(Debug, Clone, Default)]
+pub struct ConfigurationSummary {
+    pub sources: Option<Vec<Source>>,
+    pub data_sources: Option<Vec<DataSource>>,
+    pub processors: Option<Vec<String>>,
+    pub processor_count: Option<i32>,
+    pub sinks: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#Source")]
+#[derive(Debug, Clone, Default)]
+pub struct Source {
+    pub r#type: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.observabilityadmin#DataSource")]
+#[derive(Debug, Clone, Default)]
+pub struct DataSource {
+    pub name: Option<String>,
+    pub r#type: Option<String>,
+}
+
 /// The values `Action` accepts on the wire.
 pub const ACTION_VALUES: &[&str] = &["ALLOW", "BLOCK", "CAPTCHA", "CHALLENGE", "COUNT", "EXCLUDED_AS_COUNT"];
 
 
+/// The values `AzureEventHubTier` accepts on the wire.
+pub const AZURE_EVENT_HUB_TIER_VALUES: &[&str] = &["Premium", "Standard"];
+
+
+/// The values `AzureTelemetryType` accepts on the wire.
+pub const AZURE_TELEMETRY_TYPE_VALUES: &[&str] = &["FlowLogs", "Metrics", "ResourceLogs"];
+
+
 /// The values `CentralizationFailureReason` accepts on the wire.
 pub const CENTRALIZATION_FAILURE_REASON_VALUES: &[&str] = &["DESTINATION_ACCOUNT_NOT_IN_ORGANIZATION", "INTERNAL_SERVER_ERROR", "TRUSTED_ACCESS_NOT_ENABLED"];
+
+
+/// The values `CentralizeWithDataProtection` accepts on the wire.
+pub const CENTRALIZE_WITH_DATA_PROTECTION_VALUES: &[&str] = &["DISABLED", "ENABLED"];
+
+
+/// The values `ConnectorProvider` accepts on the wire.
+pub const CONNECTOR_PROVIDER_VALUES: &[&str] = &["AZURE"];
 
 
 /// The values `ContextGraphStatus` accepts on the wire.
@@ -403,7 +615,7 @@ pub const INTEGRATION_STATUS_VALUES: &[&str] = &["ACTIVE", "DELETING"];
 
 
 /// The values `LogType` accepts on the wire.
-pub const LOG_TYPE_VALUES: &[&str] = &["ACCESS_LOGS", "ALB_ACCESS_LOGS", "ALB_CONNECTION_LOGS", "ALB_HEALTH_CHECK_LOGS", "APPLICATION_LOGS", "CONNECTION_LOGS", "S3_SERVER_ACCESS_LOGS", "SECURITY_FINDING_LOGS", "USAGE_LOGS"];
+pub const LOG_TYPE_VALUES: &[&str] = &["ACCESS_LOGS", "ALB_ACCESS_LOGS", "ALB_CONNECTION_LOGS", "ALB_HEALTH_CHECK_LOGS", "ALERT_LOGS", "APPLICATION_LOGS", "CONNECTION_LOGS", "FLOW_LOGS", "S3_SERVER_ACCESS_LOGS", "SECURITY_FINDING_LOGS", "TLS_LOGS", "USAGE_LOGS"];
 
 
 /// The values `MskEnhancedMonitoringLevel` accepts on the wire.
@@ -419,7 +631,7 @@ pub const RECORD_FORMAT_VALUES: &[&str] = &["JSON", "STRING"];
 
 
 /// The values `ResourceType` accepts on the wire.
-pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS::Bedrock::KnowledgeBase", "AWS::BedrockAgentCore::Browser", "AWS::BedrockAgentCore::CodeInterpreter", "AWS::BedrockAgentCore::Gateway", "AWS::BedrockAgentCore::Memory", "AWS::BedrockAgentCore::PaymentManager", "AWS::BedrockAgentCore::Runtime", "AWS::BedrockAgentCore::WorkloadIdentity", "AWS::CloudFront::Distribution", "AWS::CloudTrail", "AWS::CloudWatch::OTelEnrichment", "AWS::EC2::Instance", "AWS::EC2::VPC", "AWS::EKS::Cluster", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::Lambda::Function", "AWS::MSK::Cluster", "AWS::Route53Resolver::ResolverEndpoint", "AWS::S3::Bucket", "AWS::SecurityHub::Hub", "AWS::SecurityHub::HubV2", "AWS::WAFv2::WebACL", "AWS::XRay::TransactionSearchConfig"];
+pub const RESOURCE_TYPE_VALUES: &[&str] = &["AWS::Bedrock::KnowledgeBase", "AWS::BedrockAgentCore::Browser", "AWS::BedrockAgentCore::CodeInterpreter", "AWS::BedrockAgentCore::Gateway", "AWS::BedrockAgentCore::Memory", "AWS::BedrockAgentCore::PaymentManager", "AWS::BedrockAgentCore::Runtime", "AWS::BedrockAgentCore::WorkloadIdentity", "AWS::CloudFront::Distribution", "AWS::CloudTrail", "AWS::CloudWatch::OTelEnrichment", "AWS::CloudWatchOmni", "AWS::EC2::Instance", "AWS::EC2::VPC", "AWS::EKS::Cluster", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::Lambda::Function", "AWS::MSK::Cluster", "AWS::NetworkFirewall::Firewall", "AWS::Route53Resolver::ResolverEndpoint", "AWS::S3::Bucket", "AWS::SecurityHub::Hub", "AWS::SecurityHub::HubV2", "AWS::WAFv2::WebACL", "AWS::XRay::TransactionSearchConfig"];
 
 
 /// The values `RuleHealth` accepts on the wire.
@@ -428,6 +640,10 @@ pub const RULE_HEALTH_VALUES: &[&str] = &["Healthy", "Provisioning", "Unhealthy"
 
 /// The values `SSEAlgorithm` accepts on the wire.
 pub const S_S_E_ALGORITHM_VALUES: &[&str] = &["AES256", "aws:kms"];
+
+
+/// The values `SetupFormat` accepts on the wire.
+pub const SETUP_FORMAT_VALUES: &[&str] = &["BICEP"];
 
 
 /// The values `SignalType` accepts on the wire.
@@ -460,6 +676,14 @@ pub const TELEMETRY_STATE_VALUES: &[&str] = &["Disabled", "Enabled", "NotApplica
 
 /// The values `TelemetryType` accepts on the wire.
 pub const TELEMETRY_TYPE_VALUES: &[&str] = &["Insights", "Logs", "Metrics", "Traces"];
+
+
+/// The values `ThirdPartyTelemetryEnrichmentStatus` accepts on the wire.
+pub const THIRD_PARTY_TELEMETRY_ENRICHMENT_STATUS_VALUES: &[&str] = &["Impaired", "Initializing", "Running", "Stopped"];
+
+
+/// The values `ThirdPartyTelemetrySource` accepts on the wire.
+pub const THIRD_PARTY_TELEMETRY_SOURCE_VALUES: &[&str] = &["Azure"];
 
 
 /// The values `WAFLogType` accepts on the wire.

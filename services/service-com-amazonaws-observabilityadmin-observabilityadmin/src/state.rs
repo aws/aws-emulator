@@ -50,7 +50,12 @@
 //! to the service that owns it, so [`resource_telemetry`] reads each one's configuration
 //! where its owner holds it instead of this module keeping a copy that could disagree.
 
+pub mod connectors;
 pub mod resource_telemetry;
+pub mod third_party_enrichments;
+
+pub use connectors::*;
+pub use third_party_enrichments::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,8 +70,8 @@ use crate::ops::test_telemetry_pipeline::{
 use crate::ops::validate_telemetry_pipeline_configuration::vended_log_schema::is_vended_log_source_type;
 use crate::ops::types::{
     CentralizationRule, CentralizationRuleSummary, ConfigurationSummary, DataSource, Encryption,
-    IntegrationSummary, RegionStatus, Source, TelemetryPipeline, TelemetryPipelineConfiguration,
-    TelemetryPipelineProjection, TelemetryPipelineStatusReason, TelemetryPipelineSummary,
+    IntegrationSummary, RegionStatus, Source, SourceProgress, TelemetryPipeline,
+    TelemetryPipelineConfiguration, TelemetryPipelineStatusReason, TelemetryPipelineSummary,
     TelemetryRule, TelemetryRuleSummary, ACTION_VALUES, DELETION_PROTECTION_VALUES,
     DESTINATION_TYPE_VALUES,
     ENCRYPTED_LOG_GROUP_STRATEGY_VALUES, ENCRYPTION_CONFLICT_RESOLUTION_STRATEGY_VALUES,
@@ -215,6 +220,17 @@ pub const MAX_STORED_PIPELINE_RECORDS: usize = 2_000;
 /// straight after the create still observes `CREATING`.
 pub const PIPELINE_ACTIVATION_DELAY_MS: i64 = 400;
 
+/// How long after an accepted `StartTelemetryPipelineRefresh` the re-discovery of the
+/// sources in scope comes due.
+///
+/// A CHOSEN span, not an AWS-documented duration: the operation "re-reads the
+/// connector's telemetry manifest and re-discovers the sources in scope" and tells the
+/// caller to "use `GetTelemetryPipeline` to track the refresh", so the work is not
+/// finished the instant the call returns. It is deliberately non-zero, so a caller that
+/// reads straight after the refresh still observes it in flight — no source active yet
+/// — and a second refresh inside the span is refused.
+pub const PIPELINE_REFRESH_DELAY_MS: i64 = 3_000;
+
 /// Status of a pipeline whose creation has not come due yet. One of
 /// `TelemetryPipelineStatus`' own values (`TELEMETRY_PIPELINE_STATUS_VALUES`).
 pub const PIPELINE_STATUS_CREATING: &str = "CREATING";
@@ -244,6 +260,36 @@ pub const PIPELINE_CREATING_STATUS_REASON: &str = "Pipeline is being created";
 /// due yet. This emulator's own sentence, in the same form as the one above, for the
 /// status it reports in the meantime.
 pub const PIPELINE_UPDATING_STATUS_REASON: &str = "Pipeline is being updated";
+
+/// The `ConflictException` message for a `StartTelemetryPipelineRefresh` of a pipeline
+/// that is not in a state a refresh may start from: "the pipeline must be in the
+/// `ACTIVE` or `UPDATE_FAILED` state".
+///
+/// Its one variable part is the status the pipeline IS in, read from the record and the
+/// clock, because that is what the caller must wait out; the rest is fixed text naming
+/// the two states the operation documents.
+pub fn pipeline_not_refreshable_message(status: &str) -> String {
+    format!(
+        "The pipeline must be in the {PIPELINE_STATUS_ACTIVE} or \
+         {PIPELINE_STATUS_UPDATE_FAILED} state to be refreshed, but it is {status}"
+    )
+}
+
+/// Status of a pipeline whose last update failed. One of
+/// `TelemetryPipelineStatus`' own values (`TELEMETRY_PIPELINE_STATUS_VALUES`) and the
+/// second state `StartTelemetryPipelineRefresh` may be called from.
+///
+/// No operation in this emulator puts a pipeline in it: an accepted update is applied
+/// to the stored record, so there is no failure for a status to report. It is named
+/// here because the refusal above states the states a refresh is allowed from, and that
+/// sentence must name both.
+pub const PIPELINE_STATUS_UPDATE_FAILED: &str = "UPDATE_FAILED";
+
+/// The `ConflictException` message for a `StartTelemetryPipelineRefresh` while the
+/// refresh the last one started is still running, which the operation refuses ("with no
+/// refresh already running"). Fixed text.
+pub const PIPELINE_REFRESH_IN_PROGRESS_MESSAGE: &str =
+    "A refresh of the pipeline is already running";
 
 /// The `ValidationException` message a telemetry-pipeline operation refuses a
 /// configuration with: fixed text, with no part of the request in it, because the
@@ -604,6 +650,18 @@ pub struct StoredTelemetryPipeline {
     /// transient status a read reports until it comes due.
     pub transition: PipelineTransition,
     pub tags: BTreeMap<String, String>,
+    /// The epoch-millisecond instant the most recent accepted
+    /// `StartTelemetryPipelineRefresh` STARTED, which is what
+    /// `TelemetryPipeline$LastRefreshTimeStamp` reports, and `None` while no refresh
+    /// has ever been started on this pipeline — the state that member describes as
+    /// "only present for external-cloud pipelines that you have refreshed".
+    pub last_refresh_started_ms: Option<i64>,
+    /// The instant that refresh finishes re-discovering the sources in scope. Until it
+    /// arrives the refresh is still in flight, which is what a second refresh is
+    /// refused on and what `SourceProgress` reports no active source for; after it,
+    /// every discovered source is active. Derived from the clock, so no read writes
+    /// and no operation sleeps.
+    pub refresh_due_ms: i64,
 }
 
 impl StoredTelemetryPipeline {
@@ -663,25 +721,62 @@ impl StoredTelemetryPipeline {
     }
 
     /// This record as the pipeline a read reports, as it stands at `now_ms`: every
-    /// member the model snapshot's `TelemetryPipeline` shape declares, plus the
-    /// `ConfigurationSummary` the recorded responses carry beside them (see
-    /// [`TelemetryPipelineProjection`]).
-    pub fn as_pipeline(&self, now_ms: i64) -> TelemetryPipelineProjection {
-        TelemetryPipelineProjection {
-            pipeline: TelemetryPipeline {
-                created_time_stamp: Some(self.created_timestamp_ms),
-                last_update_time_stamp: Some(self.last_update_timestamp_ms),
-                arn: Some(self.arn.clone()),
-                name: Some(self.name.clone()),
-                configuration: Some(TelemetryPipelineConfiguration {
-                    body: self.configuration_body.clone(),
-                }),
-                status: Some(self.status_at(now_ms).to_string()),
-                status_reason: Some(self.status_reason_at(now_ms)),
-                tags: Some(self.tag_map()),
-            },
+    /// member the model's `TelemetryPipeline` shape declares, each derived from this
+    /// one record and the clock.
+    pub fn as_pipeline(&self, now_ms: i64) -> TelemetryPipeline {
+        TelemetryPipeline {
+            created_time_stamp: Some(self.created_timestamp_ms),
+            last_update_time_stamp: Some(self.last_update_timestamp_ms),
+            arn: Some(self.arn.clone()),
+            name: Some(self.name.clone()),
+            configuration: Some(TelemetryPipelineConfiguration {
+                body: self.configuration_body.clone(),
+            }),
+            status: Some(self.status_at(now_ms).to_string()),
+            status_reason: Some(self.status_reason_at(now_ms)),
+            tags: Some(self.tag_map()),
+            last_refresh_time_stamp: self.last_refresh_started_ms,
+            source_progress: self.source_progress(now_ms),
             configuration_summary: self.configuration_summary(),
         }
+    }
+
+    /// Whether the refresh the last accepted `StartTelemetryPipelineRefresh` started
+    /// is still re-discovering sources at `now_ms`.
+    ///
+    /// `StartTelemetryPipelineRefresh` requires "no refresh already running", so this
+    /// is what a second refresh inside the span is refused on.
+    pub fn refresh_in_flight(&self, now_ms: i64) -> bool {
+        self.last_refresh_started_ms.is_some() && now_ms < self.refresh_due_ms
+    }
+
+    /// The `SourceProgress` this pipeline reports at `now_ms`, or `None` when the
+    /// member does not apply.
+    ///
+    /// `SourceProgress` is "the number of active sources and the total number of
+    /// DISCOVERED sources", and discovery is what a refresh does — "re-reads the
+    /// connector's telemetry manifest and re-discovers the sources in scope" — so a
+    /// pipeline no refresh has ever run on has discovered nothing to report, which is
+    /// the same condition `LastRefreshTimeStamp` is reported under. `Total` is the
+    /// source plugins the stored configuration document declares, read through the one
+    /// reader this crate has ([`configuration_summary`]), so the progress and the
+    /// configuration summary a read reports can never disagree about how many sources
+    /// there are. `Active` is how many of them are sending: none while the refresh is
+    /// still in flight, all of them once it comes due.
+    pub fn source_progress(&self, now_ms: i64) -> Option<SourceProgress> {
+        self.last_refresh_started_ms?;
+        let discovered = self
+            .configuration_summary()
+            .and_then(|summary| summary.sources)
+            .map_or(0, |sources| sources.len());
+        // The reader bounds a document to `MAX_CONFIGURATION_NODES` nodes, far inside
+        // `i32`, so the count is the list's length; the fallback only keeps the cast
+        // total.
+        let total = i32::try_from(discovered).unwrap_or(i32::MAX);
+        Some(SourceProgress {
+            active: Some(if self.refresh_in_flight(now_ms) { 0 } else { total }),
+            total: Some(total),
+        })
     }
 
     /// This record as the summary a listing reports, as it stands at `now_ms`: every
@@ -1290,6 +1385,26 @@ pub struct ComAmazonawsObservabilityadminObservabilityadminState {
     /// Centralization rule ARN -> store key, so a `RuleIdentifier` resolves as an
     /// ARN as well as as a bare name.
     pub centralization_arn_index: BTreeMap<String, RuleKey>,
+    /// Every stored third-party connector, keyed by `(region, id)` — the id this
+    /// service mints per create, which is the handle `ConnectorIdentifier` takes
+    /// beside the ARN. Ordering by region then id is what gives `ListConnectors` a
+    /// stable page sequence.
+    pub connectors: BTreeMap<ConnectorKey, StoredConnector>,
+    /// Connector ARN -> store key, so a `ConnectorIdentifier` resolves as an ARN as
+    /// well as as a bare id.
+    pub connector_arn_index: BTreeMap<String, ConnectorKey>,
+    /// Connector NAME -> store key, per region: `CreateConnector$Name` "must be
+    /// unique in the account and Region (case-sensitive)", and this index is what a
+    /// second create of the same name is refused on.
+    pub connector_name_index: BTreeMap<ConnectorKey, String>,
+    /// Every stored third-party telemetry enrichment, keyed by `(region, Name)`: the
+    /// name "must be unique in your account and Region" and is one of the two forms
+    /// `ThirdPartyTelemetryEnrichmentIdentifier` accepts, so it is the key and the
+    /// ARN is indexed onto it.
+    pub third_party_enrichments: BTreeMap<EnrichmentKey, StoredThirdPartyEnrichment>,
+    /// Enrichment ARN -> store key, so an identifier resolves as an ARN as well as
+    /// as a bare name.
+    pub third_party_enrichment_arn_index: BTreeMap<String, EnrichmentKey>,
 }
 
 impl ComAmazonawsObservabilityadminObservabilityadminState {
@@ -1645,6 +1760,24 @@ impl ComAmazonawsObservabilityadminObservabilityadminState {
         record.last_update_timestamp_ms = now_ms;
         record.transition = PipelineTransition::Updating;
         record.active_at_ms = now_ms.saturating_add(PIPELINE_ACTIVATION_DELAY_MS);
+    }
+
+    /// Start a refresh of the pipeline at `key`: record the instant it started, which
+    /// is what `LastRefreshTimeStamp` reports, and the instant the re-discovery of the
+    /// sources in scope comes due.
+    ///
+    /// Nothing else on the record moves: a refresh re-reads the connector's manifest,
+    /// it does not change the pipeline's configuration, name, ARN or status — the
+    /// modelled `TelemetryPipelineStatus` carries no refreshing value, and
+    /// `GetTelemetryPipeline` is what tracks the refresh through `SourceProgress`. A
+    /// key no record answers is left alone: every caller resolves the record under this
+    /// same lock first.
+    pub fn start_pipeline_refresh(&mut self, key: &PipelineKey, now_ms: i64) {
+        let Some(record) = self.telemetry_pipelines.get_mut(key) else {
+            return;
+        };
+        record.last_refresh_started_ms = Some(now_ms);
+        record.refresh_due_ms = now_ms.saturating_add(PIPELINE_REFRESH_DELAY_MS);
     }
 
     /// Remove the pipeline `identifier` names in `region`, answering the record that

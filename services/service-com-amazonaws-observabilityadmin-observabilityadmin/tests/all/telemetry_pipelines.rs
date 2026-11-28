@@ -571,6 +571,8 @@ async fn a_create_past_either_cap_is_refused_and_stores_nothing() {
                     active_at_ms: 1_700_000_000_000,
                     transition: Default::default(),
                     tags: Default::default(),
+                    last_refresh_started_ms: None,
+                    refresh_due_ms: 0,
                 });
             }
         }
