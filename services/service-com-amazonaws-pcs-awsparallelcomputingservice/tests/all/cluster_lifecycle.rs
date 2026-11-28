@@ -39,6 +39,11 @@ mod idempotent_create_retry;
 #[path = "cluster_lifecycle/recreate_with_a_used_client_token.rs"]
 mod recreate_with_a_used_client_token;
 
+// WHICH resource a child create's token is answerable for — the name AND the parent
+// cluster the first call minted it in — is its own suite, declared the same way.
+#[path = "cluster_lifecycle/child_create_token_identity.rs"]
+mod child_create_token_identity;
+
 // WHICH members a create and a read report as SET because the model documents the value the
 // service applies for them, declared the same way.
 #[path = "cluster_lifecycle/documented_member_defaults.rs"]
