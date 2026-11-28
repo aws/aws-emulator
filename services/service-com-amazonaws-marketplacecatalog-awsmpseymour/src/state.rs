@@ -3779,12 +3779,23 @@ pub fn validation(field: &str, message: impl Into<String>) -> ValidationExceptio
 ///
 /// Stated against `field` — the request member that carried the key — and built
 /// from the request, so the refusal names the offending key the caller sent.
+///
+/// The key is quoted through [`quoting`], like every other sentence this service
+/// builds around a submitted value: a tag key's own `@pattern`
+/// (`^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`) admits the separators of the Unicode `Z`
+/// category, line separator and paragraph separator among them, which the member
+/// carrying this sentence admits none of.
 pub fn reserved_tag_key(field: &str, key: &str) -> ValidationException {
     validation(
         field,
-        format!(
-            "tag key '{key}' begins with '{RESERVED_TAG_KEY_PREFIX}', the prefix reserved for \
-             the tags Amazon Web Services creates, which a caller cannot create, edit or remove"
+        quoting(
+            "tag key '",
+            key,
+            &format!(
+                "' begins with '{RESERVED_TAG_KEY_PREFIX}', the prefix reserved for \
+                 the tags Amazon Web Services creates, which a caller cannot create, edit \
+                 or remove"
+            ),
         ),
     )
 }
