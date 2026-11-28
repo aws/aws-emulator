@@ -18,6 +18,7 @@ pub enum EngagementContextPayload {
     CustomerProject(CustomerProjectsContext),
     Lead(LeadContext),
     ProspectingResult(ProspectingResult),
+    CustomerAccount(CustomerAccountContext),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#CustomerProjectsContext")]
@@ -57,6 +58,22 @@ pub struct LeadContext {
 #[derive(Debug, Clone, Default)]
 pub struct LeadInsights {
     pub lead_readiness_score: Option<String>,
+    pub channel_recommendation: Option<ChannelRecommendation>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#ChannelRecommendation")]
+#[derive(Debug, Clone, Default)]
+pub struct ChannelRecommendation {
+    pub recommended_channel: String,
+    pub best_outreach_windows: Option<Vec<BestOutreachWindow>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#BestOutreachWindow")]
+#[derive(Debug, Clone, Default)]
+pub struct BestOutreachWindow {
+    pub day: String,
+    pub start_time_utc: String,
+    pub end_time_utc: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#LeadCustomer")]
@@ -145,6 +162,22 @@ pub struct ProspectingInsights {
     pub solution_sub_category: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#CustomerAccountContext")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomerAccountContext {
+    pub account_identifier: Option<String>,
+    pub customer: Option<AccountCustomer>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#AccountCustomer")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountCustomer {
+    pub industry: Option<String>,
+    pub company_name: String,
+    pub website_url: Option<String>,
+    pub country_code: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#AccessDeniedException")]
 #[derive(Debug, Clone, Default)]
 pub struct AccessDeniedException {
@@ -205,6 +238,71 @@ pub struct Tag {
     pub value: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#CustomerAccountData")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomerAccountData {
+    pub company_name: String,
+    pub website_url: Option<String>,
+    pub duns: Option<String>,
+    pub address: Option<Address>,
+    pub industry: Option<String>,
+    pub other_industry: Option<String>,
+    pub domain: Option<String>,
+    pub parent_company_name: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#Address")]
+#[derive(Debug, Clone, Default)]
+pub struct Address {
+    pub city: Option<String>,
+    pub postal_code: Option<String>,
+    pub state_or_region: Option<String>,
+    pub country_code: Option<String>,
+    pub street_address: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#Filter")]
+#[derive(Debug, Clone, Default)]
+pub struct Filter {
+    pub and_all_filters: Option<Vec<Filter>>,
+    pub or_all_filters: Option<Vec<Filter>>,
+    pub not_filter: Option<Box<Filter>>,
+    pub equals_to: Option<FilterCondition>,
+    pub contains_any: Option<FilterCondition>,
+    pub contains_all: Option<FilterCondition>,
+    pub greater_than: Option<FilterCondition>,
+    pub greater_than_or_equals: Option<FilterCondition>,
+    pub less_than: Option<FilterCondition>,
+    pub less_than_or_equals: Option<FilterCondition>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#FilterCondition")]
+#[derive(Debug, Clone)]
+pub struct FilterCondition {
+    pub key: String,
+    pub value: FilterValue,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.partnercentralselling#FilterValue")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FilterValue {
+    StringValue(String),
+    StringListValue(Vec<String>),
+    LongValue(i64),
+    DateValue(::aws_smithy_types::DateTime),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#BulkJobResult")]
+#[derive(Debug, Clone, Default)]
+pub struct BulkJobResult {
+    pub request_id: String,
+    pub status: String,
+    pub resource_identifier: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#EngagementContextDetails")]
 #[derive(Debug, Clone, Default)]
 pub struct EngagementContextDetails {
@@ -240,6 +338,7 @@ pub struct AccountReceiver {
 pub enum Payload {
     OpportunityInvitation(OpportunityInvitationPayload),
     LeadInvitation(LeadInvitationPayload),
+    AccountPlanningInvitation(AccountPlanningInvitationPayload),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#OpportunityInvitationPayload")]
@@ -249,6 +348,7 @@ pub struct OpportunityInvitationPayload {
     pub receiver_responsibilities: Vec<String>,
     pub customer: EngagementCustomer,
     pub project: ProjectDetails,
+    pub opportunity_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#SenderContact")]
@@ -308,6 +408,22 @@ pub struct LeadInvitationInteraction {
     pub contact_business_title: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#AccountPlanningInvitationPayload")]
+#[derive(Debug, Clone, Default)]
+pub struct AccountPlanningInvitationPayload {
+    pub account_identifier: Option<String>,
+    pub customer: Option<AccountCustomer>,
+    pub sender_contacts: Option<Vec<SenderContact>>,
+    pub preferred_contact: Option<PreferredContactWindow>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#PreferredContactWindow")]
+#[derive(Debug, Clone, Default)]
+pub struct PreferredContactWindow {
+    pub window: Option<String>,
+    pub timezone: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#Customer")]
 #[derive(Debug, Clone, Default)]
 pub struct Customer {
@@ -325,16 +441,6 @@ pub struct Account {
     pub aws_account_id: Option<String>,
     pub address: Option<Address>,
     pub duns: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#Address")]
-#[derive(Debug, Clone, Default)]
-pub struct Address {
-    pub city: Option<String>,
-    pub postal_code: Option<String>,
-    pub state_or_region: Option<String>,
-    pub country_code: Option<String>,
-    pub street_address: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralselling#Contact")]
@@ -551,7 +657,11 @@ pub struct AwsSoftwareRevenue {
 }
 
 /// The values `AccessDeniedExceptionErrorCode` accepts on the wire.
-pub const ACCESS_DENIED_EXCEPTION_ERROR_CODE_VALUES: &[&str] = &["INCOMPATIBLE_BENEFIT_AWS_PARTNER_STATE"];
+pub const ACCESS_DENIED_EXCEPTION_ERROR_CODE_VALUES: &[&str] = &["INCOMPATIBLE_BENEFIT_AWS_PARTNER_STATE", "OPPORTUNITY_BULK_JOB_NOT_ENABLED", "SEARCH_OPPORTUNITIES_DATA_NOT_ROUTED_TO_DDB", "SEARCH_OPPORTUNITIES_NOT_ENABLED"];
+
+
+/// The values `AggregatableField` accepts on the wire.
+pub const AGGREGATABLE_FIELD_VALUES: &[&str] = &["ACCOUNT_PLANNING_QUALIFICATION", "AWS_INDUSTRY", "COUNTRY", "ENRICHMENT_STATUS", "GEO", "MARKETPLACE_ENGAGEMENT_SCORE", "PROGRAM_ELIGIBILITY", "REGION", "SEGMENT", "SOLUTION_CATEGORY", "SOLUTION_SCORE"];
 
 
 /// The values `AwsClosedLostReason` accepts on the wire.
@@ -574,6 +684,30 @@ pub const AWS_OPPORTUNITY_STAGE_VALUES: &[&str] = &["Building Integration", "Bus
 pub const AWS_PARTITION_VALUES: &[&str] = &["aws-eusc"];
 
 
+/// The values `BulkFileFormat` accepts on the wire.
+pub const BULK_FILE_FORMAT_VALUES: &[&str] = &["CSV"];
+
+
+/// The values `BulkJobStatus` accepts on the wire.
+pub const BULK_JOB_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "SUBMITTED"];
+
+
+/// The values `BulkOperationType` accepts on the wire.
+pub const BULK_OPERATION_TYPE_VALUES: &[&str] = &["BULK_CREATE", "BULK_UPDATE"];
+
+
+/// The values `BulkRecordStatus` accepts on the wire.
+pub const BULK_RECORD_STATUS_VALUES: &[&str] = &["FAILED", "SUCCEEDED"];
+
+
+/// The values `BulkReportStatus` accepts on the wire.
+pub const BULK_REPORT_STATUS_VALUES: &[&str] = &["AVAILABLE", "EXPIRED", "FAILED", "IN_PROGRESS", "NOT_STARTED"];
+
+
+/// The values `BulkReportType` accepts on the wire.
+pub const BULK_REPORT_TYPE_VALUES: &[&str] = &["ALL_RECORDS", "FAILED_RECORDS"];
+
+
 /// The values `Channel` accepts on the wire.
 pub const CHANNEL_VALUES: &[&str] = &["AWS Marketing Central", "Content Syndication", "Display", "Email", "Live Event", "Out Of Home (OOH)", "Print", "Search", "Social", "TV", "Telemarketing", "Video", "Virtual Event"];
 
@@ -586,6 +720,10 @@ pub const CLOSED_LOST_REASON_VALUES: &[&str] = &["Customer Deficiency", "Custome
 pub const COMPETITOR_NAME_VALUES: &[&str] = &["*Other", "Akamai", "AliCloud", "Co-location", "Google Cloud Platform", "IBM Softlayer", "Microsoft Azure", "No Competition", "On-Prem", "Oracle Cloud", "Other- Cost Optimization"];
 
 
+/// The values `ContactWindow` accepts on the wire.
+pub const CONTACT_WINDOW_VALUES: &[&str] = &["AFTERNOON", "EVENING", "MORNING"];
+
+
 /// The values `CountryCode` accepts on the wire.
 pub const COUNTRY_CODE_VALUES: &[&str] = &["AD", "AE", "AF", "AG", "AI", "AL", "AM", "AN", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"];
 
@@ -594,28 +732,56 @@ pub const COUNTRY_CODE_VALUES: &[&str] = &["AD", "AE", "AF", "AG", "AI", "AL", "
 pub const CURRENCY_CODE_VALUES: &[&str] = &["AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHE", "CHF", "CHW", "CLF", "CLP", "CNY", "COP", "COU", "CRC", "CUC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MXV", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLL", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UZS", "VEF", "VND", "VUV", "WST", "XAF", "XCD", "XDR", "XOF", "XPF", "XSU", "XUA", "YER", "ZAR", "ZMW", "ZWL"];
 
 
+/// The values `CustomerAccountFailureReason` accepts on the wire.
+pub const CUSTOMER_ACCOUNT_FAILURE_REASON_VALUES: &[&str] = &["DUPLICATE_CUSTOMER_MATCH", "PROCESSING_ERROR"];
+
+
+/// The values `DayOfWeek` accepts on the wire.
+pub const DAY_OF_WEEK_VALUES: &[&str] = &["FRIDAY", "MONDAY", "SATURDAY", "SUNDAY", "THURSDAY", "TUESDAY", "WEDNESDAY"];
+
+
 /// The values `DeliveryModel` accepts on the wire.
 pub const DELIVERY_MODEL_VALUES: &[&str] = &["BYOL or AMI", "Managed Services", "Other", "Professional Services", "Resell", "SaaS or PaaS"];
 
 
 /// The values `EngagementContextType` accepts on the wire.
-pub const ENGAGEMENT_CONTEXT_TYPE_VALUES: &[&str] = &["CustomerProject", "Lead", "ProspectingResult"];
+pub const ENGAGEMENT_CONTEXT_TYPE_VALUES: &[&str] = &["CustomerAccount", "CustomerProject", "Lead", "ProspectingResult"];
+
+
+/// The values `EngagementGroupSortName` accepts on the wire.
+pub const ENGAGEMENT_GROUP_SORT_NAME_VALUES: &[&str] = &["Count", "UpdatedAt"];
 
 
 /// The values `EngagementInvitationPayloadType` accepts on the wire.
-pub const ENGAGEMENT_INVITATION_PAYLOAD_TYPE_VALUES: &[&str] = &["LeadInvitation", "OpportunityInvitation"];
+pub const ENGAGEMENT_INVITATION_PAYLOAD_TYPE_VALUES: &[&str] = &["AccountPlanningInvitation", "LeadInvitation", "OpportunityInvitation"];
 
 
 /// The values `EngagementScore` accepts on the wire.
 pub const ENGAGEMENT_SCORE_VALUES: &[&str] = &["High", "Low", "Medium"];
 
 
+/// The values `EngagementSearchFilterName` accepts on the wire.
+pub const ENGAGEMENT_SEARCH_FILTER_NAME_VALUES: &[&str] = &["ContextType", "CreatedAt", "EngagementId", "LastModifiedAt", "LeadCustomerAwsMaturity", "LeadCustomerCompanyName", "LeadCustomerCountryCode", "LeadCustomerIndustry", "LeadCustomerMarketSegment", "LeadInteractionsContactBusinessTitle", "LeadInteractionsContactFirstName", "LeadInteractionsContactLastName", "LeadInteractionsSourceName", "LeadInteractionsSourceType", "LeadInteractionsUsecase", "LeadQualificationStatus", "LeadReadinessScore", "MemberCount", "PartnerId", "ProspectingCustomerCompanySize", "ProspectingCustomerCountry", "ProspectingCustomerGeo", "ProspectingCustomerIndustry", "ProspectingCustomerRegion", "ProspectingCustomerSegment", "ProspectingInsightsMarketplaceEngagementScore", "ProspectingInsightsSolutionCategory", "ProspectingInsightsSolutionSubCategory", "Title"];
+
+
+/// The values `EngagementSearchSortName` accepts on the wire.
+pub const ENGAGEMENT_SEARCH_SORT_NAME_VALUES: &[&str] = &["CreatedAt", "EngagementId", "LastModifiedAt", "LeadCustomerAwsMaturity", "LeadCustomerCompanyName", "LeadCustomerCountryCode", "LeadCustomerIndustry", "LeadCustomerMarketSegment", "LeadInteractionsContactBusinessTitle", "LeadInteractionsContactFirstName", "LeadInteractionsContactLastName", "LeadInteractionsUsecase", "LeadQualificationStatus", "LeadReadinessScore", "MemberCount", "PartnerId", "ProspectingCustomerCompanySize", "ProspectingCustomerCountry", "ProspectingCustomerGeo", "ProspectingCustomerIndustry", "ProspectingCustomerRegion", "ProspectingCustomerSegment", "ProspectingInsightsMarketplaceEngagementScore", "ProspectingInsightsSolutionCategory", "ProspectingInsightsSolutionSubCategory", "Title"];
+
+
 /// The values `EngagementSortName` accepts on the wire.
 pub const ENGAGEMENT_SORT_NAME_VALUES: &[&str] = &["CreatedDate"];
 
 
+/// The values `EnrichmentStatus` accepts on the wire.
+pub const ENRICHMENT_STATUS_VALUES: &[&str] = &["ACTION_REQUIRED", "ENRICHED", "NO_MATCH_FOUND", "PENDING"];
+
+
 /// The values `ExpectedContractDurationTerm` accepts on the wire.
 pub const EXPECTED_CONTRACT_DURATION_TERM_VALUES: &[&str] = &["Months"];
+
+
+/// The values `FilterableField` accepts on the wire.
+pub const FILTERABLE_FIELD_VALUES: &[&str] = &["ACCOUNT_PLANNING_QUALIFICATION", "AWS_INDUSTRY", "COMPANY_NAME", "COUNTRY", "CREATED_DATE", "ENRICHMENT_STATUS", "GEO", "IMPORT_ID", "LAST_MODIFIED_DATE", "MARKETPLACE_ENGAGEMENT_SCORE", "PROGRAM_ELIGIBILITY", "SEGMENT", "SOLUTION_CATEGORY", "SOLUTION_SCORE"];
 
 
 /// The values `Industry` accepts on the wire.
@@ -650,6 +816,14 @@ pub const OPPORTUNITY_ENGAGEMENT_INVITATION_SORT_NAME_VALUES: &[&str] = &["Invit
 pub const OPPORTUNITY_ORIGIN_VALUES: &[&str] = &["AWS Referral", "Partner Referral"];
 
 
+/// The values `OpportunitySearchFilterName` accepts on the wire.
+pub const OPPORTUNITY_SEARCH_FILTER_NAME_VALUES: &[&str] = &["ApnPrograms", "AwsAccountId", "AwsMarketplaceSolution", "CosellMotion", "CountryCode", "CreatedDate", "CustomerCompanyName", "EngagementScore", "EstimatedMrr", "Industry", "LastModifiedDate", "NextStep", "OfferId", "OfferSetId", "OpportunityId", "OpportunityOwner", "OpportunityType", "Origin", "PartnerOpportunityIdentifier", "PartnerProjectTitle", "ReviewStatus", "Stage", "Tags", "TargetCloseDate"];
+
+
+/// The values `OpportunitySearchSortName` accepts on the wire.
+pub const OPPORTUNITY_SEARCH_SORT_NAME_VALUES: &[&str] = &["ApnPrograms", "AwsAccountId", "CosellMotion", "CountryCode", "CreatedDate", "CustomerCompanyName", "EngagementScore", "EstimatedMrr", "Industry", "LastModifiedDate", "NextStep", "OfferId", "OfferSetId", "OpportunityId", "OpportunityOwner", "OpportunityType", "Origin", "PartnerOpportunityIdentifier", "PartnerProjectTitle", "ReviewStatus", "Stage", "Tags", "TargetCloseDate"];
+
+
 /// The values `OpportunitySortName` accepts on the wire.
 pub const OPPORTUNITY_SORT_NAME_VALUES: &[&str] = &["CreatedDate", "CustomerCompanyName", "Identifier", "LastModifiedDate", "TargetCloseDate"];
 
@@ -676,6 +850,10 @@ pub const PROSPECTING_FROM_ENGAGEMENT_TASK_SORT_NAME_VALUES: &[&str] = &["Failed
 
 /// The values `ProspectingTaskStatus` accepts on the wire.
 pub const PROSPECTING_TASK_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "IN_PROGRESS", "PENDING"];
+
+
+/// The values `ReadinessLevel` accepts on the wire.
+pub const READINESS_LEVEL_VALUES: &[&str] = &["LowPotential", "MarketingReady", "SalesReady"];
 
 
 /// The values `ReasonCode` accepts on the wire.
@@ -714,6 +892,10 @@ pub const SALES_ACTIVITY_VALUES: &[&str] = &["Agreed on solution to Business Pro
 pub const SALES_INVOLVEMENT_TYPE_VALUES: &[&str] = &["Co-Sell", "For Visibility Only"];
 
 
+/// The values `SearchEngagementScore` accepts on the wire.
+pub const SEARCH_ENGAGEMENT_SCORE_VALUES: &[&str] = &["High", "Low", "Medium"];
+
+
 /// The values `SolutionSortName` accepts on the wire.
 pub const SOLUTION_SORT_NAME_VALUES: &[&str] = &["Category", "CreatedDate", "Identifier", "Name", "Status"];
 
@@ -728,6 +910,10 @@ pub const SORT_BY_VALUES: &[&str] = &["CreatedDate"];
 
 /// The values `SortOrder` accepts on the wire.
 pub const SORT_ORDER_VALUES: &[&str] = &["ASCENDING", "DESCENDING"];
+
+
+/// The values `SortableField` accepts on the wire.
+pub const SORTABLE_FIELD_VALUES: &[&str] = &["COMPANY_NAME", "CREATED_DATE", "LAST_MODIFIED_DATE", "MARKETPLACE_ENGAGEMENT_SCORE", "SOLUTION_SCORE"];
 
 
 /// The values `Stage` accepts on the wire.

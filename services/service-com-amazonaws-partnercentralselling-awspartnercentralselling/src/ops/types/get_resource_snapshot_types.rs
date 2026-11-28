@@ -93,6 +93,7 @@ pub struct AwsOpportunitySummaryFullView {
     pub customer: Option<AwsOpportunityCustomer>,
     pub project: Option<AwsOpportunityProject>,
     pub cosell_motion: Option<String>,
+    pub cosell_motion_reason: Option<String>,
     pub software_revenue: Option<AwsSoftwareRevenue>,
 }
 

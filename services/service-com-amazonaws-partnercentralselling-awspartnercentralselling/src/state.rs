@@ -7,6 +7,17 @@
 //! millisecond clock the `DateTime` members are built from. They live here rather
 //! than in one operation's file because six operations need them and `src/lib.rs`
 //! is generated, so a new module file is not an option.
+//!
+//! The CustomerAccount parts live in child modules: [`customer_accounts`] holds the
+//! stored record and what the CustomerAccount operations share, and
+//! [`account_search`] the `Filter`, sort, grouping and paging rules the two reporting
+//! ones evaluate.
+
+mod account_search;
+mod customer_accounts;
+
+pub use account_search::*;
+pub use customer_accounts::*;
 
 use std::collections::{HashMap, VecDeque};
 
@@ -189,6 +200,10 @@ pub struct ComAmazonawsPartnercentralsellingAwspartnercentralsellingState {
     pub next_opportunity_seq: u64,
     /// `CreateOpportunity` idempotency, keyed by (catalog, client token).
     pub create_replays: CreateReplays,
+    /// Every stored customer account, keyed by (catalog, id) for the same reason.
+    pub customer_accounts: HashMap<(String, String), StoredCustomerAccount>,
+    /// Monotonic counter the `^cust-acc-[0-9a-z]{13}$` ids are minted from.
+    pub next_customer_account_seq: u64,
 }
 
 impl ComAmazonawsPartnercentralsellingAwspartnercentralsellingState {
@@ -229,9 +244,14 @@ pub fn date_time(millis: i64) -> ::aws_smithy_types::DateTime {
 /// Rounded, not truncated: a timestamp that travels as a fractional epoch second
 /// comes back as a float whose nanosecond expansion can land just under the
 /// millisecond it encodes, and rounding recovers the millisecond the caller was given.
+///
+/// Saturating throughout: the seconds a caller may send span the whole `i64`, so both
+/// the scaling and the rounding term clamp at the bounds rather than overflowing — a
+/// timestamp at the end of time is compared as that end, and no request can panic or
+/// wrap its way to a negative instant here.
 pub fn millis_of(value: &::aws_smithy_types::DateTime) -> i64 {
     let millis = i64::from((value.subsec_nanos() + 500_000) / 1_000_000);
-    value.secs().saturating_mul(1_000) + millis
+    value.secs().saturating_mul(1_000).saturating_add(millis)
 }
 
 /// The region to build ARNs in: the one the caller signed for, defaulting to the

@@ -17,29 +17,41 @@
 pub mod accept_engagement_invitation_types;
 pub mod assign_opportunity_types;
 pub mod associate_opportunity_types;
+pub mod create_customer_account_types;
 pub mod create_engagement_context_types;
 pub mod create_engagement_invitation_types;
 pub mod create_engagement_types;
 pub mod create_opportunity_types;
 pub mod create_resource_snapshot_job_types;
 pub mod create_resource_snapshot_types;
+pub mod delete_customer_account_types;
 pub mod delete_resource_snapshot_job_types;
 pub mod disassociate_opportunity_types;
 pub mod get_aws_opportunity_summary_types;
+pub mod get_customer_account_bulk_job_report_url_types;
+pub mod get_customer_account_bulk_job_types;
+pub mod get_customer_account_statistics_types;
+pub mod get_customer_account_types;
 pub mod get_engagement_invitation_types;
 pub mod get_engagement_types;
+pub mod get_opportunity_bulk_job_report_url_types;
 pub mod get_opportunity_types;
 pub mod get_prospecting_from_engagement_task_types;
 pub mod get_resource_snapshot_job_types;
 pub mod get_resource_snapshot_types;
 pub mod get_selling_system_settings_types;
+pub mod list_customer_account_bulk_job_results_types;
+pub mod list_customer_account_bulk_jobs_types;
 pub mod list_engagement_by_accepting_invitation_tasks_types;
 pub mod list_engagement_from_opportunity_tasks_types;
+pub mod list_engagement_groups_types;
 pub mod list_engagement_invitations_types;
 pub mod list_engagement_members_types;
 pub mod list_engagement_resource_associations_types;
 pub mod list_engagements_types;
 pub mod list_opportunities_types;
+pub mod list_opportunity_bulk_job_results_types;
+pub mod list_opportunity_bulk_jobs_types;
 pub mod list_opportunity_from_engagement_tasks_types;
 pub mod list_prospecting_from_engagement_tasks_types;
 pub mod list_resource_snapshot_jobs_types;
@@ -48,9 +60,14 @@ pub mod list_solutions_types;
 pub mod list_tags_for_resource_types;
 pub mod put_selling_system_settings_types;
 pub mod reject_engagement_invitation_types;
+pub mod search_customer_accounts_types;
+pub mod search_engagements_types;
+pub mod search_opportunities_types;
 pub mod shared_types;
+pub mod start_customer_account_bulk_job_types;
 pub mod start_engagement_by_accepting_invitation_task_types;
 pub mod start_engagement_from_opportunity_task_types;
+pub mod start_opportunity_bulk_job_types;
 pub mod start_opportunity_from_engagement_task_types;
 pub mod start_prospecting_from_engagement_task_types;
 pub mod start_resource_snapshot_job_types;
@@ -58,6 +75,7 @@ pub mod stop_resource_snapshot_job_types;
 pub mod submit_opportunity_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
+pub mod update_customer_account_types;
 pub mod update_engagement_context_types;
 pub mod update_opportunity_types;
 
@@ -67,6 +85,8 @@ pub use accept_engagement_invitation_types::*;
 pub use assign_opportunity_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_opportunity_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_customer_account_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_engagement_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -80,15 +100,27 @@ pub use create_resource_snapshot_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_resource_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_customer_account_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_resource_snapshot_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_opportunity_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_aws_opportunity_summary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_customer_account_bulk_job_report_url_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_customer_account_bulk_job_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_customer_account_statistics_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_customer_account_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_engagement_invitation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_engagement_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_opportunity_bulk_job_report_url_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_opportunity_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -100,9 +132,15 @@ pub use get_resource_snapshot_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_selling_system_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_customer_account_bulk_job_results_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_customer_account_bulk_jobs_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_engagement_by_accepting_invitation_tasks_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_engagement_from_opportunity_tasks_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_engagement_groups_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_engagement_invitations_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -113,6 +151,10 @@ pub use list_engagement_resource_associations_types::*;
 pub use list_engagements_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_opportunities_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_opportunity_bulk_job_results_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_opportunity_bulk_jobs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_opportunity_from_engagement_tasks_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -130,11 +172,21 @@ pub use put_selling_system_settings_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use reject_engagement_invitation_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use search_customer_accounts_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use search_engagements_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use search_opportunities_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_customer_account_bulk_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_engagement_by_accepting_invitation_task_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_engagement_from_opportunity_task_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_opportunity_bulk_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_opportunity_from_engagement_task_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -149,6 +201,8 @@ pub use submit_opportunity_types::*;
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use untag_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_customer_account_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_engagement_context_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
