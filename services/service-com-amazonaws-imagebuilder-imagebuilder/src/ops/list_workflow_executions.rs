@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListWorkflowExecutions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListWorkflowExecutions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Returns the runtime instances of the workflows ONE image build version ran.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListWorkflowExecutions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A runtime instance exists because a build ran a workflow, so the listing is the set of
+//! instances that build recorded (`crate::state::WorkflowExecutionRecord`), in the order the
+//! build runs its workflows — which is the order a page walks and a `nextToken` names a
+//! position in. A pure read: nothing is written.
+//!
+//! An image build version this Region holds none of has run no workflow, so the listing
+//! reports no runtime instance for it rather than refusing: `workflowExecutions` is "an array
+//! of runtime details that represents each time a workflow ran for the requested image build
+//! version. Image Builder retains workflow execution records for a limited time, so this array
+//! can be empty for older image build versions" — an empty listing, exactly as the package
+//! inventory of a build nothing has inventoried is empty rather than missing
+//! (`src/ops/list_image_packages.rs`).
 //!
 //! ## Shape of an operation
 //!
@@ -112,18 +117,21 @@ use super::types::*;
 // `ListWorkflowExecutionsError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuilder.json");
 
-// The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `ListWorkflowExecutionsError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#ListWorkflowExecutions")]
+// The operation's MODELED errors, plus the class every listing of this service widens in for
+// the same reason: `InvalidParameterValueException` is the class Image Builder refuses a
+// parameter of a request with, and a `nextToken` this service did not issue is a value that
+// parameter does not admit.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#ListWorkflowExecutions",
+    extra_errors = ["InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum ListWorkflowExecutionsErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     InvalidPaginationTokenException(InvalidPaginationTokenException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
@@ -180,18 +188,113 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListWorkflowExecutions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListWorkflowExecutionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListWorkflowExecutions"))
+        // The ARN's pattern, the `maxResults` range and the token's length have all been
+        // refused past by the centralized walk before this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListWorkflowExecutionsErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        // The status each runtime instance reports and the instant its run ended are read
+        // from the CLOCK against the build that ran it, so the instant this page is answered
+        // at is taken once here.
+        let at = ::std::time::SystemTime::now();
+
+        // The secret this store authenticates its page tokens under, taken off the store so
+        // a `nextToken` is minted and read back as the opaque value this store issued.
+        let page_token_key = state.lock().page_token_key;
+
+        // Which listing this page belongs to: the build version whose runs it walks, so a
+        // token issued for one image is refused for another.
+        let mut cursor = crate::state::PageCursor {
+            operation: crate::state::LIST_WORKFLOW_EXECUTIONS_OPERATION.to_string(),
+            region: region.clone(),
+            query: crate::state::workflow_execution_query_fingerprint(
+                &input.image_build_version_arn,
+            ),
+            after: String::new(),
+        };
+        let after = match input.next_token.as_deref() {
+            None => String::new(),
+            Some(token) => match crate::state::decode_page_token(&page_token_key, token, &cursor) {
+                Some(after) => after,
+                None => {
+                    return Err(
+                        ListWorkflowExecutionsErrorModeled::InvalidParameterValueException(
+                            InvalidParameterValueException {
+                                message: Some(crate::state::invalid_pagination_token_message()),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+            },
+        };
+
+        // A page carries at most `maxResults` entries, held to the modelled maximum, and at
+        // most the documented default when the request names no page size: "if you don't
+        // specify a value, Image Builder returns up to 25 items".
+        let page_size = input
+            .max_results
+            .and_then(|requested| usize::try_from(requested).ok())
+            .unwrap_or(crate::state::DEFAULT_LIST_PAGE_SIZE)
+            .clamp(1, crate::state::MAX_LIST_PAGE_SIZE);
+
+        // A pure read: the guard is taken, this page of the build's own runtime instances is
+        // copied out as modelled metadata, and nothing is written. The instances are held in
+        // the order the build runs its workflows, so the listing has one order and a token's
+        // position in it is stable. A build version this Region holds none of has run no
+        // workflow, so it contributes no entry at all, which is the empty page such a read
+        // answers with.
+        let store = state.lock();
+        let build = store.image(&input.image_build_version_arn, &region);
+        let recorded: &[crate::state::WorkflowExecutionRecord] =
+            build.map_or(&[], |build| build.workflow_executions.as_slice());
+        let start = if after.is_empty() {
+            0
+        } else {
+            recorded
+                .iter()
+                .position(|execution| execution.workflow_execution_id == after)
+                .map_or(recorded.len(), |position| position + 1)
+        };
+        let page: Vec<WorkflowExecutionMetadata> = build
+            .into_iter()
+            .flat_map(|build| {
+                recorded
+                    .iter()
+                    .skip(start)
+                    .take(page_size)
+                    .map(move |execution| execution.metadata(build, at))
+            })
+            .collect();
+        // A `nextToken` is answered only when a runtime instance this page did not carry
+        // remains.
+        let remaining = recorded.len() > start + page.len();
+        let next_token = page
+            .last()
+            .filter(|_| remaining)
+            .and_then(|last| last.workflow_execution_id.clone())
+            .map(|last| {
+                cursor.after = last;
+                crate::state::encode_page_token(&page_token_key, &cursor)
+            });
+        drop(store);
+
+        Ok(ListWorkflowExecutionsOutput {
+            request_id: Some(crate::state::new_request_id()),
+            workflow_executions: Some(page),
+            // "The resource Amazon Resource Name (ARN) of the image build version for which
+            // you requested a list of workflow runtime details", which is the one the request
+            // named.
+            image_build_version_arn: Some(input.image_build_version_arn),
+            // "The failure reason for the image build version, if it's in a failed state":
+            // nothing in this emulator fails a build with a reason, so there is none to
+            // report.
+            message: None,
+            next_token,
+        })
     }
 }

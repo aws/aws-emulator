@@ -52,6 +52,9 @@ pub const WORKFLOW_URI_MEMBER: &str = "uri";
 /// The document key a workflow document lists its input parameters under.
 const WORKFLOW_PARAMETERS_KEY: &str = "parameters";
 
+/// The document key a workflow document lists the steps it defines under.
+const WORKFLOW_STEPS_KEY: &str = "steps";
+
 /// The keys one declared workflow parameter carries. A workflow document names each
 /// parameter under its own `name` key — unlike a component document, which lists a
 /// parameter as a single-key mapping of its name to its details.
@@ -396,6 +399,35 @@ fn declared_workflow_parameters(
         })
         .collect();
     (!parameters.is_empty()).then_some(parameters)
+}
+
+/// How many steps the workflow document `data` defines.
+///
+/// `GetWorkflowExecution`'s `totalStepCount` is "the total number of steps that the workflow
+/// document defines for this runtime instance of the workflow. Image Builder sets this count
+/// before any steps run" — a property of the DOCUMENT, so it is read off the document this
+/// store holds rather than counted from anything a run did. A workflow document lists the
+/// steps it defines as a sequence under its own `steps` key, exactly as it lists its
+/// parameters under `parameters` ([`declared_workflow_parameters`]).
+///
+/// Zero for a document that defines no step, and for one this reader cannot read at all —
+/// the two guards every document of this service passes
+/// ([`super::guard_document_nesting`]) and a body that is not a YAML mapping — since such a
+/// document defines no step this store can count.
+#[must_use]
+pub fn workflow_document_step_count(data: &str) -> i32 {
+    if super::guard_document_nesting(data).is_none() || super::document_uses_aliases(data) {
+        return 0;
+    }
+    let Ok(documents) = ::yaml_rust2::YamlLoader::load_from_str(data) else {
+        return 0;
+    };
+    let Some(document) = documents.first().and_then(::yaml_rust2::Yaml::as_hash) else {
+        return 0;
+    };
+    super::mapping_get(document, WORKFLOW_STEPS_KEY)
+        .and_then(::yaml_rust2::Yaml::as_vec)
+        .map_or(0, |steps| i32::try_from(steps.len()).unwrap_or(i32::MAX))
 }
 
 /// A deterministic rendering of the creation parameters one `CreateWorkflow` request

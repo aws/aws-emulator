@@ -195,6 +195,11 @@ mod image;
 mod image_build_run;
 pub use image_build_run::*;
 
+/// The workflow RUNS of an image build: what the build recorded about each runtime instance
+/// of a workflow it ran, and what a read of one reports.
+mod workflow_execution;
+pub use workflow_execution::*;
+
 /// Which stopped build a retry may RESUME, which is decided by the phase that build stopped
 /// in, and how a build no retry can resume is refused.
 mod image_retry;
@@ -1366,6 +1371,12 @@ pub struct ImageBuildVersionRecord {
     /// [`MAX_IMAGE_PACKAGES`] where it is filed
     /// ([`ComAmazonawsImagebuilderImagebuilderState::insert_image`]).
     pub packages: BTreeMap<String, String>,
+    /// The runtime instances of the workflows this build ran, in the order it was configured
+    /// to run them: one per workflow configuration ([`Self::workflows`]), as the run recorded
+    /// it ([`WorkflowExecutionRecord`]). They are held on the build that ran them, so a read
+    /// of one reports the build it belongs to and the status that build's own clock decides.
+    /// A record filed by nothing that ran a workflow carries none.
+    pub workflow_executions: Vec<WorkflowExecutionRecord>,
 }
 
 impl ImageBuildVersionRecord {

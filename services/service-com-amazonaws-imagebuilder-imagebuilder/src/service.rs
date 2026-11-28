@@ -22,7 +22,9 @@
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
 //!   correctly. This service serves the operation the model's own routing key names,
-//!   wrapped (see "This service's front door" below).
+//!   wrapped (see "This service's front door" below) — and, for a request the key names
+//!   nothing for, the operation whose modelled route it addressed
+//!   ([`required_query_route`]).
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. Nothing is reworded there: a refusal this service words
 //!   itself is worded at its front door, which is the only layer that can place one.
@@ -58,6 +60,13 @@
 //! member off THAT operation's own input schema, then words the body half and the
 //! request-line half through the two wordings attached to the door.
 //!
+//! ## A request that leaves out a member the operation requires outside its body
+//!
+//! Such a request addresses the operation its method and path name and is refused as the bad
+//! request it is, never reported as naming no operation: [`required_query_route`] owns that
+//! rule, and this file only asks it at [`Service::override_operation`], where the request can
+//! still be handed to the operation it addressed.
+//!
 //! ## Naming the request a response answers
 //!
 //! Every response Image Builder sends names the request it answered: a success through the
@@ -91,12 +100,14 @@
 
 pub mod no_content_framing;
 pub mod parameter_refusal;
+pub mod required_query_route;
 
 use no_content_framing::NoContentRestJson;
 use parameter_refusal::{
     body_parameter_refusal, pipeline_listing_body_refusal, unstated_pattern_refusal,
     uri_parameter_refusal,
 };
+use required_query_route::ModelledRoutes;
 use service_common::front_door::{BodyWording, FrontDoor, UriWording};
 use service_common::query_error_envelope::{
     RequestIdEnvelopeDefinition, RequestIdReportingOperation,
@@ -115,12 +126,18 @@ use std::sync::Arc;
 /// the body, and `body_wording` how it words one the request carried IN the body. The
 /// request-id report wraps the door, so every response the operation answers — through the
 /// door or behind it — names the request it answered.
+///
+/// The operation's own modelled route is recorded in `routes` as well, so a request that
+/// addresses it and leaves out a member it requires outside its body reaches it rather than
+/// the unknown-operation tail ([`required_query_route`]).
 fn serve_worded<O: Operation + ErasedOperation + 'static>(
     table: &mut OperationRoutingTable,
+    routes: &mut ModelledRoutes,
     operation: O,
     body_wording: BodyWording,
     uri_wording: UriWording,
 ) {
+    routes.serving::<O>();
     table.add_operation(
         O::NAME,
         Box::new(RequestIdReportingOperation::error_member(
@@ -132,10 +149,11 @@ fn serve_worded<O: Operation + ErasedOperation + 'static>(
 /// [`serve_worded`] with the body wording every operation of this service shares.
 fn serve<O: Operation + ErasedOperation + 'static>(
     table: &mut OperationRoutingTable,
+    routes: &mut ModelledRoutes,
     operation: O,
     uri_wording: UriWording,
 ) {
-    serve_worded(table, operation, body_parameter_refusal, uri_wording);
+    serve_worded(table, routes, operation, body_parameter_refusal, uri_wording);
 }
 
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each served behind
@@ -148,10 +166,11 @@ macro_rules! serve_operations {
     // The wording a line states, or the one every other operation states.
     (@wording) => { uri_parameter_refusal };
     (@wording $wording:path) => { $wording };
-    ($table:expr, $engine:expr, $($module:ident :: $operation:ident $(=> $wording:path)?),+ $(,)?) => {
+    ($table:expr, $routes:expr, $engine:expr, $($module:ident :: $operation:ident $(=> $wording:path)?),+ $(,)?) => {
         $(
             serve(
                 &mut $table,
+                &mut $routes,
                 crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
                 serve_operations!(@wording $($wording)?),
             );
@@ -175,6 +194,11 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// operation reads and writes the one store. Held on the service because
     /// [`Service::override_operation`] hands back a borrow of `self`.
     front_door: OperationRoutingTable,
+    /// The `@http` route of each of those operations, so a request that addresses one of them
+    /// and leaves out a member it requires outside its body is served by the operation it
+    /// addressed rather than reported as naming no operation at all
+    /// ([`required_query_route`]).
+    routes: ModelledRoutes,
     /// This service's wire protocol, built ONCE here because
     /// [`Service::override_protocol`] hands back a borrow of it.
     protocol: NoContentRestJson,
@@ -186,12 +210,14 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         let mut front_door = OperationRoutingTable::new();
+        let mut routes = ModelledRoutes::new();
         // EVERY modelled operation, so the rule is applied by one code path rather than per
         // operation: an operation that binds nothing to the body never has a body violation
         // to find, and one that binds nothing to its request line never has a request-line
         // violation, which the wrapper reads off each operation's own input schema.
         serve_operations!(
             front_door,
+            routes,
             engine,
             cancel_image_creation::CancelImageCreation,
             cancel_lifecycle_execution::CancelLifecycleExecution,
@@ -280,6 +306,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // operation's own door is built.
         serve_worded(
             &mut front_door,
+            &mut routes,
             crate::ops::list_image_pipelines::ListImagePipelines::new(Arc::clone(&engine)),
             pipeline_listing_body_refusal,
             uri_parameter_refusal,
@@ -287,6 +314,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: RequestIdEnvelopeDefinition::error_member(crate::ServiceDefinition::new(engine)),
             front_door,
+            routes,
             protocol: NoContentRestJson::new(),
         }
     }
@@ -326,7 +354,15 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // the request itself, through the definition wrapper) is unchanged. The door
         // declares the wrapped operation's own auth schemes, so wrapping cannot change which
         // schemes sign it.
-        let key = self.entry.protocol().routing_key(req).ok()?;
+        //
+        // A request the protocol resolves NO key for is handed to the operation whose
+        // modelled route it addressed, when exactly one operation binds that method and path
+        // ([`required_query_route`]): the framework withholds such a route when a member the
+        // operation requires outside its body is absent, and that is a bad request for the
+        // operation to refuse rather than a report that nobody has written it.
+        let Ok(key) = self.entry.protocol().routing_key(req) else {
+            return self.routes.addressed(req, &self.front_door);
+        };
         self.front_door.get(key)
     }
 

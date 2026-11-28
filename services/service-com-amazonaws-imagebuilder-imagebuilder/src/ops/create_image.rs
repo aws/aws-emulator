@@ -472,6 +472,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateImage<Eng> 
                 // ones it was given — and a request that named none records the
                 // service-owned workflows it ran instead ([`crate::state::ImageBuildRun`]).
                 workflows: Some(run.workflows),
+                // Running a workflow is what creates its runtime details, so the build files
+                // the runtime instance it started for each of those workflows, which is what
+                // a read of one of them reports
+                // ([`crate::state::WorkflowExecutionRecord`]).
+                workflow_executions: run.workflow_executions,
                 // "Specifies whether to collect additional information about the image
                 // being created ... Defaults to true."
                 enhanced_image_metadata_enabled: input

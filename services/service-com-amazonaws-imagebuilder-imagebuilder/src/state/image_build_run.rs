@@ -38,7 +38,9 @@
 //!   that was given none ran under that role ([`service_linked_execution_role`]).
 //!
 //! The run also carries the ID of the execution itself, which the wire reports on a built image
-//! and the on-disk model does not declare ([`ImageBuildRun::execution_id`]).
+//! and the on-disk model does not declare ([`ImageBuildRun::execution_id`]), and the RUNTIME
+//! INSTANCE of each workflow it ran ([`ImageBuildRun::workflow_executions`]): a workflow's
+//! runtime details exist because a build ran that workflow, so they are observed here too.
 
 use std::time::SystemTime;
 
@@ -229,6 +231,12 @@ pub struct ImageBuildRun {
     /// The operating system version that base image carries, when the base image is one this
     /// service knows the operating system of.
     pub os_version: Option<String>,
+    /// The runtime instance each of those workflow configurations started, in the same order:
+    /// a workflow's runtime details exist because a build RAN it, so one instance per
+    /// configuration is recorded here, where the run starts
+    /// ([`super::WorkflowExecutionRecord`]) — at most as many as the references one request
+    /// resolves ([`super::MAX_REQUEST_WORKFLOW_REFERENCES`]).
+    pub workflow_executions: Vec<super::WorkflowExecutionRecord>,
 }
 
 impl ImageBuildRun {
@@ -246,14 +254,28 @@ impl ImageBuildRun {
         at: SystemTime,
     ) -> Self {
         let base = store.resolved_parent_image(&built.parent_image, region, at);
+        let workflows = requested_workflows.map_or_else(
+            || default_build_workflows(region, built.image_type),
+            <[WorkflowConfiguration]>::to_vec,
+        );
         Self {
             execution_id: new_uuid(),
             execution_role: requested_role
                 .map_or_else(service_linked_execution_role, str::to_string),
-            workflows: requested_workflows.map_or_else(
-                || default_build_workflows(region, built.image_type),
-                <[WorkflowConfiguration]>::to_vec,
-            ),
+            // Running a workflow is what creates its runtime details, so one runtime instance
+            // is recorded per workflow the build runs, each observing what its own
+            // configuration reached at this instant
+            // ([`ComAmazonawsImagebuilderImagebuilderState::workflow_run`]). BOUNDED at the
+            // number of workflow references one request resolves
+            // ([`super::MAX_REQUEST_WORKFLOW_REFERENCES`]), which is the cap the request path
+            // already holds a build's workflow references to, so no request can choose how
+            // many records one build files.
+            workflow_executions: workflows
+                .iter()
+                .take(super::MAX_REQUEST_WORKFLOW_REFERENCES)
+                .map(|configuration| store.workflow_run(configuration, region))
+                .collect(),
+            workflows,
             resolved_parent_image: base.reference,
             os_version: base.os_version,
         }

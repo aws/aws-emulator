@@ -375,6 +375,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartImagePipelin
                 // service-linked role when the pipeline named none; and what the run
                 // observed about the base image it built on.
                 workflows: Some(run.workflows),
+                // The runtime instance each of those workflows started, which is what a read
+                // of one of them reports ([`crate::state::WorkflowExecutionRecord`]).
+                workflow_executions: run.workflow_executions,
                 enhanced_image_metadata_enabled,
                 image_tests_configuration,
                 execution_role: Some(run.execution_role),

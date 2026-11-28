@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetWorkflowExecution
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetWorkflowExecution`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Retrieves runtime information for one runtime instance of a workflow an image build ran.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetWorkflowExecution::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A runtime instance exists because a BUILD ran a workflow, so this operation reads the
+//! instance the build recorded under the id Image Builder assigned it
+//! (`crate::state::WorkflowExecutionRecord`): what the run established is reported as the run
+//! recorded it, and what the clock decides — the status and the instant the run ended — is
+//! read from the build that ran it. A pure read: nothing is written.
+//!
+//! An id no build of the calling Region recorded reaches no runtime instance, and is reported
+//! as the missing resource it names.
 //!
 //! ## Shape of an operation
 //!
@@ -127,18 +128,25 @@ use super::types::*;
 // `GetWorkflowExecutionError` enum is never produced.
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuilder.json");
 
-// The operation's MODELED errors. `#[operation_error]` accepts only variants the
-// model declares for this operation, so the scaffold's `NotImplemented` cannot live
-// here — hence the `GetWorkflowExecutionError` alias below. An operation that models no errors
-// generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#GetWorkflowExecution")]
+// The operation's MODELED errors, plus the one this SERVICE models for an identifier that
+// names nothing. A `workflowExecutionId` may name no runtime instance this store holds, and
+// `com.amazonaws.imagebuilder#ResourceNotFoundException` (HTTP 404, "At least one of the
+// resources referenced by your request does not exist", declared in `types/shared_types.rs`)
+// is the shape this service models for exactly that case — it is simply not listed on this
+// operation, exactly as it is not listed on `GetWorkflow`, whose own reference may name
+// nothing either. So an id that reaches nothing is reported MISSING rather than dressed up as
+// an invalid request, which is a different claim a client branches on.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#GetWorkflowExecution",
+    extra_errors = ["ResourceNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum GetWorkflowExecutionErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     InvalidRequestException(InvalidRequestException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
 }
@@ -194,18 +202,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetWorkflowExecution` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetWorkflowExecutionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetWorkflowExecution"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            GetWorkflowExecutionErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+        // The status a runtime instance reports and the instant its run ended are read from
+        // the CLOCK against the build that ran it, so the instant this read is answered at
+        // is taken once here.
+        let at = ::std::time::SystemTime::now();
+
+        // A pure read: the guard is taken, the runtime instance the id names is copied out
+        // as the modelled answer, and nothing is written.
+        let answer = state
+            .lock()
+            .workflow_execution_answer(&input.workflow_execution_id, &region, at);
+
+        let mut answer = answer.ok_or_else(|| {
+            GetWorkflowExecutionErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::missing_resource_message(
+                        crate::state::WORKFLOW_EXECUTION_RESOURCE_TYPE,
+                        &input.workflow_execution_id,
+                    )),
+                },
+            )
+        })?;
+        // "The request ID that uniquely identifies this request", which every answer of this
+        // service names its own request by.
+        answer.request_id = Some(crate::state::new_request_id());
+        Ok(answer)
     }
 }
