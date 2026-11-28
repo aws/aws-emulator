@@ -222,9 +222,9 @@ const ROWS: &[Row] = &[
 /// The quotas DISPLACED by the bindings above: each is a quota this catalog used to publish
 /// under one of those codes, and no source available here states the code `glue` publishes
 /// it under — so it is published under no code of the service at all, by the `QuotaName` it
-/// was served as. The account DATABASE plane the `L-04CEE988` binding displaced is NOT among
-/// them: it is carried by `L-5E4153CA`, the code that binding vacated, the way the row
-/// tables' module header says a code whose own quota no source states keeps a row.
+/// was served as. The `UpdateTable` call rate the account DATABASE plane's binding displaced
+/// is NOT among them: it is carried by `L-5E4153CA`, the code that plane vacated, the way the
+/// row tables' module header says a code whose own quota no source states keeps a row.
 const DISPLACED_QUOTA_NAMES: &[&str] = &[
     "Workflows per account",
     "Development endpoints per account",
@@ -241,6 +241,8 @@ const DISPLACED_QUOTA_NAMES: &[&str] = &[
     "Rate of BatchDeletePartition requests",
     "Rate of CreateTable requests",
     "Rate of StartWorkflowRun requests",
+    "Rate of GetJob requests",
+    "Rate of GetTableVersions requests",
 ];
 
 /// Every pinned row carries the facts the service publishes under its own code, through

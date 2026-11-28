@@ -20,9 +20,10 @@
 //! The table spans what the rule generalises over rather than repeating one row: a code
 //! vacated by an account plane, one vacated by a Data Catalog plane and one vacated by a
 //! per-table plane; a row carrying a sentence beside one whose sentence no source states
-//! and which therefore carries none; and values from 200 to 100,000. Every row is read
-//! through BOTH listings and BOTH code-keyed single reads, and driven through the increase
-//! path, because the code is what a client acts on.
+//! and which therefore carries none; a row published over a per-second window beside rows
+//! published over none; and values from 10 to 100,000. Every row is read through BOTH
+//! listings and BOTH code-keyed single reads, and driven through the increase path, because
+//! the code is what a client acts on.
 //!
 //! The harness (`client`, `emulator`, `default_quotas_by_code`, `walk_pages`) is the one
 //! `quota_workflow.rs` owns.
@@ -49,23 +50,27 @@ struct Vacated {
 /// The codes this suite pins.
 ///
 /// SOURCE: the recorded `ListAWSDefaultServiceQuotas` response of `glue` states the quota
-/// published under `L-04CEE988` (the account's machine-learning transforms), `L-11FA2C1A`
-/// (its crawlers) and `L-096DBB95` (its spare compute capacity); the rows below are the
-/// planes those three bindings displaced, each under the code its plane left, at the limit
-/// and with the sentence this catalog has carried it under. No source states which quota
-/// `glue` publishes under these three codes, so none of these rows is a claim that AWS
-/// publishes that plane under that code — what is asserted here is that the code keeps
-/// resolving, and that the plane it carries is published under exactly one code.
+/// published under `L-F953935E` (the account's databases), `L-11FA2C1A` (its crawlers) and
+/// `L-096DBB95` (its spare compute capacity); the rows below are the planes those three
+/// bindings displaced, each under the code its plane left, at the limit and with the
+/// sentence this catalog has carried it under. No source states which quota `glue`
+/// publishes under these three codes, so none of these rows is a claim that AWS publishes
+/// that plane under that code — what is asserted here is that the code keeps resolving, and
+/// that the plane it carries is published under exactly one code.
 const VACATED: &[Vacated] = &[
-    // The ACCOUNT DATABASE plane, under the code the account's machine-learning transforms
-    // left when the sourced binding took them to `L-04CEE988`.
+    // The `UpdateTable` CALL RATE, under the code the account's database plane left when
+    // the sourced binding took that plane to `L-F953935E`: a row published over a window
+    // rather than a counted plane.
     Vacated {
         quota_code: "L-5E4153CA",
-        quota_name: "Databases per account",
-        value: 10_000.0,
-        description: Some("The maximum number of databases in your account."),
-        took_by: "L-04CEE988",
-        took_by_quota_name: "Number of machine learning transforms",
+        quota_name: "Rate of UpdateTable requests",
+        value: 10.0,
+        description: Some(
+            "The maximum number of UpdateTable requests you can make per second in this \
+             account in the current Region.",
+        ),
+        took_by: "L-F953935E",
+        took_by_quota_name: "Max databases per account",
     },
     // The account's CONCURRENT JOB RUNS, under the code the account-wide crawler plane left
     // when the sourced binding took that plane to `L-11FA2C1A`. Its published sentence is

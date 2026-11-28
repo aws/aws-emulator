@@ -81,7 +81,7 @@ const BOUND: &[Bound] = &[
         description: Some("The maximum number of connections per account per Region."),
         period: None,
     },
-    // events — a SIZE published in BYTES, and a row whose own sentence no source states.
+    // events — a SIZE published in BYTES, with the sentence the recording states for it.
     Bound {
         service_code: "events",
         quota_code: "L-5D1D13E3",
@@ -89,7 +89,11 @@ const BOUND: &[Bound] = &[
         value: 20_480.0,
         unit: "Bytes",
         adjustable: true,
-        description: None,
+        description: Some(
+            "The maximum size, in bytes, of the customer-managed (default) resource policy \
+             of a V2 event bus. Policies that AWS Resource Access Manager writes for a \
+             shared bus do not count against this quota.",
+        ),
         period: None,
     },
     // events — the event-INGEST rate, whose sentence that listing words WITHOUT the leading
@@ -107,19 +111,17 @@ const BOUND: &[Bound] = &[
         ),
         period: Some((1, "SECOND")),
     },
-    // events — a code the recording carries a row for and this catalog had published
-    // nothing under: it answers with the plane the control-plane binding displaced.
+    // events — a version 2 RESOURCE plane metered by that plane's resource count over the
+    // window those counts are published on, and a row whose own sentence no source states.
     Bound {
         service_code: "events",
         quota_code: "L-D082A4F6",
-        quota_name: "Archives",
-        value: 100.0,
+        quota_name: "[EventsV2] Event Sources",
+        value: 200.0,
         unit: "None",
-        adjustable: false,
-        description: Some(
-            "The maximum number of archives in this account in the current Region.",
-        ),
-        period: None,
+        adjustable: true,
+        description: None,
+        period: Some((5, "MINUTE")),
     },
     // fms — a per-policy count published as NOT adjustable at a limit of 2, under a code
     // this catalog had published an API rate under.
@@ -136,7 +138,7 @@ const BOUND: &[Bound] = &[
         ),
         period: None,
     },
-    // fms — a CAPACITY plane, and a row whose own sentence no source states.
+    // fms — a CAPACITY plane, whose sentence the service publishes with two spaces in it.
     Bound {
         service_code: "fms",
         quota_code: "L-5AB0AC42",
@@ -144,7 +146,10 @@ const BOUND: &[Bound] = &[
         value: 30_000.0,
         unit: "None",
         adjustable: true,
-        description: None,
+        description: Some(
+            "The maximum number of rules that can be included in a stateful  rule \
+             group within a Firewall Manager Network Firewall policy.",
+        ),
         period: None,
     },
     // fms — the two halves of the custom-managed PROTOCOL-LIST pair: the lists one setting
@@ -205,7 +210,7 @@ const BOUND: &[Bound] = &[
         period: None,
     },
     // fsx — an account-wide IOPS ceiling of 500,000 where a per-file-system count had
-    // stood, with no sentence any source states.
+    // stood, with the sentence the recording states for it.
     Bound {
         service_code: "fsx",
         quota_code: "L-901C77F5",
@@ -213,7 +218,10 @@ const BOUND: &[Bound] = &[
         value: 500_000.0,
         unit: "None",
         adjustable: true,
-        description: None,
+        description: Some(
+            "The total amount of SSD IOPS allowed for all Amazon FSx for Windows File \
+             Server file systems that you can have in this account.",
+        ),
         period: None,
     },
     // fsx — the LUSTRE family's backups, where a per-volume count of another family had
@@ -226,8 +234,8 @@ const BOUND: &[Bound] = &[
         unit: "None",
         adjustable: true,
         description: Some(
-            "The maximum number of user-initiated backups for all Amazon FSx for Lustre \
-             file systems that you can have in this account.",
+            "The maximum number of user-initiated backups that you can have for all Amazon \
+             FSx for Lustre file systems in this account.",
         ),
         period: None,
     },
@@ -241,9 +249,8 @@ const BOUND: &[Bound] = &[
         unit: "None",
         adjustable: true,
         description: Some(
-            "The maximum amount of storage capacity (in GiB) that you can configure in this \
-             account for all Amazon FSx for Lustre file systems with deployment type \
-             Persistent_2.",
+            "The maximum amount of storage capacity (in GiB) that you can configure for \
+             all Amazon FSx for Lustre persistent_2 file systems in this account.",
         ),
         period: None,
     },
@@ -261,7 +268,7 @@ const BOUND: &[Bound] = &[
         ),
         period: None,
     },
-    // gamelift — a per-fleet policy ceiling, and a row whose own sentence no source states.
+    // gamelift — a per-fleet policy ceiling, with the sentence the recording states for it.
     Bound {
         service_code: "gamelift",
         quota_code: "L-3A43EF3C",
@@ -269,7 +276,10 @@ const BOUND: &[Bound] = &[
         value: 10.0,
         unit: "None",
         adjustable: true,
-        description: None,
+        description: Some(
+            "The maximum new game sessions per creator allowed in a fleet's resource policy \
+             configuration.",
+        ),
         period: None,
     },
     // gamelift — the QUEUE plane of a Region, worded as this service words its per-Region
@@ -278,7 +288,7 @@ const BOUND: &[Bound] = &[
         service_code: "gamelift",
         quota_code: "L-22451070",
         quota_name: "Game session queues per region",
-        value: 25.0,
+        value: 100.0,
         unit: "None",
         adjustable: true,
         description: Some("The maximum number of game session queues allowed per region."),
@@ -360,7 +370,7 @@ const BOUND: &[Bound] = &[
         value: 64.0,
         unit: "Kilobytes",
         adjustable: true,
-        description: Some("The maximum size of the data field of a Docker template."),
+        description: Some("The maximum size of a Docker template data field."),
         period: None,
     },
     // imagebuilder — the account's COMPONENTS, a count of 1000 where a rate of 5 per
@@ -378,18 +388,17 @@ const BOUND: &[Bound] = &[
         ),
         period: None,
     },
-    // imagebuilder — a code the recording carries a row for and this catalog had published
-    // nothing under: it answers with the plane the workflow binding displaced.
+    // imagebuilder — a character LENGTH where a count of pipelines had stood: the parameter
+    // value a component may be given, measured in characters rather than in resources.
     Bound {
         service_code: "imagebuilder",
         quota_code: "L-10D22E0D",
-        quota_name: "Image pipelines",
-        value: 1000.0,
+        quota_name: "Component parameter length",
+        value: 1024.0,
         unit: "None",
         adjustable: true,
         description: Some(
-            "The maximum number of image pipelines that you can create in an account in \
-             the current Region.",
+            "The maximum number of characters that a component parameter value can contain.",
         ),
         period: None,
     },

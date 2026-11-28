@@ -13,10 +13,10 @@
 //! The table spans what the rule generalises over rather than repeating one row: an
 //! account-wide plane beside the per-resource plane of the same resource (the account's
 //! partitions against one table's), a concurrency plane beside the per-resource
-//! concurrency plane of the same resource, a description in the service's terse
+//! concurrency plane of the same resource, an account-wide plane beside the per-database
+//! plane of the same resource, a description in the service's terse
 //! `Catalog: …` form beside its sentence form, a name published WITH a closing period
-//! beside names published without one, a row published over no window beside a per-second
-//! request rate metered by an API's call count, and values from 3 to 20,000,000.
+//! beside names published without one, and values from 3 to 20,000,000.
 //!
 //! Each row is read BOTH through `ListAWSDefaultServiceQuotas` and through
 //! `GetAWSDefaultServiceQuota`, because the code is the only key a single read takes. The
@@ -47,9 +47,10 @@ struct Row {
 ///
 /// SOURCE: the recorded `ListAWSDefaultServiceQuotas` response of `glue` states which quota
 /// is published under each of these codes together with that quota's own name, value and
-/// sentence. The per-resource planes (`L-2C3F5401`, `L-E15CE20A`), the terse Data Catalog
-/// row (`L-4F4B522D`) and the request rate (`L-D987EC31`) are codes this change does not
-/// rebind, so the rule is asserted beyond the rebound rows as well.
+/// sentence. The per-resource planes (`L-2C3F5401`, `L-E15CE20A`) and the terse Data
+/// Catalog row (`L-4F4B522D`) are codes this change does not rebind, so the rule is
+/// asserted beyond the rebound rows as well; the rows published over a per-second WINDOW
+/// are pinned by `glue_default_rows_under_their_published_codes.rs`, which owns them.
 const ROWS: &[Row] = &[
     // The PARTITION plane of the whole account, beside the partition plane of ONE table:
     // the same resource counted on two planes, each under its own code.
@@ -132,18 +133,28 @@ const ROWS: &[Row] = &[
         period: None,
         call_count: None,
     },
-    // A per-second request rate metered by the call count of the API it throttles, so the
-    // table is not only of planes published over no window.
+    // The FUNCTION plane of the ACCOUNT, under the code the recording binds it to, beside
+    // the function plane of ONE database: the same resource counted on two planes, each
+    // under its own code, where a per-API request rate had stood.
     Row {
         quota_code: "L-D987EC31",
-        quota_name: "Rate of GetPartition requests",
+        quota_name: "Max functions per account",
         value: 100.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of GetPartition requests you can make per second in \
-                      this account in the current Region.",
-        period: Some((1, "SECOND")),
-        call_count: Some("GetPartition"),
+        description: "The maximum number of functions in your account.",
+        period: None,
+        call_count: None,
+    },
+    Row {
+        quota_code: "L-1DD415D5",
+        quota_name: "Max functions per database",
+        value: 100.0,
+        unit: "None",
+        adjustable: true,
+        description: "The maximum number of functions per database.",
+        period: None,
+        call_count: None,
     },
 ];
 
@@ -157,6 +168,7 @@ const DISPLACED_QUOTA_NAMES: &[&str] = &[
     "Rate of BatchCreatePartition requests",
     "Rate of UpdatePartition requests",
     "Rate of UpdateJob requests",
+    "Rate of GetPartition requests",
 ];
 
 /// Every pinned row carries the facts the service publishes under its own code, through the

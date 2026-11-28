@@ -256,7 +256,7 @@ const PROBES: &[Probe] = &[
         service_code: "gamelift",
         quota_code: "L-22451070",
         quota_name: "Game session queues per region",
-        value: 25.0,
+        value: 100.0,
         unit: "None",
         adjustable: true,
         period: None,
@@ -335,12 +335,12 @@ const PROBES: &[Probe] = &[
     Probe {
         service_code: "imagebuilder",
         quota_code: "L-7A0E01E3",
-        quota_name: "Rate of CreateImage requests",
-        value: 5.0,
+        quota_name: "Image pipelines",
+        value: 75.0,
         unit: "None",
         adjustable: true,
-        period: Some((1, "SECOND")),
-        call_count: Some(("EC2 Image Builder", "CreateImage")),
+        period: None,
+        call_count: None,
     },
 ];
 

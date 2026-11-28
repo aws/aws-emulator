@@ -49,32 +49,29 @@ const SERVICE_CODES: &[&str] = &[
 
 /// The `(ServiceCode, QuotaCode)` pairs published WITHOUT a `Description`.
 ///
-/// SOURCE: the recorded `ListAWSDefaultServiceQuotas` response of `events` states which
-/// quota four of its codes publish without stating every member of those rows: the
-/// resource-policy size of a version 2 event bus carries a sentence that response words and
-/// no source available to this emulator states, so that row carries none rather than a
-/// sentence this catalog would be wording itself, which is what the rule forbids. The same
-/// holds for the stateful rule group capacity of a Network Firewall policy (`fms`), the
-/// Windows family's total SSD IOPS (`fsx`) and the `NewGameSessionsPerCreator` ceiling of a
-/// fleet configuration (`gamelift`), whose names and limits that service's recorded listing
-/// states while stating no sentence for them.
-/// The same holds for the two `glue` rows whose name, value and adjustability that
-/// service's recorded listing states while stating no sentence for them: the account's
-/// security configurations and the Data Catalog's connection types. It holds too for the
-/// `glue` code whose own quota no source states and which therefore keeps the plane a
-/// sourced binding displaced (the account's concurrent job runs): the plane's limit is the
-/// one that row carried, and no source states a sentence for it.
+/// SOURCE: the recorded `ListAWSDefaultServiceQuotas` response of each service states which
+/// quota some of its codes publish without stating every member of those rows. For the
+/// account's version 2 EVENT SOURCES (`events`), the VPCs one Network Firewall policy may
+/// remediate automatically (`fms`) and the locations one fleet may have in a Region
+/// (`gamelift`) it states the quota's name, limit and adjustability while stating no
+/// sentence, so each of those rows carries none rather than a sentence this catalog would be
+/// wording itself, which is what the rule forbids.
+///
+/// Two `glue` codes are the same case reached from the other side: no source states the
+/// quota either of them publishes, so each keeps the row it has carried — the account's
+/// concurrent job runs under `L-337244C9`, whose limit is the one that row carried and whose
+/// sentence no source states, and the account's security configurations under `L-4071B0E3`,
+/// whose sentence belongs to the quota `L-83192DBF` publishes and is therefore published
+/// there rather than twice.
 ///
 /// `pub(crate)` so the suites that assert "every row carries its published sentence"
 /// read the one list rather than each keeping a copy of it.
 pub(crate) const PUBLISHED_WITHOUT_A_DESCRIPTION: &[(&str, &str)] = &[
-    ("events", "L-5D1D13E3"),
-    ("fms", "L-5AB0AC42"),
-    ("fsx", "L-901C77F5"),
-    ("gamelift", "L-3A43EF3C"),
+    ("events", "L-D082A4F6"),
+    ("fms", "L-BCA8AD34"),
+    ("gamelift", "L-55650DB7"),
     ("glue", "L-337244C9"),
-    ("glue", "L-83192DBF"),
-    ("glue", "L-F545C262"),
+    ("glue", "L-4071B0E3"),
 ];
 
 /// Whether the row `service_code` publishes under `quota_code` is one whose own published

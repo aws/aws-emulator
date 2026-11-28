@@ -196,15 +196,18 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "events",
         quota_code: "L-39263BDC",
-        quota_name: "Rules per event bus",
-        value: 300.0,
+        quota_name: "[EventsV2] Subscribers per V2 Event Bus",
+        value: 10_000.0,
         unit: "None",
         adjustable: true,
-        description: None,
+        description: Some(
+            "The maximum number of Subscribers that can be associated with each V2 Event \
+             Bus owned by this account, across all accounts it is shared with.",
+        ),
         period: Some((5, "MINUTE")),
         meter: Some(Meter::Resources {
             usage_service: "EventBridge",
-            resource: "Rule",
+            resource: "EventsV2/SubscribersPerEventBus",
         }),
     },
     // firehose — three control-plane rates whose codes this catalog had bound to a
