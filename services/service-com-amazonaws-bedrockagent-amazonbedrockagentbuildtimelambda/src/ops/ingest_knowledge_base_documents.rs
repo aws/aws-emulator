@@ -10,6 +10,12 @@
 //! ([`crate::state::index_pushed_documents`]). This is the ONLY file to touch
 //! for this operation.
 //!
+//! How many documents ONE request may carry is NOT the `@length` the modelled
+//! contract below states: that published maximum is behind the service on this
+//! path, so the member carries `skip_validation` and both the bound this
+//! operation applies and the sentence a batch outside it is refused with live in
+//! [`crate::state::document_batch`], asked at the top of `handle`.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -164,6 +170,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
+        // The LENGTH of the documents list is this operation's own to judge: the
+        // modelled `@length` maximum is behind the service on this path, so the
+        // member carries `skip_validation` and the bound the front door really
+        // applies is checked here instead (`crate::state::document_batch`).
+        // Before anything the request names is resolved, which is where the
+        // boundary walk this takes the place of ran.
+        if let Some(message) = crate::state::documents_length_refusal(&input.documents) {
+            return Err(
+                IngestKnowledgeBaseDocumentsErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(message),
+                        field_list: None,
+                    },
+                )
+                .into(),
+            );
+        }
+
         let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(
                 IngestKnowledgeBaseDocumentsErrorModeled::InternalServerException(
@@ -184,7 +208,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // store: a data source is identified by the pair, which makes an id of
         // another knowledge base's data source as absent here as one nothing
         // holds.
-        if state.live_knowledge_base(&input.knowledge_base_id).is_none() {
+        let Some(knowledge_base) = state.live_knowledge_base(&input.knowledge_base_id) else {
             return Err(
                 IngestKnowledgeBaseDocumentsErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
@@ -195,7 +219,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
-        }
+        };
+        // Which kind of knowledge base the documents are addressed to, read from
+        // the stored record: the batch a request may carry is bounded by that
+        // kind as well as by the front door's own bound above.
+        let knowledge_base_type = knowledge_base.knowledge_base_configuration.r#type.clone();
         let Some(data_source) =
             state.live_data_source_of(&input.knowledge_base_id, &input.data_source_id)
         else {
@@ -216,6 +244,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // own `DataSourceType`, which names no kind of content at all.
         let content_kind =
             crate::state::ingestible_content_type(&data_source.data_source_configuration);
+
+        // The batch the addressed knowledge base's own KIND takes: a knowledge
+        // base the service manages takes fewer documents per request than the
+        // front door accepts, and states its own sentence for a larger one
+        // rather than a constraint clause.
+        if let Some(message) = crate::state::knowledge_base_batch_refusal(
+            &knowledge_base_type,
+            input.documents.len(),
+        ) {
+            return Err(
+                IngestKnowledgeBaseDocumentsErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(message),
+                        field_list: None,
+                    },
+                )
+                .into(),
+            );
+        }
 
         // `clientToken` is an @idempotencyToken: a repeat of the same request
         // reports the documents it already ingested rather than starting their

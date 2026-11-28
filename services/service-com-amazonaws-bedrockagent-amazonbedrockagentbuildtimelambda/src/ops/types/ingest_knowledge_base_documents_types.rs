@@ -11,7 +11,18 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-bedrockagent-amazonbedrockagentbuildtimelambda.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagent#IngestKnowledgeBaseDocumentsRequest")]
+// `documents` carries `skip_validation`: the `@length` the model declares on
+// `KnowledgeBaseDocuments` (`min 1, max 10`) is NOT the bound this path applies —
+// the front door accepts `crate::state::MAX_DOCUMENTS_PER_REQUEST` documents and
+// refuses a larger batch quoting that bound — so the boundary walk must not refuse
+// a batch the service takes. The bound and the refusal both live in
+// `crate::state::document_batch`, which the handler asks before it does anything
+// else; only this member's own constraints come off the schema, so every nested
+// member of a document is still checked by the walk.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.bedrockagent#IngestKnowledgeBaseDocumentsRequest",
+    skip_validation = ["documents"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct IngestKnowledgeBaseDocumentsInput {
     pub knowledge_base_id: String,

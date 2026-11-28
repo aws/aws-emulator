@@ -12,8 +12,9 @@
 //! the service that owns them, each becomes a document of the data source and a
 //! vector in the index the knowledge base is bound to, and the
 //! `IngestionJobStatistics` the job reports once it completes are measured from
-//! that — a document whose vector the bound store did not take is reported
-//! failed rather than indexed (`crate::state::ingestion`).
+//! that — a document whose metadata could not be parsed, or whose vector the
+//! bound store did not take, is reported failed rather than indexed and named in
+//! the job's `failureReasons` (`crate::state::ingestion`).
 //!
 //! ## Shape of an operation
 //!
@@ -394,8 +395,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // documents it took from the data source's own source, or — for a data
         // source that names no source of its own — the documents pushed into
         // it, which are its source documents. The job reports them once the
-        // clock completes it.
-        let completed_statistics = match crawled {
+        // clock completes it, counters and failure reasons together.
+        let outcome = match crawled {
             Some(crawled) => state.record_ingestion(
                 &input.knowledge_base_id,
                 &input.data_source_id,
@@ -404,13 +405,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 now,
             ),
             None => state
-                .pushed_ingestion_statistics(&input.knowledge_base_id, &input.data_source_id),
+                .pushed_ingestion_outcome(&input.knowledge_base_id, &input.data_source_id),
         };
         // A job whose data source was deleted while the work ran is gone from
         // the store with it, and nothing is put back: the delete is what the
         // caller's next read answers.
         if let Some(record) = state.ingestion_jobs.get_mut(&ingestion_job_id) {
-            record.completed_statistics = completed_statistics;
+            record.completed_statistics = outcome.statistics;
+            record.completed_failure_reasons = outcome.failure_reasons;
         }
 
         Ok(StartIngestionJobOutput { ingestion_job })

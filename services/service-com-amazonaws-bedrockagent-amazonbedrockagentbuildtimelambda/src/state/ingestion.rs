@@ -36,6 +36,19 @@
 //! vectors of this data source's documents out of the bound index, and `RETAIN`
 //! leaves them.
 //!
+//! A source document's own METADATA travels beside it, in the object named
+//! `<key>.metadata.json` ([`METADATA_FILE_SUFFIX`]), and that object has to be
+//! the JSON object a metadata file is. A document whose metadata is not is one
+//! the knowledge base does NOT take in: the job accounts for it under
+//! `numberOfDocumentsFailed` rather than as indexed, writes no document record
+//! and no vector for it, and names it in the job's `failureReasons` — while the
+//! run as a whole still reaches its terminal `COMPLETE` status, because the job
+//! finished; it is the DOCUMENT that failed, not the job. A document the data
+//! source ALREADY held when its metadata broke stays held: the source still
+//! offers it, so nothing deleted it, and the job accounts only for what IT could
+//! not take in — the failed count names the ingestion that did not happen, not a
+//! removal of what an earlier one did.
+//!
 //! A data source whose documents are pushed in through the service's own
 //! document API has no source of its own to enumerate: the documents the store
 //! holds for it ARE its source documents, so they are what such a job scans.
@@ -48,6 +61,40 @@
 use std::collections::HashSet;
 
 use super::*;
+
+/// The `failureReasons` entry a job reports for a source document it refused
+/// because the metadata object beside it is not the JSON object a metadata file
+/// has to be ([`parses_as_metadata`]): the document's own `s3://` URI is the one
+/// variable part, and the rest is fixed text for this class of failure.
+///
+/// The document is NAMED because that is what the modelled `failureReasons`
+/// is for — "a list of reasons that the data ingestion job failed" — and a
+/// client reads it to learn which source object to repair.
+pub fn metadata_parse_failure_reason(uri: &str) -> String {
+    format!(
+        "Error parsing the metadata file for document {uri}. The metadata file must contain \
+         valid JSON."
+    )
+}
+
+/// The `failureReasons` entry a job reports for a source document whose vector
+/// the knowledge base's bound store did not take, so nothing indexed it.
+pub fn unindexed_document_failure_reason(uri: &str) -> String {
+    format!(
+        "Error indexing document {uri}. The document could not be written to the vector store \
+         of the knowledge base."
+    )
+}
+
+/// Whether `body` is the JSON OBJECT a metadata object beside a source document
+/// has to be: a metadata file "must be a JSON object" in the Amazon Bedrock
+/// knowledge-base documentation, which is the rule this applies — a body that is
+/// not parseable JSON at all, and one that parses as any other JSON value, both
+/// carry no attributes and are no metadata file.
+fn parses_as_metadata(body: &[u8]) -> bool {
+    ::serde_json::from_slice::<::serde_json::Value>(body)
+        .is_ok_and(|parsed| parsed.is_object())
+}
 
 /// The suffix of a metadata file: "a metadata file must be named
 /// `<source file name>.metadata.json`" in the Amazon Bedrock knowledge-base
@@ -77,6 +124,17 @@ pub struct SourceDocument {
     /// ([`ingestion_index::leading_chunk`]), which is what a retrieval of this
     /// document answers as its content.
     pub chunk: String,
+    /// Why the knowledge base takes this document in NO further, as the job
+    /// reports it in `failureReasons`; `None` for a document it ingests.
+    ///
+    /// A source document the crawl found but the knowledge base refuses — its
+    /// sibling metadata object is not the JSON object a metadata file is — is
+    /// accounted for as FAILED: no vector is written for it, this job makes it
+    /// no document of the data source, and the job names it among the reasons
+    /// its run did not take everything in. A document an EARLIER job took in is
+    /// still held: the source offers it, so nothing deleted it, and what this
+    /// run failed to do is not a removal of what that one did.
+    pub refusal: Option<String>,
 }
 
 /// What one pass over a data source's source found.
@@ -222,6 +280,10 @@ pub fn crawl_data_source<Eng: Send + Sync + 'static>(
     let s3 = configuration.s3_configuration.as_ref()?;
     let bucket = data_source_bucket(&s3.bucket_arn)?;
     let prefixes = s3.inclusion_prefixes.clone().unwrap_or_default();
+    // "A list of S3 prefixes to include certain files or content": where the
+    // configuration lists any, only the objects under one of them are the data
+    // source's source, and where it lists none the whole bucket is.
+    let included = |key: &str| prefixes.is_empty() || prefixes.iter().any(|p| key.starts_with(p));
     let state = ::service_com_amazonaws_s3_amazons3::state::service_state(engine)?;
     let store = state.lock();
     // A bucket the object store does not hold is a source that holds nothing,
@@ -230,9 +292,23 @@ pub fn crawl_data_source<Eng: Send + Sync + 'static>(
         return Some(CrawledSource::default());
     };
 
+    // A source document's own metadata travels in the sibling object named
+    // `<key>.metadata.json`, and that object has to be the JSON object a
+    // metadata file is: the documents whose metadata is not are collected FIRST,
+    // so each document is read knowing whether the knowledge base takes it in at
+    // all.
+    let refused: HashSet<&str> = held
+        .objects()
+        .filter(|(key, _)| included(key))
+        .filter_map(|(key, object)| {
+            let document = key.strip_suffix(METADATA_FILE_SUFFIX)?;
+            (!parses_as_metadata(&object.body)).then_some(document)
+        })
+        .collect();
+
     let mut crawled = CrawledSource::default();
     for (key, object) in held.objects() {
-        if !prefixes.is_empty() && !prefixes.iter().any(|prefix| key.starts_with(prefix)) {
+        if !included(key) {
             continue;
         }
         if key.ends_with(METADATA_FILE_SUFFIX) {
@@ -243,15 +319,21 @@ pub fn crawl_data_source<Eng: Send + Sync + 'static>(
             crawled.skipped_documents += 1;
             continue;
         }
+        let uri = source_uri(bucket, key);
+        let refusal = refused
+            .contains(key)
+            .then(|| metadata_parse_failure_reason(&uri));
         // The document's text is what its vector is computed from; bytes that
         // are not text carry no terms, so such a document takes the vector a
-        // document with no terms takes.
+        // document with no terms takes. A document the knowledge base refuses is
+        // embedded by nothing, so no vector is computed for it either.
         let text = String::from_utf8_lossy(&object.body);
-        let vector = dimension.map_or_else(Vec::new, |dimension| {
-            document_vector(&text, dimension)
-        });
+        let vector = dimension
+            .filter(|_| refusal.is_none())
+            .map_or_else(Vec::new, |dimension| document_vector(&text, dimension));
         crawled.documents.push(SourceDocument {
-            uri: source_uri(bucket, key),
+            refusal,
+            uri,
             digest: content_digest(&object.body),
             vector,
             // The chunk the index holds beside the vector, so a retrieval of this
@@ -304,6 +386,10 @@ impl IndexedVectors {
 /// Write the chunk of each source document into the index `bound` names, answering
 /// which of them the store really took.
 ///
+/// A document the KNOWLEDGE BASE refused ([`SourceDocument::refusal`]) is NOT
+/// offered to the store at all: its metadata could not be parsed, so the
+/// knowledge base never embedded it and no vector of it belongs in the index.
+///
 /// Every chunk is checked by the OWNING store's own rules before it is held, so
 /// what comes back is what that store holds and nothing else: an index it no longer
 /// holds takes nothing, one that is full takes what it has room for, and one whose
@@ -319,6 +405,7 @@ pub fn index_source_vectors<Eng: Send + Sync + 'static>(
 ) -> IndexedVectors {
     let chunks: Vec<WrittenChunk> = documents
         .iter()
+        .filter(|document| document.refusal.is_none())
         .map(|document| WrittenChunk {
             key: source_vector_key(&document.uri),
             text: document.chunk.clone(),
@@ -458,29 +545,45 @@ fn counted(amount: usize) -> i64 {
     i64::try_from(amount).unwrap_or(i64::MAX)
 }
 
+/// What one ingestion job's run accounted for: the statistics that MEASURE it,
+/// and the reasons the source documents it did not take in were refused.
+///
+/// The two travel together because they are one reading of one run: every
+/// document counted under `numberOfDocumentsFailed` is a document the job names
+/// a reason for, so the modelled `failureReasons` and the modelled statistics
+/// cannot disagree about what happened.
+#[derive(Debug, Clone, Default)]
+pub struct IngestionOutcome {
+    pub statistics: IngestionJobStatistics,
+    pub failure_reasons: Vec<String>,
+}
+
 impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
-    /// The statistics of an ingestion job over a data source that names no
+    /// The outcome of an ingestion job over a data source that names no
     /// source of its own to enumerate.
     ///
     /// The documents the store holds for it ARE its source documents — they were
     /// pushed in through the service's own document API — so the job scans them
     /// and finds each of them unchanged: nothing about them is new, modified or
-    /// gone.
-    pub fn pushed_ingestion_statistics(
+    /// gone, and nothing failed.
+    pub fn pushed_ingestion_outcome(
         &self,
         knowledge_base_id: &str,
         data_source_id: &str,
-    ) -> IngestionJobStatistics {
-        IngestionJobStatistics {
-            number_of_documents_scanned: counted(
-                self.document_count(knowledge_base_id, data_source_id),
-            ),
-            ..IngestionJobStatistics::default()
+    ) -> IngestionOutcome {
+        IngestionOutcome {
+            statistics: IngestionJobStatistics {
+                number_of_documents_scanned: counted(
+                    self.document_count(knowledge_base_id, data_source_id),
+                ),
+                ..IngestionJobStatistics::default()
+            },
+            failure_reasons: Vec::new(),
         }
     }
 
     /// Record what an ingestion job over `(knowledge_base_id, data_source_id)`
-    /// found, answering the statistics that measure it.
+    /// found, answering the outcome that measures it.
     ///
     /// A source document the data source did not hold is NEW and becomes one of
     /// its documents; one it held whose content has changed since is MODIFIED
@@ -489,10 +592,14 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
     /// DELETED and leaves the store. A source document the crawl could not take
     /// in is SKIPPED.
     ///
-    /// A document whose vector the bound store did NOT take (`indexed`) is
-    /// FAILED: it is not indexed, so it does not become a document of the data
-    /// source and no counter claims it was. That is what keeps every counter a
-    /// statement about work that really happened.
+    /// A document nothing indexed is FAILED, whichever of the two refused it —
+    /// the knowledge base, because the metadata beside the document could not be
+    /// parsed ([`SourceDocument::refusal`]), or the bound vector store, because
+    /// it did not take the document's vector (`indexed`). Either way THIS run
+    /// did not index it, so no counter claims it did and the job names it in its
+    /// `failureReasons`; a record an earlier run wrote for that document is left
+    /// where it is, because the source still offers the document. That is what
+    /// keeps every counter a statement about work that really happened.
     pub fn record_ingestion(
         &mut self,
         knowledge_base_id: &str,
@@ -500,7 +607,7 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
         crawled: &CrawledSource,
         indexed: &IndexedVectors,
         now: SystemTime,
-    ) -> IngestionJobStatistics {
+    ) -> IngestionOutcome {
         let mut statistics = IngestionJobStatistics {
             number_of_documents_scanned: counted(
                 crawled.documents.len() + crawled.skipped_documents,
@@ -509,9 +616,19 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
             number_of_documents_skipped: counted(crawled.skipped_documents),
             ..IngestionJobStatistics::default()
         };
+        let mut failure_reasons: Vec<String> = Vec::new();
 
         let taken = indexed.taken();
         for document in &crawled.documents {
+            // The knowledge base refused the document itself, so nothing was
+            // offered to the store for it. A record an earlier job wrote for it
+            // stays: this run took the document no further, which is not the
+            // same as the source no longer offering it.
+            if let Some(refusal) = &document.refusal {
+                statistics.number_of_documents_failed += 1;
+                failure_reasons.push(refusal.clone());
+                continue;
+            }
             if taken
                 .as_ref()
                 .is_some_and(|taken| !taken.contains(document.uri.as_str()))
@@ -519,6 +636,7 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
                 // The vector store refused this document's vector, so nothing
                 // indexed it.
                 statistics.number_of_documents_failed += 1;
+                failure_reasons.push(unindexed_document_failure_reason(&document.uri));
                 continue;
             }
             let key = DocumentKey::S3(document.uri.clone());
@@ -606,7 +724,10 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
             self.documents.remove(&index);
         }
 
-        statistics
+        IngestionOutcome {
+            statistics,
+            failure_reasons,
+        }
     }
 
     /// Where every document of `(knowledge_base_id, data_source_id)` that an

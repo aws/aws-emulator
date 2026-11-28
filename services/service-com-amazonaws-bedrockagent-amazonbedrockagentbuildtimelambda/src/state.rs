@@ -188,6 +188,10 @@ mod opensearch_serverless_store;
 /// base's bound vector index, and what takes it back out again.
 mod pushed_documents;
 
+/// How many documents ONE `IngestKnowledgeBaseDocuments` request may carry, and
+/// how a refusal of a batch outside that bound quotes the documents it carried.
+mod document_batch;
+
 /// The service role a knowledge base acts as, resolved against the account's own
 /// IAM records.
 mod service_role;
@@ -232,6 +236,7 @@ mod published_enum_value_sets;
 
 pub use bound_vector_index::*;
 pub use data_source_listing::*;
+pub use document_batch::*;
 pub use flow_aliases::*;
 pub use flow_listing::*;
 pub use ingestion::*;
@@ -2256,6 +2261,15 @@ pub struct IngestionJobRecord {
     /// what a job still in flight reports is the modelled defaults, and the
     /// measured counts take their place at the instant the clock completes it.
     pub completed_statistics: IngestionJobStatistics,
+    /// The reasons the job's run refused the source documents it did not take
+    /// in, which it reports once it has finished.
+    ///
+    /// Published at the same instant [`Self::completed_statistics`] is, and for
+    /// the same reason: the modelled `failureReasons` is this run's account of
+    /// what it could not ingest, so a job still in flight reports none and the
+    /// measured reasons take their place when the clock completes it. Every
+    /// entry names a document the measured statistics count as failed.
+    pub completed_failure_reasons: Vec<String>,
     /// Reasons the job failed; empty while nothing has failed.
     pub failure_reasons: Vec<String>,
     pub started_at: SystemTime,
@@ -2293,6 +2307,8 @@ impl IngestionJobRecord {
             // What the run measures is written here once the work is done; a
             // job that measured nothing reports the defaults.
             completed_statistics: IngestionJobStatistics::default(),
+            // What the run refused is written here with what it measured.
+            completed_failure_reasons: Vec::new(),
             // Nothing has failed on a job this call just started.
             failure_reasons: Vec::new(),
             started_at: now,
@@ -3463,8 +3479,10 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
                 if next == IngestionJobStatus::Complete {
                     job.text_ready_at = Some(due);
                     // The run is over, so what it measured is what the job
-                    // reports from here on.
+                    // reports from here on — the counters and the reasons the
+                    // documents it refused were not indexed alike.
                     job.statistics = job.completed_statistics.clone();
+                    job.failure_reasons = job.completed_failure_reasons.clone();
                 }
                 job.pending_status = next
                     .owed_next()
