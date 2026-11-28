@@ -595,6 +595,10 @@ class DataFrameWriter(object):
     part files of the rows whose values those are. The partition columns are in the
     directories rather than in the files, which is what a read of the output resolves them
     from again.
+
+    What a write does with an output ALREADY at that destination is its SAVE MODE's
+    ([`mode`], [`_committed`]): every write of this class goes through that, so a path write
+    and a table write treat what is there the same way.
     """
 
     def __init__(self, frame):
@@ -685,6 +689,46 @@ class DataFrameWriter(object):
             grouped[within].append(row)
         return [(within, grouped[within]) for within in order]
 
+    def _committed(self, kind, path, mode=None):
+        """Write this dataset out at `path`, as the save mode in force treats what is THERE.
+
+        "Specifies the behavior when data or table already exists" (`DataFrameWriter.mode`),
+        and what is already at a destination is the objects under it — whatever wrote them,
+        and whether or not anything registered a table over them. So `overwrite` REPLACES
+        them: the objects the destination holds are DELETED before this write's own are
+        committed, which is what makes a second overwrite write of one output leave exactly
+        one copy of its rows instead of a copy beside the one already there. `append` leaves
+        this write's parts beside them ([`_write`]'s `part_offset`), `ignore` leaves the
+        output as it stands and writes nothing, and the refusing modes fail the write naming
+        the destination. A destination holding nothing is the first write of it, whichever
+        mode it names.
+
+        `mode` is the mode to honour where the caller resolves one against something else as
+        well ([`saveAsTable`]), and defaults to the one the write itself names. The answer is
+        [`_write`]'s — the directories the rows were laid under — or None for a write a mode
+        left undone.
+        """
+        if path is None:
+            raise AnalysisException("a write names no path")
+        prefix = filesystem._text(path).rstrip("/")
+        held = mode or self._mode
+        stored = filesystem.list_objects(prefix)
+        if not stored:
+            return self._write(kind, prefix)
+        if held in REFUSING_MODES:
+            raise AnalysisException("path %s already exists." % (prefix,))
+        if held == "ignore":
+            return None
+        if held == "append":
+            return self._write(
+                kind, prefix, len([key for key, _size in stored if not _hidden(key)])
+            )
+        bucket, _key = filesystem.prefix_of(prefix)
+        store = filesystem.FileSystem.get(prefix)
+        for key, _size in stored:
+            store.delete(filesystem.uri(bucket, key))
+        return self._write(kind, prefix)
+
     def _write(self, kind, path, part_offset=0):
         if path is None:
             raise AnalysisException("a write names no path")
@@ -756,17 +800,17 @@ class DataFrameWriter(object):
 
     def csv(self, path, **named):
         self.options(**named)
-        self._write("csv", path)
+        self._committed("csv", path)
         return None
 
     def text(self, path, **named):
         self.options(**named)
-        self._write("text", path)
+        self._committed("text", path)
         return None
 
     def json(self, path, **named):
         self.options(**named)
-        self._write("json", path)
+        self._committed("json", path)
         return None
 
     def parquet(self, path, mode=None, partitionBy=None, compression=None, **named):
@@ -777,7 +821,7 @@ class DataFrameWriter(object):
         if compression is not None:
             self.option("compression", compression)
         self.options(**named)
-        self._write("parquet", path)
+        self._committed("parquet", path)
         return None
 
     def save(self, path=None, format=None, mode=None, partitionBy=None, **named):
@@ -788,7 +832,7 @@ class DataFrameWriter(object):
         if partitionBy is not None:
             self.partitionBy(partitionBy)
         self.options(**named)
-        self._write(self._format or "parquet", path)
+        self._committed(self._format or "parquet", path)
         return None
 
     def saveAsTable(self, name, format=None, mode=None, partitionBy=None, **named):
@@ -810,7 +854,10 @@ class DataFrameWriter(object):
 
         The `mode` decides what a table that is ALREADY there means: the default fails,
         `ignore` leaves it alone, `overwrite` replaces its data and its definition, and
-        `append` adds this dataset's rows to it.
+        `append` adds this dataset's rows to it. A table the catalog holds NONE of is created
+        here, and the data it is created with is this dataset: the location's own output is
+        replaced, so a write whose earlier attempt left files under that location registers a
+        table holding one copy of these rows rather than those files as well.
         """
         if format is not None:
             self.format(format)
@@ -860,27 +907,18 @@ class DataFrameWriter(object):
             column for column in self._frame.columns if column not in self._partitions
         ]
         types = dict(self._frame.dtypes)
-        offset = 0
-        if self._mode == "append":
-            # An append leaves this dataset's parts BESIDE the ones already under the
-            # table's location rather than over them, so the table holds both.
-            offset = len(
-                [
-                    stored
-                    for stored, _size in filesystem.list_objects(location)
-                    if not _hidden(stored)
-                ]
-            )
-        elif self._mode == "overwrite" and existing is not None:
-            # "Overwrite mode means that when saving a DataFrame to a data source, if
-            # data/table already exists, existing data is expected to be overwritten by the
-            # contents of the DataFrame": the objects the table held are removed before its
-            # new ones are written, so the table's data is this dataset and not both.
-            bucket, _prefix = filesystem.prefix_of(location)
-            store = filesystem.FileSystem.get(location)
-            for stored, _size in filesystem.list_objects(location):
-                store.delete(filesystem.uri(bucket, stored))
-        written = self._write(kind, location, offset)
+        # WHAT the write then does with an output already at that location follows from the
+        # TABLE: a table the catalog HOLDS is added to by an append — this dataset's parts go
+        # beside the ones already there, so the table holds both — and replaced by anything
+        # else, "existing data is expected to be overwritten by the contents of the
+        # DataFrame". A table the catalog holds NONE of is being created here, so its data is
+        # this dataset alone: whatever an earlier write left under the location is replaced
+        # rather than served as rows of the table now being registered over it.
+        written = self._committed(
+            kind,
+            location,
+            "append" if (self._mode == "append" and existing is not None) else "overwrite",
+        )
         definition = catalog.table_definition(
             table_name,
             held,
