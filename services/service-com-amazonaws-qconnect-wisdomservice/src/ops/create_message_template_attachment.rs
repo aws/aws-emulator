@@ -238,7 +238,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::not_implemented("CreateMessageTemplateAttachment")
         })?;
         let region = crate::state::request_region(&ctx.parts().headers);
-        let host = crate::state::request_endpoint_host(&ctx.parts().headers, &region);
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -365,12 +364,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "could not mint a unique attachmentId; retry the request".to_string(),
             ));
         };
-        let url = crate::state::message_template_attachment_url(
-            &host,
+        // Where the file is downloaded from. The URL is SIGNED, so the read it admits is
+        // one this emulator issued a credential for (see
+        // `crate::state::sign_data_plane_url`), and the signature's own expiry is what the
+        // attachment reports as `urlExpiry`.
+        let attachment_path = crate::state::message_template_attachment_path(
             &knowledge_base_id,
             &message_template_id,
             &attachment_id,
         );
+        let Some(signed) = crate::state::sign_data_plane_url(
+            &ctx.url_signer(),
+            ::http::Method::GET,
+            &region,
+            &attachment_path,
+            ::std::time::Duration::from_secs(
+                crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+            ),
+        ) else {
+            // As in `CreateContent`: nothing the caller sent can make the signer refuse,
+            // so this is an emulator-side failure, reported the way this handler reports
+            // the id mint above — the operation's own input error, worded as the retry it
+            // is, rather than a locator nothing could verify.
+            return Err(validation(
+                "could not sign the attachment's download URL; retry the request".to_string(),
+            ));
+        };
         let Some(stored) = store.message_template_mut(&knowledge_base_id, &message_template_id)
         else {
             // Unreachable: the lookups above found this record while the lock is held.
@@ -384,11 +403,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: input.name.clone(),
             content_disposition: input.content_disposition.clone(),
             uploaded_at: now,
-            url,
-            url_expiry: now
-                + ::std::time::Duration::from_secs(
-                    crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
-                ),
+            url: signed.url,
+            url_expiry: signed.expires_at,
             body: file,
         });
         // The attachments are part of what the template's content checksum is calculated

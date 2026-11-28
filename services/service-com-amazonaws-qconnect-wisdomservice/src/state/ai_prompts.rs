@@ -115,6 +115,11 @@ impl AiPrompt {
             // structure the caller never sent.
             inference_configuration: self.inference_configuration.clone(),
             modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            // The same instant `modifiedTime` renders and the Region the record's own ARN
+            // names: both members report when and where this prompt was last modified
+            // (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.ai_prompt_arn),
             description: self.description.clone(),
             visibility_status: self.visibility_status.clone(),
             tags: tags_out(&self.tags),
@@ -149,6 +154,10 @@ impl AiPrompt {
             model_id: self.model_id.clone(),
             api_format: self.api_format.clone(),
             modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            // As on the data shape: the instant the record was last written, and the
+            // Region its ARN names.
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.ai_prompt_arn),
             description: self.description.clone(),
             visibility_status: self.visibility_status.clone(),
             tags: tags_out(&self.tags),

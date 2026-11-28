@@ -36,5 +36,7 @@ pub struct AssistantAssociationSummary {
     pub association_type: String,
     pub association_data: AssistantAssociationOutputData,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 

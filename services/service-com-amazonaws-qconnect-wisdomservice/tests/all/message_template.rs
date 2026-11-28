@@ -1826,14 +1826,15 @@ async fn an_upload_persists_the_attachment_and_its_url_serves_the_file() {
             uploaded.string("/attachment/contentDisposition")
         );
         let url = uploaded.string("/attachment/url");
-        assert_eq!(
-            url,
-            format!(
-                "https://wisdom.{REGION}.amazonaws.com/knowledgeBases/{knowledge_base_id}\
-                 /messageTemplates/{message_template_id}/attachments/{attachment_id}/file"
+        super::content_upload::assert_signed_plane_url(
+            case,
+            &url,
+            &format!(
+                "/knowledgeBases/{knowledge_base_id}/messageTemplates/{message_template_id}\
+                 /attachments/{attachment_id}/file"
             ),
-            "case {case:?}: the url must address this attachment at the endpoint the caller \
-             reached, got {url:?}"
+            DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+            REGION,
         );
         // Both instants are derived from the one instant the upload happened at, so the
         // url expires exactly the store's time to live after the file was uploaded.
@@ -1849,10 +1850,15 @@ async fn an_upload_persists_the_attachment_and_its_url_serves_the_file() {
             );
         };
         let time_to_live = (DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60) as f64;
+        // The signature the url carries is minted at a WHOLE second — SigV4 dates carry no
+        // fraction — so the expiry is the time to live after the second the upload
+        // happened in: at most the time to live after `uploadedTime`, and less than one
+        // second short of it.
+        let after_the_upload = url_expiry - uploaded_time;
         assert!(
-            (url_expiry - uploaded_time - time_to_live).abs() < 0.001,
-            "case {case:?}: the url must expire {time_to_live} seconds after the upload at \
-             {uploaded_time}, got {url_expiry}"
+            after_the_upload > time_to_live - 1.0 && after_the_upload <= time_to_live,
+            "case {case:?}: the url must expire {time_to_live} seconds after the whole second \
+             the upload at {uploaded_time} was signed in, got {url_expiry}"
         );
 
         // Every read of the template reports exactly that attachment — by bare id, by ARN

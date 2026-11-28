@@ -43,27 +43,27 @@
 //! ## The content-upload plane
 //!
 //! `StartContentUpload` hands out a URL, and a URL is a promise that it can be
-//! FOLLOWED. The URL it mints (`crate::state::content_upload_url`) addresses the
-//! endpoint the caller reached, under the upload's own path
+//! FOLLOWED. The URL it mints is SIGNED by this emulator
+//! (`crate::state::sign_data_plane_url`) for the upload's own path
 //! (`/knowledgeBases/<knowledgeBaseId>/uploads/<uploadId>`) — a path the model binds no
 //! operation to, so it reaches this file twice:
 //!
 //! - [`Service::can_handle`] claims a request to an upload path naming an upload THIS
 //!   store holds, so following the URL routes back here even when nothing else in the
-//!   request names a service (an upload URL is followed WITHOUT a signature, as a
-//!   presigned URL is, and a loopback endpoint host names no service at all).
-//! - [`Service::override_routing_error`] serves it: that seam is reached BEFORE
-//!   authentication precisely for requests that name no modelled operation, which is
-//!   what makes an unsigned `PUT` to a minted URL work.
+//!   request names a service (a loopback endpoint host names no service at all).
+//! - [`Service::override_operation`] names the operation that serves it (`data_plane`).
+//!   That seam is resolved BEFORE the router authenticates the request, so the request is
+//!   authenticated against the scheme that operation declares — which is what puts the
+//!   plane behind the same signature verification a modelled operation is behind, and why
+//!   the URL carries one.
 //!
 //! ## The message-template attachment plane
 //!
 //! `CreateMessageTemplateAttachment` answers with "a pre-signed Amazon S3 URL that can be
-//! used to download the attachment file", which is the same promise: the URL it mints
-//! (`crate::state::message_template_attachment_url`) addresses the endpoint the caller
-//! reached, one segment deeper than the modelled route for the attachment itself, and is
-//! claimed and served by the two seams below exactly as the content-asset URL is. A `GET`
-//! answers the file the upload carried and changes nothing.
+//! used to download the attachment file", which is the same promise: the URL it mints is
+//! signed the same way, one segment deeper than the modelled route for the attachment
+//! itself, and is claimed and served by the same two seams as the content-asset URL. A
+//! `GET` answers the file the upload carried and changes nothing.
 //!
 //! The plane writes ONLY the upload the URL names — the bytes, bounded both per body
 //! (`crate::state::MAX_CONTENT_UPLOAD_BYTES`) and across every written body this store
@@ -77,6 +77,10 @@ use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse,
 use aws_smithy_types::body::SdkBody;
 use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service, ViolationKind};
 use std::sync::Arc;
+
+/// The data planes this service publishes URLs into, served behind the emulator's own
+/// authentication.
+mod data_plane;
 
 /// The error code this endpoint answers a request the boundary in front of the service
 /// refuses with: `BadRequestException`, HTTP 400.
@@ -255,6 +259,12 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// `override_operation` hands back a borrowed operation, so the one it may name has
     /// to live as long as the service.
     create_session_authorization: crate::ops::create_session::CreateSessionAuthorization<Eng>,
+    /// The three data planes this service publishes URLs into — the content-upload slot,
+    /// a content's asset and a message-template attachment's file — as the one
+    /// author-written operation that serves them. Held here for the same reason
+    /// `create_session_authorization` is: [`Service::override_operation`] hands back a
+    /// borrowed operation, so the one it may name has to live as long as the service.
+    content_data_plane: data_plane::ContentDataPlane<Eng>,
     /// This service's wire protocol: `restJson1`, with the timestamp members this model
     /// declares `@timestampFormat("date-time")` on ([`DATE_TIME_MEMBERS`]) carried in that
     /// declared form.
@@ -268,9 +278,9 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     protocol: ::service_common::date_time_json::DateTimeRestJson,
     /// The SAME shared engine the generated entry threads into every operation.
     ///
-    /// Held here because the content-upload plane is served from
-    /// [`Service::can_handle`] and [`Service::override_routing_error`], neither of which
-    /// is an operation with a `self.engine` of its own; both must read the one store
+    /// Held here because [`Service::can_handle`] decides whether this view holds the
+    /// upload, content or attachment a request's path names, and that seam is not an
+    /// operation with a `self.engine` of its own; it must read the one store
     /// `StartContentUpload` writes, not a second copy.
     engine: Arc<Eng>,
 }
@@ -283,6 +293,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             create_session_authorization:
                 crate::ops::create_session::CreateSessionAuthorization::new(Arc::clone(&engine)),
+            content_data_plane: data_plane::ContentDataPlane::new(Arc::clone(&engine)),
             protocol: ::service_common::date_time_json::DateTimeRestJson::for_members(
                 DATE_TIME_MEMBERS,
             ),
@@ -294,11 +305,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// Whether this request FOLLOWS an upload URL this service handed out: its path is
     /// one the upload plane publishes and it names an upload THIS store holds.
     ///
-    /// The id in the path is the receipt: it was minted by this store, is unguessable,
-    /// and expires. That is what makes the claim UNAMBIGUOUS — the legacy Amazon Connect
-    /// Wisdom view of this one endpoint mints its upload ids into its own store, so
-    /// exactly the view that handed a URL out claims a request following it, whatever
-    /// endpoint host or credential scope that request carries. Claiming every path of
+    /// The id in the path is what makes the CLAIM unambiguous: it was minted by this
+    /// store, so the legacy Amazon Connect Wisdom view of this one endpoint — which mints
+    /// its upload ids into its own store — claims only the URLs it handed out, and exactly
+    /// the view that handed a URL out claims a request following it, whatever endpoint host
+    /// or credential scope that request carries. What ADMITS the request is the signature
+    /// in the URL's own query, which the router verifies before the plane runs (see
+    /// `data_plane`); this decides only which service answers. Claiming every path of
     /// this shape instead would make both views claim it and the router refuse the
     /// request as `500 AmbiguousService`; the cost is that an upload URL this emulator
     /// never handed out is claimed by nobody and gets the router's own unknown-endpoint
@@ -311,99 +324,14 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         store.content_upload(&target.upload_id).is_some()
     }
 
-    /// Serve one request to a published upload URL.
-    ///
-    /// A `PUT` writes the asset into the upload the URL names — which is the only thing
-    /// the plane can touch — and is refused when the URL is no longer usable, when the
-    /// request does not carry the headers the start call published, or when the body is
-    /// larger than this emulator stores. The upload, the knowledge base it was started
-    /// under and the id in the path must all agree: a path that crosses one knowledge
-    /// base with another's upload names nothing.
-    fn serve_content_upload(
-        &self,
-        req: &RtRequest,
-        target: &crate::state::ContentUploadTarget,
-    ) -> RtResponse {
-        if req.method() != "PUT" {
-            return upload_error(
-                405,
-                "MethodNotAllowed",
-                "This upload URL is written by a single PUT",
-            );
-        }
-        let Some(state) = crate::state::service_state(&*self.engine) else {
-            return upload_error(
-                500,
-                "InternalServerException",
-                "the content-upload store is unavailable",
-            );
-        };
-        let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-
-        let resolved_knowledge_base = crate::state::resolve_id(&target.knowledge_base_label);
-        let names_this_upload = store
-            .content_upload(&target.upload_id)
-            .is_some_and(|upload| resolved_knowledge_base == upload.knowledge_base_id);
-        if !names_this_upload {
-            return upload_error(404, "NoSuchUpload", UPLOAD_NOT_FOUND_MESSAGE);
-        }
-        // The URL stops being usable at its `urlExpiry`, so a late PUT is refused — and
-        // the slot it named is reclaimed here, because the clock already owed it back.
-        if store
-            .content_upload(&target.upload_id)
-            .is_some_and(|upload| upload.has_expired(now))
-        {
-            store.reclaim_expired_content_uploads(now);
-            return upload_error(403, "AccessDenied", UPLOAD_EXPIRED_MESSAGE);
-        }
-        // `headersToInclude` is what the start call told the caller to send, so a write
-        // that does not carry them is refused rather than stored.
-        let headers_satisfied = store
-            .content_upload(&target.upload_id)
-            .is_some_and(|upload| {
-                upload.headers_satisfied(|name| {
-                    req.headers()
-                        .get(name)
-                        .map(::std::string::ToString::to_string)
-                })
-            });
-        if !headers_satisfied {
-            return upload_error(403, "AccessDenied", UPLOAD_HEADERS_MESSAGE);
-        }
-        let body = req.body().bytes().unwrap_or_default();
-        if body.len() > crate::state::MAX_CONTENT_UPLOAD_BYTES {
-            return upload_error(413, "EntityTooLarge", UPLOAD_TOO_LARGE_MESSAGE);
-        }
-        // The written bodies this store holds are bounded in AGGREGATE as well as one by
-        // one (`crate::state::MAX_PENDING_UPLOAD_BYTES`), so a caller that opens many
-        // uploads cannot hold the product of the two ceilings in this process's heap. A
-        // write there is no room for stores nothing: the slot keeps the body it had.
-        if !store.write_content_upload_body(&target.upload_id, body.to_vec()) {
-            return upload_error(413, "EntityTooLarge", UPLOAD_STORE_FULL_MESSAGE);
-        }
-        let Some(upload) = store.content_upload_mut(&target.upload_id) else {
-            // Unreachable: the lookups above found it while this lock is held.
-            return upload_error(404, "NoSuchUpload", UPLOAD_NOT_FOUND_MESSAGE);
-        };
-        upload.received_at = Some(now);
-
-        let mut resp = RtResponse::new(
-            StatusCode::try_from(200u16).expect("200 is a valid status"),
-            SdkBody::empty(),
-        );
-        resp.headers_mut().insert("content-length", "0");
-        resp
-    }
-
     /// Whether this request FOLLOWS an attachment URL this service handed out: its path is
     /// one the attachment plane publishes and it names an attachment THIS store holds — on
     /// the template's working copy or in a version it published, which is every record a
     /// locator this service handed out can still address.
     ///
     /// The same rule as [`Self::holds_content_upload`], and for the same reason: the
-    /// minted attachment id in the path is the receipt, so exactly the view that handed
-    /// the URL out claims a request following it.
+    /// minted attachment id in the path was minted by THIS store, so exactly the view that
+    /// handed the URL out claims a request following it.
     fn holds_message_template_attachment(
         &self,
         target: &crate::state::MessageTemplateAttachmentTarget,
@@ -423,98 +351,12 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             .is_some()
     }
 
-    /// Serve one request to a published attachment URL.
-    ///
-    /// A `GET` answers the file `CreateMessageTemplateAttachment` stored on the message
-    /// template the URL names — which is the only thing the plane can touch, and it
-    /// changes nothing — and is refused when the attachment's `urlExpiry` has passed. The
-    /// attachment, the template that holds it and the knowledge base that holds the
-    /// template must all agree: a path that crosses one template with another's attachment
-    /// names nothing. A file only a published version still carries is served too, since
-    /// `DeleteMessageTemplateAttachment` leaves every published version's attachments as
-    /// they were.
-    fn serve_message_template_attachment(
-        &self,
-        req: &RtRequest,
-        target: &crate::state::MessageTemplateAttachmentTarget,
-    ) -> RtResponse {
-        if req.method() != "GET" {
-            return upload_error(
-                405,
-                "MethodNotAllowed",
-                "This attachment URL is read by a single GET",
-            );
-        }
-        let Some(state) = crate::state::service_state(&*self.engine) else {
-            return upload_error(
-                500,
-                "InternalServerException",
-                "the message-template store is unavailable",
-            );
-        };
-        let now = ::std::time::SystemTime::now();
-        let store = state.lock();
-        let knowledge_base_id = crate::state::resolve_id(&target.knowledge_base_label);
-        let message_template_id = crate::state::resolve_id(&target.message_template_label);
-        let Some(attachment) = store.stored_message_template_attachment(
-            knowledge_base_id,
-            message_template_id,
-            &target.attachment_id,
-        ) else {
-            return upload_error(404, "NoSuchKey", ATTACHMENT_NOT_FOUND_MESSAGE);
-        };
-        // The URL stops being usable at the `urlExpiry` every read of the template
-        // reports, so a late GET is refused rather than served: what the plane honours and
-        // what a read publishes are the one stored instant.
-        if attachment.has_expired_url(now) {
-            return upload_error(403, "AccessDenied", UPLOAD_EXPIRED_MESSAGE);
-        }
-        let mut resp = RtResponse::new(
-            StatusCode::try_from(200u16).expect("200 is a valid status"),
-            SdkBody::from(attachment.body.clone()),
-        );
-        // The model carries no media type for an attachment file, so the plane claims
-        // none: the bytes are served as the generic binary type, with the presentation the
-        // upload gave. The presentation and the file NAME are both stored values that came
-        // from a request, and a header's text is visible ASCII, so each is written only
-        // when it is text a header may carry: a name of other scripts is served under the
-        // presentation alone, and a presentation that is not header text under the fixed
-        // [`ATTACHMENT_DISPOSITION`] — never as raw bytes in a header, and never through a
-        // path that could unwind this request.
-        resp.headers_mut()
-            .insert("content-type", GENERIC_ASSET_CONTENT_TYPE);
-        let presentation = attachment.content_disposition.to_ascii_lowercase();
-        let presentation = if header_safe_text(&presentation) {
-            presentation
-        } else {
-            ATTACHMENT_DISPOSITION.to_string()
-        };
-        let disposition = if header_safe_text(&attachment.name) {
-            format!("{presentation}; filename=\"{}\"", attachment.name)
-        } else {
-            presentation
-        };
-        if resp
-            .headers_mut()
-            .try_insert("content-disposition", disposition)
-            .is_err()
-        {
-            // Unreachable: every part of the value above is header text. The module's own
-            // constant is served rather than unwinding this request.
-            resp.headers_mut()
-                .insert("content-disposition", ATTACHMENT_DISPOSITION);
-        }
-        resp.headers_mut()
-            .insert("content-length", attachment.body.len().to_string());
-        resp
-    }
-
     /// Whether this request FOLLOWS a content-asset URL this service handed out: its path
     /// is one the asset plane publishes and it names a content THIS store holds.
     ///
     /// The same rule as [`Self::holds_content_upload`], and for the same reason: the id in
-    /// the path is the receipt, so exactly the view that handed the URL out claims a
-    /// request following it.
+    /// the path was minted by THIS store, so exactly the view that handed the URL out
+    /// claims a request following it.
     fn holds_content(&self, target: &crate::state::ContentAssetTarget) -> bool {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return false;
@@ -524,65 +366,6 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         store.content(knowledge_base_id, &target.content_id).is_some()
     }
 
-    /// Serve one request to a published content-asset URL.
-    ///
-    /// A `GET` answers the bytes `CreateContent` finalized into the content the URL names
-    /// — which is the only thing the plane can touch, and it changes nothing — and is
-    /// refused when the content's `urlExpiry` has passed. The content, the knowledge base
-    /// it lives in and the id in the path must all agree: a path that crosses one
-    /// knowledge base with another's content names nothing.
-    fn serve_content_asset(
-        &self,
-        req: &RtRequest,
-        target: &crate::state::ContentAssetTarget,
-    ) -> RtResponse {
-        if req.method() != "GET" {
-            return upload_error(
-                405,
-                "MethodNotAllowed",
-                "This content URL is read by a single GET",
-            );
-        }
-        let Some(state) = crate::state::service_state(&*self.engine) else {
-            return upload_error(
-                500,
-                "InternalServerException",
-                "the content store is unavailable",
-            );
-        };
-        let now = ::std::time::SystemTime::now();
-        let store = state.lock();
-        let knowledge_base_id = crate::state::resolve_id(&target.knowledge_base_label);
-        let Some(content) = store.content(knowledge_base_id, &target.content_id) else {
-            return upload_error(404, "NoSuchKey", ASSET_NOT_FOUND_MESSAGE);
-        };
-        // The URL stops being usable at the `urlExpiry` every read of the content
-        // reports, so a late GET is refused rather than served: what the plane honours
-        // and what a read publishes are the one stored instant.
-        if content.has_expired_url(now) {
-            return upload_error(403, "AccessDenied", UPLOAD_EXPIRED_MESSAGE);
-        }
-        let mut resp = RtResponse::new(
-            StatusCode::try_from(200u16).expect("200 is a valid status"),
-            SdkBody::from(content.body.clone()),
-        );
-        // The media type is a STORED value that came from a request, so it is written
-        // with the fallible insert: a stored string no header may carry (a byte outside
-        // visible ASCII, a line break) falls back to the generic binary type rather than
-        // unwinding this request, which arrives with no credential and is served before
-        // authentication. The length is this process's own number.
-        if resp
-            .headers_mut()
-            .try_insert("content-type", content.content_type.clone())
-            .is_err()
-        {
-            resp.headers_mut()
-                .insert("content-type", GENERIC_ASSET_CONTENT_TYPE);
-        }
-        resp.headers_mut()
-            .insert("content-length", content.body.len().to_string());
-        resp
-    }
 }
 
 impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
@@ -617,10 +400,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // contends for nothing. See `claims_endpoint_traffic`.
         //
         // A request that FOLLOWS an upload URL this service handed out is claimed by the
-        // store that minted it, whatever else the request carries: it has no signature
-        // and its endpoint host may name no service at all, so the route key cannot
-        // route it. The upload path binds no modelled operation, so nothing modelled is
-        // diverted here. See [`Self::holds_content_upload`].
+        // store that minted it, whatever else the request carries: its credential travels
+        // in the URL's own query rather than in a header, and its endpoint host may name
+        // no service at all, so the route key cannot route it. The upload path binds no
+        // modelled operation, so nothing modelled is diverted here. See
+        // [`Self::holds_content_upload`].
         if let Some(target) = crate::state::parse_content_upload_path(parts.uri.path()) {
             return self.holds_content_upload(&target);
         }
@@ -680,6 +464,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         //
         // The routing key is resolved through the generated table's own protocol, so
         // this names no route pattern of its own.
+        //
+        // The data planes are named here too, and for a different reason: a request that
+        // FOLLOWS one of the URLs this service hands out binds no modelled operation, so
+        // the routing table resolves nothing for it. Naming the plane operation here —
+        // rather than answering the request from `override_routing_error`, which the
+        // router serves BEFORE it authenticates — is what puts those paths behind the
+        // emulator's own signature verification. See `data_plane`.
+        let path = request_path(req.uri());
+        if data_plane::ContentDataPlane::<Eng>::serves(path) {
+            return Some(&self.content_data_plane as &dyn ErasedOperation);
+        }
         let routing_key = self.definition().protocol().routing_key(req).ok()?;
         self.create_session_authorization
             .refuses(routing_key, req)
@@ -733,19 +528,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
         // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501).
         //
-        // A request to an upload URL this service handed out is exactly that case by
-        // construction — the model binds no operation to the upload path — so this is
-        // where `StartContentUpload`'s URL is served, and the content-asset path the same
-        // way. Anything else keeps the framework's default.
-        let path = request_path(req.uri());
-        if let Some(target) = crate::state::parse_content_upload_path(path) {
-            return Some(self.serve_content_upload(req, &target));
-        }
-        if let Some(target) = crate::state::parse_content_asset_path(path) {
-            return Some(self.serve_content_asset(req, &target));
-        }
-        let target = crate::state::parse_message_template_attachment_path(path)?;
-        Some(self.serve_message_template_attachment(req, &target))
+        // The data planes are NOT served here, although they name no modelled operation
+        // either: the router answers this seam BEFORE it authenticates a request, so a
+        // plane served from here would serve stored bytes to a request carrying no
+        // credential. They are named from `override_operation` instead, which the router
+        // resolves before it authenticates. See `data_plane`.
+        let _ = req;
+        None
     }
 
     fn override_framework_error(
@@ -778,8 +567,7 @@ const ATTACHMENT_NOT_FOUND_MESSAGE: &str = "The requested attachment does not ex
 /// The presentation the attachment plane serves a file under when the stored
 /// `contentDisposition` is not text a header may carry: the lowercase form of the one
 /// value the model's `ContentDisposition` declares. A constant of this module, so the
-/// fallback is STATICALLY a legal header value and cannot unwind this request, which
-/// arrives with no credential and is served before authentication.
+/// fallback is STATICALLY a legal header value and cannot unwind the request serving it.
 const ATTACHMENT_DISPOSITION: &str = "attachment";
 
 /// Whether a stored value can be written into a header: the visible-ASCII text a header
@@ -848,4 +636,3 @@ fn request_path(uri: &str) -> &str {
         None => without_query,
     }
 }
-

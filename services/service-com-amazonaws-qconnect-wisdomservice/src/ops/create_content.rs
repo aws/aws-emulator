@@ -181,7 +181,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::scaffolded::Scaffolded::not_implemented("CreateContent"));
         };
         let region = crate::state::request_region(&ctx.parts().headers);
-        let host = crate::state::request_endpoint_host(&ctx.parts().headers, &region);
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -314,6 +313,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // Where the asset is read back from. The URL is SIGNED, so the read it admits is
+        // one this emulator issued a credential for (see
+        // `crate::state::sign_data_plane_url`), and the signature's own expiry is what the
+        // record reports as `urlExpiry`.
+        let asset_path = crate::state::content_asset_path(&knowledge_base_id, &content_id);
+        let Some(signed) = crate::state::sign_data_plane_url(
+            &ctx.url_signer(),
+            ::http::Method::GET,
+            &region,
+            &asset_path,
+            ::std::time::Duration::from_secs(
+                crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+            ),
+        ) else {
+            // Nothing the caller sent can make the signer refuse — the path is this
+            // service's own and the time to live is its documented default — so this is
+            // an emulator-side failure, reported the way this handler reports the other
+            // one of that kind (the id mint above): the operation's own input error,
+            // worded as the retry it is, rather than a locator nothing could verify.
+            return Err(CreateContentErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(
+                        "could not sign the content's asset URL; retry the request".to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
         let stored = store.insert_content(crate::state::Content {
             content_arn: crate::state::content_arn(&region, &knowledge_base_id, &content_id),
             content_id: content_id.clone(),
@@ -332,15 +359,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `overrideLinkOutUri` is the URI the article is reached at, overriding the
             // knowledge base's `templateUri` for this content when the create names one.
             link_out_uri: input.override_link_out_uri.clone(),
-            url: crate::state::content_asset_url(&host, &knowledge_base_id, &content_id),
-            url_expiry: now + ::std::time::Duration::from_secs(
-                crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
-            ),
+            url: signed.url,
+            url_expiry: signed.expires_at,
             // The asset the upload plane received. An upload nothing was written to holds
             // no bytes, which is an empty asset rather than a refusal: what the caller PUT
             // is what the content holds.
             body: upload.body.clone().unwrap_or_default(),
             created_at: now,
+            // Nothing has modified the record yet, so its last-written instant is the
+            // instant the create wrote it.
+            modified_at: now,
             // The create answers `CREATE_IN_PROGRESS`, so the move to `ACTIVE` is a
             // transition the CLOCK owes: the instant it falls due is stored and nothing
             // sleeps for it.

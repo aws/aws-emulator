@@ -40,5 +40,7 @@ pub struct AssistantSummary {
     pub capability_configuration: Option<AssistantCapabilityConfiguration>,
     pub ai_agent_configuration: Option<std::collections::HashMap<String, AIAgentConfigurationData>>,
     pub orchestrator_configuration_list: Option<Vec<OrchestratorConfigurationEntry>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 

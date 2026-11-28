@@ -49,6 +49,15 @@ pub use message_template_render::*;
 mod chat_streaming_topic;
 pub use chat_streaming_topic::*;
 
+/// The replica-Region KMS keys a resource's encryption configuration carries.
+mod replica_keys;
+pub use replica_keys::*;
+
+/// The URLs this service hands out for a caller to follow later, and where they are
+/// signed.
+mod signed_urls;
+pub use signed_urls::*;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::SystemTime;
 
@@ -1167,8 +1176,8 @@ pub const SERVER_SIDE_ENCRYPTION_KEY_ID_HEADER: &str =
 
 /// The endpoint prefix this service publishes
 /// (`smithy_query(query="service_info")`: endpoint templates
-/// `https://wisdom.{Region}.{dnsSuffix}`), used to word an upload URL for a request
-/// that addressed no endpoint host of its own.
+/// `https://wisdom.{Region}.{dnsSuffix}`), which is what a client addresses this service
+/// at and what its own `sdkId` key is derived from.
 pub const ENDPOINT_PREFIX: &str = "wisdom";
 
 /// The `AssociationType` of an association with a Bedrock knowledge base outside this
@@ -1220,6 +1229,34 @@ pub fn request_region(headers: &::http::HeaderMap) -> String {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
         .unwrap_or_else(|| DEFAULT_REGION.to_string())
+}
+
+/// The Region a resource this emulator minted lives in, read off its own stored ARN —
+/// the fourth field of `arn:aws:wisdom:<region>:<account>:<resource>`.
+///
+/// This is what every `lastModifiedRegion` reports
+/// (`smithy_query(query="doc",shape="AssistantData",member="lastModifiedRegion")`: "The
+/// Amazon Web Services Region where the assistant was last modified"). The resources of
+/// this service are regional — a resource is addressable only in the Region it was created
+/// in, and that Region is the one its ARN names — so the Region in the stored ARN is the
+/// Region every write of that record happened in. Reading it off the record keeps ONE
+/// source of truth for a resource's Region rather than a second copy that could disagree
+/// with the ARN beside it.
+///
+/// `None` for a value that is not an ARN this service minted, so a record carrying one
+/// reports no Region rather than a field of some other string.
+pub fn arn_region(arn: &str) -> Option<String> {
+    let mut fields = arn.split(':');
+    let minted_here = fields.next() == Some("arn")
+        && fields.next() == Some("aws")
+        && fields.next() == Some(ARN_NAMESPACE);
+    if !minted_here {
+        return None;
+    }
+    fields
+        .next()
+        .filter(|region| !region.is_empty())
+        .map(str::to_string)
 }
 
 /// This service's ARN for an assistant:
@@ -1856,6 +1893,11 @@ impl AiAgent {
             origin: Some(self.origin.clone()),
             status: Some(self.status.clone()),
             modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            // The same instant `modifiedTime` renders and the Region the record's own ARN
+            // names: both members report when and where this agent was last modified (see
+            // [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.ai_agent_arn),
         }
     }
 
@@ -1888,6 +1930,10 @@ impl AiAgent {
             origin: Some(self.origin.clone()),
             status: Some(self.status.clone()),
             modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            // As on the data shape: the instant the record was last written, and the
+            // Region its ARN names.
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.ai_agent_arn),
         }
     }
 
@@ -1998,6 +2044,11 @@ impl AiGuardrail {
             tags: tags_out(&self.tags),
             status: Some(self.status.clone()),
             modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            // The same instant `modifiedTime` renders and the Region the record's own ARN
+            // names: both members report when and where this guardrail was last modified
+            // (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.ai_guardrail_arn),
         }
     }
 
@@ -2025,6 +2076,11 @@ pub struct Assistant {
     pub tags: HashMap<String, String>,
     pub server_side_encryption_configuration: Option<ServerSideEncryptionConfiguration>,
     pub created_at: SystemTime,
+    /// When this assistant's own members were last written: the create that minted it,
+    /// until an operation that writes the record — an AI-agent binding, a replica key —
+    /// re-stamps it. It is what the reported `lastModifiedTime` renders, so that member is
+    /// never earlier than the create.
+    pub modified_at: SystemTime,
     /// The `AssistantCapabilityType` this assistant was provisioned with. Chosen by the
     /// service — `CreateAssistant` models no capability member — so it is stored once
     /// and reported unchanged.
@@ -2112,6 +2168,16 @@ impl Assistant {
             capability_configuration: self.capability_configuration(),
             ai_agent_configuration: Some(self.ai_agent_configuration.clone()),
             orchestrator_configuration_list: Some(self.orchestrator_configuration_list.clone()),
+            // When and where this record was last written: the stored instant, and the
+            // Region the assistant's own ARN names (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.assistant_arn),
+            // Amazon Connect Global Resiliency replicates the CONNECT INSTANCE an
+            // assistant is associated with, and the member's own documentation says it is
+            // absent for an assistant not yet associated with one, and that an absent
+            // member must not be read as DISABLED. Nothing associates an assistant here
+            // with a Connect instance, so there is no replication state to report.
+            assistant_global_resiliency_status: None,
         }
     }
 
@@ -2135,6 +2201,9 @@ impl Assistant {
             capability_configuration: self.capability_configuration(),
             ai_agent_configuration: Some(self.ai_agent_configuration.clone()),
             orchestrator_configuration_list: Some(self.orchestrator_configuration_list.clone()),
+            // The same stored instant and Region a read of the assistant reports.
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.assistant_arn),
         }
     }
 
@@ -2350,6 +2419,10 @@ pub struct KnowledgeBase {
     /// keep it too. `KnowledgeBaseData` models no creation-time member, so nothing
     /// reports it yet; it is the record's own age, not a reported value.
     pub created_at: SystemTime,
+    /// When this knowledge base's own members were last written: the create that minted
+    /// it, until an operation that writes the record — a template URI, a replica key —
+    /// re-stamps it. It is what the reported `lastModifiedTime` renders.
+    pub modified_at: SystemTime,
 }
 
 impl KnowledgeBase {
@@ -2379,6 +2452,10 @@ impl KnowledgeBase {
             // invented one.
             ingestion_status: None,
             ingestion_failure_reasons: None,
+            // When and where this record was last written: the stored instant, and the
+            // Region the knowledge base's own ARN names (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.knowledge_base_arn),
         }
     }
 
@@ -2402,6 +2479,9 @@ impl KnowledgeBase {
                 .clone(),
             description: self.description.clone(),
             tags: tags_out(&self.tags),
+            // The same stored instant and Region a read of the knowledge base reports.
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.knowledge_base_arn),
         }
     }
 }
@@ -2521,6 +2601,9 @@ impl QuickResponse {
             status: self.status.clone(),
             created_time: ::aws_smithy_types::DateTime::from(self.created_at),
             last_modified_time: ::aws_smithy_types::DateTime::from(self.last_modified_at),
+            // The Region the quick response's own ARN names (see [`arn_region`]), which is
+            // where every write of this record happened.
+            last_modified_region: arn_region(&self.quick_response_arn),
             contents: Some(self.contents()),
             description: self.description.clone(),
             grouping_configuration: self.grouping_configuration.clone(),
@@ -2554,6 +2637,8 @@ impl QuickResponse {
             status: self.status.clone(),
             created_time: ::aws_smithy_types::DateTime::from(self.created_at),
             last_modified_time: ::aws_smithy_types::DateTime::from(self.last_modified_at),
+            // The same Region a read of the quick response reports.
+            last_modified_region: arn_region(&self.quick_response_arn),
             description: self.description.clone(),
             last_modified_by: Some(self.last_modified_by.clone()),
             is_active: self.is_active,
@@ -2586,6 +2671,8 @@ impl QuickResponse {
             contents: self.contents(),
             created_time: ::aws_smithy_types::DateTime::from(self.created_at),
             last_modified_time: ::aws_smithy_types::DateTime::from(self.last_modified_at),
+            // The same Region a read of the quick response reports.
+            last_modified_region: arn_region(&self.quick_response_arn),
             is_active: self.is_active_or_default(),
             description: self.description.clone(),
             grouping_configuration: self.grouping_configuration.clone(),
@@ -2691,6 +2778,12 @@ impl AssistantAssociation {
             association_type: self.association_type.clone(),
             association_data: self.target.to_output_data(),
             tags: tags_out(&self.tags),
+            // An association is written once and never updated — the model declares no
+            // operation that changes one — so the instant it was last modified is the
+            // instant the create wrote it, and the Region is the one its own ARN names
+            // (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.created_at)),
+            last_modified_region: arn_region(&self.assistant_association_arn),
         }
     }
 
@@ -2708,6 +2801,9 @@ impl AssistantAssociation {
             association_type: self.association_type.clone(),
             association_data: self.target.to_output_data(),
             tags: tags_out(&self.tags),
+            // The same instant and Region a read of the association reports.
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.created_at)),
+            last_modified_region: arn_region(&self.assistant_association_arn),
         }
     }
 }
@@ -2880,8 +2976,9 @@ pub struct ContentAssetTarget {
 ///
 /// It sits under the content it belongs to, one segment deeper than the modelled read of
 /// that content (`GET /knowledgeBases/{knowledgeBaseId}/contents/{contentId}`), so it
-/// names no modelled operation and the service serves it from its routing-error seam the
-/// way [`content_upload_path`] is served.
+/// names no modelled operation: the service's own data plane serves it, behind the
+/// emulator's signature verification, the way [`content_upload_path`] is served. The URL a
+/// caller is handed for it is signed by [`sign_data_plane_url`].
 pub fn content_asset_path(knowledge_base_id: &str, content_id: &str) -> String {
     format!("/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset")
 }
@@ -2914,19 +3011,6 @@ pub fn parse_content_asset_path(path: &str) -> Option<ContentAssetTarget> {
         knowledge_base_label: knowledge_base_label.to_string(),
         content_id: content_id.to_string(),
     })
-}
-
-/// The URL a content's asset is read from: the endpoint the caller reached, plus the
-/// content's own asset path.
-///
-/// NO SigV4 signature is attached, for the reason [`content_upload_url`] states: the
-/// content id is the receipt that names the asset, and the URL stops being usable at the
-/// `urlExpiry` the same record carries.
-pub fn content_asset_url(host: &str, knowledge_base_id: &str, content_id: &str) -> String {
-    format!(
-        "https://{host}{}",
-        content_asset_path(knowledge_base_id, content_id)
-    )
 }
 
 /// One content of a knowledge base, as this emulator persists it.
@@ -2964,6 +3048,10 @@ pub struct Content {
     /// The asset bytes, as the upload plane received them.
     pub body: Vec<u8>,
     pub created_at: SystemTime,
+    /// When this content's own members were last written: the create that minted it, until
+    /// an `UpdateContent` re-stamps it. It is what the reported `lastModifiedTime` renders,
+    /// so that member is never earlier than the create.
+    pub modified_at: SystemTime,
     /// When the ingestion this create started is due to finish, after which every read
     /// reports the content ACTIVE. See [`CONTENT_ACTIVATION_DELAY`].
     pub active_at: SystemTime,
@@ -3003,6 +3091,13 @@ impl Content {
             status: self.status(now).to_string(),
             metadata: self.metadata.clone(),
             tags: tags_out(&self.tags),
+            // When and where this record was last written: the stored instant, and the
+            // Region the content's own ARN names (see [`arn_region`]).
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.content_arn),
+            // The model reports this hash "only for replicated content", and nothing here
+            // replicates a content into another Region, so there is none to report.
+            file_hash: None,
         }
     }
 
@@ -3023,6 +3118,11 @@ impl Content {
             link_out_uri: self.link_out_uri.clone(),
             url: self.url.clone(),
             url_expiry: ::aws_smithy_types::DateTime::from(self.url_expiry),
+            // The same instant, Region and (absent) hash the summary of this content
+            // reports — see [`Self::to_summary`].
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.modified_at)),
+            last_modified_region: arn_region(&self.content_arn),
+            file_hash: None,
         }
     }
 }
@@ -3039,8 +3139,9 @@ pub struct ContentUploadTarget {
 ///
 /// It sits under the knowledge base the upload belongs to — the same `/knowledgeBases`
 /// space the modelled routes use — and names no modelled operation (the model's own
-/// upload route is `POST /knowledgeBases/{knowledgeBaseId}/upload`), which is what lets
-/// the service serve it from its routing-error seam.
+/// upload route is `POST /knowledgeBases/{knowledgeBaseId}/upload`), so the service's own
+/// data plane serves it, behind the emulator's signature verification. The URL a caller is
+/// handed for it is signed by [`sign_data_plane_url`].
 pub fn content_upload_path(knowledge_base_id: &str, upload_id: &str) -> String {
     format!("/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}")
 }
@@ -3065,44 +3166,6 @@ pub fn parse_content_upload_path(path: &str) -> Option<ContentUploadTarget> {
         knowledge_base_label: knowledge_base_label.to_string(),
         upload_id: upload_id.to_string(),
     })
-}
-
-/// The URL an upload is written to: the endpoint the caller reached, plus the upload's
-/// own path.
-///
-/// NO SigV4 signature is attached — this emulator does not sign URLs, and a fabricated
-/// signature would claim a computation nothing performed. The upload id is the receipt
-/// that names the slot, and it is minted, unguessable and expiring.
-pub fn content_upload_url(host: &str, knowledge_base_id: &str, upload_id: &str) -> String {
-    format!(
-        "https://{host}{}",
-        content_upload_path(knowledge_base_id, upload_id)
-    )
-}
-
-/// The endpoint host a request addressed, so a URL this service hands out is reachable
-/// at the endpoint the caller is already talking to; [`ENDPOINT_PREFIX`]'s published
-/// host for a request that named none.
-///
-/// The header is only taken when it LOOKS like a host — letters, digits, `-`, `.` and a
-/// `:port` — so a caller cannot get an arbitrary string of its own into the URL this
-/// service reports.
-pub fn request_endpoint_host(headers: &::http::HeaderMap, region: &str) -> String {
-    headers
-        .get("host")
-        .and_then(|host| host.to_str().ok())
-        .filter(|host| is_host_shaped(host))
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{ENDPOINT_PREFIX}.{region}.amazonaws.com"))
-}
-
-/// Whether `host` is a non-empty `host[:port]` of the characters a hostname carries.
-fn is_host_shaped(host: &str) -> bool {
-    !host.is_empty()
-        && host.len() <= 255
-        && host
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b':'))
 }
 
 /// Per-service state for com-amazonaws-qconnect-wisdomservice. A handler reaches it through [`service_state`].
@@ -3179,8 +3242,9 @@ impl ComAmazonawsQconnectWisdomserviceState {
     /// of this sequence number's block were all taken.
     ///
     /// The model constrains `UploadId` by length alone (`len 1..1200`, no pattern), so a
-    /// minted id of the same form satisfies it, and it is unguessable — which is what
-    /// makes the id itself the receipt the upload URL carries.
+    /// minted id of the same form satisfies it. It names the slot in the URL's path; what
+    /// admits a write to that URL is the signature the URL carries (see
+    /// [`sign_data_plane_url`]).
     pub fn mint_content_upload_id(&mut self) -> Option<String> {
         let seq = self.next_seq();
         (0..MINT_ATTEMPTS as u64)
@@ -3637,6 +3701,13 @@ impl ComAmazonawsQconnectWisdomserviceState {
     /// which names nothing.
     pub fn knowledge_base(&self, label: &str) -> Option<&KnowledgeBase> {
         self.knowledge_bases.get(resolve_id(label))
+    }
+
+    /// The same knowledge base [`Self::knowledge_base`] resolves, for a caller that WRITES
+    /// the record — the one resolution both paths share, so a write and a read cannot
+    /// disagree about which record a label names.
+    pub fn knowledge_base_mut(&mut self, label: &str) -> Option<&mut KnowledgeBase> {
+        self.knowledge_bases.get_mut(resolve_id(label))
     }
 
     /// Forget a knowledge base and every index entry that named it, as

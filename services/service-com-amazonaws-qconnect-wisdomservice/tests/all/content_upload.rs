@@ -104,6 +104,13 @@ const CONTENT_TYPE_HEADER: &str = "content-type";
 const SSE_HEADER: &str = "x-amz-server-side-encryption";
 const SSE_KEY_ID_HEADER: &str = "x-amz-server-side-encryption-aws-kms-key-id";
 
+/// The header a SIGNED write must carry for its signature to verify, and its value: a
+/// query-signed URL is minted before the body exists, so the payload is signed as
+/// unsigned. Written out here, as the other header names are, so the assertion pins what
+/// a client has to send.
+const PAYLOAD_HEADER: &str = "x-amz-content-sha256";
+const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
+
 /// One wire answer, reduced to what a client branches on.
 #[derive(Debug)]
 struct Reply {
@@ -350,6 +357,63 @@ fn headers_of(reply: &Reply, case: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Assert `url` is a URL this emulator SIGNED for `path`: an absolute `https` URL whose
+/// path is the plane's own, carrying the SigV4 query signature it was minted with — the
+/// shape AWS's own presigned locator for these members has.
+///
+/// The credential scope names the Region the request was signed for and this endpoint's
+/// signing name, the expiry is the one the call asked for, and the signature is a SHA-256
+/// hex digest. Nothing of the REQUEST's `Host` reaches the URL, which is what makes the
+/// locator one this emulator issued rather than one a caller chose.
+pub(crate) fn assert_signed_plane_url(
+    case: &str,
+    url: &str,
+    path: &str,
+    expires_secs: u64,
+    region: &str,
+) {
+    let (address, query) = url
+        .split_once('?')
+        .unwrap_or_else(|| panic!("case {case:?}: the url carries no signature at all: {url}"));
+    assert!(
+        address.starts_with("https://") && address.ends_with(path),
+        "case {case:?}: the url must address {path} over https, got {url}"
+    );
+    let fields: BTreeMap<&str, &str> = query
+        .split('&')
+        .filter_map(|field| field.split_once('='))
+        .collect();
+    assert_eq!(
+        fields.get("X-Amz-Algorithm").copied(),
+        Some("AWS4-HMAC-SHA256"),
+        "case {case:?}: the url must be SigV4 query-signed, got {url}"
+    );
+    let scope = format!("%2F{region}%2Fwisdom%2Faws4_request");
+    assert!(
+        fields
+            .get("X-Amz-Credential")
+            .is_some_and(|credential| credential.ends_with(&scope)),
+        "case {case:?}: the credential scope must name {region} and this endpoint's \
+         signing name, got {url}"
+    );
+    assert_eq!(
+        fields.get("X-Amz-Expires").copied(),
+        Some(expires_secs.to_string().as_str()),
+        "case {case:?}: the signature must expire after the {expires_secs}s asked for, got \
+         {url}"
+    );
+    assert!(
+        fields.get("X-Amz-Date").is_some_and(|date| !date.is_empty()),
+        "case {case:?}: the url must name the instant it was signed at, got {url}"
+    );
+    assert!(
+        fields.get("X-Amz-Signature").is_some_and(|signature| {
+            signature.len() == 64 && signature.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }),
+        "case {case:?}: the url must carry a SHA-256 signature, got {url}"
+    );
+}
+
 /// One row of the start table: what varies between starts.
 #[derive(Debug, Clone)]
 struct StartCase {
@@ -492,25 +556,30 @@ async fn a_start_persists_an_upload_and_its_url_can_be_followed() {
             "case {label:?}: uploadId {upload_id:?} was handed out twice"
         );
 
-        // The URL names THIS upload under THIS knowledge base, at the endpoint the
-        // caller reached — whichever label form the start addressed.
+        // The URL names THIS upload under THIS knowledge base — whichever label form the
+        // start addressed — and is SIGNED by this emulator, so following it presents a
+        // credential this emulator issued.
         let url = reply
             .string("/url")
             .unwrap_or_else(|| panic!("case {label:?}: no url in {reply:?}"));
-        assert_eq!(
-            url,
-            format!(
-                "https://{host}/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}",
-                host = case.host
-            ),
-            "case {label:?}: the url must name the upload under its knowledge base"
+        let minutes = case
+            .time_to_live
+            .unwrap_or(DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES as i64);
+        assert_signed_plane_url(
+            label,
+            &url,
+            &format!("/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}"),
+            (minutes * 60) as u64,
+            REGION,
+        );
+        assert!(
+            !url.contains(case.host),
+            "case {label:?}: the url must name the emulator's own base rather than the \
+             host the start was addressed to, got {url}"
         );
 
         // `urlExpiry` is the call's instant plus the time to live asked for, and this
         // emulator's documented default for a request that named none.
-        let minutes = case
-            .time_to_live
-            .unwrap_or(DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES as i64);
         let expiry = reply
             .body
             .pointer("/urlExpiry")
@@ -531,12 +600,17 @@ async fn a_start_persists_an_upload_and_its_url_can_be_followed() {
              minutes, i.e. within {lowest}..={highest}, got {expiry}"
         );
 
-        // `headersToInclude` carries the media type the upload was started for, and the
-        // encryption headers only for a knowledge base that names a KMS key.
+        // `headersToInclude` carries the media type the upload was started for, the
+        // encryption headers only for a knowledge base that names a KMS key, and the
+        // unsigned-payload marker the SIGNATURE of a write that sends a body requires.
         let mut expected_headers: BTreeMap<String, String> = BTreeMap::new();
         expected_headers.insert(
             CONTENT_TYPE_HEADER.to_string(),
             case.content_type.to_string(),
+        );
+        expected_headers.insert(
+            PAYLOAD_HEADER.to_string(),
+            UNSIGNED_PAYLOAD.to_string(),
         );
         if let Some(kms_key_id) = case.kms_key_id {
             expected_headers.insert(SSE_HEADER.to_string(), "aws:kms".to_string());
@@ -1017,19 +1091,25 @@ async fn a_start_against_a_knowledge_base_that_cannot_take_content_is_refused() 
     }
 }
 
+/// The URL a start hands out names the EMULATOR's own base, whatever `Host` the start
+/// carried: the locator is signed for that base, so nothing a caller puts in the request
+/// can choose where the URL it is handed points.
 #[tokio::test]
-async fn a_url_falls_back_to_the_published_endpoint_when_the_request_names_no_host() {
+async fn the_url_names_the_emulators_own_base_whatever_host_the_request_carries() {
     let emulator = Emulator::new();
     let (knowledge_base_id, _) = emulator
         .given_knowledge_base("endpoint fallback", "kb-fallback", "CUSTOM", None)
         .await;
 
-    // (case, the Host header sent) — a request that carries none, and one whose header
-    // is not a host at all, which must not reach the URL this service reports.
+    // (case, the Host header sent) — a request that carries none, one whose header is not
+    // a host at all, and one that names this endpoint's published host: none of them may
+    // reach the URL this service reports.
     let rows: Vec<(&str, Option<&str>)> = vec![
         ("no Host header at all", None),
         ("a Host header that is not a host", Some("not a host")),
         ("an empty Host header", Some("")),
+        ("the published endpoint host", Some(ENDPOINT_HOST)),
+        ("a loopback host and port", Some(LOOPBACK_HOST)),
     ];
 
     for (case, host) in rows {
@@ -1051,13 +1131,16 @@ async fn a_url_falls_back_to_the_published_endpoint_when_the_request_names_no_ho
         let url = reply
             .string("/url")
             .unwrap_or_else(|| panic!("case {case:?}: no url in {reply:?}"));
-        assert_eq!(
-            url,
-            format!(
-                "https://wisdom.{REGION}.amazonaws.com\
-                 /knowledgeBases/{knowledge_base_id}/uploads/{upload_id}"
-            ),
-            "case {case:?}: the url must fall back to this service's published endpoint"
+        assert_signed_plane_url(
+            case,
+            &url,
+            &format!("/knowledgeBases/{knowledge_base_id}/uploads/{upload_id}"),
+            DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+            REGION,
+        );
+        assert!(
+            host.is_none_or(|host| host.is_empty() || !url.contains(host)),
+            "case {case:?}: nothing of the request's Host may reach the url, got {url}"
         );
         // And it is still followable: the upload id in the path is what routes the
         // write back to the store that minted it.

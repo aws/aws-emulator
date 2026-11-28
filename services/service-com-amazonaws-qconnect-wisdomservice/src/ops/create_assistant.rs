@@ -272,6 +272,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::default_ai_agents(&region, &assistant_id);
             let system_session =
                 crate::state::system_session(&region, &assistant_id, &ai_agent_configuration);
+            let created_at = ::std::time::SystemTime::now();
             let assistant = crate::state::Assistant {
                 assistant_arn: crate::state::assistant_arn(&region, &assistant_id),
                 assistant_id: assistant_id.clone(),
@@ -285,7 +286,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 server_side_encryption_configuration: input
                     .server_side_encryption_configuration
                     .clone(),
-                created_at: ::std::time::SystemTime::now(),
+                created_at,
+                // Nothing has modified the record yet, so its last-written instant is the
+                // instant the create wrote it: the reported `lastModifiedTime` is never
+                // earlier than the create.
+                modified_at: created_at,
                 capability_type: crate::state::ASSISTANT_CAPABILITY_V2.to_string(),
                 // The topic the assistant streams chat messages through is an Amazon SNS
                 // resource, so this service does not compose its ARN: it is provisioned in

@@ -296,6 +296,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        let created_at = ::std::time::SystemTime::now();
         let knowledge_base = crate::state::KnowledgeBase {
             knowledge_base_arn: crate::state::knowledge_base_arn(&region, &knowledge_base_id),
             knowledge_base_id: knowledge_base_id.clone(),
@@ -312,7 +313,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             server_side_encryption_configuration: input
                 .server_side_encryption_configuration
                 .clone(),
-            created_at: ::std::time::SystemTime::now(),
+            created_at,
+            // Nothing has modified the record yet, so its last-written instant is the
+            // instant the create wrote it.
+            modified_at: created_at,
         };
         store.insert_knowledge_base(knowledge_base);
         store.remember_create(

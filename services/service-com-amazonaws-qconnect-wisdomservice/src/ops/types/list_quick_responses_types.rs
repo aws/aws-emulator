@@ -38,6 +38,7 @@ pub struct QuickResponseSummary {
     pub status: String,
     pub created_time: ::aws_smithy_types::DateTime,
     pub last_modified_time: ::aws_smithy_types::DateTime,
+    pub last_modified_region: Option<String>,
     pub description: Option<String>,
     pub last_modified_by: Option<String>,
     pub is_active: Option<bool>,

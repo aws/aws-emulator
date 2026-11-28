@@ -85,6 +85,8 @@ pub mod notify_recommendations_received_types;
 pub mod put_feedback_types;
 pub mod query_assistant_types;
 pub mod quick_response_data_types;
+pub mod register_assistant_replica_key_types;
+pub mod register_knowledge_base_replica_key_types;
 pub mod remove_assistant_ai_agent_types;
 pub mod remove_knowledge_base_template_uri_types;
 pub mod render_message_template_types;
@@ -253,6 +255,10 @@ pub use put_feedback_types::*;
 pub use query_assistant_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use quick_response_data_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use register_assistant_replica_key_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use register_knowledge_base_replica_key_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use remove_assistant_ai_agent_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

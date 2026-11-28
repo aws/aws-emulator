@@ -46,6 +46,7 @@
             "smithy.api#timestampFormat": "epoch-seconds"
           }
         },
+        "lastModifiedRegion": { "target": "com.amazonaws.qconnect#AwsRegion" },
         "contents": { "target": "com.amazonaws.qconnect#QuickResponseContents" },
         "description": { "target": "com.amazonaws.qconnect#QuickResponseDescription" },
         "groupingConfiguration": { "target": "com.amazonaws.qconnect#GroupingConfiguration" },
@@ -122,6 +123,13 @@
       "traits": {
         "smithy.api#length": { "min": 1, "max": 10 },
         "smithy.api#sensitive": {}
+      }
+    },
+    "com.amazonaws.qconnect#AwsRegion": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 8, "max": 31 },
+        "smithy.api#pattern": "^[a-z]{2}(-[a-z]+){1,2}(-[0-9])?$"
       }
     },
     "com.amazonaws.qconnect#LanguageCode": {

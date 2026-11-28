@@ -27,7 +27,7 @@ hand-written schema or serializer. The same mechanism is used by
   recorded `ListQuickResponses` answer carries none either, so the overlay leaves
   the summary shape alone.
 - **What the snapshot declares**: `com.amazonaws.qconnect#QuickResponseData` with
-  eighteen members, none of them `attributeList`. The keys themselves are
+  nineteen members, none of them `attributeList`. The keys themselves are
   modelled: `ContactAttributeKeys` (a `@uniqueItems` list of
   `ContactAttributeKey`) is what `QuickResponseSearchResultData` reports a
   search's resolved and unresolved attributes as, so the overlay member targets
@@ -35,10 +35,10 @@ hand-written schema or serializer. The same mechanism is used by
 - **Where it is declared**: `src/ops/types/quick_response_data_types.rs`, whose
   `QuickResponseData` is the single type every quick-response write and read
   reports. It is generated from `local-additions.json`, which restates the
-  eighteen modelled members — with their own targets, so every length, pattern,
+  nineteen modelled members — with their own targets, so every length, pattern,
   enum value and the `@timestampFormat` of both timestamps is captured exactly as
-  the snapshot spells it — and adds the nineteenth.
-- **What else is in the overlay**: only the shapes those nineteen members target,
+  the snapshot spells it — and adds the twentieth.
+- **What else is in the overlay**: only the shapes those twenty members target,
   and only as much of each as codegen reads. `QuickResponseContents` and
   `GroupingConfiguration` are structures, which codegen resolves through the Rust
   field's type rather than through the model, so the overlay declares the shape
@@ -53,3 +53,20 @@ declaration, and `QuickResponseData` must differ from the snapshot's by exactly
 member the overlay does not restate, or with a changed target, value set,
 constraint or timestamp format, that test fails — and the local declaration
 should then give way to the modelled shape.
+
+## After a model refresh
+
+The op-stub generator renders `QuickResponseData` into the generated
+`src/ops/types/shared_types.rs` and does not declare the module above in the
+generated `src/ops/types/mod.rs`, so a refresh of the snapshot leaves two things
+to redo, both of which the compiler points at:
+
+1. drop the generated `QuickResponseData` from `shared_types.rs` — that module
+   loads the snapshot alone, so a declaration carrying `attributeList` there does
+   not resolve;
+2. declare `quick_response_data_types` in `types/mod.rs` beside the operation
+   modules, and re-export it the same way.
+
+Then restate in `local-additions.json` whatever members the refreshed snapshot
+added, which is what the overlay test above asks for.
+

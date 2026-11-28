@@ -335,6 +335,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             content.body = body;
         }
         content.revision_id = next_revision;
+        // This call wrote the record, so it is the instant `lastModifiedTime` reports.
+        content.modified_at = now;
         let content = content.to_content_data(now);
 
         if let Some((upload_id, _, _)) = replacement {

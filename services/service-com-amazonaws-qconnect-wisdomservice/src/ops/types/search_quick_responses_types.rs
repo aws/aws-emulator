@@ -75,6 +75,7 @@ pub struct QuickResponseSearchResultData {
     pub contents: QuickResponseContents,
     pub created_time: ::aws_smithy_types::DateTime,
     pub last_modified_time: ::aws_smithy_types::DateTime,
+    pub last_modified_region: Option<String>,
     pub is_active: bool,
     pub description: Option<String>,
     pub grouping_configuration: Option<GroupingConfiguration>,

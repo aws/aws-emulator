@@ -65,6 +65,8 @@
 //!
 //! * `AccessDeniedException` (HTTP 403) — You do not have sufficient access to perform this
 //!   action.
+//! * `ConflictException` (HTTP 409) — The request could not be processed because of conflict
+//!   in the current state of the resource.
 //! * `ResourceNotFoundException` (HTTP 404) — The specified resource does not exist.
 //! * `ThrottlingException` (HTTP 400) — The throttling limit has been exceeded.
 //! * `ValidationException` (HTTP 400) — The input fails to satisfy the constraints specified
@@ -88,6 +90,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-qconnect-wisdomservice.
 #[derive(Debug)]
 pub enum RemoveAssistantAIAgentErrorModeled {
     AccessDeniedException(AccessDeniedException),
+    ConflictException(ConflictException),
     ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
@@ -178,6 +181,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(orchestrator_use_case) => assistant.remove_orchestrator(orchestrator_use_case),
             None => assistant.remove_configured_ai_agent(&input.ai_agent_type),
         }
+        // This call wrote the assistant's own members, so it is the instant the record's
+        // reported `lastModifiedTime` names.
+        assistant.modified_at = ::std::time::SystemTime::now();
 
         Ok(RemoveAssistantAIAgentOutput {})
     }

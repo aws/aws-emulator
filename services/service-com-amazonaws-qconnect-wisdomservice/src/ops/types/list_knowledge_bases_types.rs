@@ -39,5 +39,7 @@ pub struct KnowledgeBaseSummary {
     pub server_side_encryption_configuration: Option<ServerSideEncryptionConfiguration>,
     pub description: Option<String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 

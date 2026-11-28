@@ -42,5 +42,6 @@ pub struct ConversationState {
 #[derive(Debug, Clone, Default)]
 pub struct UnprocessableContentException {
     pub message: Option<String>,
+    pub reason: Option<String>,
 }
 

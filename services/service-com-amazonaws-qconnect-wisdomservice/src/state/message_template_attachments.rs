@@ -123,8 +123,8 @@ pub fn message_attachment_too_large(member: &str) -> String {
 /// serves.
 #[derive(Debug, Clone)]
 pub struct MessageTemplateAttachmentFile {
-    /// `attachmentId`, of the modelled `Uuid` form — minted here, so it is the receipt
-    /// the download URL carries.
+    /// `attachmentId`, of the modelled `Uuid` form — minted here, so it names exactly one
+    /// file in the download URL's path.
     pub attachment_id: String,
     /// `AttachmentFileName` as the upload gave it, including its extension.
     pub name: String,
@@ -178,8 +178,9 @@ pub struct MessageTemplateAttachmentTarget {
 ///
 /// It sits one segment DEEPER than the modelled route that addresses the attachment
 /// itself (`DELETE /knowledgeBases/{knowledgeBaseId}/messageTemplates/{messageTemplateId}/attachments/{attachmentId}`),
-/// so it names no modelled operation and the service serves it from its routing-error
-/// seam the way [`content_asset_path`] is served.
+/// so it names no modelled operation: the service's own data plane serves it, behind the
+/// emulator's signature verification, the way [`content_asset_path`] is served. The URL a
+/// caller is handed for it is signed by [`sign_data_plane_url`].
 pub fn message_template_attachment_path(
     knowledge_base_id: &str,
     message_template_id: &str,
@@ -229,25 +230,6 @@ pub fn parse_message_template_attachment_path(
         message_template_label: message_template_label.to_string(),
         attachment_id: attachment_id.to_string(),
     })
-}
-
-/// The URL an attachment file is downloaded from: the endpoint the caller reached, plus
-/// the attachment's own path.
-///
-/// NO SigV4 signature is attached, for the reason [`content_upload_url`] states: this
-/// emulator does not sign URLs, and a fabricated signature would claim a computation
-/// nothing performed. The minted attachment id is the receipt that names the file, and the
-/// URL stops being usable at the `urlExpiry` the same record reports.
-pub fn message_template_attachment_url(
-    host: &str,
-    knowledge_base_id: &str,
-    message_template_id: &str,
-    attachment_id: &str,
-) -> String {
-    format!(
-        "https://{host}{}",
-        message_template_attachment_path(knowledge_base_id, message_template_id, attachment_id)
-    )
 }
 
 impl MessageTemplate {
@@ -318,8 +300,9 @@ impl ComAmazonawsQconnectWisdomserviceState {
     /// candidates of this sequence number's block were all taken.
     ///
     /// The form is the modelled `Uuid` the member declares, and uniqueness comes from the
-    /// store's own sequence, which no two mints share, so the id names exactly one file
-    /// and is the receipt the download URL carries.
+    /// store's own sequence, which no two mints share, so the id names exactly one file in
+    /// the download URL's path. What admits a read of that URL is the signature it carries
+    /// (see [`sign_data_plane_url`]).
     pub fn mint_message_template_attachment_id(&mut self) -> Option<String> {
         let seq = self.next_seq();
         (0..MINT_ATTEMPTS as u64)

@@ -169,7 +169,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::not_implemented("StartContentUpload")
         })?;
         let region = crate::state::request_region(&ctx.parts().headers);
-        let host = crate::state::request_endpoint_host(&ctx.parts().headers, &region);
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -247,14 +246,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .presigned_url_time_to_live
             .and_then(|minutes| u64::try_from(minutes).ok())
             .unwrap_or(crate::state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES);
-        let url_expiry = now + ::std::time::Duration::from_secs(time_to_live_minutes * 60);
-        let url = crate::state::content_upload_url(&host, &knowledge_base_id, &upload_id);
+        // The URL is SIGNED, so the write it admits is one this emulator issued a
+        // credential for: see `crate::state::sign_data_plane_url`. The signature carries
+        // the expiry the caller asked for, which is what `urlExpiry` reports.
+        let path = crate::state::content_upload_path(&knowledge_base_id, &upload_id);
+        let Some(signed) = crate::state::sign_data_plane_url(
+            &ctx.url_signer(),
+            ::http::Method::PUT,
+            &region,
+            &path,
+            ::std::time::Duration::from_secs(time_to_live_minutes * 60),
+        ) else {
+            // The signer refuses an expiry outside the range it accepts; the modelled
+            // `range 1..60` of `presignedUrlTimeToLive` is inside it, so this is the
+            // request's own failure rather than a URL nothing could verify.
+            return Err(StartContentUploadErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(
+                        "could not sign an upload URL for the time to live requested"
+                            .to_string(),
+                    ),
+                },
+            )
+            .into());
+        };
         let stored = store.insert_content_upload(crate::state::ContentUpload {
             upload_id: upload_id.clone(),
             knowledge_base_id,
             content_type: input.content_type,
-            url,
-            url_expiry,
+            url: signed.url,
+            url_expiry: signed.expires_at,
             headers_to_include,
             started_at: now,
             // No bytes yet: they arrive when something follows the URL.
@@ -290,10 +311,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             upload_id: upload.upload_id.clone(),
             url: upload.url.clone(),
             url_expiry: ::aws_smithy_types::DateTime::from(upload.url_expiry),
+            // The headers the caller must send: the ones the upload itself is held to —
+            // the media type it accepts, and the encryption an encrypted knowledge base's
+            // asset is written with — and the one the SIGNATURE requires of a write that
+            // sends a body, which the emulator's own verifier checks rather than the plane.
             headers_to_include: upload
                 .headers_to_include
                 .iter()
                 .map(|(name, value)| (name.clone(), value.clone()))
+                .chain(signed.required_headers)
                 .collect(),
         })
     }

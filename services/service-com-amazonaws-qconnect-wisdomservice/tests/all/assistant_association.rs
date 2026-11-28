@@ -271,6 +271,27 @@ fn expected_association_arn(assistant_id: &str, association_id: &str) -> String 
     )
 }
 
+/// `association` split into the members a create's request decides and the two the record
+/// reports about its own last write (`lastModifiedRegion`, `lastModifiedTime`), so the
+/// first can be compared with what the request asked for while the per-run instant is
+/// asserted on its own.
+fn split_last_modified(case: &str, association: &Value) -> (Value, Value) {
+    let members = association
+        .as_object()
+        .unwrap_or_else(|| panic!("case {case:?}: the answer carries no association object"));
+    let last_modified: serde_json::Map<String, Value> = members
+        .iter()
+        .filter(|(key, _)| key.starts_with("lastModified"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let rest: serde_json::Map<String, Value> = members
+        .iter()
+        .filter(|(key, _)| !key.starts_with("lastModified"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    (Value::Object(rest), Value::Object(last_modified))
+}
+
 /// Whether `value` is a lowercase hyphenated UUID, the form the model's `Uuid` pattern
 /// requires (`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`).
 fn is_modelled_uuid(value: &str) -> bool {
@@ -441,10 +462,28 @@ async fn a_create_persists_the_association_and_every_read_answers_from_the_recor
             "associationData": expected_association_data(case, &knowledge_base_id, &knowledge_base_arn),
             "tags": expected_tags,
         });
-        let actual = created
+        let created_association = created
             .field("/assistantAssociation")
             .cloned()
             .unwrap_or(Value::Null);
+        // The two members the record reports about its own last write: the Region its ARN
+        // names, and the instant it was written — a per-run value, so it is asserted to be
+        // a timestamp rather than compared with one.
+        let (actual, last_modified) = split_last_modified(case.label, &created_association);
+        assert_eq!(
+            last_modified.get("lastModifiedRegion").and_then(Value::as_str),
+            Some(REGION),
+            "case {:?}: the association must report the Region its ARN names, got {last_modified}",
+            case.label
+        );
+        assert!(
+            last_modified
+                .get("lastModifiedTime")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "case {:?}: the association must report a lastModifiedTime, got {last_modified}",
+            case.label
+        );
         assert_eq!(
             actual, expected,
             "case {:?}: the create must answer out of the record it stored, expected \
@@ -473,9 +512,9 @@ async fn a_create_persists_the_association_and_every_read_answers_from_the_recor
                     .cloned()
                     .unwrap_or(Value::Null);
                 assert_eq!(
-                    read_actual, expected,
+                    read_actual, created_association,
                     "case {:?} read by {read_label} under {parent_label}: a read must answer \
-                     what the create answered, expected {expected} got {read_actual}",
+                     what the create answered, expected {created_association} got {read_actual}",
                     case.label
                 );
             }

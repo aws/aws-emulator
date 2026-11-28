@@ -889,16 +889,16 @@ async fn a_created_content_round_trips_and_its_asset_url_is_followable() {
             );
         }
 
-        // The asset URL is followable, unsigned, and answers the bytes the upload
-        // received.
+        // The asset URL is followable and answers the bytes the upload received. It is a
+        // URL this emulator SIGNED for the content's own path — see
+        // `super::content_upload::assert_signed_plane_url`.
         let url = created.string("/content/url");
-        assert_eq!(
-            url,
-            format!(
-                "https://{ENDPOINT_HOST}/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset"
-            ),
-            "case {case:?}: the asset URL must address this endpoint under the content's own \
-             path, got {url:?}"
+        super::content_upload::assert_signed_plane_url(
+            case,
+            &url,
+            &format!("/knowledgeBases/{knowledge_base_id}/contents/{content_id}/asset"),
+            state::DEFAULT_PRESIGNED_URL_TIME_TO_LIVE_MINUTES * 60,
+            REGION,
         );
         let followed = emulator.follow("GET", &url, &[], b"").await;
         assert_eq!(

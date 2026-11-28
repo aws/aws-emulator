@@ -22,6 +22,13 @@ pub struct ResourceNotFoundException {
 #[derive(Debug, Clone, Default)]
 pub struct ServerSideEncryptionConfiguration {
     pub kms_key_id: Option<String>,
+    pub replica_kms_keys: Option<Vec<ReplicaKmsKey>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.qconnect#ReplicaKmsKey")]
+#[derive(Debug, Clone, Default)]
+pub struct ReplicaKmsKey {
+    pub arn: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#AssistantData")]
@@ -39,6 +46,9 @@ pub struct AssistantData {
     pub capability_configuration: Option<AssistantCapabilityConfiguration>,
     pub ai_agent_configuration: Option<std::collections::HashMap<String, AIAgentConfigurationData>>,
     pub orchestrator_configuration_list: Option<Vec<OrchestratorConfigurationEntry>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
+    pub assistant_global_resiliency_status: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#AssistantIntegrationConfiguration")]
@@ -595,6 +605,8 @@ pub struct AIAgentData {
     pub r#type: String,
     pub configuration: AIAgentConfiguration,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub description: Option<String>,
     pub visibility_status: String,
     pub tags: Option<std::collections::HashMap<String, String>>,
@@ -612,6 +624,8 @@ pub struct AIAgentSummary {
     pub r#type: String,
     pub ai_agent_arn: String,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub visibility_status: String,
     pub configuration: Option<AIAgentConfiguration>,
     pub origin: Option<String>,
@@ -724,6 +738,8 @@ pub struct AIGuardrailData {
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub status: Option<String>,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#AIGuardrailSummary")]
@@ -735,6 +751,8 @@ pub struct AIGuardrailSummary {
     pub ai_guardrail_id: String,
     pub ai_guardrail_arn: String,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub visibility_status: String,
     pub description: Option<String>,
     pub status: Option<String>,
@@ -778,6 +796,8 @@ pub struct AIPromptData {
     pub template_configuration: AIPromptTemplateConfiguration,
     pub inference_configuration: Option<AIPromptInferenceConfiguration>,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub description: Option<String>,
     pub visibility_status: String,
     pub tags: Option<std::collections::HashMap<String, String>>,
@@ -795,6 +815,8 @@ pub struct AIPromptSummary {
     pub r#type: String,
     pub ai_prompt_arn: String,
     pub modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
     pub template_type: String,
     pub model_id: String,
     pub api_format: String,
@@ -822,6 +844,8 @@ pub struct AssistantAssociationData {
     pub association_type: String,
     pub association_data: AssistantAssociationOutputData,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.qconnect#AssistantAssociationOutputData")]
@@ -1063,6 +1087,8 @@ pub struct KnowledgeBaseData {
     pub tags: Option<std::collections::HashMap<String, String>>,
     pub ingestion_status: Option<String>,
     pub ingestion_failure_reasons: Option<Vec<String>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#ImportJobData")]
@@ -1117,6 +1143,9 @@ pub struct ContentSummary {
     pub status: String,
     pub metadata: std::collections::HashMap<String, String>,
     pub tags: Option<std::collections::HashMap<String, String>>,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
+    pub file_hash: Option<String>,
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.qconnect#MessageTemplateSourceConfigurationSummary")]
@@ -1176,6 +1205,9 @@ pub struct ContentData {
     pub link_out_uri: Option<String>,
     pub url: String,
     pub url_expiry: ::aws_smithy_types::DateTime,
+    pub last_modified_time: Option<::aws_smithy_types::DateTime>,
+    pub last_modified_region: Option<String>,
+    pub file_hash: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#PreconditionFailedException")]
@@ -1353,6 +1385,7 @@ pub struct MessageTemplateAttributes {
     pub agent_attributes: Option<AgentAttributes>,
     pub customer_profile_attributes: Option<CustomerProfileAttributes>,
     pub custom_attributes: Option<std::collections::HashMap<String, String>>,
+    pub case_attributes: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#SystemAttributes")]
@@ -1437,6 +1470,33 @@ pub struct CustomerProfileAttributes {
     pub billing_province: Option<String>,
     pub billing_state: Option<String>,
     pub custom: Option<std::collections::HashMap<String, String>>,
+    pub recommendations: Option<Vec<ProfileRecommendation>>,
+    pub calculated_attributes: Option<std::collections::HashMap<String, String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.qconnect#ProfileRecommendation")]
+#[derive(Debug, Clone, Default)]
+pub struct ProfileRecommendation {
+    pub score: f64,
+    pub catalog_item: Option<ProfileCatalogItem>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.qconnect#ProfileCatalogItem")]
+#[derive(Debug, Clone, Default)]
+pub struct ProfileCatalogItem {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub code: Option<String>,
+    pub r#type: Option<String>,
+    pub category: Option<String>,
+    pub description: Option<String>,
+    pub additional_information: Option<String>,
+    pub image_link: Option<String>,
+    pub link: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub price: Option<String>,
+    pub attributes: Option<std::collections::HashMap<String, String>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.qconnect#MessageTemplateData")]
@@ -1508,11 +1568,10 @@ pub enum QuickResponseDataProvider {
     Content(String),
 }
 
-/// `QuickResponseData` is NOT declared here: AWS answers the quick-response operations
-/// with one member this crate's model snapshot does not declare, so the type is generated
-/// from the overlay model instead — see `quick_response_data_types.rs` and
-/// `smithy-model/LOCAL-ADDITIONS.md`.
-///
+// `QuickResponseData` is NOT declared here: AWS answers with one member this model
+// does not declare, so the type is generated from the overlay model beside it, in
+// `quick_response_data_types` (see `smithy-model/LOCAL-ADDITIONS.md`).
+
 /// The values `AIAgentAssociationConfigurationType` accepts on the wire.
 pub const A_I_AGENT_ASSOCIATION_CONFIGURATION_TYPE_VALUES: &[&str] = &["KNOWLEDGE_BASE"];
 
@@ -1535,6 +1594,10 @@ pub const A_I_PROMPT_TYPE_VALUES: &[&str] = &["ANSWER_GENERATION", "CASE_SUMMARI
 
 /// The values `AssistantCapabilityType` accepts on the wire.
 pub const ASSISTANT_CAPABILITY_TYPE_VALUES: &[&str] = &["V1", "V2"];
+
+
+/// The values `AssistantGlobalResiliencyStatus` accepts on the wire.
+pub const ASSISTANT_GLOBAL_RESILIENCY_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `AssistantStatus` accepts on the wire.
@@ -1591,6 +1654,10 @@ pub const FILTER_FIELD_VALUES: &[&str] = &["NAME"];
 
 /// The values `FilterOperator` accepts on the wire.
 pub const FILTER_OPERATOR_VALUES: &[&str] = &["EQUALS"];
+
+
+/// The values `GlobalResiliencyStatus` accepts on the wire.
+pub const GLOBAL_RESILIENCY_STATUS_VALUES: &[&str] = &["SUPPORTED", "UNSUPPORTED"];
 
 
 /// The values `GuardrailAction` accepts on the wire.
@@ -1662,7 +1729,7 @@ pub const MESSAGE_FILTER_TYPE_VALUES: &[&str] = &["ALL", "TEXT_ONLY"];
 
 
 /// The values `MessageTemplateAttributeType` accepts on the wire.
-pub const MESSAGE_TEMPLATE_ATTRIBUTE_TYPE_VALUES: &[&str] = &["AGENT", "CUSTOM", "CUSTOMER_PROFILE", "SYSTEM"];
+pub const MESSAGE_TEMPLATE_ATTRIBUTE_TYPE_VALUES: &[&str] = &["AGENT", "CASE", "CUSTOM", "CUSTOMER_PROFILE", "SYSTEM"];
 
 
 /// The values `MessageTemplateFilterOperator` accepts on the wire.
@@ -1795,6 +1862,10 @@ pub const TOOL_OVERRIDE_INPUT_VALUE_TYPE_VALUES: &[&str] = &["JSON_STRING", "NUM
 
 /// The values `ToolType` accepts on the wire.
 pub const TOOL_TYPE_VALUES: &[&str] = &["CONSTANT", "MODEL_CONTEXT_PROTOCOL", "RETURN_TO_CONTROL"];
+
+
+/// The values `UnprocessableContentReason` accepts on the wire.
+pub const UNPROCESSABLE_CONTENT_REASON_VALUES: &[&str] = &["AI_INFERENCE_MODEL_UNAVAILABLE", "ORCHESTRATION_ERROR"];
 
 
 /// The values `VisibilityStatus` accepts on the wire.

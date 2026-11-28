@@ -15,10 +15,10 @@
 //!   anything of that name on `QuickResponseData`.
 //!
 //! So the type is generated, like every other modelled shape, from a model file — the
-//! small overlay `smithy-model/local-additions.json`, which restates the eighteen members
+//! small overlay `smithy-model/local-additions.json`, which restates the nineteen members
 //! the snapshot declares, with their own targets so every constraint and the
 //! `@timestampFormat` of both timestamps are captured exactly as the snapshot spells
-//! them, and adds the nineteenth. Nothing about the wire is hand-written: the member
+//! them, and adds the twentieth. Nothing about the wire is hand-written: the member
 //! names, the shape id and the traits all come from that file.
 #![allow(unused_imports)]
 
@@ -38,6 +38,7 @@ pub struct QuickResponseData {
     pub status: String,
     pub created_time: ::aws_smithy_types::DateTime,
     pub last_modified_time: ::aws_smithy_types::DateTime,
+    pub last_modified_region: Option<String>,
     pub contents: Option<QuickResponseContents>,
     pub description: Option<String>,
     pub grouping_configuration: Option<GroupingConfiguration>,

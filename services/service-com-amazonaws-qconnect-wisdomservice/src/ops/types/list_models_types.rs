@@ -39,5 +39,6 @@ pub struct ModelSummary {
     pub model_lifecycle: Option<String>,
     pub legacy_timestamp: Option<::aws_smithy_types::DateTime>,
     pub end_of_life_timestamp: Option<::aws_smithy_types::DateTime>,
+    pub global_resiliency_status: Option<String>,
 }
 
