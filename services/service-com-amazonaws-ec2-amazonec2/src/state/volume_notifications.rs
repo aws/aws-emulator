@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The event an EBS volume's CREATE OUTCOME is published as.
+//! The event an EBS volume's LIFECYCLE OUTCOME is published as.
 //!
 //! A volume create is not finished when the API answers it: the answer reports a `creating`
 //! volume, and what becomes of that volume — it becomes available, or it cannot be created
@@ -13,6 +13,13 @@
 //! drives automation off a volume's fate — an alarm, a remediation rule, a cleanup job —
 //! learns that a volume failed without polling EC2 for a volume that will never appear, and
 //! a client waiting for the notification is told instead of hanging.
+//!
+//! A DELETE is published the same way ([`VolumeNotification::of_delete`]): a delete the
+//! service performed takes the volume out of the account's volumes, which is the outcome
+//! [`DELETE_VOLUME_EVENT`] reports with the `result` [`VOLUME_DELETED`], so a consumer that
+//! reacts to a volume going away (cost cleanup, inventory) learns of it. A call the service
+//! REFUSED performed no delete and publishes nothing: the event is the outcome of a delete,
+//! not of a call.
 //!
 //! The notification is built from the STORED record ([`VolumeNotification::of_create`]), so
 //! every value in it is one the store decided, and it is published WHEN THE OUTCOME FALLS
@@ -42,11 +49,11 @@
 //! EFFORT — an emulator with no EventBridge mounted has nowhere to publish — so a failure
 //! is traced and the operation's own answer stands.
 
-use ::std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ::std::time::{Duration, Instant};
 
 use ::smithy_server_runtime::EmbeddedEmulator;
 
-use super::{VolumeKeyRefusal, VolumeRecord, VOLUME_STATE_AVAILABLE};
+use super::{VolumeKeyRefusal, VolumeRecord, VOLUME_STATE_AVAILABLE, epoch_millis_in};
 
 /// The `source` of every event this service publishes.
 ///
@@ -68,6 +75,17 @@ pub const DEFAULT_EVENT_BUS: &str = "default";
 /// The `event` member of a notification about a volume CREATE: which call the outcome is
 /// the outcome of, spelled as the API action it names.
 pub const CREATE_VOLUME_EVENT: &str = "createVolume";
+
+/// The `event` member of a notification about a volume DELETE, spelled as the API action it
+/// names the same way [`CREATE_VOLUME_EVENT`] is.
+pub const DELETE_VOLUME_EVENT: &str = "deleteVolume";
+
+/// The `result` of a delete that took the volume out of the account's volumes.
+///
+/// A delete has one outcome it can reach — the volume is gone — so this is the only result a
+/// delete notification carries; a delete the service REFUSED performed none and publishes
+/// nothing at all.
+pub const VOLUME_DELETED: &str = "deleted";
 
 /// The `result` of a create that cannot produce a volume at all.
 ///
@@ -142,6 +160,28 @@ impl VolumeNotification {
             event: CREATE_VOLUME_EVENT,
             result,
             cause,
+            request_id: ::service_common::query_error_envelope::new_request_id(),
+        }
+    }
+
+    /// The notification for the volume `record` a delete has just taken out of the account's
+    /// volumes.
+    ///
+    /// A delete that the service PERFORMED is a fact by the time the call is answered — the
+    /// volume has left the account's volumes — so the outcome is due at once and carries no
+    /// cause, nothing having failed. A delete the service REFUSED performed none, so its
+    /// caller builds no notification for it at all: the event is the outcome of a delete, not
+    /// of a call.
+    #[must_use]
+    pub fn of_delete(record: &VolumeRecord, region: &str) -> Self {
+        Self {
+            region: region.to_string(),
+            volume_arn: record.view.volume_arn.clone().unwrap_or_default(),
+            at_millis: epoch_millis_in(Duration::ZERO),
+            due_in: Duration::ZERO,
+            event: DELETE_VOLUME_EVENT,
+            result: VOLUME_DELETED.to_string(),
+            cause: String::new(),
             request_id: ::service_common::query_error_envelope::new_request_id(),
         }
     }
@@ -242,14 +282,8 @@ impl VolumeNotification {
 /// The wall-clock instant a volume's create outcome falls due, in epoch milliseconds.
 ///
 /// The store keeps that instant on the monotonic clock it moves every transition on
-/// ([`VolumeRecord::available_at`]), which has no epoch of its own, so the span still owed
-/// at `now` is added to the wall clock. A clock that cannot be read against the epoch at all
-/// leaves the event to be stamped with no time of this service's choosing.
+/// ([`VolumeRecord::available_at`]), so the span still owed at `now` is what the one
+/// computation of an event's time ([`epoch_millis_in`]) is asked for.
 fn outcome_millis(record: &VolumeRecord, now: Instant) -> i64 {
-    let still_owed = record.available_at.saturating_duration_since(now);
-    (SystemTime::now() + still_owed)
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
-        .unwrap_or_default()
+    epoch_millis_in(record.available_at.saturating_duration_since(now))
 }

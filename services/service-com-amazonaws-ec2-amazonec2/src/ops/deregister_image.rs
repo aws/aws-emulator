@@ -287,6 +287,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(|| {
                 state::internal_error("the image checked a moment ago could not be deregistered")
             })?;
+        // "A deregistered AMI can't be used to launch new instances" (`DeregisterImage`): the
+        // image has LEFT the images the account can see by the time this call is answered, so
+        // that state change is a fact and is published at once onto the account's default
+        // event bus ([`crate::state::ImageStateNotification`]) — with the store's guard given
+        // back first, a lock of this store never being held while another service is called.
+        let announced = state::ImageStateNotification::of_applied_move(
+            &input.image_id,
+            state::IMAGE_STATE_DEREGISTERED,
+            &region,
+        );
+        drop(store);
+        announced.publish_when_due(handle.clone(), ctx.callback().clone());
 
         Ok(DeregisterImageOutput {
             // "Returns `true` if the request succeeds; otherwise, it returns an error"

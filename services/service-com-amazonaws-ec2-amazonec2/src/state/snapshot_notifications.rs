@@ -310,23 +310,45 @@ impl SnapshotNotification {
 /// One instant as an event timestamp: RFC3339 at SECOND precision, the form AWS stamps a
 /// notification's `startTime` and `endTime` in (`2019-05-01T19:04:21Z`), so the two read as
 /// one kind of value and compare as one.
-fn event_timestamp(millis: i64) -> String {
+///
+/// Shared with the completion of a multi-volume snapshot SET
+/// ([`super::MultiVolumeSnapshotsCompletion`]), which stamps the same two members of the same
+/// class of event, so one notification's interval and another's are the same kind of value.
+#[must_use]
+pub fn event_timestamp(millis: i64) -> String {
     ::aws_smithy_types::DateTime::from_secs(millis.div_euclid(1_000))
         .fmt(::aws_smithy_types::date_time::Format::DateTime)
+        .unwrap_or_default()
+}
+
+/// The wall-clock instant a move or outcome that is `due_in` away falls due, in epoch
+/// milliseconds.
+///
+/// This store keeps its due instants on the monotonic clock it moves every transition on
+/// ([`Instant`]), which has no epoch of its own, so the span still owed is added to the wall
+/// clock. A clock that cannot be read against the epoch at all leaves the event to be stamped
+/// with no time of this service's choosing.
+///
+/// The ONE computation of an event's `time` for every notification this service publishes —
+/// a volume's outcome, a snapshot's, an instance's move and an AMI's
+/// ([`super::VolumeNotification`], [`SnapshotNotification`],
+/// [`super::InstanceStateNotification`], [`super::ImageStateNotification`]) — so no two
+/// classes of event can stamp the same instant two ways. `Duration::ZERO` is an outcome that
+/// is already a fact, which stamps the event with now.
+#[must_use]
+pub fn epoch_millis_in(due_in: Duration) -> i64 {
+    (SystemTime::now() + due_in)
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
         .unwrap_or_default()
 }
 
 /// The wall-clock instant a snapshot's outcome falls due, in epoch milliseconds.
 ///
 /// The store keeps that instant on the monotonic clock it moves every transition on
-/// ([`SnapshotRecord::completed_at`]), which has no epoch of its own, so the span still owed
-/// at `now` is added to the wall clock. A clock that cannot be read against the epoch at all
-/// leaves the event to be stamped with no time of this service's choosing.
+/// ([`SnapshotRecord::completed_at`]), so the span still owed at `now` is what the one
+/// computation of an event's time ([`epoch_millis_in`]) is asked for.
 fn outcome_millis(record: &SnapshotRecord, now: Instant) -> i64 {
-    let still_owed = record.completed_at.saturating_duration_since(now);
-    (SystemTime::now() + still_owed)
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
-        .unwrap_or_default()
+    epoch_millis_in(record.completed_at.saturating_duration_since(now))
 }

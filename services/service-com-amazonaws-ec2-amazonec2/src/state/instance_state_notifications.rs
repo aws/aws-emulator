@@ -49,13 +49,13 @@
 //! mounted has nowhere to publish — so a failure is traced and the operation's own answer
 //! stands.
 
-use ::std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ::std::time::{Duration, Instant};
 
 use ::smithy_server_runtime::EmbeddedEmulator;
 
 use super::{
     ComAmazonawsEc2Amazonec2State, DEFAULT_EVENT_BUS, EC2_EVENT_SOURCE, InstanceStateName,
-    region_of_zone_name,
+    epoch_millis_in, region_of_zone_name,
 };
 
 /// The `detail-type` every notification about one INSTANCE's state is published under — the
@@ -380,16 +380,3 @@ impl ComAmazonawsEc2Amazonec2State {
     }
 }
 
-/// The wall-clock instant a move that is `due_in` away falls due, in epoch milliseconds.
-///
-/// The store keeps its due instants on the monotonic clock it moves every transition on, which
-/// has no epoch of its own, so the span still owed is added to the wall clock. A clock that
-/// cannot be read against the epoch at all leaves the event to be stamped with no time of this
-/// service's choosing.
-fn epoch_millis_in(due_in: Duration) -> i64 {
-    (SystemTime::now() + due_in)
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
-        .unwrap_or_default()
-}

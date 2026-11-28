@@ -35,7 +35,7 @@
 //! assembled from the request. Every snapshot of one request carries the same `StartTime`
 //! ("This is the same for all snapshots initiated by the same request",
 //! `SnapshotInfo$StartTime`) and is `pending` with no progress yet; reaching `completed` is
-//! owed by the clock, which [`crate::state::SnapshotRecord::view_at`] derives on every read.\n//! Each snapshot's OUTCOME is published onto the account's default EventBridge bus once that\n//! outcome falls due ([`crate::state::SnapshotNotification`]) — one event per snapshot of the\n//! set, because each one settles on its own.
+//! owed by the clock, which [`crate::state::SnapshotRecord::view_at`] derives on every read.\n//! Each snapshot's OUTCOME is published onto the account's default EventBridge bus once that\n//! outcome falls due ([`crate::state::SnapshotNotification`]) — one event per snapshot of the\n//! set, because each one settles on its own. Beside them the SET's own completion is\n//! published once the LAST of those outcomes falls due\n//! ([`crate::state::MultiVolumeSnapshotsCompletion`]), listing every snapshot the call\n//! produced, so a client that promotes a backup set has one signal to wait for.
 //!
 //! `DryRun` sits after every parameter has been validated and before the first write, so it
 //! reports whether the request WOULD have succeeded and leaves the store untouched. The
@@ -203,9 +203,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::state::{
             COPY_TAGS_FROM_SOURCE_VOLUME, CREATE_SNAPSHOTS_EVENT, MAX_EXCLUDED_DATA_VOLUME_IDS,
             MAX_STORED_BYTES, MAX_STORED_SNAPSHOTS, MAX_TAGS_PER_RESOURCE,
-            SNAPSHOT_LOCATION_LOCAL, SNAPSHOT_LOCATION_REGIONAL, SNAPSHOT_STORAGE_TIER_STANDARD,
-            SNAPSHOT_TAGGABLE_RESOURCE, SnapshotNotification, SnapshotView,
-            invalid_volume_id_malformed, request_region, require_service_state,
+            MultiVolumeSnapshotsCompletion, SNAPSHOT_LOCATION_LOCAL, SNAPSHOT_LOCATION_REGIONAL,
+            SNAPSHOT_STORAGE_TIER_STANDARD, SNAPSHOT_TAGGABLE_RESOURCE, SnapshotNotification,
+            SnapshotView, invalid_volume_id_malformed, request_region, require_service_state,
             snapshot_limit_exceeded, snapshot_payload_bytes, tag_list, tags_from_specifications,
             volume_id_is_well_formed,
         };
@@ -518,11 +518,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this store is never held while another service is called.
         drop(store);
 
+        // The completion of the SET, rendered from those same outcomes so the set and each
+        // snapshot of it cannot say two different things about one snapshot: ONE event per
+        // call, published once the LAST snapshot of the set has settled
+        // ([`crate::state::MultiVolumeSnapshotsCompletion`]), which is what a client waiting
+        // for a whole backup set to be safe watches for. A call that created no snapshot at
+        // all made no set, so it publishes none.
+        let completion = MultiVolumeSnapshotsCompletion::of(&notifications);
+
         // The call is ANSWERED with the `pending` snapshots above, and the outcome of EACH
         // one is published once that outcome falls due: one event per snapshot this call
         // created, because each snapshot of the set settles on its own.
         for notification in notifications {
             notification.publish_when_due(ctx.callback().clone());
+        }
+        if let Some(completion) = completion {
+            completion.publish_when_due(ctx.callback().clone());
         }
 
         Ok(CreateSnapshotsOutput {

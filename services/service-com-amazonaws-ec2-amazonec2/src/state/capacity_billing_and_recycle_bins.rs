@@ -500,6 +500,48 @@ pub const IMAGE_TAGGABLE_RESOURCES: [&str; 2] = [
     super::SNAPSHOT_TAGGABLE_RESOURCE,
 ];
 
+/// The tags `specifications` ask an operation that creates BOTH an AMI and its backing
+/// snapshots to put on the resource kind `resource_type`.
+///
+/// "You can tag the AMI, the snapshots, or both. To tag the AMI, the value for `ResourceType`
+/// must be `image`. To tag the new snapshots, the value for `ResourceType` must be
+/// `snapshot`. If you specify other values for `ResourceType`, the request fails" — the
+/// wording `CreateImage`, `CopyImage` and `CreateRestoreImageTask` share for the two kinds
+/// [`IMAGE_TAGGABLE_RESOURCES`] lists. So a specification naming anything else is refused
+/// whichever kind is being read, and the refusal does not depend on which of the two reads
+/// happens first; the specifications of the kind asked for are then handed to the crate's one
+/// reader of a create's tag specifications
+/// ([`tags_from_specifications`]), which is what holds that kind's payload to the documented
+/// bounds. `operation` is the action the refusal names.
+pub fn tags_for_image_or_snapshot<E>(
+    specifications: Option<&[TagSpecification]>,
+    resource_type: &str,
+    operation: &str,
+) -> Result<Vec<Tag>, crate::scaffolded::Scaffolded<E>> {
+    for specification in specifications.unwrap_or_default() {
+        match specification.resource_type.as_deref() {
+            Some(named) if IMAGE_TAGGABLE_RESOURCES.contains(&named) => {}
+            Some(other) => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                    format!("'{other}' is not a valid resource type for tagging on {operation}"),
+                ));
+            }
+            None => {
+                return Err(crate::scaffolded::Scaffolded::missing_parameter(
+                    "Tag specification resource type must have a value",
+                ));
+            }
+        }
+    }
+    let of_this_kind: Vec<TagSpecification> = specifications
+        .unwrap_or_default()
+        .iter()
+        .filter(|specification| specification.resource_type.as_deref() == Some(resource_type))
+        .cloned()
+        .collect();
+    tags_from_specifications(Some(&of_this_kind), resource_type, operation)
+}
+
 /// The id prefix of the global identifier of an Amazon FPGA Image: `agfi-`
 /// ("The global FPGA image identifier (AGFI ID)", `CreateFpgaImageResult$FpgaImageGlobalId`).
 pub const FPGA_IMAGE_GLOBAL_ID_PREFIX: &str = "agfi";

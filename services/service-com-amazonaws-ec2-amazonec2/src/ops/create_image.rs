@@ -1,15 +1,48 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateImage
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateImage`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: mints an Amazon EBS-backed AMI from a stored instance — one snapshot of
+//! every Amazon EBS volume the instance holds, a block device mapping per device restored
+//! from the snapshot made of it, and the AMI itself persisted in [`crate::state`] — and
+//! answers the id the store gave it. This is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateImage::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The rules this handler keeps:
+//!
+//! 1. THE AMI IS CREATED FROM THE INSTANCE, NOT FROM THE REQUEST: "creates an Amazon
+//!    EBS-backed AMI from an Amazon EBS-backed instance that is either running or stopped",
+//!    so the instance is resolved out of this store and an instance in any other state is
+//!    refused. The facts of the image's contents — its architecture, platform and billing
+//!    strings, boot mode, IMDS and NitroTPM support, the root device and how it is backed,
+//!    the virtualization, enhanced networking, kernel and RAM disk — are the instance's own
+//!    and those of the image it was launched from, so `DescribeImages` reports this AMI
+//!    exactly as it reports a registered one and nothing about it is invented here.
+//! 2. EVERY VOLUME OF THE INSTANCE IS SNAPSHOTTED AND MAPPED: "if you customized your
+//!    instance with instance store volumes or Amazon EBS volumes in addition to the root
+//!    device volume, the new AMI contains block device mapping information for those volumes.
+//!    When you launch an instance from this new AMI, the instance automatically launches with
+//!    those additional volumes" — so each Amazon EBS device of the instance gets a snapshot
+//!    of its volume, stored beside the ones `CreateSnapshot` makes, and the AMI's mapping for
+//!    that device restores from it with the volume's own size, type, performance and
+//!    encryption state.
+//! 3. A REQUESTED MAPPING MAY ONLY SUPPRESS A DEVICE OR CHANGE `DeleteOnTermination`: "you
+//!    can't change the volume size using the VolumeSize parameter […] You can't modify the
+//!    encryption status of existing volumes or snapshots […] The only option that can be
+//!    changed for existing mappings or snapshots is DeleteOnTermination"
+//!    (`CreateImageRequest$BlockDeviceMappings`), so anything else a mapping names is
+//!    refused rather than silently ignored.
+//! 4. THE CREATE IS ASYNCHRONOUS: the image is stored [`crate::state::IMAGE_STATE_PENDING`]
+//!    and reaches [`crate::state::IMAGE_STATE_AVAILABLE`] on the clock, once the snapshots it
+//!    is backed by have completed
+//!    ([`crate::state::ComAmazonawsEc2Amazonec2State::image_available_at`]) — the same
+//!    contract `CopyImage` keeps. Nothing sleeps for it and no caller moves it. That move is
+//!    PUBLISHED onto the account's default EventBridge bus when it falls due
+//!    ([`crate::state::ImageStateNotification`]), so a client that bakes an image learns it is
+//!    usable without polling.
+//! 5. THE INSTANCE IS REBOOTED UNLESS THE REQUEST SAYS OTHERWISE: "`false` - The instance is
+//!    rebooted before creating the image […] Default: false" (`NoReboot`), through the one
+//!    writer of a queued reboot
+//!    ([`crate::state::ComAmazonawsEc2Amazonec2State::queue_instance_reboot`]), so the guest
+//!    of a running instance comes up again exactly as `RebootInstances` brings it up.
 //!
 //! ## Shape of an operation
 //!
@@ -191,18 +224,635 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateImage` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateImageErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateImage"))
+        use crate::scaffolded::Scaffolded;
+        use crate::state::{self, InstanceStateName};
+
+        // The Region of the request's credential scope: the instance is named by id alone, and
+        // the AMI this creates carries no Region-derived member, so the Region is read to scope
+        // the instance to the Region the call was made in (EC2 being reached through a regional
+        // endpoint) and for the account's default event bus this AMI's state change is
+        // published onto. The store is reached through the engine held on `self`.
+        let region = state::request_region(ctx.parts());
+
+        // "A name for the new image" (`Name`) and "the ID of the instance" (`InstanceId`) are
+        // both `@required` but modelled `clientOptional`, so a request that left one out
+        // reaches this handler as an empty string rather than being refused at the boundary. A
+        // parameter the request did not carry is EC2's `MissingParameter`, the reading
+        // `RegisterImage` and `CopyImage` give the same members.
+        if input.name.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter name",
+            ));
+        }
+        // The character set an AMI name may use, read through the crate's one definition of
+        // that question. Its LENGTH half is the member's own `@length` constraint (3..128),
+        // already refused by the request walk.
+        if !state::image_name_is_well_formed(&input.name) {
+            return Err(state::invalid_ami_name_malformed());
+        }
+        if input.instance_id.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter instanceId",
+            ));
+        }
+
+        // "Only supported for instances in Local Zones and for instances on Outposts that
+        // support local snapshots. If the source instance is not in one of these locations,
+        // omit this parameter" (`SnapshotLocation`). Every Region of this emulator reports
+        // Availability Zones only ([`crate::state::availability_zones_in_region`]), so no
+        // instance of it is in a Local Zone or on an Outpost and there is nowhere local to
+        // snapshot into; `regional` and an absent member both name the default location, which
+        // is where these snapshots are made. A value outside the modelled enum never reaches
+        // here: the boundary validator refuses it against the catalog first. The reading
+        // `CreateSnapshots` gives its own location member.
+        if input.snapshot_location.as_deref() == Some(state::SNAPSHOT_LOCATION_LOCAL) {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "Invalid value '{local}' for snapshotLocation. \
+                 A local snapshot is supported only for an instance in a Local Zone or on an \
+                 Outpost, so only '{regional}' can be served here",
+                local = state::SNAPSHOT_LOCATION_LOCAL,
+                regional = state::SNAPSHOT_LOCATION_REGIONAL,
+            )));
+        }
+
+        // "The tags to apply to the AMI and snapshots on creation. You can tag the AMI, the
+        // snapshots, or both. […] If you specify other values for ResourceType, the request
+        // fails" (`TagSpecifications`): the two resource kinds this call creates, each read
+        // through the crate's one reader of such a specification, which holds each kind's
+        // payload to its documented bounds.
+        let image_tags = state::tags_for_image_or_snapshot(
+            input.tag_specifications.as_deref(),
+            state::IMAGE_TAGGABLE_RESOURCE,
+            Self::NAME,
+        )?;
+        // "The same tag is applied to all of the snapshots that are created."
+        let snapshot_tags = state::tags_for_image_or_snapshot(
+            input.tag_specifications.as_deref(),
+            state::SNAPSHOT_TAGGABLE_RESOURCE,
+            Self::NAME,
+        )?;
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // A move the clock already owes a record of this store fell due whether or not anybody
+        // called, so those moves are applied before this call reads it.
+        store.materialize_due_transitions();
+        let now = ::std::time::Instant::now();
+
+        // The INSTANCE is what the image is created from, so it is resolved first — malformed
+        // before unknown, through the crate's one resolution of the single instance an
+        // operation was given, and an instance of another Region is no instance this request
+        // can name.
+        let instance = state::require_instance_record(&store, &region, &input.instance_id)?;
+        let instance_id = instance.instance_id.clone();
+        let source_image_id = instance.image_id.clone();
+        let instance_state = instance.state;
+        // The facts of the image's CONTENTS that the instance itself carries: the
+        // architecture it runs, the kernel and RAM disk it boots and the boot mode its
+        // firmware uses, each the EFFECTIVE value the instance reports rather than the AMI's
+        // own, so an instance something modified images as it runs.
+        let architecture = instance.architecture.clone();
+        let kernel_id = instance.kernel_id.clone();
+        let ramdisk_id = instance.ramdisk_id.clone();
+        let instance_boots_uefi = store.instance_boots_uefi(instance);
+        let instance_boot_mode = store.instance_image_boot_mode(instance);
+
+        // "Creates an Amazon EBS-backed AMI from an Amazon EBS-backed instance that is either
+        // running or stopped" (`CreateImage`): an instance in any other state has no file
+        // system to image — it is still coming up, on its way down, or already gone — so the
+        // request is refused rather than answered with an AMI of nothing. The two states the
+        // sentence names and no others: an instance still `pending` holds none of its volumes
+        // yet ("the root volume of a launch is attached as part of that launch completing"), so
+        // an AMI of it would describe no device at all.
+        if !matches!(
+            instance_state,
+            InstanceStateName::Running | InstanceStateName::Stopped
+        ) {
+            return Err(Scaffolded::incorrect_instance_state(&instance_id, "imaged"));
+        }
+
+        // "The name must be unique for AMIs in the Region for this account": the one reader of
+        // that question, so the refusal names the AMI that already holds the name.
+        if let Some(image_id) = store.image_named(&input.name) {
+            return Err(state::invalid_ami_name_duplicate(&input.name, &image_id));
+        }
+
+        // "The boot mode of the new image, which overrides the default boot mode. By default,
+        // if you do not specify this parameter, the new image inherits the boot-mode from the
+        // source instance. […] You can specify this parameter only if the
+        // current-instance-boot-mode of the source instance is uefi"
+        // (`BootModeOverride`) — asked through the ONE derivation of how an instance boots
+        // ([`crate::state::ComAmazonawsEc2Amazonec2State::instance_boots_uefi`]), so this
+        // refusal and what `DescribeInstances` reports for the same instance cannot disagree.
+        // The only value the member takes is already held to the modelled catalog by the
+        // request walk.
+        let boot_mode = match input
+            .boot_mode_override
+            .as_deref()
+            .filter(|override_mode| !override_mode.is_empty())
+        {
+            Some(override_mode) => {
+                if !instance_boots_uefi {
+                    return Err(Scaffolded::invalid_parameter_value(format!(
+                        "Invalid value '{override_mode}' for bootModeOverride. \
+                         The current-instance-boot-mode of instance '{instance_id}' is not \
+                         '{uefi}'",
+                        uefi = state::INSTANCE_BOOT_MODE_UEFI,
+                    )));
+                }
+                Some(override_mode.to_string())
+            }
+            None => instance_boot_mode,
+        };
+
+        // The AMI the instance was launched from, for the facts of the image's contents the
+        // instance does not carry itself — read as a value, so the store is free to be written
+        // below. An instance launched from an AMI the account can no longer see leaves those
+        // facts to the EBS-backed Linux image this crate publishes by default
+        // ([`crate::state::ImageSpec::default`]), which is what every other reader of an
+        // unreachable source image falls back to.
+        let source_image = source_image_id
+            .as_deref()
+            .and_then(|image_id| store.images.get(image_id))
+            .cloned();
+        let defaults = state::ImageSpec::default();
+
+        // "The device name of the root device volume" (`Image$RootDeviceName`): the device the
+        // instance's own launch put its root volume at, read through the crate's ONE
+        // resolution of that device, so this call and the launch cannot disagree about which
+        // attachment is the root one — the same reading `CreateSnapshots` makes.
+        let root_device = store
+            .launched_root_device(source_image_id.as_deref())
+            .map(|(device_name, _)| device_name);
+
+        // "If you customized your instance with […] Amazon EBS volumes in addition to the root
+        // device volume, the new AMI contains block device mapping information for those
+        // volumes" (`CreateImage`): every Amazon EBS volume the instance HOLDS is one device of
+        // the AMI, read off the store in device order so one instance's AMI describes its
+        // devices in a stable order. A volume the instance holds at more than one device (a
+        // Multi-Attach volume) is one device of the AMI per attachment, each restoring from the
+        // snapshot made of that volume.
+        let mut devices: Vec<SourceDevice> = Vec::new();
+        for (volume_id, record) in &store.volumes {
+            for attachment in record
+                .attachments_at(now)
+                .into_iter()
+                .filter(|attachment| {
+                    attachment.instance_id.as_deref() == Some(instance_id.as_str())
+                })
+            {
+                let Some(device_name) = attachment.device.filter(|device| !device.is_empty())
+                else {
+                    continue;
+                };
+                devices.push(SourceDevice {
+                    device_name,
+                    volume_id: volume_id.clone(),
+                    size: record.view.size,
+                    volume_type: record.view.volume_type.clone(),
+                    iops: record.view.iops,
+                    throughput: record.view.throughput,
+                    encrypted: record.view.encrypted,
+                    kms_key_id: record.view.kms_key_id.clone(),
+                });
+            }
+        }
+        devices.sort_by(|left, right| left.device_name.cmp(&right.device_name));
+
+        // What the request's own mappings say about those devices: which to leave out of the
+        // AMI and which to change `DeleteOnTermination` for, plus the instance store devices it
+        // describes. "The only option that can be changed for existing mappings or snapshots is
+        // DeleteOnTermination" (`BlockDeviceMappings`), so anything else is refused here rather
+        // than stored and ignored.
+        let mut suppressed: Vec<String> = Vec::new();
+        let mut delete_on_termination: Vec<(String, bool)> = Vec::new();
+        let mut instance_store_devices: Vec<BlockDeviceMapping> = Vec::new();
+        for mapping in input.block_device_mappings.iter().flatten() {
+            let device_name = mapping
+                .device_name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    invalid_block_device_mapping("Each blockDeviceMapping must name a device")
+                })?
+                .to_string();
+            // "Suppresses the specified device included in the block device mapping of the
+            // AMI" (`BlockDeviceMapping$NoDevice`): the device is left out of the AMI, so no
+            // snapshot of it is made either.
+            if mapping.no_device.is_some() {
+                suppressed.push(device_name);
+                continue;
+            }
+            match mapping.ebs.as_ref() {
+                Some(ebs) => {
+                    if !devices
+                        .iter()
+                        .any(|device| device.device_name == device_name)
+                    {
+                        return Err(invalid_block_device_mapping(format!(
+                            "The blockDeviceMapping for device {device_name} describes an \
+                             Amazon EBS volume, and instance '{instance_id}' holds no volume \
+                             at that device"
+                        )));
+                    }
+                    // "You can't change the volume size using the VolumeSize parameter. If you
+                    // want a different volume size, you must first change the volume size of
+                    // the source instance."
+                    if ebs.volume_size.is_some() {
+                        return Err(Scaffolded::invalid_parameter_value(format!(
+                            "Value ({size}) for parameter volumeSize is invalid. You can't \
+                             change the volume size of device {device_name} using this \
+                             request; change the volume size of the source instance instead",
+                            size = ebs.volume_size.unwrap_or_default(),
+                        )));
+                    }
+                    // "You can't modify the encryption status of existing volumes or
+                    // snapshots. To create an AMI with volumes or snapshots that have a
+                    // different encryption status […] copy the image instead."
+                    if ebs.encrypted.is_some() || ebs.kms_key_id.is_some() {
+                        return Err(Scaffolded::invalid_parameter_value(format!(
+                            "Value ({encrypted}) for parameter encrypted is invalid. You can't \
+                             modify the encryption status of the volume of device \
+                             {device_name}; copy the image instead",
+                            encrypted = ebs.encrypted.unwrap_or_default(),
+                        )));
+                    }
+                    // "The only option that can be changed for existing mappings or snapshots
+                    // is DeleteOnTermination": everything else a mapping could name describes
+                    // a volume this AMI restores from the instance's own, so it is refused.
+                    if ebs.snapshot_id.is_some()
+                        || ebs.volume_type.is_some()
+                        || ebs.iops.is_some()
+                        || ebs.throughput.is_some()
+                    {
+                        return Err(invalid_block_device_mapping(format!(
+                            "The only option that can be changed for the existing mapping of \
+                             device {device_name} is deleteOnTermination"
+                        )));
+                    }
+                    if let Some(requested) = ebs.delete_on_termination {
+                        delete_on_termination.push((device_name, requested));
+                    }
+                }
+                // An instance store device is described by the mapping itself — "the virtual
+                // device name" — and restores no snapshot, so it is carried into the AMI as
+                // the request gave it.
+                None if mapping
+                    .virtual_name
+                    .as_deref()
+                    .is_some_and(|name| !name.is_empty()) =>
+                {
+                    instance_store_devices.push(mapping.clone());
+                }
+                None => {
+                    return Err(invalid_block_device_mapping(format!(
+                        "The blockDeviceMapping for device {device_name} must describe an \
+                         Amazon EBS volume, a virtual device or noDevice"
+                    )));
+                }
+            }
+        }
+
+        // The devices the AMI really describes: the instance's own, minus the ones the request
+        // suppressed.
+        let mapped: Vec<SourceDevice> = devices
+            .into_iter()
+            .filter(|device| !suppressed.contains(&device.device_name))
+            .collect();
+        let root_device_name = root_device
+            .clone()
+            .or_else(|| mapped.first().map(|device| device.device_name.clone()))
+            .unwrap_or_else(|| defaults.root_device_name.clone());
+
+        // The mappings as they will be stored, with a PLACEHOLDER snapshot id of exactly the
+        // width a minted id has — every id of this store is its prefix and 17 hexadecimal
+        // digits — so the record the ceilings below are asked about is the one the insert
+        // charges for. The real ids are written in once the snapshots have been minted.
+        let placeholder_snapshot_id = format!("{}-{:017x}", state::SNAPSHOT_ID_PREFIX, 0);
+        let mut mappings: Vec<BlockDeviceMapping> = mapped
+            .iter()
+            .map(|device| {
+                device.mapping(
+                    &placeholder_snapshot_id,
+                    delete_on_termination
+                        .iter()
+                        .find(|(named, _)| *named == device.device_name)
+                        .map(|(_, requested)| *requested),
+                )
+            })
+            .collect();
+        mappings.extend(instance_store_devices);
+
+        let spec = state::ImageSpec {
+            name: input.name.clone(),
+            // "A description for the new image" (`Description`).
+            description: input.description.clone().unwrap_or_default(),
+            // The facts of the image's contents: the instance's own where it carries them,
+            // and otherwise those of the AMI it was launched from, read off the stored record
+            // rather than restated here.
+            architecture,
+            kernel_id,
+            ramdisk_id,
+            boot_mode,
+            platform: source_image
+                .as_ref()
+                .and_then(|image| image.platform.clone()),
+            platform_details: source_image
+                .as_ref()
+                .and_then(|image| image.platform_details.clone())
+                .unwrap_or_else(|| defaults.platform_details.clone()),
+            usage_operation: source_image
+                .as_ref()
+                .and_then(|image| image.usage_operation.clone())
+                .unwrap_or_else(|| defaults.usage_operation.clone()),
+            imds_support: source_image
+                .as_ref()
+                .and_then(|image| image.imds_support.clone()),
+            tpm_support: source_image
+                .as_ref()
+                .and_then(|image| image.tpm_support.clone()),
+            sriov_net_support: source_image
+                .as_ref()
+                .and_then(|image| image.sriov_net_support.clone()),
+            ena_support: source_image.as_ref().and_then(|image| image.ena_support),
+            virtualization_type: source_image
+                .as_ref()
+                .and_then(|image| image.virtualization_type.clone())
+                .unwrap_or_else(|| defaults.virtualization_type.clone()),
+            // "Any product codes associated with the AMI" (`Image$ProductCodes`) are codes of
+            // what the image holds, so an image of an instance carries the codes of the AMI
+            // that instance runs.
+            product_codes: source_image
+                .as_ref()
+                .and_then(|image| image.product_codes.clone())
+                .unwrap_or_default(),
+            // "Base64 representation of the non-volatile UEFI variable store"
+            // (`ImageAttribute$UefiData`) is part of what the image holds, so the variable
+            // store the instance's own AMI was registered with goes with it.
+            uefi_data: source_image_id
+                .as_deref()
+                .and_then(|image_id| store.image_uefi_data.get(image_id).cloned()),
+            root_device_name,
+            // "Creates an Amazon EBS-backed AMI": the AMI restores its root device from a
+            // snapshot, which is what makes it Amazon EBS-backed.
+            root_device_type: state::IMAGE_ROOT_DEVICE_TYPE_EBS.to_string(),
+            // The image belongs to the account that asked for it, is private until something
+            // shares it, and carries no owner alias — an alias names an Amazon-published
+            // image, which this is not.
+            public: false,
+            owner_id: ::engine::emulator_account_id().to_string(),
+            owner_alias: None,
+            creation_date: state::iso8601_utc(::std::time::SystemTime::now()),
+            // The image is still being assembled when this call answers — its snapshots are
+            // being written — so it is stored `pending` and the clock owes it its `available`
+            // move.
+            state: state::IMAGE_STATE_PENDING.to_string(),
+            tags: image_tags,
+            block_device_mappings: Some(mappings.clone()),
+            // "The ID of the instance that the AMI was created from if the AMI was created
+            // using CreateImage" (`Image$SourceInstanceId`).
+            source_instance_id: Some(instance_id.clone()),
+            ..state::ImageSpec::default()
+        };
+
+        // The ceilings are asked BEFORE anything is minted, so a create this emulator cannot
+        // hold whole is refused rather than half-written: a count of images, a count of
+        // snapshots, and the caller-chosen bytes both records hold, counted by the ONE
+        // definition of each charge.
+        if !store.has_image_capacity() {
+            return Err(state::resource_limit_exceeded(format!(
+                "This emulator holds {max} images, which is as many as it stores",
+                max = state::MAX_IMAGES,
+            )));
+        }
+        if !store.has_snapshot_capacity(mapped.len()) {
+            return Err(state::snapshot_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} EBS snapshots, so it cannot \
+                 store {asked} more",
+                held = store.snapshots.len(),
+                max = state::MAX_STORED_SNAPSHOTS,
+                asked = mapped.len(),
+            )));
+        }
+        let payload_bytes = state::image_payload_bytes(&spec).saturating_add(
+            state::snapshot_payload_bytes(&snapshot_tags, Some(&snapshot_description(
+                &instance_id,
+                &placeholder_snapshot_id,
+            )))
+            .saturating_mul(mapped.len()),
+        );
+        if store.would_exceed_stored_bytes(payload_bytes) {
+            return Err(state::resource_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} bytes of caller-supplied data, \
+                 so it cannot store {payload_bytes} more",
+                held = store.stored_bytes(),
+                max = state::MAX_STORED_BYTES,
+            )));
+        }
+
+        // The permission question, answered once every refusal this request earns has been
+        // minted and before the first write: "If you have the required permissions, the error
+        // response is DryRunOperation" (`DryRun`).
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let image_id = store.insert_image(spec);
+
+        // The snapshots the AMI's devices restore from, each a snapshot of this account in its
+        // own right: stored beside the ones `CreateSnapshot` makes, so `DescribeSnapshots`
+        // reports them, and moved from `pending` to `completed` by the clock rather than by a
+        // caller. One instant for the whole set, the snapshots of one image being started
+        // together.
+        let started_at = ::std::time::SystemTime::now();
+        let owner_id = ::engine::emulator_account_id().to_string();
+        let mut snapshots_minted = 0usize;
+        for (index, device) in mapped.iter().enumerate() {
+            let snapshot_id = store.insert_snapshot(
+                state::SnapshotView {
+                    // The words AWS writes on a snapshot an image create makes, naming the
+                    // instance it was taken of and the image it backs.
+                    description: Some(snapshot_description(&instance_id, &image_id)),
+                    tags: Some(snapshot_tags.clone()),
+                    // "Snapshots that are taken from encrypted volumes are automatically
+                    // encrypted" (`CreateSnapshot`), so this is the source volume's own
+                    // encryption state and never something the request asked for — which is
+                    // also why the request may not name one.
+                    encrypted: Some(device.encrypted.unwrap_or(false)),
+                    kms_key_id: device.kms_key_id.clone(),
+                    // "Source volume from which this snapshot was created" and "size of the
+                    // volume from which this snapshot was created", both read off that volume.
+                    volume_id: Some(device.volume_id.clone()),
+                    volume_size: device.size,
+                    owner_id: Some(owner_id.clone()),
+                    storage_tier: Some(state::SNAPSHOT_STORAGE_TIER_STANDARD.to_string()),
+                    // The members a snapshot of this kind carries nothing for, as the snapshot
+                    // of a volume carries them ([`crate::ops::create_snapshots`]).
+                    owner_alias: None,
+                    outpost_arn: None,
+                    restore_expiry_time: None,
+                    sse_type: None,
+                    availability_zone: None,
+                    transfer_type: None,
+                    completion_duration_minutes: None,
+                    state_message: None,
+                    data_encryption_key_id: None,
+                    full_snapshot_size_in_bytes: None,
+                    // Minted, stamped and derived by the store: the id, the start time, and
+                    // the state, progress and completion time the clock decides.
+                    snapshot_id: None,
+                    start_time: None,
+                    state: None,
+                    progress: None,
+                    completion_time: None,
+                },
+                started_at,
+            );
+            if let Some(mapping) = mappings.get_mut(index) {
+                if let Some(ebs) = mapping.ebs.as_mut() {
+                    ebs.snapshot_id = Some(snapshot_id);
+                }
+            }
+            snapshots_minted += 1;
+        }
+        // The mappings as STORED now name the snapshots this call minted rather than the
+        // placeholder the ceilings were asked about, so `DescribeImages` reports the snapshots
+        // a launch from this AMI will restore from.
+        if let Some(image) = store.images.get_mut(&image_id) {
+            image.block_device_mappings = Some(mappings);
+        }
+
+        // When the create finishes: the image is backed by the snapshots minted above, so it
+        // becomes `available` once THEY have completed — one span of the store's own clock-owed
+        // delay per level, the snapshots' own and then the image's. An image backed by no
+        // snapshot at all owes only its own.
+        let snapshots_complete_at = if snapshots_minted == 0 {
+            now
+        } else {
+            now + state::TRANSITION_DELAY
+        };
+        let available_at = snapshots_complete_at + state::TRANSITION_DELAY;
+        store
+            .image_available_at
+            .insert(image_id.clone(), available_at);
+
+        // "`false` - The instance is rebooted before creating the image. This ensures that all
+        // buffered data and data in memory is written to the volumes before the snapshots are
+        // created. Default: false" (`NoReboot`) — queued through the one writer of a reboot,
+        // so the guest comes up again exactly as `RebootInstances` brings it up. A stopped
+        // instance has no running operating system to reboot, so nothing is queued for one.
+        if input.no_reboot != Some(true) && matches!(instance_state, InstanceStateName::Running) {
+            store.queue_instance_reboot(&instance_id, started_at);
+        }
+
+        // Read the answer back OUT of the store, so the caller is told the id a later
+        // `DescribeImages` will report rather than one held only in this stack frame — and,
+        // off the same record, the state change the clock-owed `available` move is published
+        // as.
+        let answered = store
+            .images
+            .get(&image_id)
+            .map(|image| CreateImageOutput {
+                image_id: image.image_id.clone(),
+            })
+            .ok_or_else(|| {
+                state::internal_error(format!(
+                    "the newly created image '{image_id}' could not be read back"
+                ))
+            });
+        let announced = state::ImageStateNotification::of_owed_move(
+            &image_id,
+            state::IMAGE_STATE_AVAILABLE,
+            &region,
+            available_at,
+            now,
+        );
+        // The store's guard is given back before the publication is handed on: a lock of this
+        // store is never held while another service is called.
+        drop(store);
+        announced.publish_when_due(state_handle.clone(), ctx.callback().clone());
+        answered
     }
+}
+
+/// One Amazon EBS device of the source instance: the device it is held at and the facts of
+/// the volume behind it that the AMI's own mapping reports.
+///
+/// Read off the stored volume ([`crate::state::VolumeRecord`]) rather than from the request,
+/// because "you can't change the volume size using the VolumeSize parameter" and "you can't
+/// modify the encryption status of existing volumes or snapshots"
+/// (`CreateImageRequest$BlockDeviceMappings`): what the AMI describes is the instance's
+/// storage as it stands.
+#[derive(Debug, Clone)]
+struct SourceDevice {
+    /// The device the instance holds the volume at, which is the mapping's `DeviceName`.
+    device_name: String,
+    /// The volume itself, which the snapshot this call makes is a snapshot OF.
+    volume_id: String,
+    /// Its size in GiB, which the device restores into.
+    size: Option<i32>,
+    /// Its volume type.
+    volume_type: Option<String>,
+    /// The IOPS it provisions, for a type that provisions any.
+    iops: Option<i32>,
+    /// The throughput it provisions, for a type that provisions any.
+    throughput: Option<i32>,
+    /// Whether it is encrypted, which is what the snapshot and the restored device carry.
+    encrypted: Option<bool>,
+    /// The KMS key an encrypted volume is protected under.
+    kms_key_id: Option<String>,
+}
+
+impl SourceDevice {
+    /// The AMI's block device mapping for this device: restored from `snapshot_id`, with the
+    /// volume's own size, type and performance, and deleted on instance termination unless the
+    /// request asked otherwise (`delete_on_termination`).
+    ///
+    /// "Indicates whether the EBS volume is deleted on instance termination"
+    /// (`EbsBlockDevice$DeleteOnTermination`): an AMI's own mapping answers it, so a launch
+    /// from this AMI has one answer — `true` being what a device of an image created from an
+    /// instance carries unless the request changed it, the one option it may change.
+    fn mapping(&self, snapshot_id: &str, delete_on_termination: Option<bool>) -> BlockDeviceMapping {
+        BlockDeviceMapping {
+            device_name: Some(self.device_name.clone()),
+            virtual_name: None,
+            no_device: None,
+            ebs: Some(EbsBlockDevice {
+                delete_on_termination: Some(delete_on_termination.unwrap_or(true)),
+                snapshot_id: Some(snapshot_id.to_string()),
+                volume_size: self.size,
+                volume_type: self.volume_type.clone(),
+                iops: self.iops,
+                throughput: self.throughput,
+                encrypted: self.encrypted,
+                kms_key_id: self.kms_key_id.clone(),
+                outpost_arn: None,
+                availability_zone: None,
+                volume_initialization_rate: None,
+                availability_zone_id: None,
+                ebs_card_index: None,
+            }),
+        }
+    }
+}
+
+/// The description AWS writes on a snapshot an image create makes: the call it was made by,
+/// the instance it was taken of and the image it backs.
+///
+/// A recorded `DescribeSnapshots` of such a snapshot reports exactly this sentence, with the
+/// two ids of the call it belongs to, so a client that tells an image's snapshots apart from
+/// a caller's own reads it.
+fn snapshot_description(instance_id: &str, image_id: &str) -> String {
+    format!("Created by CreateImage({instance_id}) for {image_id}")
+}
+
+/// The code EC2 answers for a block device mapping an image cannot be created with: "a block
+/// device mapping parameter is not valid. The returned message indicates the incorrect
+/// parameter" (EC2 API "Error codes", `InvalidBlockDeviceMapping`).
+///
+/// It lives in this file rather than in `crate::state` for the reason
+/// `crate::ops::register_image`'s own copy does: each operation's block-device validator
+/// words its own refusals, and these are this operation's.
+fn invalid_block_device_mapping(message: impl Into<String>) -> CreateImageError {
+    crate::scaffolded::Scaffolded::service_error("InvalidBlockDeviceMapping", 400, message)
 }

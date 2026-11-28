@@ -867,6 +867,15 @@ pub const IMAGE_STATE_DISABLED: &str = "disabled";
 /// already holding its data.
 pub const IMAGE_STATE_PENDING: &str = "pending";
 
+/// An AMI that has been deregistered: the `ImageState` enum's `deregistered` member.
+///
+/// No image this store HOLDS carries it — "a deregistered AMI can't be used to launch new
+/// instances" (`DeregisterImage`), so a deregistration takes the image out of
+/// [`ComAmazonawsEc2Amazonec2State::images`] altogether — it is the state the AMI MOVED INTO,
+/// which is what the state change published for that move reports
+/// ([`super::ImageStateNotification`]).
+pub const IMAGE_STATE_DEREGISTERED: &str = "deregistered";
+
 /// "The type of image" (`Image$ImageType`) for an AMI, as opposed to a kernel or a RAM
 /// disk image: the `ImageTypeValues` enum's `machine` member.
 pub const IMAGE_TYPE_MACHINE: &str = "machine";
@@ -1071,6 +1080,17 @@ pub(super) const ISO8601_SECONDS_WIDTH: usize = 19;
 /// asks [`ComAmazonawsEc2Amazonec2State::has_image_capacity`] first, the way a VPC create
 /// asks [`ComAmazonawsEc2Amazonec2State::has_vpc_capacity`].
 pub const MAX_IMAGES: usize = 4_096;
+
+/// How many of the identifiers it has spent on AMIs this store remembers, for the ids it can
+/// still READ as an AMI id once the image itself has gone
+/// ([`ComAmazonawsEc2Amazonec2State::image_id_identifies_another_resource`]).
+///
+/// One `u64` per image this store has ever held, which is why the figure is a multiple of the
+/// images it holds at all ([`MAX_IMAGES`]) rather than that number: an account that
+/// deregisters an image and creates another spends two identifiers while holding one image.
+/// CHOSEN, like every other ceiling of this store: it is far above the images one client's
+/// work creates and small enough that the set cannot grow this process without limit.
+pub const MAX_REMEMBERED_IMAGE_IDENTIFIERS: usize = 4 * MAX_IMAGES;
 
 /// The code EC2 answers for an AMI id the account can see no image for.
 pub const INVALID_AMI_ID_NOT_FOUND: &str = "InvalidAMIID.NotFound";
@@ -1472,6 +1492,10 @@ pub struct ImageSpec {
     /// named by [`Self::source_image_id`] lives in, which is the Region the copy named as its
     /// source rather than the one the copy itself is in.
     pub source_image_region: Option<String>,
+    /// "The ID of the instance that the AMI was created from if the AMI was created using
+    /// `CreateImage`" (`Image$SourceInstanceId`), and `None` for an image no instance was
+    /// imaged into — which is every image a register, a copy or an import produces.
+    pub source_instance_id: Option<String>,
 }
 
 /// An EBS-backed Linux machine image of the calling account, created now and available:
@@ -1519,6 +1543,8 @@ impl Default for ImageSpec {
             // own ancestry chain.
             source_image_id: None,
             source_image_region: None,
+            // Set only "if the AMI was created using CreateImage" (`Image$SourceInstanceId`).
+            source_instance_id: None,
         }
     }
 }
@@ -1811,8 +1837,10 @@ impl ComAmazonawsEc2Amazonec2State {
             tpm_support: spec.tpm_support,
             deprecation_time: spec.deprecation_time,
             imds_support: spec.imds_support,
-            // Set only "if the AMI was created using CreateImage" (`Image$SourceInstanceId`).
-            source_instance_id: None,
+            // Set only "if the AMI was created using CreateImage" (`Image$SourceInstanceId`):
+            // the instance the image was created FROM, which `CreateImage` is the one writer
+            // of.
+            source_instance_id: spec.source_instance_id,
             deregistration_protection: Some(
                 IMAGE_DEREGISTRATION_PROTECTION_DISABLED.to_string(),
             ),
@@ -1879,6 +1907,9 @@ impl ComAmazonawsEc2Amazonec2State {
             self.image_uefi_data.insert(image_id.clone(), uefi_data);
         }
         self.images.insert(image_id.clone(), image);
+        // The identifier this mint has now spent on an AMI, so the id still reads as an AMI
+        // id after the image itself has been deregistered and deleted.
+        self.remember_image_identifier(&image_id);
         image_id
     }
 
@@ -2161,19 +2192,54 @@ impl ComAmazonawsEc2Amazonec2State {
     /// against the record this store keeps of the AMI ids it issued rather than against a
     /// counter: every resource kind but the instance draws its identifiers from the ONE
     /// [`Self::next_id`] counter, so the identifiers spent on AMIs are the ones the
-    /// catalogue holds or the Recycle Bin still holds — "it can be restored before its
+    /// catalogue holds, the ones the Recycle Bin still holds — "it can be restored before its
     /// retention period expires" (`DeregisterImage`), so a recycled AMI's id is its own
-    /// however invisible the image is, and either is looked up and reported as an image the
-    /// account cannot see. A long-form value whose identifier the mint HAS reached while no
-    /// AMI ever carried it names another kind of resource, so it is no AMI id and is refused
-    /// before any lookup; one the mint has not reached is left to the lookup.
+    /// however invisible the image is — and the ones this store REMEMBERS having spent on an
+    /// AMI ([`Self::issued_image_identifiers`]), which is what an AMI that has been
+    /// deregistered and permanently deleted keeps: its id was an AMI's, so a question about
+    /// that id is still a question about an AMI and is answered as an image the account cannot
+    /// see. A long-form value whose identifier the mint HAS reached while no AMI ever carried
+    /// it names another kind of resource, so it is no AMI id and is refused before any lookup;
+    /// one the mint has not reached is left to the lookup.
     pub fn image_id_identifies_another_resource(&self, image_id: &str) -> bool {
         if self.images.contains_key(image_id) || self.images_in_recycle_bin.contains_key(image_id)
         {
             return false;
         }
-        long_form_identifier(image_id)
-            .is_some_and(|identifier| identifier <= u128::from(self.id_counter))
+        let Some(identifier) = long_form_identifier(image_id) else {
+            return false;
+        };
+        if u64::try_from(identifier)
+            .is_ok_and(|spent| self.issued_image_identifiers.contains(&spent))
+        {
+            return false;
+        }
+        identifier <= u128::from(self.id_counter)
+    }
+
+    /// Record that this store spent the identifier `image_id` carries on an AMI.
+    ///
+    /// Called by [`Self::insert_image`], the ONE writer of an image, so every id this service
+    /// ever answered with as an AMI's is one it can still READ as an AMI id after the image
+    /// itself has gone ([`Self::image_id_identifies_another_resource`]).
+    ///
+    /// BOUNDED by [`MAX_REMEMBERED_IMAGE_IDENTIFIERS`]: an id is remembered per image this
+    /// store has ever held rather than per image it holds, so a client that creates and
+    /// deregisters images without end would grow it without end. The oldest entry goes when a
+    /// new one would pass that figure, which leaves the id of an image deleted that long ago
+    /// read as another kind's again — the state this store was in before it remembered any.
+    fn remember_image_identifier(&mut self, image_id: &str) {
+        let Some(identifier) = long_form_identifier(image_id).and_then(|value| u64::try_from(value).ok())
+        else {
+            return;
+        };
+        while self.issued_image_identifiers.len() >= MAX_REMEMBERED_IMAGE_IDENTIFIERS {
+            let Some(oldest) = self.issued_image_identifiers.iter().next().copied() else {
+                break;
+            };
+            self.issued_image_identifiers.remove(&oldest);
+        }
+        self.issued_image_identifiers.insert(identifier);
     }
 
     /// Every public Systems Manager parameter name this account can resolve, and the id of

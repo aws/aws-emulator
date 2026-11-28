@@ -764,44 +764,18 @@ const MAX_COMPLETION_DURATION_MINUTES: i64 = 2_880;
 /// (`CopyImageRequest$CopyImageTags`).
 const SHARED_TAG_PREFIX: &str = "ec2:SharedTag/";
 
-/// The tags the request asks this copy to put on the resource kind `resource_type`.
-///
-/// "You can tag the AMI, the snapshots, or both. To tag the new AMI, the value for
-/// `ResourceType` must be `image`. To tag the new snapshots, the value for `ResourceType`
-/// must be `snapshot`. If you specify other values for `ResourceType`, the request fails"
-/// (`CopyImageRequest$TagSpecifications`): a specification naming anything else is refused
-/// whichever kind is being read, so the refusal does not depend on which of the two reads
-/// happens first. The specifications of the kind asked for are then handed to the crate's one
-/// reader of a create's tag specifications
-/// ([`crate::state::tags_from_specifications`]), which is what holds that kind's payload to
-/// the documented bounds.
+/// The tags the request asks this copy to put on the resource kind `resource_type`, read
+/// through the crate's one reader of the tag specifications of an operation that creates both
+/// an AMI and its backing snapshots ([`crate::state::tags_for_image_or_snapshot`]) — "you can
+/// tag the AMI, the snapshots, or both … if you specify other values for `ResourceType`, the
+/// request fails" (`CopyImageRequest$TagSpecifications`), the rule `CreateImage` reads the
+/// same way.
 fn requested_tags(
     specifications: Option<&[TagSpecification]>,
     resource_type: &str,
     operation: &str,
 ) -> Result<Vec<Tag>, CopyImageError> {
-    for specification in specifications.unwrap_or_default() {
-        match specification.resource_type.as_deref() {
-            Some(named) if state::IMAGE_TAGGABLE_RESOURCES.contains(&named) => {}
-            Some(other) => {
-                return Err(Scaffolded::invalid_parameter_value(format!(
-                    "'{other}' is not a valid resource type for tagging on {operation}"
-                )));
-            }
-            None => {
-                return Err(Scaffolded::missing_parameter(
-                    "Tag specification resource type must have a value",
-                ));
-            }
-        }
-    }
-    let of_this_kind: Vec<TagSpecification> = specifications
-        .unwrap_or_default()
-        .iter()
-        .filter(|specification| specification.resource_type.as_deref() == Some(resource_type))
-        .cloned()
-        .collect();
-    state::tags_from_specifications(Some(&of_this_kind), resource_type, operation)
+    state::tags_for_image_or_snapshot(specifications, resource_type, operation)
 }
 
 /// The tags of `source` this copy carries over, for a request that asked for them.

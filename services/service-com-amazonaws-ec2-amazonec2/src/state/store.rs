@@ -2385,6 +2385,24 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// plus any image a writer stores later. Ordered by id, which is the order the
     /// describe reports and pages over.
     pub images: BTreeMap<String, Image>,
+    /// Every identifier this store has spent on an AMI, whatever became of the image that
+    /// carried it.
+    ///
+    /// EC2's long id form is an OBFUSCATED identifier the service decodes before it resolves
+    /// anything, so what a value DECODES to decides whether it is an AMI id at all
+    /// ([`Self::image_id_identifies_another_resource`]): an identifier this mint spent on
+    /// another kind of resource is no AMI id, while one it spent on an AMI stays an AMI id
+    /// after that AMI has been deregistered and deleted — the image is gone, which is a
+    /// question about an AMI the account cannot see rather than about a value that cannot be
+    /// read. [`Self::images`] and [`Self::images_in_recycle_bin`] answer that for the images
+    /// still held; this set is what answers it for the ones that have gone. Starts EMPTY: a
+    /// fresh account's store has spent none until it publishes Amazon's own catalog.
+    ///
+    /// Written only by [`Self::insert_image`], through the one place that records a spend
+    /// ([`Self::remember_image_identifier`]), and BOUNDED there by
+    /// [`MAX_REMEMBERED_IMAGE_IDENTIFIERS`] entries, so a client that creates and deregisters
+    /// images without end cannot grow this store without end.
+    pub(super) issued_image_identifiers: BTreeSet<u64>,
     /// The non-volatile UEFI variable store of each AMI registered with one, by `ImageId`:
     /// "Base64 representation of the non-volatile UEFI variable store"
     /// (`ImageAttribute$UefiData`), which only a register of an AMI can give it. The
@@ -4196,6 +4214,9 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             network_insights_analyses: BTreeMap::new(),
             network_insights_analysis_client_tokens: HashMap::new(),
             images: BTreeMap::new(),
+            // This store has spent no identifier on an AMI until it publishes Amazon's own
+            // catalog below, which is what records the ones it spends.
+            issued_image_identifiers: BTreeSet::new(),
             image_uefi_data: BTreeMap::new(),
             // A fresh account has shared no AMI of its own with anybody by name.
             image_launch_permissions: BTreeMap::new(),

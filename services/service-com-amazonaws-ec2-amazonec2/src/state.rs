@@ -3285,6 +3285,15 @@ mod volume_notifications;
 /// Everything it declares is re-exported below, so a handler reaches it as
 /// `crate::state::SnapshotNotification` like any other primitive of this module.
 mod snapshot_notifications;
+/// The event the COMPLETION of a multi-volume snapshot set is published as, onto that same
+/// bus — one event per `CreateSnapshots` call, beside the outcome of each snapshot of the
+/// set. Everything it declares is re-exported below, so a handler reaches it as
+/// `crate::state::MultiVolumeSnapshotsCompletion` like any other primitive of this module.
+mod multi_volume_snapshot_notifications;
+/// The event every change of an AMI's state is published as, onto that same bus. Everything
+/// it declares is re-exported below, so a handler reaches it as
+/// `crate::state::ImageStateNotification` like any other primitive of this module.
+mod image_state_notifications;
 /// The event every change of an INSTANCE's state is published as, onto that same bus.
 /// Everything it declares is re-exported below, so a handler reaches it as
 /// `crate::state::InstanceStateNotification` like any other primitive of this module.
@@ -3373,6 +3382,8 @@ pub use volume_encryption::*;
 pub use launch_volume_keys::*;
 pub use volume_notifications::*;
 pub use snapshot_notifications::*;
+pub use multi_volume_snapshot_notifications::*;
+pub use image_state_notifications::*;
 pub use instance_state_notifications::*;
 pub use volumes::*;
 pub use import_image_tasks_and_verified_access::*;

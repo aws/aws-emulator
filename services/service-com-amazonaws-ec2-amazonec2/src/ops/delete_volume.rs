@@ -9,6 +9,11 @@
 //! the `rbin` service's own resources, read through
 //! [`crate::state::recycle_bin_retention_period`].
 //!
+//! A delete this call PERFORMS is published onto the account's default EventBridge bus as
+//! the volume's own outcome ([`crate::state::VolumeNotification::of_delete`]), so what
+//! watches a volume's fate learns that it is gone; a delete this call REFUSES performs none
+//! and publishes nothing.
+//!
 //! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
@@ -154,10 +159,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         use crate::state::{
-            dry_run_operation, incorrect_state_of, internal_error,
-            invalid_volume_id_not_found, recycle_bin_retention_period, request_region,
-            require_readable_volume_id, require_service_state, volume_in_use,
-            volume_limit_exceeded, RECYCLE_BIN_RESOURCE_TYPE_VOLUME, VolumeRecord,
+            dry_run_operation, internal_error, invalid_volume_id_not_found,
+            recycle_bin_retention_period, request_region, require_readable_volume_id,
+            require_service_state, volume_limit_exceeded, RECYCLE_BIN_RESOURCE_TYPE_VOLUME,
+            VolumeNotification,
         };
 
         // A volume carries its own Availability Zone and is named by id, so WHICH volume this
@@ -167,74 +172,66 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = request_region(ctx.parts());
 
         let state_handle = require_service_state(&*self.engine)?;
-        let mut store = state_handle.lock();
-        let now = ::std::time::Instant::now();
 
-        // A value this service cannot READ as a volume id names no volume in any account, so
-        // it is refused BEFORE the store is asked about it — the ordering `require_volume`
-        // keeps, spelled out here because the state check below needs the record mutably. The
-        // reading is the store's own ([`crate::state::require_readable_volume_id`]), because
-        // EC2 decodes a long-form id before it resolves anything and only this service knows
-        // which identifiers it ever issued.
-        require_readable_volume_id(&store, &input.volume_id)?;
+        // WHAT THE REQUEST ASKS FOR, resolved under this store's guard and nothing else: the
+        // guard is taken for this reading alone and given back before the Recycle Bin rules —
+        // another service's resources — are asked about below, so no lock of this store is
+        // ever held while another service is reached. The delete itself re-takes it.
+        let (tags, notification) = {
+            let mut store = state_handle.lock();
+            let now = ::std::time::Instant::now();
 
-        // "Deletes the specified EBS volume": a volume id this account holds no volume for
-        // is a refusal, not a no-op — a caller that deletes twice has to be able to tell the
-        // deletion it performed from one it did not, and a waiter polling for the volume to
-        // be gone needs the not-found answer to stop.
-        let Some(record) = store.volumes.get_mut(&input.volume_id) else {
-            return Err(invalid_volume_id_not_found(&input.volume_id));
-        };
+            // A value this service cannot READ as a volume id names no volume in any account,
+            // so it is refused BEFORE the store is asked about it — the ordering
+            // `require_volume` keeps, spelled out here because the state check below needs the
+            // record mutably. The reading is the store's own
+            // ([`crate::state::require_readable_volume_id`]), because EC2 decodes a long-form
+            // id before it resolves anything and only this service knows which identifiers it
+            // ever issued.
+            require_readable_volume_id(&store, &input.volume_id)?;
 
-        // Whether an instance still holds the volume is a question about the CURRENT
-        // attachments, so a detach the clock already finished is applied before it is asked:
-        // the move was due at that instant whether or not anybody called.
-        record.materialize_due_detachments(now);
-
-        // The tags the volume carries, read off the record while it is resolved: they are what
-        // the tag filters of a Recycle Bin retention rule are matched against below, and the
-        // record is the one place that holds them, so they are taken here rather than looked
-        // up a second time.
-        let tags = record.view.tags.clone().unwrap_or_default();
-
-        // "The volume must be in the available state (not attached to an instance)"
-        // (`DeleteVolume`) — so an attachment the volume still holds refuses the delete, and
-        // the refusal names what has to be detached first: every holder, as the set the
-        // service renders them as. The parenthesis is what that state means here: a volume
-        // that is still `creating` holds no attachment and is deletable, which is what the
-        // service does for a delete that follows the create at once; no `IncorrectState`
-        // refusal is made for the transient state on its own.
-        let held = record.attachments_at(now);
-        if !held.is_empty() {
-            // Only an attachment that NAMES what holds it can be a member of the set the
-            // refusal renders. A volume whose attachments name nothing gives the caller
-            // nothing to let go of it, so it is refused for the state it is in instead — the
-            // reading `AttachVolume` makes of the same case.
-            let holders: Vec<String> = held
-                .iter()
-                .filter_map(|attachment| {
-                    VolumeRecord::managed_resource_of(attachment)
-                        .or(attachment.instance_id.as_deref())
-                        .map(str::to_string)
-                })
-                .collect();
-            return if holders.is_empty() {
-                Err(incorrect_state_of(
-                    "Volume",
-                    &input.volume_id,
-                    record.state_at(now),
-                ))
-            } else {
-                Err(volume_in_use(&input.volume_id, &holders))
+            // "Deletes the specified EBS volume": a volume id this account holds no volume for
+            // is a refusal, not a no-op — a caller that deletes twice has to be able to tell
+            // the deletion it performed from one it did not, and a waiter polling for the
+            // volume to be gone needs the not-found answer to stop.
+            let Some(record) = store.volumes.get_mut(&input.volume_id) else {
+                return Err(invalid_volume_id_not_found(&input.volume_id));
             };
-        }
 
-        // The request is one that would have succeeded, so a dry run stops HERE: "If you
-        // have the required permissions, the error response is DryRunOperation" (`DryRun`).
-        // Nothing has been removed yet, and nothing is.
-        if input.dry_run.unwrap_or(false) {
-            return Err(dry_run_operation());
-        }
+            // Whether an instance still holds the volume is a question about the CURRENT
+            // attachments, so a detach the clock already finished is applied before it is
+            // asked: the move was due at that instant whether or not anybody called.
+            record.materialize_due_detachments(now);
+
+            // "The volume must be in the available state (not attached to an instance)"
+            // (`DeleteVolume`) — so an attachment the volume still holds refuses the delete,
+            // through the one reading of that question this handler has.
+            if let Some(refusal) = held_volume_refusal(record, &input.volume_id, now) {
+                return Err(refusal);
+            }
+
+            // The request is one that would have succeeded, so a dry run stops HERE: "If you
+            // have the required permissions, the error response is DryRunOperation"
+            // (`DryRun`). Nothing has been removed yet, and nothing is.
+            if input.dry_run.unwrap_or(false) {
+                return Err(dry_run_operation());
+            }
+
+            (
+                // The tags the volume carries, read off the record while it is resolved: they
+                // are what the tag filters of a Recycle Bin retention rule are matched against
+                // below, and the record is the one place that holds them, so they are taken
+                // here rather than looked up a second time.
+                record.view.tags.clone().unwrap_or_default(),
+                // The notification this delete's OUTCOME is published as, rendered from the
+                // STORED record while it is still resolved — the ARN the event names the
+                // volume by is the record's own — and handed on below, once the delete has
+                // been performed and the guard given back. Built after every refusal this
+                // request earns has been answered, so nothing is published for a delete that
+                // was not performed.
+                VolumeNotification::of_delete(record, &region),
+            )
+        };
 
         // Unless the volume is RETAINED instead of deleted: "resources (of the specified type)
         // that have at least one of these tag key and value pairs are automatically retained in
@@ -242,24 +239,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resources of the specified resource type in the Region in which the rule is created,
         // even if the resources are not tagged" (`rbin`'s `CreateRuleRequest$ResourceTags`). So
         // a delete asks the retention rules of the Region it was signed for — the `rbin`
-        // service's own resources, read through [`recycle_bin_retention_period`] — and a
-        // covered volume MOVES into the bin for that rule's retention period rather than being
-        // permanently deleted: it stops being one of the account's volumes, which is what this
-        // delete reports, and `RestoreVolumeFromRecycleBin` can take it back until the
-        // retention period runs out.
+        // service's own resources, read through [`recycle_bin_retention_period`] WITH NO GUARD
+        // OF THIS STORE HELD — and a covered volume MOVES into the bin for that rule's
+        // retention period rather than being permanently deleted: it stops being one of the
+        // account's volumes, which is what this delete reports, and
+        // `RestoreVolumeFromRecycleBin` can take it back until the retention period runs out.
         //
         // ONE reading of the moment this delete runs at: the rules in force are the rules as of
         // it, and the two instants the Recycle Bin entry reports are read off the same moment,
         // so a retained volume's retention period cannot start before the rule that retained it
         // was consulted.
         let now_wall = SystemTime::now();
-        if let Some(retention) = recycle_bin_retention_period(
+        let retention = recycle_bin_retention_period(
             &*self.engine,
             &region,
             RECYCLE_BIN_RESOURCE_TYPE_VOLUME,
             &tags,
             now_wall,
-        ) {
+        );
+
+        // The DELETE, under the guard again. Everything the reading above decided is asked of
+        // the store once more, because another call of this account may have deleted the volume
+        // or attached it while the rules were being read: a volume that is no longer there is
+        // the not-found refusal, and one an instance has taken hold of is refused exactly as it
+        // would have been the first time.
+        let mut store = state_handle.lock();
+        let now = ::std::time::Instant::now();
+        let Some(record) = store.volumes.get_mut(&input.volume_id) else {
+            return Err(invalid_volume_id_not_found(&input.volume_id));
+        };
+        record.materialize_due_detachments(now);
+        if let Some(refusal) = held_volume_refusal(record, &input.volume_id, now) {
+            return Err(refusal);
+        }
+
+        if let Some(retention) = retention {
             // The bin is bounded like every other store here, and the question is asked BEFORE
             // the volume leaves this store, so a delete that cannot be retained refuses rather
             // than permanently deleting a volume a rule says to keep. The ceiling is this
@@ -282,6 +296,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     "the volume checked a moment ago could not be retained in the Recycle Bin",
                 ));
             }
+            // A retained volume is deleted as far as the account's volumes go — it is what
+            // this call reports — so the delete publishes its outcome like any other, with
+            // the store's guard given back first: a lock of this store is never held while
+            // another service is called.
+            drop(store);
+            notification.publish_when_due(ctx.callback().clone());
             return Ok(DeleteVolumeOutput);
         }
 
@@ -293,6 +313,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "the volume checked a moment ago could not be removed",
             ));
         }
+        // The guard is given back before the publication is handed on, for the reason above.
+        drop(store);
+        notification.publish_when_due(ctx.callback().clone());
         Ok(DeleteVolumeOutput)
     }
+}
+
+/// How this delete is refused for a volume something still HOLDS, and `None` for one nothing
+/// holds.
+///
+/// "The volume must be in the available state (not attached to an instance)" (`DeleteVolume`)
+/// — so an attachment the volume still holds refuses the delete, and the refusal names what
+/// has to be detached first: every holder, as the set the service renders them as. The
+/// parenthesis is what that state means here: a volume that is still `creating` holds no
+/// attachment and is deletable, which is what the service does for a delete that follows the
+/// create at once; no `IncorrectState` refusal is made for the transient state on its own.
+///
+/// The ONE reading of that question in this handler, asked once of the volume the request
+/// named and again of the volume the delete is performed on, so the two cannot answer
+/// differently about one volume. `now` is the instant the attachments are read as of.
+fn held_volume_refusal(
+    record: &crate::state::VolumeRecord,
+    volume_id: &str,
+    now: ::std::time::Instant,
+) -> Option<DeleteVolumeError> {
+    use crate::state::{incorrect_state_of, volume_in_use, VolumeRecord};
+
+    let held = record.attachments_at(now);
+    if held.is_empty() {
+        return None;
+    }
+    // Only an attachment that NAMES what holds it can be a member of the set the refusal
+    // renders. A volume whose attachments name nothing gives the caller nothing to let go of
+    // it, so it is refused for the state it is in instead — the reading `AttachVolume` makes
+    // of the same case.
+    let holders: Vec<String> = held
+        .iter()
+        .filter_map(|attachment| {
+            VolumeRecord::managed_resource_of(attachment)
+                .or(attachment.instance_id.as_deref())
+                .map(str::to_string)
+        })
+        .collect();
+    Some(if holders.is_empty() {
+        incorrect_state_of("Volume", volume_id, record.state_at(now))
+    } else {
+        volume_in_use(volume_id, &holders)
+    })
 }
