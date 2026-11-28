@@ -44,11 +44,23 @@ const OTHER_READING: f64 = 5.0;
 /// The second the fixture's readings are placed from: a whole minute inside the
 /// window `BatchPutAssetPropertyValue` accepts, so every reading falls in ONE
 /// aggregation window of every resolution and the `precomputed_aggregates` suite can
-/// name that window's row. Resolved once per process, so two calls of one case
-/// cannot straddle a minute boundary.
+/// name that window's row. The readings themselves are placed in the seconds AFTER
+/// it, because an aggregation window is `(start, end]` and a reading exactly on a
+/// boundary belongs to the window ending there. Resolved once per process, so two
+/// calls of one case cannot straddle a minute boundary.
 fn window_start() -> i64 {
     static ONCE: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     *ONCE.get_or_init(|| (now_seconds() - 600) / 60 * 60)
+}
+
+/// The instant `seconds` names, as the text a `TIMESTAMP` column's `scalarValue`
+/// carries: `YYYY-MM-DD HH:MM:SS.mmm` in UTC, built here from the runtime's own
+/// ISO-8601 formatter so the expectation is computed rather than remembered.
+fn timestamp_text(seconds: i64) -> String {
+    let formatted = aws_smithy_types::DateTime::from_secs(seconds)
+        .fmt(aws_smithy_types::date_time::Format::DateTime)
+        .expect("a formattable instant");
+    format!("{}.000", formatted.trim_end_matches('Z').replace('T', " "))
 }
 
 /// What the fixture created: the ids a statement names its rows by.
@@ -112,7 +124,7 @@ async fn fixture(router: &MultiServiceRouter) -> Fixture {
             router,
             &boiler_one,
             &temperature,
-            window_start() + at as i64,
+            window_start() + 1 + at as i64,
             *value,
         )
         .await;
@@ -121,7 +133,7 @@ async fn fixture(router: &MultiServiceRouter) -> Fixture {
         router,
         &boiler_two,
         &other_temperature,
-        window_start(),
+        window_start() + 1,
         OTHER_READING,
     )
     .await;
@@ -129,7 +141,7 @@ async fn fixture(router: &MultiServiceRouter) -> Fixture {
         router,
         &boiler_one,
         &status,
-        window_start(),
+        window_start() + 1,
         json!({"stringValue": "OK"}),
     )
     .await;
@@ -1161,11 +1173,10 @@ async fn the_precomputed_aggregates_view_answers_the_aggregates_of_the_stored_re
         );
         let answered = answered(&router, resolution, &statement).await;
         let sum: f64 = READINGS.iter().sum();
-        // Windows are aligned to the epoch, so the one the readings fall in starts at
-        // the last multiple of its own length at or before them and ends one length
-        // later.
-        let ends = (window_start() - window_start().rem_euclid(seconds) + seconds) as i128
-            * 1_000_000_000;
+        // Windows are aligned to the epoch and are `(start, end]`, so the one the
+        // readings fall in — they sit in the seconds after [`window_start`] — ends
+        // at the first multiple of its own length after that minute.
+        let ends = window_start() - window_start().rem_euclid(seconds) + seconds;
         assert_eq!(
             answered,
             vec![vec![
@@ -1174,7 +1185,7 @@ async fn the_precomputed_aggregates_view_answers_the_aggregates_of_the_stored_re
                 Some((sum / READINGS.len() as f64).to_string()),
                 Some(READINGS.iter().copied().fold(f64::MAX, f64::min).to_string()),
                 Some(READINGS.iter().copied().fold(f64::MIN, f64::max).to_string()),
-                Some(ends.to_string()),
+                Some(timestamp_text(ends)),
             ]],
             "case {resolution:?}: the window reduces the stored readings and is \
              stamped with its own end, got {answered:?}"
@@ -1241,7 +1252,7 @@ async fn the_precomputed_aggregates_view_answers_the_aggregates_of_the_stored_re
          got {reported}"
     );
     // And stamps it with the same instant: the view reports what that operation
-    // reports, in the nanoseconds a `TIMESTAMP` cell carries.
+    // reports, in the text a `TIMESTAMP` cell carries.
     let stamped = one_cell(
         &router,
         "the instant the view stamps the window with",
@@ -1252,12 +1263,11 @@ async fn the_precomputed_aggregates_view_answers_the_aggregates_of_the_stored_re
     )
     .await;
     assert_eq!(
-        stamped
-            .as_deref()
-            .and_then(|text| text.parse::<i128>().ok()),
+        stamped.as_deref(),
         reported["aggregatedValues"][0]["timestamp"]
             .as_f64()
-            .map(|seconds| (seconds as i128) * 1_000_000_000),
+            .map(|seconds| timestamp_text(seconds as i64))
+            .as_deref(),
         "the view and the aggregate operation stamp one window with one instant, \
          got {stamped:?} and {reported}"
     );
@@ -1365,7 +1375,7 @@ async fn the_answers_follow_the_store() {
         &router,
         &held.boiler_one,
         &held.temperature,
-        window_start() + READINGS.len() as i64,
+        window_start() + READINGS.len() as i64 + 1,
         APPENDED,
     )
     .await;

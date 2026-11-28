@@ -201,123 +201,133 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(requested) => requested as usize,
             None => MAX_RESULTS as usize,
         };
-        // A `nextToken` is a POSITION in the entry list THIS operation was sent, so
-        // it only means something against the SAME list: the cursor is decoded
-        // against the entries that arrived, and a token this service never issued,
-        // one minted for another operation or another entry list, or one past the end
-        // of the list it is replayed against names no page.
+        // A `nextToken` is a POSITION in every entry of the list THIS operation was
+        // sent, so it only means something against the SAME list: the cursor is
+        // decoded against the entries that arrived, and a token this service never
+        // issued, or one minted for another operation or another entry list, names
+        // no page.
+        let scope = crate::state::batch_entries_scope(Self::NAME, &input.entries);
         let cursor = match input.next_token.as_deref() {
-            Some(token) => crate::state::BatchCursor::decode(token, Self::NAME, &input.entries)
-                .ok_or_else(invalid_token)?,
-            None => crate::state::BatchCursor::START,
+            Some(token) => {
+                crate::state::BatchEntryCursor::decode(token, Self::NAME, &input.entries)
+                    .ok_or_else(|| invalid_token(token, &scope))?
+            }
+            None => crate::state::BatchEntryCursor::start(input.entries.len()),
         };
+        // Whether this request resumes a walk, which is what separates an entry's
+        // FIRST appearance — reported even when it has nothing to carry — from one
+        // an earlier page already finished, reported as skipped.
+        let resumed = input.next_token.is_some();
 
         let store = state.lock();
         let now = ::std::time::SystemTime::now();
 
+        // EVERY entry is classified and read before any page is cut, so a page
+        // reports what each entry is whether this page carries windows of it or not:
+        // an entry that cannot be served is reported as an error on the first page
+        // and as a skipped ERROR entry afterwards, and `maxResults` is spread across
+        // the entries that can.
+        //
+        // The derivation walks each stream's stored SAMPLES rather than the windows
+        // the entry's range spans, and a stored series is trimmed to
+        // `crate::state::MAX_SAMPLES_PER_SERIES`, so one entry can materialise at
+        // most one window per stored sample however far apart its `startDate` and
+        // `endDate` are; the entry count is bounded above.
+        let resolved: Vec<Result<_, (&'static str, String)>> = input
+            .entries
+            .iter()
+            .map(|entry| resolve_entry(&store, entry))
+            .collect();
+        let windows: Vec<Option<Vec<AggregatedValue>>> = resolved
+            .iter()
+            .map(|resolved| {
+                resolved
+                    .as_ref()
+                    .ok()
+                    .map(|(stream, query)| {
+                        crate::state::aggregated_values(&store, stream, query, now)
+                    })
+            })
+            .collect();
+        let available: Vec<Option<usize>> = windows
+            .iter()
+            .map(|windows| windows.as_ref().map(Vec::len))
+            .collect();
+
+        // A resume point past the end of an entry's answer is a position this
+        // request's entries cannot have produced, so it is refused rather than
+        // clamped: a clamped offset would silently repeat or drop windows.
+        let page = crate::state::batch_page(&available, &cursor, max_results, resumed)
+            .ok_or_else(|| {
+                invalid_token(input.next_token.as_deref().unwrap_or_default(), &scope)
+            })?;
+
         let mut error_entries = Vec::new();
         let mut success_entries = Vec::new();
         let mut skipped_entries = Vec::new();
-        let mut next_token = None;
-        // The budget this response has left, in data points. An entry that fails to
-        // resolve spends none of it: it reports an error rather than a result.
-        let mut remaining = max_results;
 
-        for (at, entry) in input.entries.iter().enumerate() {
-            // The same entry resolves the same way on every page, so an entry a
-            // previous page already finished is recognised without storing anything
-            // about that page beyond the cursor.
-            let resolved = resolve_entry(&store, entry);
-
-            if at < cursor.entry {
+        for (((entry, placement), resolved), windows) in input
+            .entries
+            .iter()
+            .zip(page.entries.iter())
+            .zip(resolved.iter())
+            .zip(windows.iter())
+        {
+            match (placement, resolved, windows) {
+                (crate::state::EntryPage::Served { from, to }, _, Some(windows)) => {
+                    success_entries.push(BatchGetAssetPropertyAggregatesSuccessEntry {
+                        entry_id: entry.entry_id.clone(),
+                        aggregated_values: windows
+                            [(*from).min(windows.len())..(*to).min(windows.len())]
+                            .to_vec(),
+                    });
+                }
                 // "entries that were not processed by this batch request, because
                 // these entries had been completely processed by previous paginated
                 // requests."
-                skipped_entries.push(BatchGetAssetPropertyAggregatesSkippedEntry {
-                    entry_id: entry.entry_id.clone(),
-                    completion_status: if resolved.is_ok() { "SUCCESS" } else { "ERROR" }
-                        .to_string(),
-                    error_info: resolved.as_ref().err().map(|(code, _)| {
-                        BatchGetAssetPropertyAggregatesErrorInfo {
+                (crate::state::EntryPage::Finished, _, _) => {
+                    skipped_entries.push(BatchGetAssetPropertyAggregatesSkippedEntry {
+                        entry_id: entry.entry_id.clone(),
+                        completion_status: COMPLETION_SUCCESS.to_string(),
+                        error_info: None,
+                    });
+                }
+                (crate::state::EntryPage::Failed, Err((code, message)), _) => {
+                    // The page that first processes the entry reports WHY it failed;
+                    // every later page lists it as skipped, carrying the code and the
+                    // instant that failure was observed.
+                    if resumed {
+                        skipped_entries.push(BatchGetAssetPropertyAggregatesSkippedEntry {
+                            entry_id: entry.entry_id.clone(),
+                            completion_status: COMPLETION_ERROR.to_string(),
+                            error_info: Some(BatchGetAssetPropertyAggregatesErrorInfo {
+                                error_code: (*code).to_string(),
+                                error_timestamp: crate::state::to_date_time(now),
+                            }),
+                        });
+                    } else {
+                        error_entries.push(BatchGetAssetPropertyAggregatesErrorEntry {
                             error_code: (*code).to_string(),
-                            error_timestamp: crate::state::to_date_time(now),
-                        }
-                    }),
-                });
-                continue;
-            }
-
-            let (stream, query) = match resolved {
-                Ok(resolved) => resolved,
-                Err((code, message)) => {
-                    error_entries.push(BatchGetAssetPropertyAggregatesErrorEntry {
-                        error_code: code.to_string(),
-                        error_message: message,
-                        entry_id: entry.entry_id.clone(),
-                    });
-                    continue;
-                }
-            };
-
-            // The derivation walks the stream's stored SAMPLES rather than the windows
-            // the entry's range spans, and a stored series is trimmed to
-            // `crate::state::MAX_SAMPLES_PER_SERIES`, so one entry can materialise at
-            // most one window per stored sample however far apart its `startDate` and
-            // `endDate` are; the entry count is bounded above.
-            let aggregated = crate::state::aggregated_values(&store, &stream, &query, now);
-            // The first entry of a resumed page starts where the previous one
-            // stopped; every later entry starts at its first data point.
-            let from = if at == cursor.entry {
-                // A resume point past the end of this entry's answer is a token
-                // this request's entries cannot have produced, so it is refused
-                // rather than clamped: a clamped offset would silently repeat or
-                // drop data points. A series trimmed at
-                // `MAX_SAMPLES_PER_SERIES` between two pages can also land here,
-                // and refusing is the right answer for that too — the enumeration
-                // the token named no longer exists.
-                if cursor.value > aggregated.len() {
-                    return Err(invalid_token());
-                }
-                cursor.value
-            } else {
-                0
-            };
-            let available = aggregated.len() - from;
-
-            if available > remaining {
-                // This entry still has data points the budget cannot carry, so the
-                // page ends inside it and `nextToken` names where to resume.
-                if remaining > 0 {
-                    success_entries.push(BatchGetAssetPropertyAggregatesSuccessEntry {
-                        entry_id: entry.entry_id.clone(),
-                        aggregated_values: aggregated[from..from + remaining].to_vec(),
-                    });
-                }
-                next_token = Some(
-                    crate::state::BatchCursor {
-                        entry: at,
-                        value: from + remaining,
+                            error_message: message.clone(),
+                            entry_id: entry.entry_id.clone(),
+                        });
                     }
-                    .encode(Self::NAME, &input.entries),
-                );
-                break;
+                }
+                // Deferred: this page's budget was spent before the entry's turn, so
+                // a later page carries it and this one reports it nowhere.
+                _ => {}
             }
-
-            remaining -= available;
-            // An entry whose series feeds no window still gets a success entry, with
-            // an empty `aggregatedValues`: the entry WAS processed, and reporting it
-            // as an error would claim a failure that did not happen.
-            success_entries.push(BatchGetAssetPropertyAggregatesSuccessEntry {
-                entry_id: entry.entry_id.clone(),
-                aggregated_values: aggregated[from..].to_vec(),
-            });
         }
 
         Ok(BatchGetAssetPropertyAggregatesOutput {
             error_entries,
             success_entries,
             skipped_entries,
-            next_token,
+            // "The token for the next set of results, or null if there are no
+            // additional results."
+            next_token: page
+                .next
+                .map(|cursor| cursor.encode(Self::NAME, &input.entries)),
         })
     }
 }
@@ -333,16 +343,27 @@ const MAX_ENTRIES: usize = 16;
 const MAX_RESULTS: i32 = 4_000;
 
 /// Where a page of a batch read resumes lives in `crate::state`
-/// ([`crate::state::BatchCursor`]), hoisted there once
+/// ([`crate::state::BatchEntryCursor`]), hoisted there once
 /// `BatchGetAssetPropertyValueHistory` became a second caller, so the paginated
 /// batch readers cannot drift in token format, in what a token is bound to, or in
 /// what counts as a token this service never issued.
 ///
-/// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never issued
-/// for these entries.
-fn invalid_token() -> BatchGetAssetPropertyAggregatesError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+/// HTTP 400 `InvalidRequestException` for a `nextToken` this read cannot resolve
+/// against its entries, in the wording the shared classification picks for it
+/// ([`crate::state::next_token_refusal_message`]): the constant text for text this
+/// service never issued as a token, and the filter-mismatch text for a token of its
+/// own replayed with another entry list — the entries being what decides which
+/// windows this read enumerates and in what order.
+fn invalid_token(token: &str, scope: &str) -> BatchGetAssetPropertyAggregatesError {
+    invalid_request(crate::state::next_token_refusal_message(token, scope).to_string())
 }
+
+/// `BatchEntryCompletionStatus` value a skipped entry that resolves reports.
+const COMPLETION_SUCCESS: &str = "SUCCESS";
+
+/// `BatchEntryCompletionStatus` value a skipped entry that does not resolve
+/// reports.
+const COMPLETION_ERROR: &str = "ERROR";
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.
 fn invalid_request(message: String) -> BatchGetAssetPropertyAggregatesError {

@@ -634,8 +634,11 @@ async fn max_results_cuts_the_data_points_of_every_entry_into_pages() {
                 "case {case:?}: every entry resolves, so errorEntries must be empty: {body}"
             );
 
-            // Everything a previous page finished is reported as skipped, in the
+            // Everything an EARLIER page finished is reported as skipped, in the
             // order the request carries, with the status it was answered with.
+            // Every entry contributes from the first page on, so the finished
+            // entries are not a leading run of the list: a short entry finishes
+            // while longer ones are still being paged.
             let skipped: Vec<String> = body["skippedEntries"]
                 .as_array()
                 .unwrap_or_else(|| panic!("case {case:?}: no skippedEntries in {body}"))
@@ -645,13 +648,12 @@ async fn max_results_cuts_the_data_points_of_every_entry_into_pages() {
             let finished: Vec<String> = expected
                 .iter()
                 .zip(&seen)
-                .take_while(|((_, want), (_, got))| want == got)
+                .filter(|((_, want), (_, got))| want == got)
                 .map(|((entry_id, _), _)| (*entry_id).to_string())
                 .collect();
             assert_eq!(
-                skipped,
-                finished[..skipped.len().min(finished.len())].to_vec(),
-                "case {case:?}: skipped entries are the leading entries earlier pages \
+                skipped, finished,
+                "case {case:?}: skipped entries are exactly the entries earlier pages \
                  finished, got {body}"
             );
             for entry in body["skippedEntries"].as_array().into_iter().flatten() {
@@ -717,9 +719,9 @@ async fn max_results_cuts_the_data_points_of_every_entry_into_pages() {
     let bad_tokens = [
         ("not hex", "zzzz".to_string()),
         ("hex of nothing cursor-shaped", hex_token("ab")),
-        ("an entry past the end of the list", hex_token("9:0")),
-        ("a data point past the end of an entry", hex_token("0:99")),
-        ("a cursor with no numbers", hex_token("a:b")),
+        ("one resume point per entry but no scope", hex_token("0,0,0")),
+        ("fewer resume points than entries", hex_token("0,0")),
+        ("a cursor with no numbers", hex_token("a,b,c")),
     ];
     for (case, token) in bad_tokens {
         let (status, body) = call(
@@ -853,5 +855,363 @@ async fn a_value_outside_the_modelled_catalog_is_refused_never_answered() {
                 "case {case:?}: expected a 400 refusal, got {status} {body}"
             );
         }
+    }
+}
+
+/// Walk a paged batch read of `entries` at `max_results`, answering one element per
+/// page: `(the entryIds served with how many data points each, the entryIds skipped
+/// with their completionStatus, the entryIds reported as errors)`.
+///
+/// The walk is bounded by `pages`, a generous ceiling on how many pages the answer
+/// can take, so a non-terminating walk fails the case instead of running forever.
+async fn walk_pages(
+    router: &MultiServiceRouter,
+    case: &str,
+    entries: &Value,
+    max_results: i64,
+    pages: usize,
+) -> Vec<(Vec<(String, usize)>, Vec<(String, String)>, Vec<String>)> {
+    let mut walked = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut request = json!({"entries": entries, "maxResults": max_results});
+        if let Some(token) = token.as_deref() {
+            request["nextToken"] = json!(token);
+        }
+        let (status, body) = call(router, "POST", BATCH_HISTORY, Some(request)).await;
+        assert_eq!(status, 200, "case {case:?}: got {status} {body}");
+        let served: Vec<(String, usize)> = body["successEntries"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: no successEntries in {body}"))
+            .iter()
+            .map(|entry| {
+                (
+                    entry["entryId"].as_str().unwrap_or_default().to_string(),
+                    count(&entry["assetPropertyValueHistory"]),
+                )
+            })
+            .collect();
+        let skipped: Vec<(String, String)> = body["skippedEntries"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: no skippedEntries in {body}"))
+            .iter()
+            .map(|entry| {
+                (
+                    entry["entryId"].as_str().unwrap_or_default().to_string(),
+                    entry["completionStatus"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect();
+        let failed: Vec<String> = body["errorEntries"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {case:?}: no errorEntries in {body}"))
+            .iter()
+            .map(|entry| entry["entryId"].as_str().unwrap_or_default().to_string())
+            .collect();
+        walked.push((served, skipped, failed));
+        assert!(
+            walked.len() <= pages,
+            "case {case:?}: the walk must terminate within {pages} pages, got {} so far",
+            walked.len()
+        );
+        match body.get("nextToken").and_then(Value::as_str) {
+            Some(next) => token = Some(next.to_string()),
+            None => break,
+        }
+    }
+    walked
+}
+
+#[tokio::test]
+async fn max_results_is_spread_across_the_entries_and_a_finished_entry_is_skipped() {
+    // The rule: `maxResults` caps the data points of a page ACROSS ALL entries, and
+    // every entry contributes to the pages from the FIRST page on; an entry whose
+    // data points run out on an earlier page is reported on every later page in
+    // skippedEntries with completionStatus SUCCESS and is never served again.
+    let router = router();
+    let (long_asset, long) = double_property(&router, "PressLong", "PressLong1", "Force").await;
+    let (short_asset, short) =
+        double_property(&router, "PressShort", "PressShort1", "Force").await;
+    let (single_asset, single) =
+        double_property(&router, "PressSingle", "PressSingle1", "Force").await;
+    let long_samples: Vec<Sample<'_>> = (0..8).map(|at| (4_000 + at * 10, 0, None)).collect();
+    write_samples(&router, &long_asset, &long, &long_samples).await;
+    write_samples(
+        &router,
+        &short_asset,
+        &short,
+        &[(4_000, 0, None), (4_010, 0, None)],
+    )
+    .await;
+    write_samples(&router, &single_asset, &single, &[(4_000, 0, None)]).await;
+
+    // Rows differ along what the rule generalises over: how unevenly the data
+    // points are spread over the entries, how many entries there are, and the page
+    // size — one data point per page, a size that cannot divide the entries evenly,
+    // and one that takes a whole round of them.
+    let cases: [(&str, Value, &[usize]); 3] = [
+        (
+            "a long entry beside a one-point entry",
+            json!([
+                {"entryId": "long", "assetId": long_asset, "propertyId": long},
+                {"entryId": "single", "assetId": single_asset, "propertyId": single},
+            ]),
+            &[8, 1],
+        ),
+        (
+            "three entries of very different lengths",
+            json!([
+                {"entryId": "long", "assetId": long_asset, "propertyId": long},
+                {"entryId": "short", "assetId": short_asset, "propertyId": short},
+                {"entryId": "single", "assetId": single_asset, "propertyId": single},
+            ]),
+            &[8, 2, 1],
+        ),
+        (
+            "the short entry listed first",
+            json!([
+                {"entryId": "single", "assetId": single_asset, "propertyId": single},
+                {"entryId": "long", "assetId": long_asset, "propertyId": long},
+            ]),
+            &[1, 8],
+        ),
+    ];
+
+    for (case, entries, counts) in cases {
+        let identifiers: Vec<String> = entries
+            .as_array()
+            .expect("the entries of this case")
+            .iter()
+            .map(|entry| entry["entryId"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let total: usize = counts.iter().sum();
+        for max_results in [1_i64, 3, counts.len() as i64] {
+            let case = format!("{case}/maxResults={max_results}");
+            let pages = walk_pages(&router, &case, &entries, max_results, total + 1).await;
+
+            // Every entry that has data points is served on the FIRST page: the
+            // budget is spread, not spent on the first entry of the list.
+            let first_page: Vec<String> = pages[0]
+                .0
+                .iter()
+                .filter(|(_, served)| *served > 0)
+                .map(|(entry_id, _)| entry_id.clone())
+                .collect();
+            let expected_first: Vec<String> = identifiers
+                .iter()
+                .take(max_results as usize)
+                .cloned()
+                .collect();
+            assert_eq!(
+                first_page, expected_first,
+                "case {case:?}: the first page spreads its budget over the entries, \
+                 got {:?}",
+                pages[0]
+            );
+
+            for (entry_id, count) in identifiers.iter().zip(counts) {
+                // Where this entry was served, and where it was reported finished.
+                let served: Vec<usize> = pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (served, ..))| {
+                        served
+                            .iter()
+                            .any(|(served_id, points)| served_id == entry_id && *points > 0)
+                    })
+                    .map(|(at, _)| at)
+                    .collect();
+                let reported: usize = pages
+                    .iter()
+                    .flat_map(|(served, ..)| served.iter())
+                    .filter(|(served_id, _)| served_id == entry_id)
+                    .map(|(_, points)| *points)
+                    .sum();
+                assert_eq!(
+                    reported, *count,
+                    "case {case:?}: entry {entry_id} reports its {count} data points \
+                     exactly once, got {reported}"
+                );
+                let finished = served.iter().copied().next_back().unwrap_or_default();
+                for (at, (_, skipped, _)) in pages.iter().enumerate() {
+                    let listed = skipped
+                        .iter()
+                        .any(|(skipped_id, _)| skipped_id == entry_id);
+                    assert_eq!(
+                        listed,
+                        at > finished,
+                        "case {case:?}: entry {entry_id} finished on page {finished}, so it \
+                         is skipped on every later page and on no earlier one; page {at} \
+                         reported {skipped:?}"
+                    );
+                    for (skipped_id, status) in skipped {
+                        if skipped_id == entry_id {
+                            assert_eq!(
+                                status, "SUCCESS",
+                                "case {case:?}: entry {entry_id} was answered, so it is \
+                                 skipped with SUCCESS, got {status}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // The one-point entry finishes before the walk does, rather than only on
+            // the last page.
+            if total > max_results as usize {
+                let shortest = identifiers
+                    .iter()
+                    .zip(counts)
+                    .min_by_key(|(_, count)| **count)
+                    .map(|(entry_id, _)| entry_id.clone())
+                    .unwrap_or_default();
+                assert!(
+                    pages.iter().take(pages.len() - 1).any(|(_, skipped, _)| {
+                        skipped.iter().any(|(entry_id, _)| *entry_id == shortest)
+                    }),
+                    "case {case:?}: the shortest entry {shortest} must be finished before \
+                     the last page, got {pages:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failed_entry_is_an_error_on_the_first_page_and_skipped_with_its_error_after() {
+    // The rule: an entry a paged batch read cannot serve is reported in
+    // errorEntries on the FIRST page — with its own errorCode and errorMessage —
+    // and on every later page in skippedEntries with completionStatus ERROR and an
+    // errorInfo carrying that code and the instant the failure was observed. It is
+    // never reported nowhere, however the pages fall.
+    let router = router();
+    let (asset_id, speed) = double_property(&router, "Mixer", "Mixer1", "Speed").await;
+    let samples: Vec<Sample<'_>> = (0..4).map(|at| (5_000 + at * 10, 0, None)).collect();
+    write_samples(&router, &asset_id, &speed, &samples).await;
+    let absent = "11111111-2222-3333-4444-555555555555";
+
+    // Rows differ along HOW the entry fails and WHERE in the list it sits: ids no
+    // account owns, an alias naming no stream, and an entry naming no identifier at
+    // all — the `BatchGetAssetPropertyValueHistoryErrorCode` values this emulator
+    // can decide.
+    let cases: [(&str, Value, &str, Option<String>); 3] = [
+        (
+            "ids no account owns, listed last",
+            json!([
+                {"entryId": "ok", "assetId": asset_id, "propertyId": speed},
+                {"entryId": "ghost", "assetId": absent, "propertyId": absent},
+            ]),
+            "ResourceNotFoundException",
+            Some(format!(
+                "Property not found (Property Id = {absent}, Asset Id = {absent})"
+            )),
+        ),
+        (
+            "an alias naming no stream, listed first",
+            json!([
+                {"entryId": "ghost", "propertyAlias": "/no/such/stream"},
+                {"entryId": "ok", "assetId": asset_id, "propertyId": speed},
+            ]),
+            "ResourceNotFoundException",
+            None,
+        ),
+        (
+            "an entry naming no identifier at all",
+            json!([
+                {"entryId": "ok", "assetId": asset_id, "propertyId": speed},
+                {"entryId": "ghost"},
+            ]),
+            "InvalidRequestException",
+            None,
+        ),
+    ];
+
+    for (case, entries, code, message) in cases {
+        let pages = walk_pages(&router, case, &entries, 1, samples.len() + 1).await;
+        assert!(
+            pages.len() > 1,
+            "case {case:?}: one data point per page must take several pages, got {pages:?}"
+        );
+
+        // Page one carries the failure itself, and nothing is skipped there.
+        let (_, skipped, failed) = &pages[0];
+        assert_eq!(
+            failed,
+            &vec!["ghost".to_string()],
+            "case {case:?}: the first page reports the failed entry in errorEntries, \
+             got {pages:?}"
+        );
+        assert!(
+            skipped.is_empty(),
+            "case {case:?}: nothing was processed before the first page, got {skipped:?}"
+        );
+
+        // Every later page lists it as skipped with its error, and reports no error
+        // entry of its own.
+        for (at, (_, skipped, failed)) in pages.iter().enumerate().skip(1) {
+            assert!(
+                failed.is_empty(),
+                "case {case:?}: page {at} reports the failure as skipped, not again as an \
+                 error entry, got {failed:?}"
+            );
+            assert_eq!(
+                skipped,
+                &vec![("ghost".to_string(), "ERROR".to_string())],
+                "case {case:?}: page {at} lists the failed entry as skipped with ERROR, \
+                 got {skipped:?}"
+            );
+        }
+
+        // The error itself: the code the model lists, and a message naming the ids
+        // the request supplied.
+        let request = json!({"entries": entries, "maxResults": 1});
+        let (status, body) = call(&router, "POST", BATCH_HISTORY, Some(request)).await;
+        assert_eq!(status, 200, "case {case:?}: got {status} {body}");
+        let reported = find_entry(&body["errorEntries"], "ghost")
+            .unwrap_or_else(|| panic!("case {case:?}: no error entry for ghost in {body}"));
+        assert_eq!(
+            reported["errorCode"].as_str(),
+            Some(code),
+            "case {case:?}: unexpected errorCode in {reported}"
+        );
+        match message {
+            Some(expected) => assert_eq!(
+                reported["errorMessage"].as_str(),
+                Some(expected.as_str()),
+                "case {case:?}: unexpected errorMessage in {reported}"
+            ),
+            None => assert!(
+                reported["errorMessage"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty()),
+                "case {case:?}: an error entry carries an errorMessage, got {reported}"
+            ),
+        }
+
+        // And on a later page, the skipped entry carries that code beside the
+        // instant the failure was observed.
+        let token = body["nextToken"].as_str().unwrap_or_default().to_string();
+        let (status, body) = call(
+            &router,
+            "POST",
+            BATCH_HISTORY,
+            Some(json!({"entries": entries, "maxResults": 1, "nextToken": token})),
+        )
+        .await;
+        assert_eq!(status, 200, "case {case:?}: got {status} {body}");
+        let reported = find_entry(&body["skippedEntries"], "ghost")
+            .unwrap_or_else(|| panic!("case {case:?}: no skipped entry for ghost in {body}"));
+        assert_eq!(
+            reported["errorInfo"]["errorCode"].as_str(),
+            Some(code),
+            "case {case:?}: a skipped ERROR entry carries its errorCode, got {reported}"
+        );
+        assert!(
+            reported["errorInfo"]["errorTimestamp"].is_number(),
+            "case {case:?}: a skipped ERROR entry carries an errorTimestamp, got {reported}"
+        );
     }
 }

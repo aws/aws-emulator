@@ -731,8 +731,9 @@ async fn a_row_page_token_is_honoured_only_for_a_row_the_result_still_has() {
                 );
                 assert_eq!(
                     body["message"].as_str(),
-                    Some("The nextToken is not a token this operation issued."),
-                    "case {case:?}: offset {at}: unexpected message in {body}"
+                    Some("Invalid pagination token encountered"),
+                    "case {case:?}: offset {at}: this operation's own fixed refusal text, \
+                     carrying no part of the request; got {body}"
                 );
             } else {
                 assert_eq!(
@@ -1397,5 +1398,131 @@ async fn the_work_a_cell_length_costs_is_charged_against_the_engine_budget() {
         rows(&again).len(),
         2,
         "both samples must still be there, got {again}"
+    );
+}
+
+#[tokio::test]
+async fn a_timestamp_column_is_answered_as_a_formatted_utc_instant() {
+    // The rule: a TIMESTAMP column's `Datum$scalarValue` is the INSTANT that cell
+    // holds, written `YYYY-MM-DD HH:MM:SS.mmm` in UTC — the layout is fixed and
+    // only the digits come from the instant — never the count of nanoseconds behind
+    // it.
+    let router = router();
+    let model_id = create_model(
+        &router,
+        "Chiller",
+        json!([{"name": "Temperature", "dataType": "DOUBLE", "type": {"measurement": {}}}]),
+    )
+    .await;
+    let asset_id = create_asset(&router, "Chiller1", &model_id).await;
+    let (_, asset) = call(&router, "GET", &format!("/assets/{asset_id}"), None).await;
+    let temperature = property_id(&asset["assetProperties"], "Temperature");
+
+    // Rows are instants that differ along what the layout has to render: the whole
+    // second, a sub-second offset that rounds down to the millisecond, one that
+    // lands on a whole millisecond, and a second on a minute boundary. Each is
+    // written with its own value, so a row cannot borrow another's.
+    let samples: [(&str, i64, i32, f64); 4] = [
+        ("a whole second", 300, 0, 1.5),
+        ("a sub-millisecond offset", 240, 1, 2.5),
+        ("a whole millisecond", 180, 250_000_000, 3.5),
+        ("a minute boundary", 120, 0, 4.5),
+    ];
+    for (case, behind, offset, value) in samples {
+        // Each row is written one whole minute apart, on the minute for the boundary
+        // row and one second past it otherwise, so the rows differ in what the
+        // layout must render rather than in which minute they fall.
+        let minute = {
+            let at = now_seconds() - behind;
+            at - at.rem_euclid(60)
+        };
+        let at = minute + i64::from(behind != 120);
+        let (status, body) = call(
+            &router,
+            "POST",
+            "/properties",
+            Some(json!({"entries": [{
+                "entryId": format!("e{behind}"),
+                "assetId": asset_id,
+                "propertyId": temperature,
+                "propertyValues": [{
+                    "value": {"doubleValue": value},
+                    "timestamp": {"timeInSeconds": at, "offsetInNanos": offset},
+                }],
+            }]})),
+        )
+        .await;
+        assert_eq!(status, 200, "case {case:?}: seeding got {status} {body}");
+        assert_eq!(
+            body["errorEntries"].as_array().map(Vec::len),
+            Some(0),
+            "case {case:?}: the sample must be accepted, got {body}"
+        );
+    }
+
+    let (status, body) = query(
+        &router,
+        &format!(
+            "SELECT event_timestamp, double_value FROM raw_time_series \
+             WHERE asset_id = '{asset_id}' AND property_id = '{temperature}' \
+             ORDER BY event_timestamp ASC"
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "the raw time series: got {status} {body}");
+    assert_eq!(
+        body["columns"][0]["type"]["scalarType"], "TIMESTAMP",
+        "event_timestamp is a TIMESTAMP column, got {body}"
+    );
+
+    // Every cell carries the fixed layout, and nothing else: ten digits of date, a
+    // space, eight of clock time, a dot and three of millisecond.
+    let answered = rows(&body);
+    assert_eq!(
+        answered.len(),
+        samples.len(),
+        "every ingested point must be answered, got {body}"
+    );
+    for row in &answered {
+        let cell = row[0]
+            .as_deref()
+            .unwrap_or_else(|| panic!("a TIMESTAMP cell with no scalarValue in {body}"));
+        let shape: String = cell
+            .chars()
+            .map(|character| if character.is_ascii_digit() { 'd' } else { character })
+            .collect();
+        assert_eq!(
+            shape, "dddd-dd-dd dd:dd:dd.ddd",
+            "a TIMESTAMP cell is written YYYY-MM-DD HH:MM:SS.mmm in UTC, got {cell:?}"
+        );
+    }
+
+    // And the cells are the instants themselves: ordering by the column puts them
+    // in ascending text order, because that layout sorts exactly as the instants do.
+    let mut sorted = answered
+        .iter()
+        .map(|row| row[0].clone())
+        .collect::<Vec<Option<String>>>();
+    sorted.sort();
+    assert_eq!(
+        answered
+            .iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<Option<String>>>(),
+        sorted,
+        "ORDER BY event_timestamp ASC answers the points oldest first, got {body}"
+    );
+    assert_eq!(
+        answered
+            .iter()
+            .map(|row| row[1].clone())
+            .collect::<Vec<Option<String>>>(),
+        vec![
+            Some("1.5".to_string()),
+            Some("2.5".to_string()),
+            Some("3.5".to_string()),
+            Some("4.5".to_string()),
+        ],
+        "each row keeps its own value beside its own instant, got {body}"
     );
 }

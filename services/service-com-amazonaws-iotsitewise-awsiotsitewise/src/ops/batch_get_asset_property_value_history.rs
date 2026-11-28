@@ -199,115 +199,116 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(requested) => requested as usize,
             None => MAX_RESULTS as usize,
         };
-        // A `nextToken` is a POSITION in the entry list THIS operation was sent, so
-        // it only means something against the SAME list: the cursor is decoded
-        // against the entries that arrived, and a token this service never issued,
-        // one minted for another operation or another entry list, or one past the end
-        // of the list it is replayed against names no page.
+        // A `nextToken` is a POSITION in every entry of the list THIS operation was
+        // sent, so it only means something against the SAME list: the cursor is
+        // decoded against the entries that arrived, and a token this service never
+        // issued, or one minted for another operation or another entry list, names
+        // no page.
+        // Which enumeration a token of this read belongs to: the operation and the
+        // entry list it is a position in.
+        let scope = crate::state::batch_entries_scope(Self::NAME, &input.entries);
         let cursor = match input.next_token.as_deref() {
-            Some(token) => crate::state::BatchCursor::decode(token, Self::NAME, &input.entries)
-                .ok_or_else(invalid_token)?,
-            None => crate::state::BatchCursor::START,
+            Some(token) => crate::state::BatchEntryCursor::decode(token, Self::NAME, &input.entries)
+                .ok_or_else(|| invalid_token(token, &scope))?,
+            None => crate::state::BatchEntryCursor::start(input.entries.len()),
         };
+        // Whether this request resumes a walk, which is what separates an entry's
+        // FIRST appearance — reported even when it has nothing to carry — from one
+        // an earlier page already finished, reported as skipped.
+        let resumed = input.next_token.is_some();
 
         let store = state.lock();
         let now = ::std::time::SystemTime::now();
 
+        // EVERY entry is classified and read before any page is cut, so a page
+        // reports what each entry is whether this page carries data points of it or
+        // not: an entry that cannot be served is reported as an error on the first
+        // page and as a skipped ERROR entry afterwards, and `maxResults` is spread
+        // across the entries that can.
+        let resolved: Vec<Result<_, (&'static str, String)>> = input
+            .entries
+            .iter()
+            .map(|entry| resolve_entry(&store, entry))
+            .collect();
+        let histories: Vec<Option<Vec<AssetPropertyValue>>> = resolved
+            .iter()
+            .map(|resolved| {
+                resolved.as_ref().ok().map(|(stream, query)| {
+                    crate::state::history_values(&store, stream, query, now)
+                })
+            })
+            .collect();
+        let available: Vec<Option<usize>> = histories
+            .iter()
+            .map(|history| history.as_ref().map(Vec::len))
+            .collect();
+
+        // A resume point past the end of an entry's answer is a position this
+        // request's entries cannot have produced, so it is refused rather than
+        // clamped: a clamped offset would silently repeat or drop data points. A
+        // series trimmed at `crate::state::MAX_SAMPLES_PER_SERIES` between two pages
+        // lands here too, and refusing is the right answer for that as well — the
+        // enumeration the token named no longer exists.
+        let page = crate::state::batch_page(&available, &cursor, max_results, resumed)
+            .ok_or_else(|| {
+                invalid_token(input.next_token.as_deref().unwrap_or_default(), &scope)
+            })?;
+
         let mut error_entries = Vec::new();
         let mut success_entries = Vec::new();
         let mut skipped_entries = Vec::new();
-        let mut next_token = None;
-        // The budget this response has left, in data points. An entry that fails to
-        // resolve spends none of it: it reports an error rather than a result.
-        let mut remaining = max_results;
 
-        for (at, entry) in input.entries.iter().enumerate() {
-            // The same entry resolves the same way on every page, so an entry a
-            // previous page already finished is recognised without storing anything
-            // about that page beyond the cursor.
-            let resolved = resolve_entry(&store, entry);
-
-            if at < cursor.entry {
+        for (((entry, placement), resolved), history) in input
+            .entries
+            .iter()
+            .zip(page.entries.iter())
+            .zip(resolved.iter())
+            .zip(histories.iter())
+        {
+            match (placement, resolved, history) {
+                (crate::state::EntryPage::Served { from, to }, _, Some(history)) => {
+                    success_entries.push(BatchGetAssetPropertyValueHistorySuccessEntry {
+                        entry_id: entry.entry_id.clone(),
+                        asset_property_value_history: history
+                            [(*from).min(history.len())..(*to).min(history.len())]
+                            .to_vec(),
+                    });
+                }
                 // "entries that were not processed by this batch request, because
                 // these entries had been completely processed by previous paginated
                 // requests."
-                skipped_entries.push(BatchGetAssetPropertyValueHistorySkippedEntry {
-                    entry_id: entry.entry_id.clone(),
-                    completion_status: if resolved.is_ok() {
-                        COMPLETION_SUCCESS
+                (crate::state::EntryPage::Finished, _, _) => {
+                    skipped_entries.push(BatchGetAssetPropertyValueHistorySkippedEntry {
+                        entry_id: entry.entry_id.clone(),
+                        completion_status: COMPLETION_SUCCESS.to_string(),
+                        error_info: None,
+                    });
+                }
+                (crate::state::EntryPage::Failed, Err((code, message)), _) => {
+                    // The page that first processes the entry reports WHY it failed;
+                    // every later page lists it as skipped, carrying the code and the
+                    // instant that failure was observed.
+                    if resumed {
+                        skipped_entries.push(BatchGetAssetPropertyValueHistorySkippedEntry {
+                            entry_id: entry.entry_id.clone(),
+                            completion_status: COMPLETION_ERROR.to_string(),
+                            error_info: Some(BatchGetAssetPropertyValueHistoryErrorInfo {
+                                error_code: (*code).to_string(),
+                                error_timestamp: crate::state::to_date_time(now),
+                            }),
+                        });
                     } else {
-                        COMPLETION_ERROR
-                    }
-                    .to_string(),
-                    error_info: resolved.as_ref().err().map(|(code, _)| {
-                        BatchGetAssetPropertyValueHistoryErrorInfo {
+                        error_entries.push(BatchGetAssetPropertyValueHistoryErrorEntry {
                             error_code: (*code).to_string(),
-                            error_timestamp: crate::state::to_date_time(now),
-                        }
-                    }),
-                });
-                continue;
-            }
-
-            let (stream, query) = match resolved {
-                Ok(resolved) => resolved,
-                Err((code, message)) => {
-                    error_entries.push(BatchGetAssetPropertyValueHistoryErrorEntry {
-                        error_code: code.to_string(),
-                        error_message: message,
-                        entry_id: entry.entry_id.clone(),
-                    });
-                    continue;
-                }
-            };
-
-            let history = crate::state::history_values(&store, &stream, &query, now);
-            // The first entry of a resumed page starts where the previous one
-            // stopped; every later entry starts at its first data point.
-            let from = if at == cursor.entry {
-                // A resume point past the end of this entry's answer is a token this
-                // request's entries cannot have produced, so it is refused rather
-                // than clamped: a clamped offset would silently repeat or drop data
-                // points. A series trimmed at `MAX_SAMPLES_PER_SERIES` between two
-                // pages can also land here, and refusing is the right answer for that
-                // too — the enumeration the token named no longer exists.
-                if cursor.value > history.len() {
-                    return Err(invalid_token());
-                }
-                cursor.value
-            } else {
-                0
-            };
-            let available = history.len() - from;
-
-            if available > remaining {
-                // This entry still has data points the budget cannot carry, so the
-                // page ends inside it and `nextToken` names where to resume.
-                if remaining > 0 {
-                    success_entries.push(BatchGetAssetPropertyValueHistorySuccessEntry {
-                        entry_id: entry.entry_id.clone(),
-                        asset_property_value_history: history[from..from + remaining].to_vec(),
-                    });
-                }
-                next_token = Some(
-                    crate::state::BatchCursor {
-                        entry: at,
-                        value: from + remaining,
+                            error_message: message.clone(),
+                            entry_id: entry.entry_id.clone(),
+                        });
                     }
-                    .encode(Self::NAME, &input.entries),
-                );
-                break;
+                }
+                // Deferred: this page's budget was spent before the entry's turn, so
+                // a later page carries it and this one reports it nowhere.
+                _ => {}
             }
-
-            remaining -= available;
-            // An entry whose property holds no sample in the queried window still gets
-            // a success entry, with an empty `assetPropertyValueHistory`: the entry WAS
-            // processed, and reporting it as an error would claim a failure that did
-            // not happen.
-            success_entries.push(BatchGetAssetPropertyValueHistorySuccessEntry {
-                entry_id: entry.entry_id.clone(),
-                asset_property_value_history: history[from..].to_vec(),
-            });
         }
 
         Ok(BatchGetAssetPropertyValueHistoryOutput {
@@ -316,7 +317,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             skipped_entries,
             // "The token for the next set of results, or null if there are no
             // additional results."
-            next_token,
+            next_token: page
+                .next
+                .map(|cursor| cursor.encode(Self::NAME, &input.entries)),
         })
     }
 }
@@ -479,10 +482,14 @@ fn resolve_entry<'a>(
 /// with ASCENDING the documented default.
 const ORDER_DESCENDING: &str = "DESCENDING";
 
-/// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never issued
-/// for these entries.
-fn invalid_token() -> BatchGetAssetPropertyValueHistoryError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+/// HTTP 400 `InvalidRequestException` for a `nextToken` this read cannot resolve
+/// against `entries`, in the wording the shared classification picks for it
+/// ([`crate::state::next_token_refusal_message`]): the constant text for text this
+/// service never issued as a token, and the filter-mismatch text for a token of its
+/// own replayed with another entry list — the entries being what decides which data
+/// points this read enumerates and in what order.
+fn invalid_token(token: &str, scope: &str) -> BatchGetAssetPropertyValueHistoryError {
+    invalid_request(crate::state::next_token_refusal_message(token, scope).to_string())
 }
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.

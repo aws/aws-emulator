@@ -1033,7 +1033,10 @@ async fn assert_a_batch_token_binds_to_its_entry_list(
         .to_string();
 
     // Honoured by the list that minted it, whatever the page size: the page SIZE
-    // decides where a page ends, not which entries are enumerated.
+    // decides where a page ends, not which entries are enumerated. WHICH data
+    // points a resumed page carries depends on that size — one `maxResults` budget
+    // is spread across the entries — but it always carries something new, and
+    // nothing the first page already reported.
     for size in [None, Some(1), Some(3), Some(99)] {
         let case = format!("{reader}: resumed with maxResults={size:?}");
         let mut request = json!({"entries": entries.to_vec(), "nextToken": token});
@@ -1043,15 +1046,24 @@ async fn assert_a_batch_token_binds_to_its_entry_list(
         let (status, resumed) = call(router, "POST", uri, Some(request)).await;
         assert_eq!(status, 200, "case {case:?}: got {status} {resumed}");
         let reported = batch_points(&case, &resumed, member, instant);
-        assert_eq!(
-            reported.first(),
-            points.get(1),
-            "case {case:?}: expected the page to resume at the second data point, got {reported:?}"
+        assert!(
+            !reported.is_empty(),
+            "case {case:?}: the list that minted the token is served from it, got {resumed}"
+        );
+        assert!(
+            !reported.contains(&points[0]),
+            "case {case:?}: a resumed page never repeats what the first page carried, \
+             got {reported:?}"
+        );
+        assert!(
+            reported.iter().all(|point| points.contains(point)),
+            "case {case:?}: every data point of a resumed page is one this entry list \
+             enumerates, got {reported:?}"
         );
     }
 
-    // ... and the whole walk of that list still reports every data point exactly
-    // once, in order.
+    // ... and the whole walk of that list still reports every data point of every
+    // entry exactly once, in that entry's own order.
     let mut collected: Vec<(String, i64)> = Vec::new();
     let mut walking: Option<String> = None;
     for page in 0..points.len() + 2 {
@@ -1072,9 +1084,29 @@ async fn assert_a_batch_token_binds_to_its_entry_list(
         walking.is_none(),
         "case {reader:?}: the walk of one entry list must terminate"
     );
+    for entry in entries {
+        let entry_id = entry["entryId"].as_str().unwrap_or_default();
+        let walked: Vec<i64> = collected
+            .iter()
+            .filter(|(answered, _)| answered == entry_id)
+            .map(|(_, at)| *at)
+            .collect();
+        let expected: Vec<i64> = points
+            .iter()
+            .filter(|(answered, _)| answered == entry_id)
+            .map(|(_, at)| *at)
+            .collect();
+        assert_eq!(
+            walked, expected,
+            "case {reader:?}: paging one entry list must deliver entry {entry_id}'s own \
+             run exactly once, in order"
+        );
+    }
     assert_eq!(
-        collected, points,
-        "case {reader:?}: paging one entry list must deliver its unpaginated answer in order"
+        collected.len(),
+        points.len(),
+        "case {reader:?}: the walk reports exactly the data points the entry list \
+         enumerates, got {collected:?}"
     );
 
     // Every other entry list is long enough to hold the position the token carries,
@@ -1288,4 +1320,347 @@ async fn a_batch_token_is_not_a_token_of_the_other_batch_reader() {
             "case {case:?}: expected InvalidRequestException, got {refused}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// HOW a refused `nextToken` is worded.
+//
+// A refusal carries one of two fixed texts, and which one says what the caller
+// should do about it: text this service never issued as a token cannot be resumed
+// at all, while a token of its own replayed with other query filtering parameters
+// means the walk was restarted under another query. Neither text carries any part
+// of the request — not the token, not a count of entries — so a client keying on
+// the message reads the same sentence whatever it sent.
+// ---------------------------------------------------------------------------
+
+/// What a time-series read answers for text it never issued as a token. Recorded
+/// behaviour for the wording; the error is the modelled `InvalidRequestException`
+/// (400).
+const UNISSUED_MESSAGE: &str = "Invalid next token provided";
+
+/// What a time-series read answers for a token it DID issue, replayed with other
+/// query filtering parameters.
+const FILTER_MISMATCH_MESSAGE: &str =
+    "The provided next token does not match query filtering parameters";
+
+/// What `ExecuteQuery` answers for either — the query reader words its own pagination
+/// refusal.
+const QUERY_TOKEN_MESSAGE: &str = "Invalid pagination token encountered";
+
+/// Where `BatchGetAssetPropertyValue` is bound: `POST /properties/batch/latest`.
+const BATCH_LATEST: &str = "/properties/batch/latest";
+
+/// The `InterpolationType` the interpolated read's rows below ask for. Source:
+/// `smithy_query(query="doc", shape="GetInterpolatedAssetPropertyValuesRequest",
+/// member="type")` — LINEAR_INTERPOLATION | LOCF_INTERPOLATION.
+const LINEAR: &str = "LINEAR_INTERPOLATION";
+
+/// Assert a refusal is 400 `InvalidRequestException` carrying exactly `message`, and
+/// that the message is that fixed text alone: it never echoes `token`.
+fn assert_refusal_message(case: &str, status: u16, body: &Value, message: &str, token: &str) {
+    assert_eq!(
+        status, 400,
+        "case {case:?}: expected 400 for a token this read cannot resolve, got {status} {body}"
+    );
+    assert_eq!(
+        error_code(body),
+        "InvalidRequestException",
+        "case {case:?}: expected InvalidRequestException, got {body}"
+    );
+    assert_eq!(
+        body["message"].as_str(),
+        Some(message),
+        "case {case:?}: expected the message {message:?}, got {body}"
+    );
+    assert!(
+        !body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(token),
+        "case {case:?}: the message is fixed text and never echoes the token {token:?}, \
+         got {body}"
+    );
+}
+
+#[tokio::test]
+async fn text_this_service_never_issued_as_a_token_is_refused_in_one_fixed_wording() {
+    let router = crate::asset_lifecycle::router();
+    let (asset_id, speed, torque) =
+        asset_with_two_properties(&router, "Valve1", "Speed", "Torque").await;
+    write_to_each(
+        &router,
+        &[(&asset_id, &speed), (&asset_id, &torque)],
+        &[(0, None), (120, None), (240, None)],
+    )
+    .await;
+
+    // Rows are tokens no read of this service ever issued, each inside `NextToken`'s
+    // modelled `^[A-Za-z0-9+/=]+$` pattern so it reaches the handler's own check
+    // rather than the runtime's constraint check: base64 text of several lengths,
+    // padded and unpadded, and hex that spells no resume point of any enumeration.
+    let forged = [
+        "c2ltMnJlYWxuZXZlcmlzc3VlZA==",
+        "AAAA",
+        "ZZZ=",
+        "0123456789abcdef",
+    ];
+    let history_stream = format!("assetId={asset_id}&propertyId={speed}");
+    let interpolated = format!(
+        "assetId={asset_id}&propertyId={speed}&startTimeInSeconds={}\
+         &endTimeInSeconds={}&quality=GOOD&intervalInSeconds=60&type={LINEAR}",
+        anchored(0),
+        anchored(240)
+    );
+    let batch_history = vec![history_entry("one", &asset_id, &speed)];
+    let batch_aggregates = vec![aggregates_entry("one", &asset_id, &speed)];
+    let batch_latest = vec![json!({
+        "entryId": "one", "assetId": asset_id, "propertyId": speed
+    })];
+
+    for token in forged {
+        // The single-property reads, each driven over its own binding.
+        let (status, body) = history(
+            &router,
+            &format!("{history_stream}&nextToken={token}"),
+        )
+        .await;
+        assert_refusal_message(
+            &format!("GetAssetPropertyValueHistory/{token}"),
+            status,
+            &body,
+            UNISSUED_MESSAGE,
+            token,
+        );
+
+        let (status, body) = call(
+            &router,
+            "GET",
+            &format!(
+                "/properties/aggregates?{}&nextToken={token}",
+                aggregates_query(&asset_id, &speed, "1m", -60, 300)
+            ),
+            None,
+        )
+        .await;
+        assert_refusal_message(
+            &format!("GetAssetPropertyAggregates/{token}"),
+            status,
+            &body,
+            UNISSUED_MESSAGE,
+            token,
+        );
+
+        let (status, body) = call(
+            &router,
+            "GET",
+            &format!("/properties/interpolated?{interpolated}&nextToken={token}"),
+            None,
+        )
+        .await;
+        assert_refusal_message(
+            &format!("GetInterpolatedAssetPropertyValues/{token}"),
+            status,
+            &body,
+            UNISSUED_MESSAGE,
+            token,
+        );
+
+        // ... and the batch reads, whose tokens are positions in an entry list.
+        for (reader, uri, entries) in [
+            (
+                "BatchGetAssetPropertyValue",
+                BATCH_LATEST,
+                batch_latest.clone(),
+            ),
+            (
+                "BatchGetAssetPropertyValueHistory",
+                BATCH_HISTORY,
+                batch_history.clone(),
+            ),
+            (
+                "BatchGetAssetPropertyAggregates",
+                BATCH_AGGREGATES,
+                batch_aggregates.clone(),
+            ),
+        ] {
+            let (status, body) = call(
+                &router,
+                "POST",
+                uri,
+                Some(json!({"entries": entries, "nextToken": token})),
+            )
+            .await;
+            assert_refusal_message(
+                &format!("{reader}/{token}"),
+                status,
+                &body,
+                UNISSUED_MESSAGE,
+                token,
+            );
+        }
+
+        // The query reader words it its own way, for the same token.
+        let (status, body) = call(
+            &router,
+            "POST",
+            "/queries/execution",
+            Some(json!({
+                "queryStatement": "SELECT property_id FROM asset_property",
+                "nextToken": token,
+            })),
+        )
+        .await;
+        assert_refusal_message(
+            &format!("ExecuteQuery/{token}"),
+            status,
+            &body,
+            QUERY_TOKEN_MESSAGE,
+            token,
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_token_replayed_with_other_query_filtering_parameters_says_so() {
+    let router = crate::asset_lifecycle::router();
+    let (asset_id, speed, torque) =
+        asset_with_two_properties(&router, "Valve2", "Speed", "Torque").await;
+    write_to_each(
+        &router,
+        &[(&asset_id, &speed), (&asset_id, &torque)],
+        &[(0, None), (120, None), (240, None)],
+    )
+    .await;
+
+    // Rows are the ways one request can differ from the request that minted the
+    // token while still enumerating something: another property, the opposite
+    // ordering, and a window the minting read did not carry. Each is a token this
+    // service DID issue, so each earns the filter-mismatch wording rather than the
+    // unissued one.
+    let minting = format!("assetId={asset_id}&propertyId={speed}");
+    let token = mint_history_token(&router, "the plain read", &minting).await;
+    for (case, query) in [
+        (
+            "another property of the same asset",
+            format!("assetId={asset_id}&propertyId={torque}"),
+        ),
+        (
+            "the ordering flipped",
+            format!("{minting}&timeOrdering=DESCENDING"),
+        ),
+        (
+            "a start bound the minting read did not carry",
+            format!("{minting}&startDate={}", query_date(60)),
+        ),
+    ] {
+        let (status, body) = history(&router, &format!("{query}&nextToken={token}")).await;
+        assert_refusal_message(
+            &format!("GetAssetPropertyValueHistory: {case}"),
+            status,
+            &body,
+            FILTER_MISMATCH_MESSAGE,
+            &token,
+        );
+    }
+
+    // The aggregate reader binds its tokens the same way, so it refuses one of its
+    // own the same way.
+    let minting = aggregates_query(&asset_id, &speed, "1m", -60, 300);
+    let (status, first) = call(
+        &router,
+        "GET",
+        &format!("/properties/aggregates?{minting}&maxResults=1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "minting an aggregates token: got {status} {first}");
+    let aggregates_token = first["nextToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("minting an aggregates token: got {first}"))
+        .to_string();
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!(
+            "/properties/aggregates?{}&nextToken={aggregates_token}",
+            aggregates_query(&asset_id, &torque, "1m", -60, 300)
+        ),
+        None,
+    )
+    .await;
+    assert_refusal_message(
+        "GetAssetPropertyAggregates: another property of the same asset",
+        status,
+        &body,
+        FILTER_MISMATCH_MESSAGE,
+        &aggregates_token,
+    );
+
+    // A batch token is a position in the entry list it was minted for, so another
+    // entry list is another set of query filtering parameters.
+    let minting_entries = vec![history_entry("one", &asset_id, &speed)];
+    let (status, first) = call(
+        &router,
+        "POST",
+        BATCH_HISTORY,
+        Some(json!({"entries": minting_entries, "maxResults": 1})),
+    )
+    .await;
+    assert_eq!(status, 200, "minting a batch token: got {status} {first}");
+    let batch_token = first["nextToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("minting a batch token: got {first}"))
+        .to_string();
+    let (status, body) = call(
+        &router,
+        "POST",
+        BATCH_HISTORY,
+        Some(json!({
+            "entries": [history_entry("one", &asset_id, &torque)],
+            "nextToken": batch_token,
+        })),
+    )
+    .await;
+    assert_refusal_message(
+        "BatchGetAssetPropertyValueHistory: an entry naming another property",
+        status,
+        &body,
+        FILTER_MISMATCH_MESSAGE,
+        &batch_token,
+    );
+
+    // And a query token belongs to its statement: replayed with another one it is
+    // refused in the query reader's own wording.
+    let (status, first) = call(
+        &router,
+        "POST",
+        "/queries/execution",
+        Some(json!({
+            "queryStatement": "SELECT property_id FROM asset_property",
+            "maxResults": 1,
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "minting a query token: got {status} {first}");
+    let query_token = first["nextToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("minting a query token: got {first}"))
+        .to_string();
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/queries/execution",
+        Some(json!({
+            "queryStatement": "SELECT asset_id FROM asset_property",
+            "nextToken": query_token,
+        })),
+    )
+    .await;
+    assert_refusal_message(
+        "ExecuteQuery: a token issued for another statement",
+        status,
+        &body,
+        QUERY_TOKEN_MESSAGE,
+        &query_token,
+    );
 }

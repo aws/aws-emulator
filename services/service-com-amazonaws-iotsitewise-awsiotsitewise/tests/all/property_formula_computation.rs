@@ -540,24 +540,24 @@ async fn an_aggregate_read_summarises_the_computed_series() {
     // data points sit at the instants of its input, and a metric's, whose data
     // points sit at the ends of its windows — and so along how the epoch-aligned
     // `1m` windows of the aggregate read group them. The expected windows are the
-    // ones the aggregate reader reports for the computed instants: a data point at
-    // an epoch-aligned instant starts the window it is counted in, which is stamped
-    // one resolution later.
+    // ones the aggregate reader reports for the computed instants: a window is
+    // `(start, end]` and is stamped with its end, so a data point at an
+    // epoch-aligned instant is counted in the window ENDING at that instant.
     let rows: Vec<WindowRow> = vec![
         (
             // The transform's five data points sit at `+1`, `+30`, `+60`, `+61` and
-            // `+90`: two of them in the minute stamped `+60` and three in the one
-            // stamped `+120`.
+            // `+90`: three of them in the minute ending `+60` and two in the one
+            // ending `+120`.
             "a transform's computed series",
             "Fahrenheit",
-            vec![(60, 2.0, 59.0), (120, 3.0, 230.0)],
+            vec![(60, 3.0, 68.0), (120, 2.0, 302.0)],
         ),
         (
             // The metric's two data points are stamped `+60` and `+120`, each the
-            // only one in the minute it starts.
+            // only one in the minute ending there.
             "a metric's computed series",
             "AvgTemp",
-            vec![(120, 1.0, 20.0), (180, 1.0, 150.0)],
+            vec![(60, 1.0, 20.0), (120, 1.0, 150.0)],
         ),
     ];
 

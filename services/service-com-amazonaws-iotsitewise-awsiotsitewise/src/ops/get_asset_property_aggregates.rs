@@ -412,11 +412,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let first = match input.next_token.as_deref() {
             Some(token) => {
                 let resume = crate::state::decode_timestamp_token(token, &scope)
-                    .ok_or_else(invalid_token)?;
+                    .ok_or_else(|| invalid_token(token, &scope))?;
                 aggregated
                     .iter()
                     .position(|value| window_key(value) == resume)
-                    .ok_or_else(invalid_token)?
+                    .ok_or_else(|| invalid_token(token, &scope))?
             }
             None => 0,
         };
@@ -460,9 +460,13 @@ fn window_key(value: &AggregatedValue) -> (i64, i32) {
     (value.timestamp.secs(), 0)
 }
 
-/// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never issued.
-fn invalid_token() -> GetAssetPropertyAggregatesError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+/// HTTP 400 `InvalidRequestException` for a `nextToken` this read cannot resolve,
+/// in the wording the shared classification picks for it
+/// ([`crate::state::next_token_refusal_message`]): the constant text for text this
+/// service never issued as a token, and the filter-mismatch text for a token of its
+/// own replayed with other query filtering parameters.
+fn invalid_token(token: &str, scope: &str) -> GetAssetPropertyAggregatesError {
+    invalid_request(crate::state::next_token_refusal_message(token, scope).to_string())
 }
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.

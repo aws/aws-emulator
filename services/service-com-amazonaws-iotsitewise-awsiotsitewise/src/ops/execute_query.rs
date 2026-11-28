@@ -448,8 +448,8 @@ impl QueryRun {
     }
 
     /// The rows of this result inside `page`, each cell rendered as the text the
-    /// wire carries for it and `None` for an absent value — which is what a null
-    /// cell is.
+    /// wire carries for it ([`Cell::wire_text`]) and `None` for an absent value —
+    /// which is what a null cell is.
     ///
     /// A range reaching past the end answers nothing, so a caller's own paging
     /// arithmetic cannot make this panic, and only the page asked for is
@@ -459,7 +459,7 @@ impl QueryRun {
             .get(page)
             .unwrap_or_default()
             .iter()
-            .map(|row| row.iter().map(Cell::as_text).collect())
+            .map(|row| row.iter().map(Cell::wire_text).collect())
             .collect()
     }
 }
@@ -910,27 +910,44 @@ impl Cell {
     /// This value as the modelled `Datum` the wire carries: a `scalarValue` string,
     /// or `nullValue` for an absent one.
     fn datum(&self) -> Datum {
-        let scalar = match self {
-            Self::Null => {
-                return Datum {
-                    scalar_value: None,
-                    array_value: None,
-                    row_value: None,
-                    null_value: Some(true),
-                }
-            }
+        match self.wire_text() {
+            Some(scalar) => Datum {
+                scalar_value: Some(scalar),
+                array_value: None,
+                row_value: None,
+                null_value: None,
+            },
+            None => Datum {
+                scalar_value: None,
+                array_value: None,
+                row_value: None,
+                null_value: Some(true),
+            },
+        }
+    }
+
+    /// This value as the text the WIRE carries for it, or `None` for an absent one —
+    /// which is what a null cell is.
+    ///
+    /// ONE rendering, used by every operation that serialises a query's rows
+    /// (`ExecuteQuery`'s `Datum$scalarValue` and the text rows `GetQueryResults`
+    /// pages), so two readers of one result cannot report one cell as two different
+    /// strings. It is not [`Cell::as_text`]: that one is the value a comparison or a
+    /// string function inside a statement sees, where a `TIMESTAMP` is the instant's
+    /// own count of nanoseconds rather than the text that spells it.
+    pub(crate) fn wire_text(&self) -> Option<String> {
+        let text = match self {
+            Self::Null => return None,
             Self::Str(value) => value.clone(),
             Self::Int(value) => value.to_string(),
             Self::Double(value) => value.to_string(),
             Self::Bool(value) => value.to_string(),
-            Self::Timestamp(nanos) => nanos.to_string(),
+            // A `TIMESTAMP` column reports an INSTANT, not the count of
+            // nanoseconds behind it, so it travels as the text that spells that
+            // instant ([`timestamp_text`]).
+            Self::Timestamp(nanos) => timestamp_text(*nanos),
         };
-        Datum {
-            scalar_value: Some(scalar),
-            array_value: None,
-            row_value: None,
-            null_value: None,
-        }
+        Some(text)
     }
 
     /// How much comparing, copying or rendering this value costs, in BYTES.
@@ -1034,6 +1051,47 @@ impl Column {
 fn is_numeric(scalar_type: &str) -> bool {
     matches!(scalar_type, "INT" | "DOUBLE" | "TIMESTAMP")
 }
+
+/// An instant, in nanoseconds since the Unix epoch, as the text a `TIMESTAMP`
+/// column's `scalarValue` carries: `YYYY-MM-DD HH:MM:SS.mmm` in UTC.
+///
+/// `Datum$scalarValue` is a STRING, so a `TIMESTAMP` cell travels as text; the
+/// layout is fixed and only the digits come from the instant, down to the
+/// millisecond. The calendar arithmetic is the runtime's own
+/// (`aws_smithy_types::DateTime`, the ISO-8601 formatter every timestamp this
+/// service reports on the wire goes through): this takes its `date` and `time`
+/// fields and writes them with a space between and three fractional digits, rather
+/// than deriving a date itself. An instant that formatter cannot represent (far
+/// outside the Gregorian range it writes) falls back to the whole seconds behind
+/// it, so a cell is always produced.
+fn timestamp_text(nanos: i128) -> String {
+    let seconds = nanos.div_euclid(NANOS_PER_SECOND);
+    let millis = nanos.rem_euclid(NANOS_PER_SECOND) / NANOS_PER_MILLISECOND;
+    let whole = i64::try_from(seconds)
+        .ok()
+        .map(::aws_smithy_types::DateTime::from_secs)
+        .and_then(|at| at.fmt(::aws_smithy_types::date_time::Format::DateTime).ok());
+    match whole {
+        // `YYYY-MM-DDTHH:MM:SSZ`, with any fraction of a second the formatter
+        // wrote: the fraction is rewritten below to the three digits this form
+        // carries, and the date and the time of day are kept as the formatter
+        // spelled them.
+        Some(formatted) => {
+            let instant = formatted.trim_end_matches('Z');
+            let instant = instant.split_once('.').map_or(instant, |(whole, _)| whole);
+            format!("{}.{millis:03}", instant.replace('T', " "))
+        }
+        None => seconds.to_string(),
+    }
+}
+
+/// Nanoseconds in one second, for splitting an instant into the whole seconds and
+/// the fraction [`timestamp_text`] writes.
+const NANOS_PER_SECOND: i128 = 1_000_000_000;
+
+/// Nanoseconds in one millisecond: the resolution a `TIMESTAMP` cell's text
+/// carries.
+const NANOS_PER_MILLISECOND: i128 = 1_000_000;
 
 /// A relation: the columns every one of its rows carries, and the rows.
 ///
@@ -4573,8 +4631,17 @@ fn decode_token(token: &str, scope: &RowPageScope) -> Result<usize, ExecuteQuery
 
 /// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never
 /// issued: text that is not one of its tokens, a token issued for another
-/// enumeration of rows, or an offset at or past the end of the result it was issued
-/// for.
+/// enumeration of rows — the rows of another `queryStatement` among them — or an
+/// offset at or past the end of the result it was issued for.
+///
+/// The message is this operation's own fixed text, which AWS words differently from
+/// the one the time-series reads of this service answer with
+/// (`crate::state::INVALID_NEXT_TOKEN_MESSAGE`), and carries no part of the request.
 fn invalid_token() -> ExecuteQueryError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+    invalid_request(INVALID_PAGINATION_TOKEN_MESSAGE.to_string())
 }
+
+/// What `ExecuteQuery` answers for a `nextToken` it cannot resolve. Entirely fixed
+/// text: it names neither the token, nor the statement, nor anything else of the
+/// request.
+const INVALID_PAGINATION_TOKEN_MESSAGE: &str = "Invalid pagination token encountered";

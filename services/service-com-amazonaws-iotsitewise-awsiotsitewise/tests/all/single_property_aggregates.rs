@@ -289,7 +289,8 @@ const READINGS: [Reading; 6] = [
 ];
 
 /// One row of the resolution table: the `Resolution` value and the windows it groups
-/// [`READINGS`] into, as `(offset from base(), sum, count)`.
+/// [`READINGS`] into, as `(offset from base() of the window's INCLUSIVE END, sum,
+/// count)`.
 type ResolutionCase = (&'static str, Vec<(i64, f64, f64)>);
 
 #[tokio::test]
@@ -300,33 +301,37 @@ async fn a_resolution_groups_the_readings_into_its_own_aligned_windows() {
 
     // Rows are every `Resolution` the modelled pattern `^1m|15m|1h|1d$` admits —
     // including "15m", which the issue never cited — with the windows each one groups
-    // READINGS into, written out by hand as an independent oracle. Window starts are
-    // epoch-aligned, so `1d` starts at UTC midnight and `15m` at :00/:15/:30/:45.
+    // READINGS into, written out by hand as an independent oracle. Windows are
+    // epoch-aligned and each is `(start, end]`, so `1d` ends at UTC midnight and
+    // `15m` at :00/:15/:30/:45, and a reading exactly on a boundary belongs to the
+    // window ENDING there — which is why the reading at +90000 s closes the window
+    // ending at +90000 s under `1m`, `15m` and `1h`, each of whose lengths divides
+    // it.
     let cases: [ResolutionCase; 4] = [
         (
             "1m",
             vec![
-                (0, 6.0, 2.0),
-                (60, 6.0, 1.0),
-                (960, 8.0, 1.0),
-                (3_960, 10.0, 1.0),
+                (60, 6.0, 2.0),
+                (120, 6.0, 1.0),
+                (1_020, 8.0, 1.0),
+                (4_020, 10.0, 1.0),
                 (90_000, 20.0, 1.0),
             ],
         ),
         (
             "15m",
             vec![
-                (0, 12.0, 3.0),
-                (900, 8.0, 1.0),
-                (3_600, 10.0, 1.0),
+                (900, 12.0, 3.0),
+                (1_800, 8.0, 1.0),
+                (4_500, 10.0, 1.0),
                 (90_000, 20.0, 1.0),
             ],
         ),
         (
             "1h",
-            vec![(0, 20.0, 4.0), (3_600, 10.0, 1.0), (90_000, 20.0, 1.0)],
+            vec![(3_600, 20.0, 4.0), (7_200, 10.0, 1.0), (90_000, 20.0, 1.0)],
         ),
-        ("1d", vec![(0, 30.0, 5.0), (DAY, 20.0, 1.0)]),
+        ("1d", vec![(DAY, 30.0, 5.0), (2 * DAY, 20.0, 1.0)]),
     ];
 
     for (resolution, windows) in cases {
@@ -345,9 +350,8 @@ async fn a_resolution_groups_the_readings_into_its_own_aligned_windows() {
         )
         .await;
         assert_eq!(status, 200, "case {resolution:?}: got {status} {body}");
-        // Each window is stamped with the instant it ends: its start plus the
-        // length of the resolution's window.
-        let end_of = |start: i64| base() + start + window_seconds(resolution);
+        // Each window is stamped with the instant it ends.
+        let end_of = |end: i64| base() + end;
         let expected_sums: Vec<(i64, f64)> = windows
             .iter()
             .map(|(offset, sum, _)| (end_of(*offset), *sum))
@@ -584,11 +588,12 @@ async fn time_ordering_and_max_results_page_the_windows() {
     let (asset_id, speed) = asset_with_property(&router, "Fan", "Rpm", "DOUBLE").await;
     write_readings(&router, &asset_id, &speed, &READINGS).await;
 
-    // The `1m` windows of READINGS, ascending, each stamped with the instant it
-    // ends.
-    let ascending: Vec<i64> = [0, 60, 960, 3_960, 90_000]
+    // The `1m` windows of READINGS, ascending, each named by the instant it ends:
+    // the smallest whole minute at or after the reading it holds, so a reading on a
+    // minute boundary (+90000 s) closes the window ending there.
+    let ascending: Vec<i64> = [60, 120, 1_020, 4_020, 90_000]
         .iter()
-        .map(|offset| base() + offset + window_seconds("1m"))
+        .map(|end| base() + end)
         .collect();
     let mut descending = ascending.clone();
     descending.reverse();

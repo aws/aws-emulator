@@ -177,12 +177,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // list, or one past the end of the list it is replayed against names no page.
         let start = match input.next_token.as_deref() {
             None => 0,
-            Some(token) => decode_page_token(token, Self::NAME, &input.entries).ok_or_else(|| {
-                invalid_request(format!(
-                    "The nextToken {token} does not name a page of this request's {} entries.",
-                    input.entries.len()
-                ))
-            })?,
+            Some(token) => {
+                decode_page_token(token, Self::NAME, &input.entries).ok_or_else(|| {
+                    invalid_request(
+                        crate::state::next_token_refusal_message(
+                            token,
+                            &crate::state::batch_entries_scope(Self::NAME, &input.entries),
+                        )
+                        .to_string(),
+                    )
+                })?
+            }
         };
 
         let store = state.lock();

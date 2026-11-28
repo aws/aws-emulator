@@ -169,6 +169,7 @@ mod asset_records;
 mod capture_ingest;
 mod capture_rendering;
 mod computation_models;
+mod data_plane_paging;
 mod id_references;
 mod jobs;
 mod paths;
@@ -185,6 +186,7 @@ pub use assistant::*;
 pub use capture_ingest::*;
 pub use capture_rendering::*;
 pub use computation_models::*;
+pub use data_plane_paging::*;
 pub use id_references::*;
 pub use jobs::*;
 pub use paths::*;
@@ -3399,7 +3401,7 @@ impl BatchCursor {
 /// was sent to, because one text sent to two operations is two tokens, and the entry
 /// list of the request, in order and with every member of every entry, because those
 /// members decide which data points each entry enumerates and in what order.
-fn batch_entries_scope(operation: &str, entries: &[impl ::std::fmt::Debug]) -> String {
+pub fn batch_entries_scope(operation: &str, entries: &[impl ::std::fmt::Debug]) -> String {
     pagination_scope(&[&operation, &entries])
 }
 
@@ -4133,6 +4135,32 @@ impl<'a> AggregateQuery<'a> {
             descending,
         })
     }
+
+    /// The window the instant `at` (nanoseconds of Unix epoch time) belongs to,
+    /// named by the whole second that window ENDS at.
+    ///
+    /// A resolution's windows are the epoch-aligned intervals of
+    /// `window_seconds`, each EXCLUSIVE at its start and INCLUSIVE at its end, so
+    /// a reading whose timestamp falls exactly on a grid boundary `t` belongs to
+    /// the window ENDING at `t` and not to the one starting there — the same
+    /// convention the `startDate`/`endDate` range of an aggregate read carries
+    /// ("the exclusive start" and "the inclusive end"). The end of the window
+    /// holding `at` is therefore the SMALLEST multiple of the window length that
+    /// is not before `at`.
+    ///
+    /// `window_seconds` is positive by construction (see [`AggregateQuery::new`]),
+    /// so the arithmetic is total; it is done in nanoseconds, so a sub-second
+    /// offset decides the window as much as the whole second does. The result
+    /// saturates rather than wrapping at the ends of the representable range.
+    fn window_end_seconds(&self, at: i128) -> i64 {
+        let window = i128::from(self.window_seconds) * NANOS_PER_SECOND;
+        // Ceiling division: `div_euclid` floors, so shifting the numerator up by
+        // one window less one nanosecond rounds the other way, on both sides of
+        // the epoch.
+        let windows = (at + window - 1).div_euclid(window);
+        let end = windows.saturating_mul(i128::from(self.window_seconds));
+        i64::try_from(end).unwrap_or(if end.is_negative() { i64::MIN } else { i64::MAX })
+    }
 }
 
 /// The aggregated values of the stream `stream` names under `query` — what either
@@ -4178,12 +4206,9 @@ pub fn aggregated_values(
         if sample.value.null_value.is_some() {
             continue;
         }
-        let seconds = sample.timestamp.time_in_seconds;
-        // `window_seconds` is positive by construction (see
-        // [`AggregateQuery::new`]), so this is total.
-        let start = seconds.saturating_sub(seconds.rem_euclid(query.window_seconds));
-        if windows.last().map(|(at, _)| *at) != Some(start) {
-            windows.push((start, Bucket::default()));
+        let end = query.window_end_seconds(at);
+        if windows.last().map(|(at, _)| *at) != Some(end) {
+            windows.push((end, Bucket::default()));
         }
         if let Some((_, bucket)) = windows.last_mut() {
             bucket.count = bucket.count.saturating_add(1);
@@ -4195,17 +4220,13 @@ pub fn aggregated_values(
 
     let mut values: Vec<AggregatedValue> = windows
         .iter()
-        .filter_map(|(start, bucket)| {
+        .filter_map(|(end, bucket)| {
             let value = bucket.reduce(query.aggregate_types);
             reports_an_aggregate(&value).then(|| AggregatedValue {
-                // A window is reported at the instant it ENDS — the end of the
-                // interval the aggregate summarises, which for a window starting at
-                // `start` is `start` plus the length of the resolution's window. The
-                // saturating add keeps the last window of the representable range on
-                // the largest second the member can carry rather than wrapping.
-                timestamp: ::aws_smithy_types::DateTime::from_secs(
-                    start.saturating_add(query.window_seconds),
-                ),
+                // A window is reported at the instant it ENDS — the inclusive end
+                // of the interval the aggregate summarises
+                // ([`AggregateQuery::window_end_seconds`]).
+                timestamp: ::aws_smithy_types::DateTime::from_secs(*end),
                 quality: Some(query.quality.to_string()),
                 value,
             })

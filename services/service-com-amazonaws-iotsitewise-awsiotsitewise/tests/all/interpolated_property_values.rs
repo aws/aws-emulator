@@ -1025,8 +1025,9 @@ async fn a_next_token_is_honoured_only_against_the_request_that_minted_it() {
         );
         assert_eq!(
             body["message"].as_str(),
-            Some("The nextToken is not a token this operation issued."),
-            "case {case:?}: unexpected message in {body}"
+            Some("The provided next token does not match query filtering parameters"),
+            "case {case:?}: a token this operation DID issue, replayed with other query \
+             filtering parameters, is refused in those words; got {body}"
         );
     }
 
@@ -1053,6 +1054,12 @@ async fn a_next_token_is_honoured_only_against_the_request_that_minted_it() {
             error_code(&body),
             "InvalidRequestException",
             "ordinal {ordinal}: unexpected error code in {body}"
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some("Invalid next token provided"),
+            "ordinal {ordinal}: text this operation never issued is refused in those \
+             fixed words, which carry no part of the request; got {body}"
         );
     }
 

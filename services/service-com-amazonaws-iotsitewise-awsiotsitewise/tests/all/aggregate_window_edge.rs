@@ -3,10 +3,12 @@
 //! The bucket-EDGE rule of the two aggregate reads, driven over HTTP through the
 //! same `MultiServiceRouter` the emulator boots with.
 //!
-//! The rule this suite pins: an aggregate reports the summarised window stamped
-//! with the instant that window ENDS — the start of the epoch-aligned window of
-//! the requested `resolution` plus that resolution's own length — for every
-//! resolution and for both `GetAssetPropertyAggregates` and
+//! The rule this suite pins: a resolution's windows are the epoch-aligned
+//! intervals of that resolution's length, each EXCLUSIVE at its start and
+//! INCLUSIVE at its end, and an aggregate is stamped with the instant its window
+//! ENDS — so a reading whose timestamp falls exactly on a grid boundary `t` is
+//! summarised in the window ENDING at `t`, not in the one starting there. It holds
+//! for every resolution and for both `GetAssetPropertyAggregates` and
 //! `BatchGetAssetPropertyAggregates`, which share one aggregation engine.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over:
@@ -124,18 +126,31 @@ async fn write_readings(
 ///
 /// An INDEPENDENT oracle: it groups the instants this file wrote onto the
 /// epoch-aligned grid itself and stamps each group with the END of the window it
-/// falls in — the start of that window plus `window`.
+/// falls in. A window is `(end - window, end]`, so the end of the window holding an
+/// instant is the SMALLEST multiple of `window` that is not before it — the instant
+/// itself when it lands exactly on a boundary.
 fn expected_windows(window: i64, readings: &[(i64, f64)]) -> Vec<(i64, Vec<f64>)> {
     let mut windows: Vec<(i64, Vec<f64>)> = Vec::new();
     for (offset, value) in readings {
-        let at = grid_start() + offset;
-        let end = at - at.rem_euclid(window) + window;
+        let end = window_end(window, grid_start() + offset);
         match windows.last_mut() {
             Some((last, values)) if *last == end => values.push(*value),
             _ => windows.push((end, vec![*value])),
         }
     }
     windows
+}
+
+/// The end of the `window`-long epoch-aligned interval that holds the instant `at`,
+/// under the `(start, end]` convention: the smallest multiple of `window` that is
+/// not before `at`.
+fn window_end(window: i64, at: i64) -> i64 {
+    let inside = at.rem_euclid(window);
+    if inside == 0 {
+        at
+    } else {
+        at - inside + window
+    }
 }
 
 /// `GET /properties/aggregates?...` for one property over `(start, end]` at
@@ -242,11 +257,11 @@ fn assert_windows(case: &str, window: i64, expected: &[(i64, Vec<f64>)], reporte
             "case {case:?}: window {at} covers ({}, {end}], so it is stamped with {end}, got {actual}",
             end - window
         );
-        // The edge is the END of the interval the aggregate summarises: every
-        // reading it counted is at or before it, and the window it closes starts
-        // one resolution length earlier, on the epoch-aligned grid.
+        // The edge is the INCLUSIVE end of the interval the aggregate summarises:
+        // every reading it counted is at or before it, and the window it closes
+        // starts one resolution length earlier, on the epoch-aligned grid.
         assert_eq!(
-            (actual - window).rem_euclid(window),
+            actual.rem_euclid(window),
             0,
             "case {case:?}: window {at} must close an epoch-aligned window, got {actual}"
         );
@@ -265,8 +280,9 @@ fn assert_windows(case: &str, window: i64, expected: &[(i64, Vec<f64>)], reporte
 
 /// The reading placements the resolution table reads: offsets from [`grid_start`]
 /// and the value written at each, chosen so every resolution groups them
-/// differently and so that readings land at a window's first second, in its middle
-/// and at its very last second.
+/// differently and so that readings land exactly on a grid boundary (which closes
+/// the window ENDING there), inside a window, and on the last second before the
+/// next boundary.
 const READINGS: [(i64, f64); 6] = [
     (0, 1.0),
     (30, 3.0),
@@ -330,22 +346,23 @@ async fn every_resolution_stamps_an_aggregate_with_the_end_of_its_window() {
 async fn a_reading_anywhere_in_a_window_is_reported_at_that_window_s_end() {
     let router = router();
 
-    // Rows walk ONE reading across a `15m` window: its first second, a second
-    // inside it, its last second, and the first second of the next window. Each
-    // row is a fresh series, so only the placement decides the reported edge.
+    // Rows walk ONE reading across a `15m` window: its exclusive start (a
+    // boundary, which belongs to the PREVIOUS window), a second inside it, its
+    // inclusive end, and a second past that end. Each row is a fresh series, so
+    // only the placement decides the reported edge.
     let window = 900_i64;
     let placements: [(&str, i64); 4] = [
-        ("the window's first second", 0),
+        ("a grid boundary, closing the window before it", 0),
         ("a second inside the window", 1),
-        ("the window's last second", window - 1),
-        ("the next window's first second", window),
+        ("the window's inclusive end", window),
+        ("the first second past that end", window + 1),
     ];
     for (case, offset) in placements {
         let (asset_id, property) =
             asset_with_property(&router, &format!("EdgeProbe{offset}")).await;
         write_readings(&router, &asset_id, &property, &[(offset, 2.0)]).await;
 
-        let expected = grid_start() + offset - (grid_start() + offset).rem_euclid(window) + window;
+        let expected = window_end(window, grid_start() + offset);
         let (status, body) = call(
             &router,
             "GET",
@@ -374,9 +391,10 @@ async fn a_reading_anywhere_in_a_window_is_reported_at_that_window_s_end() {
             grid_start() + offset
         );
         assert!(
-            actual > grid_start() + offset,
-            "case {case:?}: the window's end follows the reading at {}, got {actual}",
-            grid_start() + offset
+            actual >= grid_start() + offset && actual - window < grid_start() + offset,
+            "case {case:?}: the reading at {} falls in ({}, {actual}]",
+            grid_start() + offset,
+            actual - window
         );
     }
 }

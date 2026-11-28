@@ -287,15 +287,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `^[A-Za-z0-9+/=]+$`. A token whose resume point is not in this enumeration is
         // refused rather than answered with an empty page, which would report absence
         // as success — and a token minted for ANOTHER enumeration is one of those,
-        // rather than a position in this one.
+        // rather than a position in this one, refused in the wording that says so.
         let start = match input.next_token.as_deref() {
             Some(token) => {
                 let resume = crate::state::decode_timestamp_token(token, &scope)
-                    .ok_or_else(invalid_token)?;
+                    .ok_or_else(|| invalid_token(token, &scope))?;
                 selected
                     .iter()
                     .position(|sample| crate::state::timestamp_key(&sample.timestamp) == resume)
-                    .ok_or_else(invalid_token)?
+                    .ok_or_else(|| invalid_token(token, &scope))?
             }
             None => 0,
         };
@@ -329,9 +329,16 @@ const MAX_RESULTS: i32 = 20_000;
 /// with ASCENDING the documented default.
 const ORDER_DESCENDING: &str = "DESCENDING";
 
-/// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never issued.
-fn invalid_token() -> GetAssetPropertyValueHistoryError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+/// HTTP 400 `InvalidRequestException` for a `nextToken` this read cannot resolve.
+///
+/// WHICH refusal comes from the shared classification every data-plane read of this
+/// service refuses a token with ([`crate::state::next_token_refusal_message`]): the
+/// constant text for text this service never issued as a token, and the
+/// filter-mismatch text for a token of its own replayed with other query filtering
+/// parameters — here another property, another window, another quality filter or
+/// the opposite `timeOrdering`, all of which `scope` binds a token to.
+fn invalid_token(token: &str, scope: &str) -> GetAssetPropertyValueHistoryError {
+    invalid_request(crate::state::next_token_refusal_message(token, scope).to_string())
 }
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.

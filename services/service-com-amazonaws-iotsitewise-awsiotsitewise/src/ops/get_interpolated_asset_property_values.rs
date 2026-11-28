@@ -433,7 +433,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(token) => {
                 let resume = decode_token(token, &scope)?;
                 if resume < 1 || resume > last_index {
-                    return Err(invalid_token());
+                    return Err(invalid_token(token, &scope));
                 }
                 resume
             }
@@ -735,20 +735,26 @@ fn decode_token(
     // hex in another case, or a signed or zero-padded ordinal, reads back as the same
     // resume point but is text this operation never issued, which the shared decoders
     // refuse for every paginated operation of this service alike.
-    let decoded = crate::state::decode_token_text(token).ok_or_else(invalid_token)?;
-    let (resume, fingerprint) = decoded.split_once('|').ok_or_else(invalid_token)?;
+    let decoded =
+        crate::state::decode_token_text(token).ok_or_else(|| invalid_token(token, scope))?;
+    let (resume, fingerprint) = decoded
+        .split_once('|')
+        .ok_or_else(|| invalid_token(token, scope))?;
     if fingerprint != scope.0 {
-        return Err(invalid_token());
+        return Err(invalid_token(token, scope));
     }
-    crate::state::token_number(resume).ok_or_else(invalid_token)
+    crate::state::token_number(resume).ok_or_else(|| invalid_token(token, scope))
 }
 
-/// HTTP 400 `InvalidRequestException` for a `nextToken` this operation never issued
-/// for the enumeration it is replayed against: text that is not one of its tokens, a
-/// token issued for another request's intervals, or an ordinal this range has no
-/// interval at.
-fn invalid_token() -> GetInterpolatedAssetPropertyValuesError {
-    invalid_request("The nextToken is not a token this operation issued.".to_string())
+/// HTTP 400 `InvalidRequestException` for a `nextToken` this read cannot resolve,
+/// in the wording the shared classification picks for it
+/// ([`crate::state::next_token_refusal_message`]): the constant text for text this
+/// service never issued as a token, and the filter-mismatch text for a token of its
+/// own replayed with other query filtering parameters — another stream, another
+/// grid, another interpolation type or another quality, all of which `scope` binds
+/// a token to.
+fn invalid_token(token: &str, scope: &GridScope) -> GetInterpolatedAssetPropertyValuesError {
+    invalid_request(crate::state::next_token_refusal_message(token, &scope.0).to_string())
 }
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.

@@ -712,10 +712,26 @@ async fn max_results_pages_the_batch_and_skips_entries_earlier_pages_finished() 
         .iter()
         .map(|entry| entry["entryId"].as_str().unwrap_or("").to_string())
         .collect();
+    // The oracle, per entry: `maxResults` spreads the page across the entries, so
+    // what a walk must reproduce is each entry's OWN ordered run, not the order the
+    // unpaginated answer happens to concatenate them in.
+    let expected_by_entry: Vec<(String, Vec<f64>)> = ids
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                expected
+                    .iter()
+                    .filter(|(entry_id, _)| entry_id == id)
+                    .map(|(_, sum)| *sum)
+                    .collect(),
+            )
+        })
+        .collect();
     for max_results in [1_usize, 2, 3, 4, 6, 7] {
         let case = format!("maxResults={max_results}");
-        let mut collected: Vec<(String, f64)> = Vec::new();
-        let mut finished: Vec<String> = Vec::new();
+        let mut collected: Vec<(String, Vec<f64>)> =
+            ids.iter().map(|id| (id.clone(), Vec::new())).collect();
         let mut token: Option<String> = None;
         for page in 0..10 {
             let mut request = json!({"entries": entries.clone(), "maxResults": max_results});
@@ -735,7 +751,9 @@ async fn max_results_pages_the_batch_and_skips_entries_earlier_pages_finished() 
                 "case {case:?} page {page}: expected at most {max_results} data points, got {points:?}"
             );
             // Every entry a previous page completely processed is reported as
-            // skipped on this one, and as having completed successfully.
+            // skipped on this one, and as having completed successfully. An entry
+            // finishes when ITS windows run out, which under one budget spread
+            // across the entries need not be in the order the request lists them.
             let skipped: Vec<String> = body["skippedEntries"]
                 .as_array()
                 .cloned()
@@ -753,14 +771,16 @@ async fn max_results_pages_the_batch_and_skips_entries_earlier_pages_finished() 
                     skipped["entryId"].as_str().unwrap_or("").to_string()
                 })
                 .collect();
+            let expected_skipped: Vec<String> = expected_by_entry
+                .iter()
+                .zip(&collected)
+                .filter(|((_, want), (_, got))| want == got)
+                .map(|((id, _), _)| id.clone())
+                .collect();
             assert_eq!(
-                skipped,
-                ids[..skipped.len()],
-                "case {case:?} page {page}: the skipped entries are the ones before the resume point, got {skipped:?}"
-            );
-            assert!(
-                finished.iter().all(|id| skipped.contains(id)),
-                "case {case:?} page {page}: an entry reported finished must stay finished: {finished:?} then {skipped:?}"
+                skipped, expected_skipped,
+                "case {case:?} page {page}: the skipped entries are exactly the ones \
+                 earlier pages finished, got {skipped:?}"
             );
             assert!(
                 skipped
@@ -768,8 +788,15 @@ async fn max_results_pages_the_batch_and_skips_entries_earlier_pages_finished() 
                     .all(|id| points.iter().all(|(answered, _)| answered != id)),
                 "case {case:?} page {page}: an entry cannot be both skipped and answered, got {body}"
             );
-            finished = skipped;
-            collected.extend(points);
+            for (answered, sum) in points {
+                let slot = collected
+                    .iter_mut()
+                    .find(|(id, _)| *id == answered)
+                    .unwrap_or_else(|| {
+                        panic!("case {case:?} page {page}: {answered} is not an entry of this request")
+                    });
+                slot.1.push(sum);
+            }
             token = body["nextToken"].as_str().map(str::to_string);
             if token.is_none() {
                 break;
@@ -780,8 +807,8 @@ async fn max_results_pages_the_batch_and_skips_entries_earlier_pages_finished() 
             "case {case:?}: paging did not terminate within ten pages"
         );
         assert_eq!(
-            collected, expected,
-            "case {case:?}: paging must deliver the unpaginated answer in order"
+            collected, expected_by_entry,
+            "case {case:?}: paging must deliver every entry's own ordered run exactly once"
         );
     }
 }
