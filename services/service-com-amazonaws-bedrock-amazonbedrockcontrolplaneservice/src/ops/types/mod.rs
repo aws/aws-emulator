@@ -14,13 +14,20 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
-// The schema/codec macros every structure with a `@timestampFormat("date-time")` member
-// uses, because the vendored codegen drops that trait. Hand-added, not generated; see the
-// module's own note. `#[macro_use]`, and declared FIRST, so the macros are in the textual
-// scope of every `*_types` module below.
+// The schema/codec macros every structure with a `@timestampFormat("date-time")` member, or
+// with a member that must be STATED while it holds nothing, is written with — the vendored
+// codegen emits neither. Hand-added, not rendered; see the module's own note.
+// `#[macro_use]`, and declared FIRST, so the macros are in the textual scope of every
+// `*_types` module below.
 #[macro_use]
 pub mod date_time_wire;
 
+// The shapes this service reports that the on-disk model does not declare, and the members
+// it reports beside the ones a declared shape carries. Hand-written, so the module and its
+// declaration both stay out of the rendered files; see the module's own note.
+pub mod catalog_reporting;
+
+pub mod archive_project_types;
 pub mod batch_delete_advanced_prompt_optimization_job_types;
 pub mod batch_delete_evaluation_job_types;
 pub mod cancel_automated_reasoning_policy_build_workflow_types;
@@ -40,8 +47,10 @@ pub mod create_model_copy_job_types;
 pub mod create_model_customization_job_types;
 pub mod create_model_import_job_types;
 pub mod create_model_invocation_job_types;
+pub mod create_project_types;
 pub mod create_prompt_router_types;
 pub mod create_provisioned_model_throughput_types;
+pub mod delete_account_data_retention_storage_types;
 pub mod delete_automated_reasoning_policy_build_workflow_types;
 pub mod delete_automated_reasoning_policy_test_case_types;
 pub mod delete_automated_reasoning_policy_types;
@@ -54,11 +63,14 @@ pub mod delete_imported_model_types;
 pub mod delete_inference_profile_types;
 pub mod delete_marketplace_model_endpoint_types;
 pub mod delete_model_invocation_logging_configuration_types;
+pub mod delete_organization_data_retention_storage_types;
+pub mod delete_project_data_retention_storage_types;
 pub mod delete_prompt_router_types;
 pub mod delete_provisioned_model_throughput_types;
 pub mod delete_resource_policy_types;
 pub mod deregister_marketplace_model_endpoint_types;
 pub mod export_automated_reasoning_policy_version_types;
+pub mod get_account_data_retention_storage_types;
 pub mod get_account_data_retention_types;
 pub mod get_advanced_prompt_optimization_job_types;
 pub mod get_automated_reasoning_policy_annotations_types;
@@ -82,9 +94,16 @@ pub mod get_model_customization_job_types;
 pub mod get_model_import_job_types;
 pub mod get_model_invocation_job_types;
 pub mod get_model_invocation_logging_configuration_types;
+pub mod get_organization_data_retention_storage_types;
+pub mod get_project_data_retention_storage_types;
+pub mod get_project_types;
 pub mod get_prompt_router_types;
 pub mod get_provisioned_model_throughput_types;
 pub mod get_resource_policy_types;
+pub mod get_trusted_access_program_account_enrollment_types;
+pub mod get_trusted_access_program_organization_enrollment_types;
+pub mod get_trusted_access_program_project_enrollment_types;
+pub mod get_trusted_access_program_types;
 pub mod get_use_case_for_model_access_types;
 pub mod list_advanced_prompt_optimization_jobs_types;
 pub mod list_automated_reasoning_policies_types;
@@ -105,18 +124,29 @@ pub mod list_model_copy_jobs_types;
 pub mod list_model_customization_jobs_types;
 pub mod list_model_import_jobs_types;
 pub mod list_model_invocation_jobs_types;
+pub mod list_projects_types;
 pub mod list_prompt_routers_types;
 pub mod list_provisioned_model_throughputs_types;
 pub mod list_tags_for_resource_types;
+pub mod list_trusted_access_programs_types;
+pub mod put_account_data_retention_storage_types;
 pub mod put_account_data_retention_types;
 pub mod put_enforced_guardrail_configuration_types;
 pub mod put_model_invocation_logging_configuration_types;
+pub mod put_organization_data_retention_storage_types;
+pub mod put_project_data_retention_storage_types;
 pub mod put_resource_policy_types;
+pub mod put_trusted_access_program_account_enrollment_types;
+pub mod put_trusted_access_program_organization_enrollment_types;
+pub mod put_trusted_access_program_project_enrollment_types;
 pub mod put_use_case_for_model_access_types;
 pub mod register_marketplace_model_endpoint_types;
 pub mod shared_types;
 pub mod start_automated_reasoning_policy_build_workflow_types;
 pub mod start_automated_reasoning_policy_test_workflow_types;
+pub mod start_trusted_access_program_account_application_types;
+pub mod start_trusted_access_program_organization_application_types;
+pub mod start_trusted_access_program_project_application_types;
 pub mod stop_advanced_prompt_optimization_job_types;
 pub mod stop_evaluation_job_types;
 pub mod stop_model_customization_job_types;
@@ -129,8 +159,13 @@ pub mod update_automated_reasoning_policy_types;
 pub mod update_custom_model_deployment_types;
 pub mod update_guardrail_types;
 pub mod update_marketplace_model_endpoint_types;
+pub mod update_project_types;
 pub mod update_provisioned_model_throughput_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use catalog_reporting::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use archive_project_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_delete_advanced_prompt_optimization_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -170,9 +205,13 @@ pub use create_model_import_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_model_invocation_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_project_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_prompt_router_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_provisioned_model_throughput_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_account_data_retention_storage_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_automated_reasoning_policy_build_workflow_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -198,6 +237,10 @@ pub use delete_marketplace_model_endpoint_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_model_invocation_logging_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_organization_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_project_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_prompt_router_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_provisioned_model_throughput_types::*;
@@ -207,6 +250,8 @@ pub use delete_resource_policy_types::*;
 pub use deregister_marketplace_model_endpoint_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use export_automated_reasoning_policy_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_account_data_retention_storage_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_account_data_retention_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -254,11 +299,25 @@ pub use get_model_invocation_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_model_invocation_logging_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_organization_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_project_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_project_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_prompt_router_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_provisioned_model_throughput_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_resource_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_trusted_access_program_account_enrollment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_trusted_access_program_organization_enrollment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_trusted_access_program_project_enrollment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_trusted_access_program_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_use_case_for_model_access_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -300,11 +359,17 @@ pub use list_model_import_jobs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_model_invocation_jobs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_projects_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_prompt_routers_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_provisioned_model_throughputs_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_trusted_access_programs_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_account_data_retention_storage_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_account_data_retention_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -312,7 +377,17 @@ pub use put_enforced_guardrail_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_model_invocation_logging_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_organization_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_project_data_retention_storage_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_resource_policy_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_trusted_access_program_account_enrollment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_trusted_access_program_organization_enrollment_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use put_trusted_access_program_project_enrollment_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use put_use_case_for_model_access_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -323,6 +398,12 @@ pub use shared_types::*;
 pub use start_automated_reasoning_policy_build_workflow_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_automated_reasoning_policy_test_workflow_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_trusted_access_program_account_application_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_trusted_access_program_organization_application_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_trusted_access_program_project_application_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use stop_advanced_prompt_optimization_job_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -347,6 +428,8 @@ pub use update_custom_model_deployment_types::*;
 pub use update_guardrail_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_marketplace_model_endpoint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_project_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_provisioned_model_throughput_types::*;
 

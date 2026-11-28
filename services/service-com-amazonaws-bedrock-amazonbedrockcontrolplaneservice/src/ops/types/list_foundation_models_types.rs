@@ -18,17 +18,18 @@ pub struct ListFoundationModelsInput {
     pub by_customization_type: Option<String>,
     pub by_output_modality: Option<String>,
     pub by_inference_type: Option<String>,
+    pub project_identifier: Option<String>,
 }
 
-/// `ListFoundationModelsResponse`, plus `enableAccessToAllModelsByDefault`.
-///
-/// RECORDED behaviour, not modelled: the on-disk shape declares `modelSummaries` alone
-/// (`smithy_query(query="shape", shape="com.amazonaws.bedrock#ListFoundationModelsResponse")`),
-/// while a listing also reports whether this account reaches every model the catalog offers
-/// by default. The model evidently predates the member, so it is appended LAST — the
-/// model's own member keeps the index the model gives it, and a later model refresh that
-/// declares the flag only has to move it into place. Its schema and codec come from
-/// [`bedrock_schema_and_codec!`] for that reason; see `types/date_time_wire.rs`.
+/// `ListFoundationModelsResponse`. Its schema and codec come from
+/// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
+/// because Amazon Bedrock reports, beside the summaries, whether this account reaches every
+/// model the catalog offers by DEFAULT — an account-level fact, so it is reported once
+/// rather than per summary — and the on-disk shape declares only `modelSummaries`
+/// (`smithy_query(query="operation", operation="ListFoundationModels")`). A member no shape
+/// declares cannot be rendered from the model, so the member list, the schema and the codec
+/// are written out here; see `types/catalog_reporting.rs` for the same reason stated of the
+/// capability records a summary carries.
 #[derive(Debug, Clone, Default)]
 pub struct ListFoundationModelsOutput {
     pub model_summaries: Option<Vec<FoundationModelSummary>>,
@@ -59,19 +60,18 @@ bedrock_schema_and_codec!(
     ),
 );
 
-/// `FoundationModelSummary`, plus the capability members a listing reports per model.
+/// `FoundationModelSummary`, with the CAPABILITY members Amazon Bedrock reports beside the
+/// ten the on-disk shape declares (`smithy_query(query="shape",
+/// shape="FoundationModelSummary")`): the family the model belongs to, the invocation APIs it
+/// is reachable through, the features published for it, and what a conversation with it may
+/// carry. Its schema and codec come from [`bedrock_schema_and_codec!`] for that reason —
+/// a member no shape declares cannot be rendered from the model — and `types/
+/// catalog_reporting.rs`, which declares the records those members carry, says what fills
+/// them and when to drop them.
 ///
-/// The first ten members are the model's, member for member, in its order:
-/// `smithy_query(query="shape", shape="com.amazonaws.bedrock#FoundationModelSummary")`.
-/// The nine after them are RECORDED behaviour, not modelled — the shape declares none of
-/// them, while a listing reports the model's family and what may be done with it
-/// (`crate::state::foundation_model_summary` computes each one from the catalog row, and
-/// reports it only for a model whose capabilities the catalog publishes) — so they are
-/// appended LAST, keeping the model's own indices intact for a later refresh.
-///
-/// Its schema and codec therefore come from [`bedrock_schema_and_codec!`] rather than
-/// `#[smithy_macros::smithy(shape = ...)]`, which can only emit the members the model
-/// declares; see `types/date_time_wire.rs` for that whole story.
+/// The ten modelled members keep the member list, the order and the requiredness the model
+/// states for them, so the part of the shape the model does declare is reported exactly as
+/// rendered; the capability members follow them.
 #[derive(Debug, Clone, Default)]
 pub struct FoundationModelSummary {
     pub model_arn: String,

@@ -293,13 +293,9 @@ pub struct AutomatedReasoningPolicyScenario {
 
 /// `AutomatedReasoningPolicyTestCase`. Its schema and codec come from
 /// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
-/// because `createdAt` and `updatedAt` carry `@timestampFormat("date-time")`
-/// (`smithy_query(query="shape", shape="AutomatedReasoningPolicyTestCase")`), which the
-/// derive does not put on a member schema — see `types/date_time_wire.rs` for that whole
-/// story.
-///
-/// The member list below is the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types.
+/// because `createdAt` and `updatedAt` target a shape the model marks
+/// `@timestampFormat("date-time")` (`smithy_query(query="shape", shape="Timestamp")`),
+/// which the derive does not put on a member schema — see `types/date_time_wire.rs`.
 #[derive(Debug, Clone)]
 pub struct AutomatedReasoningPolicyTestCase {
     pub test_case_id: String,
@@ -355,15 +351,9 @@ bedrock_schema_and_codec!(
 );
 
 /// `AutomatedReasoningPolicyTestResult`. Its schema and codec come from
-/// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]` for
-/// the reason [`AutomatedReasoningPolicyTestCase`]'s do: `updatedAt` carries
-/// `@timestampFormat("date-time")`
-/// (`smithy_query(query="shape", shape="AutomatedReasoningPolicyTestResult")`), which the
-/// derive does not put on a member schema — see `types/date_time_wire.rs` for that whole
-/// story.
-///
-/// The member list below is the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types.
+/// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
+/// because `updatedAt` targets a shape the model marks `@timestampFormat("date-time")`,
+/// which the derive does not put on a member schema — see `types/date_time_wire.rs`.
 #[derive(Debug, Clone)]
 pub struct AutomatedReasoningPolicyTestResult {
     pub test_case: AutomatedReasoningPolicyTestCase,
@@ -565,12 +555,9 @@ pub struct VpcConfig {
 
 /// `MarketplaceModelEndpoint`. Its schema and codec come from
 /// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
-/// because `createdAt` and `updatedAt` carry `@timestampFormat("date-time")`
-/// (`smithy_query(query="shape", shape="MarketplaceModelEndpoint")`), which the derive does
-/// not put on a member schema — see `types/date_time_wire.rs` for that whole story.
-///
-/// The member list below is the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types.
+/// because `createdAt` and `updatedAt` target a shape the model marks
+/// `@timestampFormat("date-time")`, which the derive does not put on a member schema —
+/// see `types/date_time_wire.rs`.
 #[derive(Debug, Clone)]
 pub struct MarketplaceModelEndpoint {
     pub endpoint_arn: String,
@@ -776,6 +763,14 @@ pub struct RFTHyperParameters {
     pub inference_max_tokens: Option<i32>,
     pub reasoning_effort: Option<String>,
     pub eval_interval: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#DataRetentionStorageConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct DataRetentionStorageConfiguration {
+    pub kms_key_arn: String,
+    pub s3_bucket_arn: String,
+    pub s3_bucket_owner: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrock#SelectiveContentGuarding")]
@@ -1424,12 +1419,10 @@ pub struct ModelInvocationJobS3OutputDataConfig {
 
 /// `FoundationModelLifecycle`. Its schema and codec come from
 /// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
-/// because all four of its instants carry `@timestampFormat("date-time")`
+/// because each of its four instants targets a shape the model marks
+/// `@timestampFormat("date-time")`
 /// (`smithy_query(query="shape", shape="FoundationModelLifecycle")`), which the derive does
-/// not put on a member schema — see `types/date_time_wire.rs` for that whole story.
-///
-/// The member list below is the model's, member for member: same shape ids, same wire
-/// names, same order, same shape types.
+/// not put on a member schema — see `types/date_time_wire.rs`.
 #[derive(Debug, Clone, Default)]
 pub struct FoundationModelLifecycle {
     pub status: String,
@@ -1473,442 +1466,11 @@ bedrock_schema_and_codec!(
     ),
 );
 
-/// What the Converse API supports for one published foundation model, as the `converse`
-/// member of a `FoundationModelSummary` / `FoundationModelDetails` carries it.
-///
-/// RECORDED behaviour, not modelled: the on-disk model declares no shape of this name and
-/// no `converse` member on either of those two structures
-/// (`smithy_query(query="shape", shape="com.amazonaws.bedrock#FoundationModelSummary")`),
-/// while a listing of the catalog reports Converse metadata per model. Its schema and
-/// codec therefore come from [`bedrock_schema_and_codec!`], like every other structure in
-/// this service whose wire form the derive cannot emit — see `types/date_time_wire.rs`.
-///
-/// Every member is optional, because none is `@required` anywhere: nothing in the model
-/// constrains a shape the model does not declare. A conversation is driven through this
-/// API, so the record carries what a client has to know before it starts one: whether the
-/// API reaches the model at all and whether the answer streams, the ceiling and default the
-/// model's own `maxTokens` has, whether it takes a system role or extended reasoning, the
-/// stop sequences it starts with, the schema of the provider-specific fields it accepts,
-/// and the document, image and video formats a turn may carry to it. A member the catalog
-/// publishes nothing for is absent rather than reported as a value this emulator invented.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ConverseSupport {
-    pub supported: Option<bool>,
-    pub streaming_supported: Option<bool>,
-    pub additional_request_fields_schema: Option<String>,
-    pub max_tokens_default: Option<i32>,
-    pub max_tokens_maximum: Option<i32>,
-    pub reasoning_supported: Option<ReasoningSupport>,
-    pub stop_sequences_default: Option<Vec<String>>,
-    pub system_role_supported: Option<bool>,
-    pub user_document_types_supported: Option<Vec<String>>,
-    pub user_image_types_supported: Option<Vec<String>>,
-    pub user_video_types_supported: Option<Vec<String>>,
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#ProjectDataRetention")]
+#[derive(Debug, Clone, Default)]
+pub struct ProjectDataRetention {
+    pub mode: String,
 }
-
-bedrock_schema_and_codec!(
-    ConverseSupport,
-    FOUNDATION_MODEL_CONVERSE_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelConverseSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelConverseSupport",
-    (M_SUPPORTED, supported, "supported", 0, opt, boolean),
-    (
-        M_STREAMING_SUPPORTED,
-        streaming_supported,
-        "streamingSupported",
-        1,
-        opt,
-        boolean
-    ),
-    (
-        M_ADDITIONAL_REQUEST_FIELDS_SCHEMA,
-        additional_request_fields_schema,
-        "additionalRequestFieldsSchema",
-        2,
-        opt,
-        string
-    ),
-    (
-        M_MAX_TOKENS_DEFAULT,
-        max_tokens_default,
-        "maxTokensDefault",
-        3,
-        opt,
-        integer
-    ),
-    (
-        M_MAX_TOKENS_MAXIMUM,
-        max_tokens_maximum,
-        "maxTokensMaximum",
-        4,
-        opt,
-        integer
-    ),
-    (
-        M_REASONING_SUPPORTED,
-        reasoning_supported,
-        "reasoningSupported",
-        5,
-        opt,
-        struct_of(ReasoningSupport)
-    ),
-    (
-        M_STOP_SEQUENCES_DEFAULT,
-        stop_sequences_default,
-        "stopSequencesDefault",
-        6,
-        opt,
-        list_of_string
-    ),
-    (
-        M_SYSTEM_ROLE_SUPPORTED,
-        system_role_supported,
-        "systemRoleSupported",
-        7,
-        opt,
-        boolean
-    ),
-    (
-        M_USER_DOCUMENT_TYPES_SUPPORTED,
-        user_document_types_supported,
-        "userDocumentTypesSupported",
-        8,
-        opt,
-        list_of_string
-    ),
-    (
-        M_USER_IMAGE_TYPES_SUPPORTED,
-        user_image_types_supported,
-        "userImageTypesSupported",
-        9,
-        opt,
-        list_of_string
-    ),
-    (
-        M_USER_VIDEO_TYPES_SUPPORTED,
-        user_video_types_supported,
-        "userVideoTypesSupported",
-        10,
-        opt,
-        list_of_string
-    ),
-);
-
-/// Whether ONE capability may be used with a published foundation model, as the
-/// `explicitPromptCaching` and `intelligentPromptRouting` members of a
-/// `FoundationModelSummary` / `FoundationModelDetails` carry it, and as the
-/// `reasoningSupported` member of the Converse record does.
-///
-/// RECORDED behaviour, not modelled, like [`ConverseSupport`]: a feature is reported as a
-/// RECORD naming whether it is supported rather than as a bare boolean, so a later
-/// per-feature fact (a limit, a window) has a member to live in.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CapabilitySupport {
-    pub is_supported: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    CapabilitySupport,
-    FOUNDATION_MODEL_CAPABILITY_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelCapabilitySupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelCapabilitySupport",
-    (M_IS_SUPPORTED, is_supported, "isSupported", 0, opt, boolean),
-);
-
-/// Whether EXTENDED REASONING may be asked of a published foundation model, as the
-/// `reasoningSupported` member of the Converse record carries it.
-///
-/// RECORDED behaviour, not modelled, like [`CapabilitySupport`], and a record of its own
-/// rather than that one because reasoning answers TWO questions a client has to settle
-/// before it asks for it: whether the model reasons at all, and WHERE the reasoning arrives
-/// — in a block of its own beside the answer, or embedded in the answer text, which a
-/// client has to parse out of the text itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ReasoningSupport {
-    pub is_supported: Option<bool>,
-    pub embedded: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    ReasoningSupport,
-    FOUNDATION_MODEL_REASONING_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelReasoningSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelReasoningSupport",
-    (M_IS_SUPPORTED, is_supported, "isSupported", 0, opt, boolean),
-    (M_EMBEDDED, embedded, "embedded", 1, opt, boolean),
-);
-
-/// Whether a model invocation job may run a model over a dataset, as the `batchSupported`
-/// member of a `FoundationModelSummary` / `FoundationModelDetails` carries it.
-///
-/// RECORDED behaviour, not modelled: batch inference is reported as a RECORD naming the
-/// three ways a job may run the model — against the base model itself, against it from
-/// another region, and against a customization of it — rather than as one boolean.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BatchSupport {
-    pub base_model_supported: Option<bool>,
-    pub cross_region_supported: Option<bool>,
-    pub custom_model_supported: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    BatchSupport,
-    FOUNDATION_MODEL_BATCH_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelBatchSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelBatchSupport",
-    (
-        M_BASE_MODEL_SUPPORTED,
-        base_model_supported,
-        "baseModelSupported",
-        0,
-        opt,
-        boolean
-    ),
-    (
-        M_CROSS_REGION_SUPPORTED,
-        cross_region_supported,
-        "crossRegionSupported",
-        1,
-        opt,
-        boolean
-    ),
-    (
-        M_CUSTOM_MODEL_SUPPORTED,
-        custom_model_supported,
-        "customModelSupported",
-        2,
-        opt,
-        boolean
-    ),
-);
-
-/// Whether a model invocation job may run one model over a dataset FROM the region the
-/// request addresses and from ANOTHER region, as the `batchInference` member of the feature
-/// record carries it.
-///
-/// RECORDED behaviour, not modelled, like [`BatchSupport`], and a record rather than a bare
-/// boolean for the same reason: batch inference is published per REGION SCOPE — a model a
-/// job may run where it is offered is not thereby one a job in another region may run — so
-/// the feature answers one member per scope, and a client reads the scope it is submitting
-/// a job from.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BatchInferenceSupport {
-    pub cross_region: Option<bool>,
-    pub in_region: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    BatchInferenceSupport,
-    FOUNDATION_MODEL_BATCH_INFERENCE_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelBatchInferenceSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelBatchInferenceSupport",
-    (M_CROSS_REGION, cross_region, "crossRegion", 0, opt, boolean),
-    (M_IN_REGION, in_region, "inRegion", 1, opt, boolean),
-);
-
-/// The Amazon Bedrock features published for one foundation model, as the
-/// `featuresSupported` member of a `FoundationModelSummary` / `FoundationModelDetails`
-/// carries it: a RECORD whose members are the features themselves, so a client tests one
-/// feature by name instead of searching a list.
-///
-/// A feature the catalog does not publish for the model answers NO rather than being left
-/// out, so a client that tests one feature by name always gets an answer. A feature whose
-/// answer is more than one bit answers with a record of its own — batch inference does
-/// ([`BatchInferenceSupport`]), because it is published per region scope.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FeaturesSupport {
-    pub batch_inference: Option<BatchInferenceSupport>,
-    pub count_tokens: Option<bool>,
-    pub intelligent_prompt_routing: Option<bool>,
-    pub latency_optimization: Option<bool>,
-    pub prompt_caching: Option<bool>,
-    pub prompt_optimization: Option<bool>,
-    pub provisioned_throughput: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    FeaturesSupport,
-    FOUNDATION_MODEL_FEATURES_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelFeaturesSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelFeaturesSupport",
-    (
-        M_BATCH_INFERENCE,
-        batch_inference,
-        "batchInference",
-        0,
-        opt,
-        struct_of(BatchInferenceSupport)
-    ),
-    (M_COUNT_TOKENS, count_tokens, "countTokens", 1, opt, boolean),
-    (
-        M_INTELLIGENT_PROMPT_ROUTING,
-        intelligent_prompt_routing,
-        "intelligentPromptRouting",
-        2,
-        opt,
-        boolean
-    ),
-    (
-        M_LATENCY_OPTIMIZATION,
-        latency_optimization,
-        "latencyOptimization",
-        3,
-        opt,
-        boolean
-    ),
-    (
-        M_PROMPT_CACHING,
-        prompt_caching,
-        "promptCaching",
-        4,
-        opt,
-        boolean
-    ),
-    (
-        M_PROMPT_OPTIMIZATION,
-        prompt_optimization,
-        "promptOptimization",
-        5,
-        opt,
-        boolean
-    ),
-    (
-        M_PROVISIONED_THROUGHPUT,
-        provisioned_throughput,
-        "provisionedThroughput",
-        6,
-        opt,
-        boolean
-    ),
-);
-
-/// What the Converse API offers for one published foundation model, as the `converse` member
-/// of the invocation-API record carries it: the API answers a turn, and it streams that
-/// answer, and those are two different questions a client settles before it calls.
-///
-/// RECORDED behaviour, not modelled, like [`InferenceApisSupport`], which says why an API is
-/// reported as a record of its calling modes rather than as a name in a list.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ConverseApiSupport {
-    pub streaming: Option<bool>,
-    pub sync: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    ConverseApiSupport,
-    FOUNDATION_MODEL_CONVERSE_API_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelConverseApiSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelConverseApiSupport",
-    (M_STREAMING, streaming, "streaming", 0, opt, boolean),
-    (M_SYNC, sync, "sync", 1, opt, boolean),
-);
-
-/// What the InvokeModel API offers for one published foundation model, as the `invokeModel`
-/// member of the invocation-API record carries it: the API answers in one piece, it streams
-/// the answer back, and it carries a stream in BOTH directions — three calling modes, each
-/// its own question.
-///
-/// RECORDED behaviour, not modelled, like [`InferenceApisSupport`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct InvokeModelApiSupport {
-    pub bidirectional_streaming: Option<bool>,
-    pub response_streaming: Option<bool>,
-    pub sync: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    InvokeModelApiSupport,
-    FOUNDATION_MODEL_INVOKE_MODEL_API_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelInvokeModelApiSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelInvokeModelApiSupport",
-    (
-        M_BIDIRECTIONAL_STREAMING,
-        bidirectional_streaming,
-        "bidirectionalStreaming",
-        0,
-        opt,
-        boolean
-    ),
-    (
-        M_RESPONSE_STREAMING,
-        response_streaming,
-        "responseStreaming",
-        1,
-        opt,
-        boolean
-    ),
-    (M_SYNC, sync, "sync", 2, opt, boolean),
-);
-
-/// The invocation APIs one published foundation model is reachable through, as the
-/// `inferenceAPIsSupported` member of a `FoundationModelSummary` / `FoundationModelDetails`
-/// carries it: a RECORD with one member per API, so a client tests the API it is about to
-/// call by name.
-///
-/// RECORDED behaviour, not modelled, like [`FeaturesSupport`]: the on-disk model declares no
-/// such member. A record rather than a list of API NAMES because what an API offers for a
-/// model is more than one bit — Converse answers a turn and may stream it, InvokeModel
-/// answers in one piece, streams an answer and carries a two-way stream — so an API whose
-/// answer has parts answers with a record of its own ([`ConverseApiSupport`],
-/// [`InvokeModelApiSupport`]) and one whose answer is a single bit answers yes or no. A
-/// client reads the mode it needs by member name, which a list of names cannot be asked.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct InferenceApisSupport {
-    pub async_invoke: Option<bool>,
-    pub converse: Option<ConverseApiSupport>,
-    pub invoke_model: Option<InvokeModelApiSupport>,
-    pub open_ai_chat_completions: Option<bool>,
-    pub open_ai_responses: Option<bool>,
-}
-
-bedrock_schema_and_codec!(
-    InferenceApisSupport,
-    FOUNDATION_MODEL_INFERENCE_APIS_SUPPORT_SCHEMA,
-    "com.amazonaws.bedrock#FoundationModelInferenceApisSupport",
-    "com.amazonaws.bedrock",
-    "FoundationModelInferenceApisSupport",
-    (M_ASYNC_INVOKE, async_invoke, "asyncInvoke", 0, opt, boolean),
-    (
-        M_CONVERSE,
-        converse,
-        "converse",
-        1,
-        opt,
-        struct_of(ConverseApiSupport)
-    ),
-    (
-        M_INVOKE_MODEL,
-        invoke_model,
-        "invokeModel",
-        2,
-        opt,
-        struct_of(InvokeModelApiSupport)
-    ),
-    (
-        M_OPEN_AI_CHAT_COMPLETIONS,
-        open_ai_chat_completions,
-        "openAiChatCompletions",
-        3,
-        opt,
-        boolean
-    ),
-    (
-        M_OPEN_AI_RESPONSES,
-        open_ai_responses,
-        "openAiResponses",
-        4,
-        opt,
-        boolean
-    ),
-);
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrock#PromptRouterTargetModel")]
 #[derive(Debug, Clone, Default)]
@@ -1930,7 +1492,11 @@ pub struct StatusDetails {
     pub training_details: Option<TrainingDetails>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#ValidationDetails")]
+/// `ValidationDetails`. Its schema and codec come from [`bedrock_schema_and_codec!`] rather
+/// than `#[smithy_macros::smithy(shape = ...)]` because both its instants target a shape
+/// the model marks `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="ValidationDetails")`), which the derive does not put
+/// on a member schema — see `types/date_time_wire.rs`.
 #[derive(Debug, Clone, Default)]
 pub struct ValidationDetails {
     pub status: Option<String>,
@@ -1938,7 +1504,34 @@ pub struct ValidationDetails {
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#DataProcessingDetails")]
+bedrock_schema_and_codec!(
+    ValidationDetails,
+    VALIDATION_DETAILS_SCHEMA,
+    "com.amazonaws.bedrock#ValidationDetails",
+    "com.amazonaws.bedrock",
+    "ValidationDetails",
+    (M_STATUS, status, "status", 0, opt, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        1,
+        opt,
+        date_time
+    ),
+    (
+        M_LAST_MODIFIED_TIME,
+        last_modified_time,
+        "lastModifiedTime",
+        2,
+        opt,
+        date_time
+    ),
+);
+
+/// `DataProcessingDetails`. Its schema and codec come from [`bedrock_schema_and_codec!`] for
+/// the reason stated on [`ValidationDetails`]: both its instants are modelled
+/// `@timestampFormat("date-time")`.
 #[derive(Debug, Clone, Default)]
 pub struct DataProcessingDetails {
     pub status: Option<String>,
@@ -1946,13 +1539,124 @@ pub struct DataProcessingDetails {
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#TrainingDetails")]
+bedrock_schema_and_codec!(
+    DataProcessingDetails,
+    DATA_PROCESSING_DETAILS_SCHEMA,
+    "com.amazonaws.bedrock#DataProcessingDetails",
+    "com.amazonaws.bedrock",
+    "DataProcessingDetails",
+    (M_STATUS, status, "status", 0, opt, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        1,
+        opt,
+        date_time
+    ),
+    (
+        M_LAST_MODIFIED_TIME,
+        last_modified_time,
+        "lastModifiedTime",
+        2,
+        opt,
+        date_time
+    ),
+);
+
+/// `TrainingDetails`. Its schema and codec come from [`bedrock_schema_and_codec!`] for the
+/// reason stated on [`ValidationDetails`]: both its instants are modelled
+/// `@timestampFormat("date-time")`.
 #[derive(Debug, Clone, Default)]
 pub struct TrainingDetails {
     pub status: Option<String>,
     pub creation_time: Option<::aws_smithy_types::DateTime>,
     pub last_modified_time: Option<::aws_smithy_types::DateTime>,
 }
+
+bedrock_schema_and_codec!(
+    TrainingDetails,
+    TRAINING_DETAILS_SCHEMA,
+    "com.amazonaws.bedrock#TrainingDetails",
+    "com.amazonaws.bedrock",
+    "TrainingDetails",
+    (M_STATUS, status, "status", 0, opt, string),
+    (
+        M_CREATION_TIME,
+        creation_time,
+        "creationTime",
+        1,
+        opt,
+        date_time
+    ),
+    (
+        M_LAST_MODIFIED_TIME,
+        last_modified_time,
+        "lastModifiedTime",
+        2,
+        opt,
+        date_time
+    ),
+);
+
+#[smithy_macros::smithy(shape = "com.amazonaws.bedrock#TrustedAccessResolutionContext")]
+#[derive(Debug, Clone, Default)]
+pub struct TrustedAccessResolutionContext {
+    pub account_id: String,
+    pub project_arn: Option<String>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.bedrock#TrustedAccessProgramApplicationResult")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum TrustedAccessProgramApplicationResult {
+    providerHandoff(TrustedAccessProgramProviderHandoff),
+}
+
+/// `TrustedAccessProgramProviderHandoff`. Its schema and codec come from
+/// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
+/// because `applicationTokenExpiresAt` targets a shape the model marks
+/// `@timestampFormat("date-time")`
+/// (`smithy_query(query="shape", shape="TrustedAccessProgramProviderHandoff")`), which the
+/// derive does not put on a member schema — see `types/date_time_wire.rs`.
+#[derive(Debug, Clone)]
+pub struct TrustedAccessProgramProviderHandoff {
+    pub enrollment_url: Option<String>,
+    pub application_token: String,
+    pub application_token_expires_at: ::aws_smithy_types::DateTime,
+}
+
+bedrock_schema_and_codec!(
+    TrustedAccessProgramProviderHandoff,
+    TRUSTED_ACCESS_PROGRAM_PROVIDER_HANDOFF_SCHEMA,
+    "com.amazonaws.bedrock#TrustedAccessProgramProviderHandoff",
+    "com.amazonaws.bedrock",
+    "TrustedAccessProgramProviderHandoff",
+    (
+        M_ENROLLMENT_URL,
+        enrollment_url,
+        "enrollmentUrl",
+        0,
+        opt,
+        string
+    ),
+    (
+        M_APPLICATION_TOKEN,
+        application_token,
+        "applicationToken",
+        1,
+        req,
+        string
+    ),
+    (
+        M_APPLICATION_TOKEN_EXPIRES_AT,
+        application_token_expires_at,
+        "applicationTokenExpiresAt",
+        2,
+        req,
+        date_time
+    ),
+);
 
 /// The values `AdvancedPromptOptimizationJobStatus` accepts on the wire.
 pub const ADVANCED_PROMPT_OPTIMIZATION_JOB_STATUS_VALUES: &[&str] = &["Completed", "Deleting", "Failed", "InProgress", "PartiallyCompleted", "Stopped", "Stopping"];
@@ -2036,6 +1740,22 @@ pub const CUSTOMIZATION_TYPE_VALUES: &[&str] = &["CONTINUED_PRE_TRAINING", "DIST
 
 /// The values `DataRetentionMode` accepts on the wire.
 pub const DATA_RETENTION_MODE_VALUES: &[&str] = &["aws_review", "default", "inherit", "none", "provider_data_share"];
+
+
+/// The values `DataRetentionStorageDestination` accepts on the wire.
+pub const DATA_RETENTION_STORAGE_DESTINATION_VALUES: &[&str] = &["amazon_managed", "customer_managed"];
+
+
+/// The values `DataRetentionStorageModelProvider` accepts on the wire.
+pub const DATA_RETENTION_STORAGE_MODEL_PROVIDER_VALUES: &[&str] = &["anthropic", "openai"];
+
+
+/// The values `DataRetentionStorageResourceStatus` accepts on the wire.
+pub const DATA_RETENTION_STORAGE_RESOURCE_STATUS_VALUES: &[&str] = &["access_denied", "active", "pending"];
+
+
+/// The values `DataRetentionStorageScope` accepts on the wire.
+pub const DATA_RETENTION_STORAGE_SCOPE_VALUES: &[&str] = &["account", "organization", "project"];
 
 
 /// The values `EntitlementAvailability` accepts on the wire.
@@ -2190,6 +1910,10 @@ pub const OFFER_TYPE_VALUES: &[&str] = &["ALL", "PUBLIC"];
 pub const PERFORMANCE_CONFIG_LATENCY_VALUES: &[&str] = &["optimized", "standard"];
 
 
+/// The values `ProjectStatus` accepts on the wire.
+pub const PROJECT_STATUS_VALUES: &[&str] = &["active", "archived"];
+
+
 /// The values `PromptRouterStatus` accepts on the wire.
 pub const PROMPT_ROUTER_STATUS_VALUES: &[&str] = &["AVAILABLE"];
 
@@ -2252,6 +1976,18 @@ pub const SORT_ORDER_VALUES: &[&str] = &["Ascending", "Descending"];
 
 /// The values `Status` accepts on the wire.
 pub const STATUS_VALUES: &[&str] = &["INCOMPATIBLE_ENDPOINT", "REGISTERED"];
+
+
+/// The values `TrustedAccessProgramOptIn` accepts on the wire.
+pub const TRUSTED_ACCESS_PROGRAM_OPT_IN_VALUES: &[&str] = &["disabled", "enabled", "inherit"];
+
+
+/// The values `TrustedAccessProgramScope` accepts on the wire.
+pub const TRUSTED_ACCESS_PROGRAM_SCOPE_VALUES: &[&str] = &["account", "organization", "program_default", "project"];
+
+
+/// The values `TrustedAccessProgramStatus` accepts on the wire.
+pub const TRUSTED_ACCESS_PROGRAM_STATUS_VALUES: &[&str] = &["disabled", "eligible", "enabled", "requestable", "revoked"];
 
 
 /// The values `VectorSearchRerankingConfigurationType` accepts on the wire.

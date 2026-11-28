@@ -17,6 +17,7 @@ pub struct ListInferenceProfilesInput {
     pub max_results: Option<i32>,
     pub next_token: Option<String>,
     pub type_equals: Option<String>,
+    pub project_identifier: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrock#ListInferenceProfilesResponse")]
@@ -26,20 +27,17 @@ pub struct ListInferenceProfilesOutput {
     pub next_token: Option<String>,
 }
 
-/// `InferenceProfileSummary`, plus the `toolboxArn` member a listing reports per profile.
-/// Its schema and codec come from [`bedrock_schema_and_codec!`]
-/// rather than `#[smithy_macros::smithy(shape = ...)]` because `createdAt` and `updatedAt`
-/// carry `@timestampFormat("date-time")`
+/// `InferenceProfileSummary`. Its schema and codec come from
+/// [`bedrock_schema_and_codec!`] rather than `#[smithy_macros::smithy(shape = ...)]`
+/// because `createdAt` and `updatedAt` target a shape the model marks
+/// `@timestampFormat("date-time")`
 /// (`smithy_query(query="shape", shape="InferenceProfileSummary")`), which the derive does
-/// not put on a member schema — see `types/date_time_wire.rs` for that whole story.
+/// not put on a member schema — see `types/date_time_wire.rs`.
 ///
-/// The first nine members below are the model's, member for member: same shape ids, same
-/// wire names, same order, same shape types. `toolboxArn` is RECORDED behaviour, not
-/// modelled — the shape declares no such member, while a listing STATES one per profile,
-/// carrying the toolbox the profile is bound to or nothing at all — so it is appended LAST,
-/// keeping the model's own indices intact for a later refresh, and it is `opt_stated`:
-/// stated either way, because a profile bound to no toolbox reports that it is bound to
-/// none rather than leaving the member unserved.
+/// `toolboxArn` is a member Amazon Bedrock reports that the on-disk shape does not declare,
+/// and it is STATED whether or not the profile is bound to a toolbox — the `opt_stated`
+/// presence, which the derive cannot express either. `crate::state::
+/// inference_profile_summary` says what fills it.
 #[derive(Debug, Clone, Default)]
 pub struct InferenceProfileSummary {
     pub inference_profile_name: String,

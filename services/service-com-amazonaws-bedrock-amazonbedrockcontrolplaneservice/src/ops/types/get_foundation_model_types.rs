@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-bedrock-amazonbedrockco
 #[derive(Debug, Clone, Default)]
 pub struct GetFoundationModelInput {
     pub model_identifier: String,
+    pub project_identifier: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.bedrock#GetFoundationModelResponse")]
@@ -23,13 +24,12 @@ pub struct GetFoundationModelOutput {
     pub model_details: Option<FoundationModelDetails>,
 }
 
-/// `FoundationModelDetails`, plus the capability members a read of a model reports.
-///
-/// The same member set as [`FoundationModelSummary`], for the reason
-/// `crate::state::foundation_model_details` gives: a read of one model must report what a
-/// listing reports for it. The first ten are the model's, in its order
-/// (`smithy_query(query="shape", shape="com.amazonaws.bedrock#FoundationModelDetails")`);
-/// the nine after them are RECORDED behaviour the shape does not declare, appended last.
+/// `FoundationModelDetails`, with the CAPABILITY members Amazon Bedrock reports beside the
+/// ten the on-disk shape declares (`smithy_query(query="shape",
+/// shape="FoundationModelDetails")`) — the same members a listing reports for the model, so a
+/// read and a listing cannot disagree about it. Its schema and codec come from
+/// [`bedrock_schema_and_codec!`] because a member no shape declares cannot be rendered from
+/// the model; `types/catalog_reporting.rs` says what fills them and when to drop them.
 #[derive(Debug, Clone, Default)]
 pub struct FoundationModelDetails {
     pub model_arn: String,
