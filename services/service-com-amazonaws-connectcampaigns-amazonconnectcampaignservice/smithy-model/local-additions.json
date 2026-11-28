@@ -1,0 +1,38 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.connectcampaigns#GetCampaignStateBatchRequest": {
+      "type": "structure",
+      "members": {
+        "campaignIds": {
+          "target": "com.amazonaws.connectcampaigns#CampaignIdList",
+          "traits": {
+            "smithy.api#documentation": "List of CampaignId",
+            "smithy.api#length": { "min": 1, "max": 500 },
+            "smithy.api#required": {}
+          }
+        }
+      },
+      "traits": {
+        "smithy.api#input": {}
+      }
+    },
+    "com.amazonaws.connectcampaigns#CampaignIdList": {
+      "type": "list",
+      "member": {
+        "target": "com.amazonaws.connectcampaigns#CampaignId"
+      },
+      "traits": {
+        "smithy.api#documentation": "List of CampaignId"
+      }
+    },
+    "com.amazonaws.connectcampaigns#CampaignId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#documentation": "Identifier representing a Campaign",
+        "smithy.api#length": { "min": 0, "max": 256 },
+        "smithy.api#pattern": "^[\\S]*$"
+      }
+    }
+  }
+}

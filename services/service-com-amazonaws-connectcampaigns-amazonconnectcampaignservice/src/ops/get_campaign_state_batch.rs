@@ -10,7 +10,15 @@
 //!
 //! How MANY ids one call may name is the `@length` the model declares on `campaignIds`,
 //! so a batch outside it never reaches this handler: the boundary validator refuses it,
-//! worded as `crate::service` words a constraint refusal.
+//! worded as `crate::service` words a constraint refusal. That bound is the one the
+//! SERVICE enforces and not the one the AWS documentation prints for the member: the
+//! recorded corpus shows a batch of five hundred ids ANSWERED — every id it holds no
+//! campaign under coming back in `failedRequests` — and only a larger batch refused. The
+//! published model snapshot states the documented twenty-five and is kept exactly as
+//! shipped, so this operation's input is declared from the overlay model beside it
+//! instead, carrying the maximum the service enforces
+//! (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md` and
+//! `super::types::get_campaign_state_batch_types`).
 //!
 //! ## Shape of an operation
 //!
@@ -54,7 +62,8 @@
 //!
 //! ## Input
 //!
-//! * `campaignIds` (CampaignIdList, len 1..25) **required** — List of CampaignId. Each
+//! * `campaignIds` (CampaignIdList, len 1..500 — the snapshot prints 25; see above)
+//!   **required** — List of CampaignId. Each
 //!   entry is a `CampaignId` (len 0..256, pattern ^[\S]*$), and the boundary validator
 //!   applies those entry constraints and the list's own length bounds before `handle`
 //!   runs.
@@ -175,8 +184,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A batch read is per-id: the only thing that can refuse the whole call is
         // `campaignIds` itself, and its whole `@length` — the minimum of one and the
-        // maximum the model declares — is applied by the boundary validator before this
-        // runs, together with every entry's own `CampaignId` constraints. So reaching here
+        // maximum the model declares, which is the one this service enforces — is applied
+        // by the boundary validator before this runs, together with every entry's own
+        // `CampaignId` constraints. So reaching here
         // means the request carries a batch this service admits, and each id is answered on
         // its own — resolved or not — in the order it was asked for, so a caller can line
         // the answers up with what it sent.

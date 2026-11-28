@@ -7,7 +7,7 @@
 //! last start/pause/stop left it in, an id it does not hold goes to `failedRequests`
 //! carrying the `ResourceNotFound` failure code, and the whole call is refused (HTTP 400
 //! `ValidationException`) only when the request breaks `campaignIds`' own modelled bounds —
-//! its `@length` minimum of one entry and its maximum of 25. Reporting state changes
+//! its `@length` minimum of one entry and its maximum of 500. Reporting state changes
 //! nothing, so the same batch asked twice, and the single-id read beside it, answer alike.
 //!
 //! Each rule is asserted over a table whose rows differ along what it generalises over —
@@ -35,12 +35,14 @@ const INSTANCE: &str = "batch-instance";
 /// rather than reading it back out of the implementation.
 const RESOURCE_NOT_FOUND: &str = "ResourceNotFound";
 
-/// The largest batch `campaignIds` admits: the `@length` maximum the model declares on
-/// that member, whose minimum is one entry
-/// (`smithy_query(query="operation", operation="GetCampaignStateBatch")`). Written out
-/// here rather than read back out of the implementation, so this suite pins it; the sizes
-/// around it are `input_constraint_refusals.rs`'s own table.
-const MAX_BATCH: usize = 25;
+/// The largest batch `campaignIds` admits: the `@length` maximum the model this
+/// operation's input is declared from carries on that member, whose minimum is one entry
+/// (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`). It is the
+/// maximum the SERVICE enforces rather than the one the member's documentation prints — the
+/// recorded corpus shows a batch of five hundred ids answered. Written out here rather than
+/// read back out of the implementation, so this suite pins it; the sizes around it are
+/// `input_constraint_refusals.rs`'s own table.
+const MAX_BATCH: usize = 500;
 
 /// The sentence a request refused for ONE broken input constraint is answered with: the
 /// envelope around a clause naming the value half the class states, the member it sits
@@ -435,7 +437,7 @@ async fn a_batch_outside_the_bounds_of_campaign_ids_is_refused_as_a_bad_request(
     let router = router();
     let known = a_campaign(&router, "known").await;
 
-    // `campaignIds` is required and carries a `@length` of one to 25 entries, so the three
+    // `campaignIds` is required and carries a `@length` of one to 500 entries, so the three
     // ways a batch can break the contract are refused as bad requests rather than answered
     // with an empty pair of lists: no list at all, an empty list, and one id past the
     // modelled maximum. Each row carries the sentence that class is refused with — the one
@@ -513,9 +515,10 @@ async fn an_empty_list_is_refused_as_the_empty_list_it_is_on_every_list_member()
     let known = a_campaign(&router, "known").await;
 
     // Every member of this service modelled as a list with a length MINIMUM, so an empty
-    // list breaks it: `campaignIds` here and `dialRequests` on PutDialRequestBatch (both
-    // `@length(min 1, max 25)`, from
-    // `smithy_query(query="operation", operation="GetCampaignStateBatch,PutDialRequestBatch")`).
+    // list breaks it: `campaignIds` here (`@length(min 1, max 500)`, from the overlay model
+    // that operation's input is declared from) and `dialRequests` on PutDialRequestBatch
+    // (`@length(min 1, max 25)`, from
+    // `smithy_query(query="operation", operation="PutDialRequestBatch")`).
     // The rule is the service's, not this operation's: whichever list member a request
     // empties, the clause states that value as the empty list it is.
     let rows: Vec<(&str, &str, String, &str)> = vec![

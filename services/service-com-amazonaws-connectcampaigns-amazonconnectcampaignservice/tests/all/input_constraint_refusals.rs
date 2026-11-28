@@ -44,12 +44,15 @@ const INSTANCE: &str = "constraint-instance";
 
 /// The most campaign ids one batch state read may name.
 ///
-/// `GetCampaignStateBatchRequest$campaignIds`' published `@length` maximum, whose minimum
-/// is one entry (`smithy_query(query="operation", operation="GetCampaignStateBatch")`),
-/// written out here rather than read back out of the implementation so this suite pins it:
-/// a batch of up to this many ids is processed structurally, every id answered on its own,
-/// and only one past it is refused.
-const MAX_BATCH: usize = 25;
+/// `GetCampaignStateBatchRequest$campaignIds`' `@length` maximum, whose minimum is one
+/// entry, as the overlay model that operation's input is declared from carries them
+/// (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`), written
+/// out here rather than read back out of the implementation so this suite pins it: a batch
+/// of up to this many ids is processed structurally, every id answered on its own, and only
+/// one past it is refused. It is the maximum the SERVICE enforces rather than the one the
+/// member's documentation prints — the recorded corpus shows a batch of five hundred ids
+/// answered, every unknown id of it reported in `failedRequests`.
+const MAX_BATCH: usize = 500;
 
 /// `CampaignName`'s published length maximum (`@length(min 1, max 127)`).
 const MAX_NAME: usize = 127;
@@ -66,9 +69,14 @@ const MAX_CONTACT_FLOW_ID: usize = 500;
 /// `TagValue`'s published length maximum (`@length(min 0, max 256)`).
 const MAX_TAG_VALUE: usize = 256;
 
-/// `CampaignId`'s published length maximum (`@length(min 0, max 256)`), which every entry
-/// of a batch is held to.
-const MAX_CAMPAIGN_ID: usize = 256;
+/// The length of one id in the oversize row whose ids are LONG: well inside `CampaignId`'s
+/// own published length maximum (`@length(min 0, max 256)`, which every entry of a batch is
+/// held to), and chosen so the whole batch of them renders into thousands of characters and
+/// still inside what one clause of this service's refusal envelope quotes (the shared echo
+/// bound in `service_common::validation`, 16 KiB per clause), which is what makes "the
+/// clause quotes the list in full" a claim about the rendering rather than about one short
+/// list.
+const LONG_CAMPAIGN_ID: usize = 20;
 
 /// `MaxResults`' published range (`@range(min 1, max 50)`).
 const MAX_RESULTS_RANGE: (i64, i64) = (1, 50);
@@ -427,7 +435,7 @@ async fn a_batch_up_to_the_modelled_maximum_is_processed_and_only_one_past_it_is
     // Rows differ along HOW MANY ids the batch names, spanning the sizes a caller can
     // send inside the maximum: one, a handful, one short of the maximum, and the maximum
     // itself.
-    let sizes = [1, 2, MAX_BATCH - 1, MAX_BATCH];
+    let sizes = [1, 2, 26, MAX_BATCH - 1, MAX_BATCH];
     for size in sizes {
         let case = format!("a batch of {size} ids");
         // The stored campaign is asked for first, so every row carries one id that
@@ -479,18 +487,17 @@ async fn a_batch_up_to_the_modelled_maximum_is_processed_and_only_one_past_it_is
 
     // One id past the maximum is refused, and the clause states the list the caller
     // submitted as the value of the member that broke it. The rows differ along how long
-    // that list renders: ids of a handful of characters, and ids at `CampaignId`'s own
-    // length maximum of 256 — the longest batch an attempt at the maximum can be, which the
-    // clause still quotes in full.
+    // that list renders: ids of a handful of characters, and ids long enough that the whole
+    // batch renders into thousands of characters, which the clause still quotes in full.
     let refusal_rows: Vec<(String, Vec<String>)> = vec![
         (
             format!("a batch of {} short ids", MAX_BATCH + 1),
             unknown_ids(MAX_BATCH + 1),
         ),
         (
-            format!("a batch of {} ids at the length maximum", MAX_BATCH + 1),
+            format!("a batch of {} longer ids", MAX_BATCH + 1),
             (0..=MAX_BATCH)
-                .map(|index| format!("{index:0>width$}", width = MAX_CAMPAIGN_ID))
+                .map(|index| format!("{index:0>width$}", width = LONG_CAMPAIGN_ID))
                 .collect(),
         ),
     ];

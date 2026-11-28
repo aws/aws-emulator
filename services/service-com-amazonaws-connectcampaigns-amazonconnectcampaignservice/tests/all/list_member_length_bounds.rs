@@ -12,8 +12,10 @@
 //!
 //! The rows span every list member this service's operations declare, each with its own
 //! published bounds and its own binding — two in a request BODY (`GetCampaignStateBatch`'s
-//! `campaignIds` and `PutDialRequestBatch`'s `dialRequests`, both `@length(min 1, max 25)`)
-//! and one in the QUERY STRING (`UntagResource`'s `tagKeys`, `@length(min 0, max 50)`), from
+//! `campaignIds`, `@length(min 1, max 500)` as the overlay model that operation's input is
+//! declared from states it — see `smithy-model/LOCAL-ADDITIONS.md` — and
+//! `PutDialRequestBatch`'s `dialRequests`, `@length(min 1, max 25)`) and one in the QUERY
+//! STRING (`UntagResource`'s `tagKeys`, `@length(min 0, max 50)`), from
 //! `smithy_query(query="operation",
 //! operation="GetCampaignStateBatch,PutDialRequestBatch,UntagResource")` — and, per member,
 //! the sizes around each published bound: one element, each bound itself, and one element
@@ -68,7 +70,13 @@ impl ListMember {
     /// The `@length` bounds the model declares for this member, as `(min, max)`.
     fn bounds(self) -> (usize, usize) {
         match self {
-            Self::CampaignIds | Self::DialRequests => (1, 25),
+            // The batch state read's own maximum is the one the SERVICE enforces, which the
+            // recorded corpus shows is five hundred ids and not the twenty-five the
+            // member's documentation prints; it is declared in the overlay model this
+            // operation's input comes from (`smithy-model/LOCAL-ADDITIONS.md`, and
+            // `crate::ops::get_campaign_state_batch`).
+            Self::CampaignIds => (1, 500),
+            Self::DialRequests => (1, 25),
             Self::TagKeys => (0, 50),
         }
     }

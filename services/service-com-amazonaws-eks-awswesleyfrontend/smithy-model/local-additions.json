@@ -1,0 +1,53 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.eks#DescribeAddonVersionsRequest": {
+      "type": "structure",
+      "members": {
+        "kubernetesVersion": {
+          "target": "smithy.api#String",
+          "traits": { "smithy.api#httpQuery": "kubernetesVersion" }
+        },
+        "maxResults": {
+          "target": "com.amazonaws.eks#DescribeAddonVersionsRequestMaxResults",
+          "traits": { "smithy.api#httpQuery": "maxResults" }
+        },
+        "nextToken": {
+          "target": "smithy.api#String",
+          "traits": { "smithy.api#httpQuery": "nextToken" }
+        },
+        "addonName": {
+          "target": "smithy.api#String",
+          "traits": { "smithy.api#httpQuery": "addonName" }
+        },
+        "types": {
+          "target": "com.amazonaws.eks#StringList",
+          "traits": { "smithy.api#httpQuery": "types" }
+        },
+        "publishers": {
+          "target": "com.amazonaws.eks#StringList",
+          "traits": { "smithy.api#httpQuery": "publishers" }
+        },
+        "owners": {
+          "target": "com.amazonaws.eks#StringList",
+          "traits": { "smithy.api#httpQuery": "owners" }
+        }
+      },
+      "traits": {
+        "smithy.api#input": {}
+      }
+    },
+    "com.amazonaws.eks#DescribeAddonVersionsRequestMaxResults": {
+      "type": "integer",
+      "traits": {
+        "smithy.api#range": { "min": 1 }
+      }
+    },
+    "com.amazonaws.eks#StringList": {
+      "type": "list",
+      "member": {
+        "target": "smithy.api#String"
+      }
+    }
+  }
+}

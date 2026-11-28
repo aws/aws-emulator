@@ -20,6 +20,15 @@
 //! whose input declares a collection member a caller can take outside its modelled bounds,
 //! whatever that member is bound to: the batch state read's `campaignIds` and the dial
 //! batch's `dialRequests` in the body, and an untag call's `tagKeys` in the query string.
+//!
+//! A collection renders only when every one of its elements was walked, and the shared
+//! collector visits a COUNT of member positions and keeps a rendering of a bounded SIZE,
+//! both sized for the members most models declare — so a member whose declared maximum is
+//! larger than either states its own ceilings, computed from that maximum and from the
+//! declared maximum of one element (`service_common::validation` documents both knobs on
+//! `refusing_violations_with_declared_echoes_rendering_up_to`). Each ceiling is therefore a
+//! MODEL constant and no answer is sized by the request; past it the framework's own count
+//! summary stands, which is the fail-safe direction.
 
 use ::aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use ::aws_smithy_schema_server::ProtocolError;
@@ -27,6 +36,19 @@ use ::smithy_server_runtime::{
     BoxFuture, ErasedOperation, Operation, OperationContext, Service,
 };
 use ::std::marker::PhantomData;
+
+/// The ceilings ONE operation's echo walk runs under, both computed from the model: how
+/// many member POSITIONS the walk may visit, and how many bytes of one collection's
+/// RENDERING it may keep.
+#[derive(Debug, Clone, Copy)]
+pub struct Quoting {
+    /// One per element of the largest collection a clause of this operation can be about,
+    /// plus the member that carries it.
+    pub positions: usize,
+    /// The bytes that collection's rendering takes at its largest — every element at its
+    /// own declared maximum.
+    pub rendering: usize,
+}
 
 /// One modelled operation, served so that a clause about a COLLECTION its request carried
 /// quotes that collection ([the module docs](self)).
@@ -41,6 +63,11 @@ pub struct StatingTheSubmittedCollection<O> {
     /// The media-type wrapper every routed request of this service is served through, which
     /// this one delegates to for every request it words no refusal for.
     announced: ::service_common::response_media_type::ResponseMediaTypeOperation,
+    /// The ceilings the echo walk runs under for this operation, or `None` for the ones the
+    /// shared collector states itself — see the module docs. Stated for an operation whose
+    /// collection member admits more elements, or a longer rendering, than those defaults
+    /// reach, so the clause about it can still quote the collection the caller submitted.
+    quoting: Option<Quoting>,
     /// The operation whose input schema the request is read against. Held as a type alone:
     /// the walk below needs `O`'s schemas and nothing of the instance the routing table
     /// holds, which is the one that serves the request.
@@ -48,12 +75,15 @@ pub struct StatingTheSubmittedCollection<O> {
 }
 
 impl<O: Operation> StatingTheSubmittedCollection<O> {
-    /// Wrap the media-type wrapper this one delegates to.
+    /// Wrap the media-type wrapper this one delegates to, with the ceilings the echo walk
+    /// runs under for this operation ([`Self::quoting`]).
     pub const fn new(
         announced: ::service_common::response_media_type::ResponseMediaTypeOperation,
+        quoting: Option<Quoting>,
     ) -> Self {
         Self {
             announced,
+            quoting,
             operation: PhantomData,
         }
     }
@@ -85,10 +115,18 @@ where
             let refused = {
                 let definition = svc.definition();
                 let protocol = definition.wire_protocol(req).protocol();
-                let refusing =
-                    ::service_common::validation::refusing_violations_with_echoes::<O>(
+                let refusing = match self.quoting {
+                    Some(quoting) => ::service_common::validation::
+                        refusing_violations_with_declared_echoes_rendering_up_to::<O>(
+                            protocol,
+                            req,
+                            quoting.positions,
+                            quoting.rendering,
+                        ),
+                    None => ::service_common::validation::refusing_violations_with_echoes::<O>(
                         protocol, req,
-                    );
+                    ),
+                };
                 super::stated_refusal_quoting_collections(&refusing).map(|(violations, stated)| {
                     definition.refusal_response(
                         ProtocolError::Invalid(violations),

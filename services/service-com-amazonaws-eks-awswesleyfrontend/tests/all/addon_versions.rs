@@ -816,18 +816,23 @@ async fn the_catalog_is_served_whole_whatever_the_page_size() {
         addon_names(&filtered)
     );
 
-    // `maxResults` is bounded by the model like every other page size of this API
-    // (`DescribeAddonVersionsRequestMaxResults` is `@range {min: 1, max: 100}`), so a
-    // value INSIDE the bounds is served — and served whole, because this listing has
-    // no page after the first — while a value outside them is the bad parameter it is.
-    // The rows are each published bound and one past each, plus a value no page size
-    // could be.
-    for page_size in [MIN_LIST_MAX_RESULTS, 2, MAX_LIST_MAX_RESULTS] {
+    // This listing never pages, so it publishes no MAXIMUM page size: the recorded
+    // service answers a `maxResults` ABOVE the bound the member's documentation prints
+    // with the whole catalog, exactly as it answers one inside it. What a page size can
+    // never be is less than one, and that is refused. The rows are the published
+    // minimum, a value between, the documented maximum and values past it.
+    for page_size in [
+        MIN_LIST_MAX_RESULTS,
+        2,
+        MAX_LIST_MAX_RESULTS,
+        MAX_LIST_MAX_RESULTS + 1,
+        10 * MAX_LIST_MAX_RESULTS,
+    ] {
         let answer = describe_addon_versions(&router, &format!("maxResults={page_size}")).await;
         assert_eq!(
             answer.status, 200,
-            "case maxResults={page_size}: inside the modelled range expected HTTP 200, got \
-             {answer:?}"
+            "case maxResults={page_size}: a page size this listing ignores expected HTTP 200, \
+             got {answer:?}"
         );
         assert_eq!(
             addon_names(&answer),
@@ -836,16 +841,12 @@ async fn the_catalog_is_served_whole_whatever_the_page_size() {
             answer.body["addons"]
         );
     }
-    for page_size in [
-        MIN_LIST_MAX_RESULTS - 1,
-        MAX_LIST_MAX_RESULTS + 1,
-        -MIN_LIST_MAX_RESULTS,
-    ] {
+    for page_size in [MIN_LIST_MAX_RESULTS - 1, -MIN_LIST_MAX_RESULTS] {
         let answer = describe_addon_versions(&router, &format!("maxResults={page_size}")).await;
         assert_eq!(
             answer.status, 400,
-            "case maxResults={page_size}: outside the modelled range expected HTTP 400, got \
-             {answer:?}"
+            "case maxResults={page_size}: a page size below the published minimum expected \
+             HTTP 400, got {answer:?}"
         );
         let code = error_code(&answer);
         assert_eq!(

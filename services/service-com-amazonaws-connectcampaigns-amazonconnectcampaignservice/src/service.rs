@@ -291,6 +291,36 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
 /// One operation served through the collection-quoting wrapper, as the fields above hold it.
 type CollectionStated<O> = submitted_collection::StatingTheSubmittedCollection<O>;
 
+/// The ceilings the echo walk runs under for the BATCH STATE READ, both computed from the
+/// model this operation's input is declared from (`smithy-model/local-additions.json`, see
+/// `smithy-model/LOCAL-ADDITIONS.md`) and from `CampaignId`'s own length maximum: the ids
+/// of the largest batch a clause about `campaignIds` can be about — that member's
+/// `@length` maximum and the one id past it that breaks it — plus the member itself, and
+/// the bytes that batch renders into with every id at that length maximum.
+///
+/// Stated because both are larger than the ceilings the shared collector states by default,
+/// and a list renders only when every one of its elements was walked and its whole rendering
+/// kept (see [`submitted_collection`]); every other collection member of this service is
+/// inside those defaults, so each keeps them.
+const CAMPAIGN_IDS_QUOTING: submitted_collection::Quoting = submitted_collection::Quoting {
+    positions: CAMPAIGN_IDS_MAX + 2,
+    rendering: (CAMPAIGN_IDS_MAX + 1) * (CAMPAIGN_ID_MAX_LENGTH + LIST_SEPARATOR) + BRACKETS,
+};
+
+/// `GetCampaignStateBatchRequest$campaignIds`' `@length` maximum, as the overlay model this
+/// operation's input is declared from states it.
+const CAMPAIGN_IDS_MAX: usize = 500;
+
+/// `CampaignId`'s `@length` maximum, which every entry of a batch is held to
+/// (`smithy_query(query="shape", shape="CampaignId")`).
+const CAMPAIGN_ID_MAX_LENGTH: usize = 256;
+
+/// What one element of a rendered list costs beside the element itself (`, `), and what the
+/// list costs around its elements (`[`, `]`) — the form
+/// `service_common::validation::rendered_list` writes.
+const LIST_SEPARATOR: usize = 2;
+const BRACKETS: usize = 2;
+
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// Build this service from the shared engine. The engine is threaded into the
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
@@ -305,9 +335,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: crate::ServiceDefinition::new(engine),
             media_type: announced(),
-            campaign_ids: CollectionStated::new(announced()),
-            dial_requests: CollectionStated::new(announced()),
-            tag_keys: CollectionStated::new(announced()),
+            campaign_ids: CollectionStated::new(announced(), Some(CAMPAIGN_IDS_QUOTING)),
+            dial_requests: CollectionStated::new(announced(), None),
+            tag_keys: CollectionStated::new(announced(), None),
         }
     }
 
