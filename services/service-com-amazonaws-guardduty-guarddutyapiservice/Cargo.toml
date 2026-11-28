@@ -49,6 +49,13 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # the account's clusters and for the GuardDuty security agent add-on installed on
 # each, because both are EKS resources.
 aws-sdk-eks = { version = "1", default-features = false }
+# The AWS SDK for Amazon S3, over the same callback: a Malware Protection plan reads the
+# objects of the bucket it protects, writes the scan status of each as a tag on the object and
+# turns that bucket's EventBridge delivery on, because the bucket and its objects are S3's.
+aws-sdk-s3 = { version = "1", default-features = false }
+# The AWS SDK for EventBridge, over the same callback: a Malware Protection plan owns a managed
+# rule on the account's default bus and publishes its status and its scan results onto it.
+aws-sdk-eventbridge = { version = "1", default-features = false }
 # Digests the identity of the ordered list a page token is a position in, so the
 # token names its own listing; `hex` renders that digest into the token.
 sha2 = { workspace = true }

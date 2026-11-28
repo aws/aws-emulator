@@ -4937,3 +4937,8 @@ pub mod connection_secret;
 
 mod invocation_attempts;
 pub use invocation_attempts::*;
+
+/// WHICH Amazon Web Services service is making the call that writes a rule, which is what
+/// `Rule$ManagedBy` reports and what makes a rule a managed one — read off the credential
+/// the call presents rather than off any member of the request.
+pub mod managed_rule_owner;

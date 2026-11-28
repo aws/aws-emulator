@@ -51,6 +51,17 @@ mod ip_sets;
 mod malware_protection_plan_role;
 /// Malware Protection plans.
 mod malware_protection_plans;
+/// What a Malware Protection plan wires up for the bucket it protects — its managed
+/// EventBridge rule, that bucket's EventBridge delivery — and the events it publishes.
+pub mod malware_protection_wiring;
+/// The scan of ONE S3 object: what it reads, what it concludes, the tag it leaves and the
+/// results it publishes.
+pub mod malware_object_scan;
+/// The scans a plan owes for the objects that ARRIVE in the bucket it protects.
+pub mod malware_upload_scans;
+/// The identity a call GuardDuty makes of its own — a plan's managed-rule writes — presents
+/// to the service serving it.
+pub mod plan_service_principal_call;
 /// Malware scans and the reports over them.
 mod malware_scans;
 /// The delegated administrator and the organization-wide configuration.
@@ -80,6 +91,7 @@ pub use investigations::*;
 pub use ip_sets::*;
 pub use malware_protection_plan_role::*;
 pub use malware_protection_plans::*;
+pub use malware_upload_scans::{UploadScanPump, WatchedPlan};
 pub use malware_scans::*;
 pub use organization::*;
 pub use pagination::*;
@@ -241,6 +253,14 @@ pub struct ComAmazonawsGuarddutyGuarddutyapiserviceState {
     /// before it writes ([`Self::organization_admin_regions_exhausted`]), so the
     /// map is finite whatever Region a caller signs for.
     pub organization_admin_accounts: BTreeMap<String, OrganizationAdminAccountRecord>,
+    /// The lease on the in-process pump that runs the scans the Malware Protection plans of
+    /// this store owe for the objects ARRIVING in the buckets they protect
+    /// ([`malware_upload_scans`]).
+    ///
+    /// One store runs at most one such pump, which is what the lease is for; it is taken by the
+    /// call that makes that work owed and given up however the pump ends, so the work is never
+    /// wedged behind a pump that is no longer running.
+    pub malware_upload_scan_pump: UploadScanPump,
     /// Last instant handed out by [`Self::tick_millis`], so two mutations in the
     /// same millisecond still get strictly increasing timestamps.
     last_millis: i64,

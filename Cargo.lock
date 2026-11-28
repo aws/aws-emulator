@@ -16159,6 +16159,8 @@ dependencies = [
  "aws-emulator-smithy-server-runtime",
  "aws-sdk-ec2",
  "aws-sdk-eks",
+ "aws-sdk-eventbridge",
+ "aws-sdk-s3",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",

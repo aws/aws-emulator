@@ -237,6 +237,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .event_pattern
             .as_deref()
             .filter(|text| !text.trim().is_empty());
+        // WHICH service is provisioning this rule on the account's behalf, if any: a rule
+        // written by an emulated AWS service's own call is a MANAGED rule and reports that
+        // service as its `ManagedBy` (`crate::state::managed_rule_owner`). Read before the
+        // store is locked, like every other fact this handler takes off the request.
+        let provisioning =
+            crate::state::managed_rule_owner::provisioning_service(&*self.engine, ctx);
         let mut store = state.lock();
 
         // Writing a rule is the action `events:PutRule` on that rule, so the policies
@@ -401,12 +407,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "You cannot modify these managed rules by using DisableRule, EnableRule,
         // PutTargets, PutRule, TagResource, or UntagResource"
         // (`ManagedRuleException`): a name this bus already holds a MANAGED rule
-        // under is refused rather than replaced.
-        if bus
-            .rules
-            .get(&input.name)
-            .is_some_and(|rule| rule.managed_by.is_some())
-        {
+        // under is refused rather than replaced — except for the one writer such a
+        // rule admits, the service that OWNS it, which is what maintains it
+        // (`crate::state::managed_rule_owner`).
+        if bus.rules.get(&input.name).is_some_and(|rule| {
+            rule.managed_by.is_some()
+                && !crate::state::managed_rule_owner::owned_by_the_caller(
+                    rule,
+                    provisioning.as_deref(),
+                )
+        }) {
             return Err(PutRuleErrorModeled::ManagedRuleException(ManagedRuleException {
                 message: Some(crate::state::managed_rule_refusal(&input.name)),
             })
@@ -452,6 +462,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(crate::scaffolded::Scaffolded::validation(reason));
             }
         }
+        // "If this is a managed rule, created by an Amazon Web Services service on your
+        // behalf, this field displays the principal name of the service that CREATED the
+        // rule" (`Rule$ManagedBy`): the owner is settled when the rule comes into
+        // existence and no later write moves it, so an UPDATE keeps the owner the stored
+        // rule has — a service's write over a rule the customer owns leaves it the
+        // customer's, and the owner's own write over its managed rule leaves it managed
+        // (`crate::state::managed_rule_owner`; a managed rule admits no other writer at
+        // all, which is refused above).
+        let managed_by = match existing {
+            Some(rule) => rule.managed_by.clone(),
+            None => provisioning,
+        };
         let record = crate::state::RuleRecord {
             name: input.name.clone(),
             arn: arn.clone(),
@@ -460,10 +482,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state: rule_state,
             description: input.description,
             role_arn: input.role_arn,
-            // A rule this service created on the account's behalf is never a
-            // managed rule REPLACED here: a managed name is refused above, so a
-            // rule written by this operation is always the customer's own.
-            managed_by: None,
+            // "If this is a managed rule, created by an Amazon Web Services service on
+            // your behalf, this field displays the principal name of the service that
+            // created the rule" (`Rule$ManagedBy`): the owner this call settled above.
+            managed_by,
             created_by: Some(crate::state::account_id().to_string()),
             event_bus_name: bus_name,
             targets,

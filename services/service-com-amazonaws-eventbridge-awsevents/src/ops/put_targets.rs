@@ -231,6 +231,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &caller,
             input.targets.iter().map(|target| target.role_arn.as_deref()),
         );
+        // WHICH service is making this call on the account's behalf, if any: the service
+        // that OWNS a managed rule is the one writer that rule admits, because its targets
+        // are that service's to set (`crate::state::managed_rule_owner`).
+        let provisioning =
+            crate::state::managed_rule_owner::provisioning_service(&*self.engine, ctx);
         let mut store = state.lock();
 
         // Adding targets to a rule is the action `events:PutTargets` on that rule, so
@@ -354,8 +359,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "You cannot modify these managed rules by using DisableRule, EnableRule,
         // PutTargets, PutRule, TagResource, or UntagResource"
-        // (`ManagedRuleException`).
-        if rule.managed_by.is_some() {
+        // (`ManagedRuleException`) — except for the service that OWNS the rule, which is
+        // what maintains its targets (`crate::state::managed_rule_owner`).
+        if rule.managed_by.is_some()
+            && !crate::state::managed_rule_owner::owned_by_the_caller(
+                rule,
+                provisioning.as_deref(),
+            )
+        {
             return Err(PutTargetsErrorModeled::ManagedRuleException(ManagedRuleException {
                 message: Some(crate::state::managed_rule_refusal(&input.rule)),
             })

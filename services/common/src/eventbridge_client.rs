@@ -39,10 +39,46 @@ pub fn eventbridge_client(
     callback: &EmbeddedEmulator,
     region: &str,
 ) -> ::aws_sdk_eventbridge::Client {
+    client_signing_with(callback, region, callback.aws_credentials_provider())
+}
+
+/// The same client, signing every call it makes as `credentials` rather than with the
+/// emulator's own.
+///
+/// What a service uses when the call it makes is one it makes AS ITS OWN SERVICE PRINCIPAL
+/// rather than as the emulator — the rule a service provisions on the account's behalf among
+/// them ([`crate::service_principal_calls`] carries how the serving service reads that
+/// identity off the call). The credentials are a credential the calling service minted in the
+/// emulator's own credential store for the one call; nothing here constructs an access key id
+/// or a secret.
+///
+/// The sibling of [`crate::s3_client::s3_client_signed_as`], and configured through the same
+/// one builder as [`eventbridge_client`], so the hop is configured one way whoever the call
+/// is signed as.
+#[must_use]
+pub fn eventbridge_client_signed_as(
+    callback: &EmbeddedEmulator,
+    region: &str,
+    credentials: ::aws_sdk_eventbridge::config::Credentials,
+) -> ::aws_sdk_eventbridge::Client {
+    client_signing_with(
+        callback,
+        region,
+        ::aws_sdk_eventbridge::config::SharedCredentialsProvider::new(credentials),
+    )
+}
+
+/// The ONE builder both constructions above share, so the hop is configured one way whoever
+/// the call is signed as.
+fn client_signing_with(
+    callback: &EmbeddedEmulator,
+    region: &str,
+    credentials: impl ::aws_sdk_eventbridge::config::ProvideCredentials + 'static,
+) -> ::aws_sdk_eventbridge::Client {
     let config = ::aws_sdk_eventbridge::Config::builder()
         .behavior_version(::aws_sdk_eventbridge::config::BehaviorVersion::latest())
         .http_client(callback.http_client())
-        .credentials_provider(callback.aws_credentials_provider())
+        .credentials_provider(credentials)
         .region(::aws_sdk_eventbridge::config::Region::new(region.to_string()))
         .endpoint_url(format!("https://events.{region}.amazonaws.com"))
         .retry_config(::aws_sdk_eventbridge::config::retry::RetryConfig::disabled())
