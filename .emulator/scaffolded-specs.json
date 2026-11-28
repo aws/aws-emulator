@@ -1473,6 +1473,10 @@
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/sagemaker-geospatial/service/2020-05-27/sagemaker-geospatial-2020-05-27.json"
     },
     {
+      "shape_id": "com.amazonaws.sagemakerinferencerouterruntime#SageMakerInferenceRouterRuntime",
+      "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/c017e19db1da3c456cbf8f8cd3f6a4b9922c5bcf/models/sagemaker-inference-router-runtime/service/2026-01-01/sagemaker-inference-router-runtime-2026-01-01.json"
+    },
+    {
       "shape_id": "com.amazonaws.sagemakerjobruntime#AgenticRFTRuntimeService",
       "spec_url": "https://raw.githubusercontent.com/aws/api-models-aws/refs/heads/main/models/sagemakerjobruntime/service/2026-02-01/sagemakerjobruntime-2026-02-01.json"
     },

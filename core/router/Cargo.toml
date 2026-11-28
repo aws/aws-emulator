@@ -379,6 +379,7 @@ service-com-amazonaws-sagemakeredge-amazonsagemakeredge = { workspace = true }
 service-com-amazonaws-sagemakerfeaturestoreruntime-amazonsagemakerfeaturestoreruntime = { workspace = true }
 service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime = { workspace = true }
 service-com-amazonaws-sagemakergeospatial-sagemakergeospatial = { workspace = true }
+service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime = { workspace = true }
 service-com-amazonaws-sagemakerjobruntime-agenticrftruntimeservice = { workspace = true }
 service-com-amazonaws-sagemakermetrics-sagemakermetricsservice = { workspace = true }
 service-com-amazonaws-sagemakerruntime-amazonsagemakerruntime = { workspace = true }

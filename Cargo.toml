@@ -368,6 +368,7 @@ members = [
     "services/service-com-amazonaws-sagemakerfeaturestoreruntime-amazonsagemakerfeaturestoreruntime",
     "services/service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime",
     "services/service-com-amazonaws-sagemakergeospatial-sagemakergeospatial",
+    "services/service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime",
     "services/service-com-amazonaws-sagemakerjobruntime-agenticrftruntimeservice",
     "services/service-com-amazonaws-sagemakermetrics-sagemakermetricsservice",
     "services/service-com-amazonaws-sagemakerruntime-amazonsagemakerruntime",
@@ -848,6 +849,7 @@ service-com-amazonaws-sagemakeredge-amazonsagemakeredge = { path = "services/ser
 service-com-amazonaws-sagemakerfeaturestoreruntime-amazonsagemakerfeaturestoreruntime = { path = "services/service-com-amazonaws-sagemakerfeaturestoreruntime-amazonsagemakerfeaturestoreruntime" }
 service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime = { path = "services/service-com-amazonaws-sagemakergatewayruntime-globalinferencegatewayruntime" }
 service-com-amazonaws-sagemakergeospatial-sagemakergeospatial = { path = "services/service-com-amazonaws-sagemakergeospatial-sagemakergeospatial" }
+service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime = { path = "services/service-com-amazonaws-sagemakerinferencerouterruntime-sagemakerinferencerouterruntime" }
 service-com-amazonaws-sagemakerjobruntime-agenticrftruntimeservice = { path = "services/service-com-amazonaws-sagemakerjobruntime-agenticrftruntimeservice" }
 service-com-amazonaws-sagemakermetrics-sagemakermetricsservice = { path = "services/service-com-amazonaws-sagemakermetrics-sagemakermetricsservice" }
 service-com-amazonaws-sagemakerruntime-amazonsagemakerruntime = { path = "services/service-com-amazonaws-sagemakerruntime-amazonsagemakerruntime" }
