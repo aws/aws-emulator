@@ -328,6 +328,105 @@ pub struct ResourceNotFoundException {
     pub code: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#EncryptionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct EncryptionConfiguration {
+    pub kms_key_id: String,
+    pub kms_encryption_context: Option<std::collections::HashMap<String, String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#ExtractionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct ExtractionConfiguration {
+    pub bounding_box: BoundingBoxConfiguration,
+    pub granularity: ExtractionGranularity,
+    pub output_format: OutputFormat,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#BoundingBoxConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct BoundingBoxConfiguration {
+    pub state: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#ExtractionGranularity")]
+#[derive(Debug, Clone, Default)]
+pub struct ExtractionGranularity {
+    pub types: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#OutputFormat")]
+#[derive(Debug, Clone, Default)]
+pub struct OutputFormat {
+    pub additional_file_format: OutputAdditionalFileFormat,
+    pub text_format: OutputTextFormat,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#OutputAdditionalFileFormat")]
+#[derive(Debug, Clone, Default)]
+pub struct OutputAdditionalFileFormat {
+    pub state: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#OutputTextFormat")]
+#[derive(Debug, Clone, Default)]
+pub struct OutputTextFormat {
+    pub types: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#GenerativeConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct GenerativeConfiguration {
+    pub summarization: Option<SummarizationConfiguration>,
+    pub figure_caption: Option<FigureCaptionConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#SummarizationConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SummarizationConfiguration {
+    pub state: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#FigureCaptionConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct FigureCaptionConfiguration {
+    pub state: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#CustomConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomConfiguration {
+    pub blueprints: Vec<BlueprintItem>,
+    pub fallback_blueprints: Option<Vec<BlueprintItem>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#BlueprintItem")]
+#[derive(Debug, Clone, Default)]
+pub struct BlueprintItem {
+    pub blueprint_arn: String,
+    pub blueprint_version: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#SplitterConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SplitterConfiguration {
+    pub state: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#SensitiveDataConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct SensitiveDataConfiguration {
+    pub detection_mode: String,
+    pub pii_entities_configuration: Option<PIIEntitiesConfiguration>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#PIIEntitiesConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct PIIEntitiesConfiguration {
+    pub pii_entity_types: Vec<String>,
+    pub redaction_mask_mode: String,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.textract#Warning")]
 #[derive(Debug, Clone, Default)]
 pub struct Warning {
@@ -340,6 +439,12 @@ pub struct Warning {
 pub struct InvalidJobIdException {
     pub message: Option<String>,
     pub code: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.textract#OutputConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct OutputConfiguration {
+    pub s3_uri: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.textract#DocumentLocation")]
@@ -375,6 +480,10 @@ pub const CONTENT_CLASSIFIER_VALUES: &[&str] = &["FreeOfAdultContent", "FreeOfPe
 pub const ENTITY_TYPE_VALUES: &[&str] = &["COLUMN_HEADER", "KEY", "SEMI_STRUCTURED_TABLE", "STRUCTURED_TABLE", "TABLE_FOOTER", "TABLE_SECTION_TITLE", "TABLE_SUMMARY", "TABLE_TITLE", "VALUE"];
 
 
+/// The values `ExtractionGranularityType` accepts on the wire.
+pub const EXTRACTION_GRANULARITY_TYPE_VALUES: &[&str] = &["DOCUMENT", "ELEMENT", "LINE", "PAGE", "WORD"];
+
+
 /// The values `FeatureType` accepts on the wire.
 pub const FEATURE_TYPE_VALUES: &[&str] = &["FORMS", "LAYOUT", "QUERIES", "SIGNATURES", "TABLES"];
 
@@ -383,12 +492,40 @@ pub const FEATURE_TYPE_VALUES: &[&str] = &["FORMS", "LAYOUT", "QUERIES", "SIGNAT
 pub const JOB_STATUS_VALUES: &[&str] = &["FAILED", "IN_PROGRESS", "PARTIAL_SUCCESS", "SUCCEEDED"];
 
 
+/// The values `OutputTextFormatType` accepts on the wire.
+pub const OUTPUT_TEXT_FORMAT_TYPE_VALUES: &[&str] = &["CSV", "HTML", "MARKDOWN", "PLAIN_TEXT"];
+
+
+/// The values `PIIEntityType` accepts on the wire.
+pub const P_I_I_ENTITY_TYPE_VALUES: &[&str] = &["ADDRESS", "AGE", "ALL", "AWS_ACCESS_KEY", "AWS_SECRET_KEY", "CA_HEALTH_NUMBER", "CA_SOCIAL_INSURANCE_NUMBER", "CREDIT_DEBIT_CARD_CVV", "CREDIT_DEBIT_CARD_EXPIRY", "CREDIT_DEBIT_CARD_NUMBER", "DRIVER_ID", "EMAIL", "INTERNATIONAL_BANK_ACCOUNT_NUMBER", "IP_ADDRESS", "LICENSE_PLATE", "MAC_ADDRESS", "NAME", "PASSWORD", "PHONE", "PIN", "SWIFT_CODE", "UK_NATIONAL_HEALTH_SERVICE_NUMBER", "UK_NATIONAL_INSURANCE_NUMBER", "UK_UNIQUE_TAXPAYER_REFERENCE_NUMBER", "URL", "USERNAME", "US_BANK_ACCOUNT_NUMBER", "US_BANK_ROUTING_NUMBER", "US_INDIVIDUAL_TAX_IDENTIFICATION_NUMBER", "US_PASSPORT_NUMBER", "US_SOCIAL_SECURITY_NUMBER", "VEHICLE_IDENTIFICATION_NUMBER"];
+
+
+/// The values `PIIRedactionMaskMode` accepts on the wire.
+pub const P_I_I_REDACTION_MASK_MODE_VALUES: &[&str] = &["ENTITY_TYPE", "PII"];
+
+
+/// The values `ProjectStatus` accepts on the wire.
+pub const PROJECT_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED"];
+
+
 /// The values `RelationshipType` accepts on the wire.
 pub const RELATIONSHIP_TYPE_VALUES: &[&str] = &["ANSWER", "CHILD", "COMPLEX_FEATURES", "MERGED_CELL", "TABLE", "TABLE_FOOTER", "TABLE_TITLE", "TITLE", "VALUE"];
 
 
+/// The values `ResourceOwner` accepts on the wire.
+pub const RESOURCE_OWNER_VALUES: &[&str] = &["ACCOUNT", "SERVICE"];
+
+
 /// The values `SelectionStatus` accepts on the wire.
 pub const SELECTION_STATUS_VALUES: &[&str] = &["NOT_SELECTED", "SELECTED"];
+
+
+/// The values `SensitiveDataDetectionMode` accepts on the wire.
+pub const SENSITIVE_DATA_DETECTION_MODE_VALUES: &[&str] = &["DETECTION", "DETECTION_AND_REDACTION", "DISABLED"];
+
+
+/// The values `State` accepts on the wire.
+pub const STATE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `TextType` accepts on the wire.

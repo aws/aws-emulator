@@ -60,6 +60,13 @@ ttf-noto-sans = { version = "0.1", default-features = false, features = [
 # Rasterises that outline face at the small pixel sizes documents are set at, so a
 # template is the glyph as it is really drawn at that size, anti-aliasing included.
 fontdue = { version = "0.9", default-features = false, features = ["std"] }
+# Writes the CSV rendering of a document's text that an `OutputTextFormat` can ask a
+# document insights job for, so a line carrying a separator or a quote is quoted the way
+# the format requires.
+csv = "1.4"
+# Escapes the HTML rendering of that same text, so a document whose words carry markup is
+# reported as text rather than as markup.
+html-escape = "0.2"
 # The Amazon S3 client this service reads a `Document.S3Object` / `DocumentLocation`
 # through, over the in-process callback into this same emulator (no network client
 # feature: the transport is the emulator's own).

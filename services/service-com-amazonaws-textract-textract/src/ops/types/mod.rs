@@ -19,27 +19,40 @@ pub mod analyze_expense_types;
 pub mod analyze_id_types;
 pub mod create_adapter_types;
 pub mod create_adapter_version_types;
+pub mod create_blueprint_types;
+pub mod create_blueprint_version_types;
+pub mod create_project_types;
 pub mod delete_adapter_types;
 pub mod delete_adapter_version_types;
+pub mod delete_blueprint_types;
+pub mod delete_project_types;
 pub mod detect_document_text_types;
 pub mod get_adapter_types;
 pub mod get_adapter_version_types;
+pub mod get_blueprint_types;
 pub mod get_document_analysis_types;
+pub mod get_document_insights_types;
 pub mod get_document_text_detection_types;
 pub mod get_expense_analysis_types;
 pub mod get_lending_analysis_summary_types;
 pub mod get_lending_analysis_types;
+pub mod get_project_types;
 pub mod list_adapter_versions_types;
 pub mod list_adapters_types;
+pub mod list_blueprints_types;
+pub mod list_projects_types;
 pub mod list_tags_for_resource_types;
 pub mod shared_types;
 pub mod start_document_analysis_types;
+pub mod start_document_insights_types;
 pub mod start_document_text_detection_types;
 pub mod start_expense_analysis_types;
 pub mod start_lending_analysis_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_adapter_types;
+pub mod update_blueprint_types;
+pub mod update_project_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use analyze_document_types::*;
@@ -52,9 +65,19 @@ pub use create_adapter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_adapter_version_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_blueprint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_blueprint_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_project_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_adapter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_adapter_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_blueprint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_project_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use detect_document_text_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -62,7 +85,11 @@ pub use get_adapter_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_adapter_version_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_blueprint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_document_analysis_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_document_insights_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_document_text_detection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -72,15 +99,23 @@ pub use get_lending_analysis_summary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_lending_analysis_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_project_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_adapter_versions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_adapters_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_blueprints_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_projects_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_document_analysis_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use start_document_insights_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use start_document_text_detection_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -93,4 +128,8 @@ pub use tag_resource_types::*;
 pub use untag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_adapter_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_blueprint_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_project_types::*;
 

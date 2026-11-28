@@ -178,7 +178,10 @@ fn unreadable(object: &S3Ref) -> Unreadable {
 /// need a sleep implementation this client is not given. The same goes for caching the
 /// identity: the credentials the callback hands over are used directly, and they only sign
 /// this operation's in-process calls.
-fn s3_client(
+/// `pub(super)`: the document insights job writes its result back through the SAME
+/// in-process client ([`super::insights`]), so a read and a write of this service's object
+/// store cannot be addressed differently.
+pub(super) fn s3_client(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_s3::Client {

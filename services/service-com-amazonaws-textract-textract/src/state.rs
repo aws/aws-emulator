@@ -95,6 +95,11 @@
 //!   ([`heads_its_columns`]) and the table reports whether it is a structured one
 //!   ([`table_entity_type`]).
 
+/// The document-intelligence control plane: projects, blueprints and the document
+/// insights jobs that run under them.
+pub mod intelligence;
+/// What a document insights job EXTRACTS, and where it writes it.
+pub mod insights;
 pub mod ocr;
 pub mod s3_source;
 
@@ -344,6 +349,27 @@ pub struct ComAmazonawsTextractTextractState {
     /// Monotonic counter mixed into a minted `AdapterId` so two creates of the same
     /// adapter name never collide.
     pub next_adapter_seq: u64,
+    /// Every project `CreateProject` has minted, keyed by the identifier its `ProjectArn`
+    /// carries. Bounded by [`intelligence::MAX_STORED_PROJECTS`]; nothing is evicted.
+    pub projects: HashMap<String, intelligence::ProjectRecord>,
+    /// Every blueprint `CreateBlueprint` has minted, keyed by the identifier its
+    /// `BlueprintArn` carries. Bounded by [`intelligence::MAX_STORED_BLUEPRINTS`].
+    pub blueprints: HashMap<String, intelligence::BlueprintRecord>,
+    /// Every document insights job `StartDocumentInsights` has started, keyed by the
+    /// identifier its `JobArn` carries. Bounded by
+    /// [`intelligence::MAX_STORED_INSIGHTS_JOBS`], oldest evicted first.
+    pub insights_jobs: HashMap<String, intelligence::InsightsJob>,
+    /// `ClientRequestToken` -> the answer the create it was first sent with gave, for the
+    /// three `@idempotencyToken` creates of the intelligence control plane.
+    ///
+    /// Keyed by `"<operation>|<token>"` so one token sent to two different creates names
+    /// two different resources, the way two operations' tokens are independent. Bounded by
+    /// [`intelligence::MAX_STORED_IDEMPOTENCY_SLOTS`], and a slot is dropped when the
+    /// resource it named is, so it never outlives what it answers with.
+    pub intelligence_idempotency: HashMap<String, intelligence::IdempotencySlot>,
+    /// Monotonic counter mixed into a minted project, blueprint or job identifier, so two
+    /// creates in one instant never collide.
+    pub next_intelligence_seq: u64,
 }
 
 impl ComAmazonawsTextractTextractState {
@@ -527,20 +553,30 @@ impl ComAmazonawsTextractTextractState {
     /// something here: the resource a tag write lands on is the resource a tag read
     /// reports.
     ///
-    /// Every resource this service holds that can carry tags is an adapter, keyed by its
-    /// `AdapterId`. `None` is a resource that is ABSENT rather than a request that is
-    /// malformed — an adapter id no create minted, an adapter already deleted, an ARN of
-    /// another Amazon Textract resource type, or an ARN carrying further path segments
-    /// after the `AdapterId` (a nested resource, which arrives with that whole path as
-    /// its identifier and so matches no stored adapter: an adapter VERSION is a resource
-    /// this service mints none of while `CreateAdapterVersion` is a stub).
+    /// Every resource this service holds that can carry tags is keyed by the identifier
+    /// its own ARN carries: an adapter by its `AdapterId`, and a project, a blueprint and
+    /// a document insights job by the identifier in its `ProjectArn`, `BlueprintArn` or
+    /// `JobArn` — the four kinds of resource whose create takes a `Tags` map. `None` is a
+    /// resource that is ABSENT rather than a request that is malformed — an identifier no
+    /// create minted, a resource already deleted, an ARN of another Amazon Textract
+    /// resource type, or an ARN carrying further path segments after the identifier (a
+    /// nested resource, which arrives with that whole path as its identifier and so
+    /// matches no stored resource).
     pub fn resource_tags(&self, resource: &ArnResource) -> Option<&HashMap<String, String>> {
-        if resource.resource_type != ADAPTER_RESOURCE_TYPE {
-            return None;
+        let id = &resource.resource_id;
+        match resource.resource_type.as_str() {
+            ADAPTER_RESOURCE_TYPE => self.adapters.get(id).map(|adapter| &adapter.tags),
+            intelligence::PROJECT_RESOURCE_TYPE => {
+                self.projects.get(id).map(|project| &project.tags)
+            }
+            intelligence::BLUEPRINT_RESOURCE_TYPE => {
+                self.blueprints.get(id).map(|blueprint| &blueprint.tags)
+            }
+            intelligence::INSIGHTS_JOB_RESOURCE_TYPE => {
+                self.insights_jobs.get(id).map(|job| &job.tags)
+            }
+            _ => None,
         }
-        self.adapters
-            .get(&resource.resource_id)
-            .map(|adapter| &adapter.tags)
     }
 
     /// [`Self::resource_tags`] for a caller that WRITES the tags — the same resolution,
@@ -549,12 +585,21 @@ impl ComAmazonawsTextractTextractState {
         &mut self,
         resource: &ArnResource,
     ) -> Option<&mut HashMap<String, String>> {
-        if resource.resource_type != ADAPTER_RESOURCE_TYPE {
-            return None;
+        let id = &resource.resource_id;
+        match resource.resource_type.as_str() {
+            ADAPTER_RESOURCE_TYPE => self.adapters.get_mut(id).map(|adapter| &mut adapter.tags),
+            intelligence::PROJECT_RESOURCE_TYPE => {
+                self.projects.get_mut(id).map(|project| &mut project.tags)
+            }
+            intelligence::BLUEPRINT_RESOURCE_TYPE => self
+                .blueprints
+                .get_mut(id)
+                .map(|blueprint| &mut blueprint.tags),
+            intelligence::INSIGHTS_JOB_RESOURCE_TYPE => {
+                self.insights_jobs.get_mut(id).map(|job| &mut job.tags)
+            }
+            _ => None,
         }
-        self.adapters
-            .get_mut(&resource.resource_id)
-            .map(|adapter| &mut adapter.tags)
     }
 
     /// Mint a `JobId`: 64 hex characters, within `JobId`'s `1..64` length and its

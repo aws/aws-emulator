@@ -150,6 +150,19 @@ pub fn bucket_name(s3_uri: &str) -> Option<String> {
     split(s3_uri).map(|(bucket, _)| bucket)
 }
 
+/// The bucket and the key path the `s3://` URI `s3_uri` names, where the key MAY be empty,
+/// or `None` when it names no bucket Amazon S3 holds one under.
+///
+/// What to read for the PLACE a job WRITES into, which is a bucket and the path under it
+/// rather than one object: a location naming the bucket alone (`s3://bucket`) is the bucket
+/// root, which [`object_address`] answers `None` for because it names no object. Same one
+/// reading as its two siblings ([`split`]), so a destination and a source are resolved
+/// alike.
+#[must_use]
+pub fn bucket_and_prefix(s3_uri: &str) -> Option<(String, String)> {
+    split(s3_uri)
+}
+
 /// The ONE reading of an `s3://` URI: its bucket, and the key under it, which may be empty.
 ///
 /// The URI's SHAPE is read by the maintained URL parser — a caller-supplied URI is not
@@ -382,6 +395,66 @@ mod tests {
 
     /// One row of the URL table below: the case, the URL and the object address it names.
     type UrlRow = (&'static str, &'static str, Option<(&'static str, &'static str)>);
+
+    /// One row of the place table below: the case, the URI and the place it names.
+    type PlaceRow = (&'static str, &'static str, Option<(&'static str, &'static str)>);
+
+    /// RULE: the PLACE an `s3://` URI names is its bucket and the path under it, which may be
+    /// empty — the bucket root — so a destination naming a bucket alone is a place while
+    /// naming no object.
+    ///
+    /// The rows span the key path (absent, a bare separator, a prefix, a nested prefix, one
+    /// naming an object) and the authorities that name no bucket at all.
+    #[test]
+    fn an_s3_uri_names_the_place_it_spells() {
+        let rows: &[PlaceRow] = &[
+            (
+                "a bucket with nothing under it, which is its root",
+                "s3://bda-samples",
+                Some(("bda-samples", "")),
+            ),
+            (
+                "a bucket with a bare separator, the same root",
+                "s3://bda-samples/",
+                Some(("bda-samples", "")),
+            ),
+            (
+                "a prefix under the bucket",
+                "s3://bda-samples/out",
+                Some(("bda-samples", "out")),
+            ),
+            (
+                "a nested prefix with a trailing separator",
+                "s3://bda-samples/out/2026/",
+                Some(("bda-samples", "out/2026/")),
+            ),
+            (
+                "a key naming one object, which is a place too",
+                "s3://bda-samples/out/a.json",
+                Some(("bda-samples", "out/a.json")),
+            ),
+            (
+                "an upper-case authority, which S3 holds no bucket under",
+                "s3://BDA-Samples/out",
+                None,
+            ),
+            (
+                "an authority carrying a port, which addresses no S3 location",
+                "s3://bda-samples:443/out",
+                None,
+            ),
+            ("another scheme", "https://bda-samples/out", None),
+            ("no authority", "s3:///out", None),
+        ];
+        for (case, uri, expected) in rows {
+            let expected = expected.map(|(bucket, key)| (bucket.to_string(), key.to_string()));
+            let actual = bucket_and_prefix(uri);
+            assert_eq!(
+                actual, expected,
+                "case {case:?} ({uri}): expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
 
     /// RULE: a member admitting "the S3, HTTP, or HTTPS URL" of an object names that object
     /// in any of the spellings Amazon S3 publishes for it — the `s3://` URI, a
