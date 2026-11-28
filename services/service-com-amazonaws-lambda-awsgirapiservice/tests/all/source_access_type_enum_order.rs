@@ -29,8 +29,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::event_source_mappings::{
-    call, create_function, create_mapping, create_request, get_mapping, list_mappings,
-    refusal_message, router_on, Answer, MAPPINGS_URI, MSK_SOURCE, STATE_DISABLED,
+    await_mapping_state, call, create_function, create_mapping, create_request, get_mapping,
+    list_mappings, refusal_message, router_on, Answer, MAPPINGS_URI, MSK_SOURCE, STATE_CREATING,
+    STATE_DISABLED,
 };
 
 /// The modelled error a value outside an enumerated type's set is refused with.
@@ -266,8 +267,9 @@ async fn an_update_states_the_same_set_in_the_same_order_and_changes_nothing() {
     let function = "source-access-type-update";
     create_function(&router, function).await;
 
-    // A mapping asked for with polling paused is answered in the terminal state it asked
-    // for, so an update of it is not inside the create window.
+    // A create is accepted rather than applied, so it answers the transitional state and the
+    // mapping settles into the paused state it asked for; the update below is taken once the
+    // mapping has left the create's own window, waited for by LOOKING for that state.
     let held = &["SASL_SCRAM_512_AUTH", "CLIENT_CERTIFICATE_TLS_AUTH"];
     let created = create_mapping(
         &router,
@@ -291,13 +293,14 @@ async fn an_update_states_the_same_set_in_the_same_order_and_changes_nothing() {
     );
     assert_eq!(
         created.string("State"),
-        Some(STATE_DISABLED.to_string()),
-        "a mapping created with polling paused must answer {STATE_DISABLED}, got {}",
+        Some(STATE_CREATING.to_string()),
+        "a create is accepted and answers {STATE_CREATING}, got {}",
         created.text()
     );
     let uuid = created
         .string("UUID")
         .unwrap_or_else(|| panic!("the create answers a UUID: {}", created.text()));
+    await_mapping_state(&router, "the mapping under test", &uuid, STATE_DISABLED).await;
 
     // The same clause, from the other operation that carries the list: the second element's
     // own `type`, and the set in the one order this service states for the shape.

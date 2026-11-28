@@ -6,13 +6,13 @@
 //!
 //! Two rules under test:
 //!
-//! 1. The operation is ACCEPTED rather than applied — it answers 202 — so a mapping asked
-//!    to be ACTIVE is the one being stood up: `State` is `Creating`, and the move to
-//!    `Enabled` ("When true, the event source mapping is active. When false, Lambda pauses
-//!    polling and invocation. Default: True") is owed by the clock afterwards. A mapping
-//!    asked for with polling PAUSED polls nothing, so nothing is stood up for it and it is
-//!    created in the terminal `Disabled` at once. The rows differ along how `Enabled` is
-//!    stated (omitted, `true`, `false`) and which event source the mapping polls.
+//! 1. The operation is ACCEPTED rather than applied — it answers 202 — so the mapping it
+//!    answers is the one being stood up: `State` is `Creating` whatever polling the request
+//!    asked for, and the move to the state that setting asks for ("When true, the event
+//!    source mapping is active. When false, Lambda pauses polling and invocation. Default:
+//!    True") is owed by the clock afterwards — `Enabled` for a mapping asked to be active,
+//!    `Disabled` for one asked for with polling paused. The rows differ along how `Enabled`
+//!    is stated (omitted, `true`, `false`) and which event source the mapping polls.
 //! 2. A `StartingPosition` the request states has to be one the event source can be READ
 //!    from — "the position in a stream from which to start reading", with `AT_TIMESTAMP`
 //!    "supported only for Amazon Kinesis streams, Amazon DocumentDB, Amazon MSK, and
@@ -406,9 +406,9 @@ async fn every_accepted_create_is_transitional_and_settles_into_its_polling_sett
             answered.status,
             answered.text()
         );
-        // Only polling has to be stood up, so the create answers the transitional state for
-        // a mapping asked to be active and the terminal one the row asked for when it asked
-        // for polling to be paused.
+        // A create is accepted rather than applied, so it answers the transitional state
+        // whatever polling the row asked for; the state that setting asks for is the
+        // clock's to bring.
         let created_state = created_state(&row.extras);
         assert_eq!(
             (

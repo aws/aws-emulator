@@ -84,12 +84,13 @@
 //!
 //! A certificate the CA HOLDS is served whatever status the authority rests in: serving one
 //! needs no signing key, which is how a root CA's own self-signed certificate is read back
-//! while that CA is still waiting to be given one. For an ARN it holds no record of, the
-//! CA's STATE decides: a CA whose status is one it could not have ISSUED certificates in —
-//! one still being created, one waiting for its own certificate, one whose creation failed,
-//! or one a deletion withdrew from service — is answered about the AUTHORITY
-//! (`InvalidStateException`), a state a caller waits out, and a CA that could have issued it
-//! reports that CERTIFICATE absent (`ResourceNotFoundException`), which is terminal.
+//! while that CA is still waiting to be given one. So the CERTIFICATE the request names is
+//! resolved BEFORE the authority's lifecycle status is judged, and an ARN the CA holds no
+//! record of is the absence of that certificate (`ResourceNotFoundException`), which is
+//! terminal, whatever status the CA rests in. The one status that displaces it is the one
+//! that serves no certificate at all: a CA a deletion withdrew from service is answered
+//! about the AUTHORITY (`InvalidStateException`), a state a caller waits out by restoring
+//! it. This is the same precedence `RevokeCertificate` reads a serial with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -225,18 +226,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .flatten();
 
         let Some(certificate) = held else {
-            // WHICH refusal a miss earns is decided by the CA's STATE, which is the
-            // precondition of the question rather than a property of the answer: a CA whose
-            // status is one it could not have issued certificates in
-            // ([`crate::state::STATUSES_THAT_COULD_HAVE_ISSUED`]) is told so — a state a
-            // caller waits out, as it does for an issuance still in progress below — and
-            // only a CA that COULD have issued the certificate reports it absent, which is
-            // terminal.
-            if !record.could_have_issued() {
-                return Err(invalid_state(
-                    crate::state::not_in_state_to_have_issued_message(&ca_arn),
-                ));
-            }
+            // The certificate the request named is one this CA holds no record of, which is
+            // the absence of that CERTIFICATE and is terminal: reading one back needs no
+            // signing key, so no lifecycle status of the authority turns the question into
+            // one about the authority. The one status that does is the deletion refused
+            // above, which withdraws the CA from service altogether — the same precedence
+            // `RevokeCertificate` resolves a serial with.
             return Err(not_found(
                 crate::state::CERTIFICATE_NOT_FOUND_MESSAGE.to_string(),
             ));

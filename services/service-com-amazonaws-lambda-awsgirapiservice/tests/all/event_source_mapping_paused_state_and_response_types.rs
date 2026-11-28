@@ -8,12 +8,11 @@
 //! Two rules under test, over the one `EventSourceMappingConfiguration` every mapping
 //! operation answers:
 //!
-//! 1. A mapping has a transitional `State` only while something is being stood up for it:
-//!    a create that asks for an ACTIVE mapping is accepted rather than applied (202), so it
-//!    answers `Creating` and the clock then settles the mapping into `Enabled`, while a
-//!    create that asks for polling to be PAUSED ("when false, Lambda pauses polling and
-//!    invocation") has no poller to stand up and answers the terminal `Disabled` it asked
-//!    for, which is what every later read of it reports too.
+//! 1. A create is accepted rather than applied (202), so the mapping it answers is the one
+//!    being stood up: it reports the transitional `Creating` whatever polling the request
+//!    asked for, and the clock then settles it into the state that setting asks for —
+//!    `Enabled`, or the `Disabled` of a mapping asked for with polling paused ("when false,
+//!    Lambda pauses polling and invocation"), which is what every later read reports.
 //! 2. `FunctionResponseTypes` is "a list of CURRENT response type enums applied to the
 //!    event source mapping": the types applied to a mapping are always known, so the member
 //!    is reported as the EMPTY list when none were requested rather than left out.
@@ -54,8 +53,8 @@ struct Row {
     event_source: &'static str,
     /// What the create states beside the function and the event source.
     extras: Value,
-    /// The `State` the create must answer: the transitional one for a mapping asked to be
-    /// active, and the terminal one a paused mapping is created in.
+    /// The `State` the create must answer: the transitional one, whatever polling the
+    /// request asked for.
     created_state: &'static str,
     /// The `State` the mapping must be in once the create's settle is due.
     settles_into: &'static str,
@@ -71,7 +70,7 @@ fn rows() -> Vec<Row> {
             function: "esm-paused-queue",
             event_source: QUEUE_SOURCE,
             extras: json!({ "Enabled": false, "ScalingConfig": { "MaximumConcurrency": 2 } }),
-            created_state: STATE_DISABLED,
+            created_state: STATE_CREATING,
             settles_into: STATE_DISABLED,
             response_types: json!([]),
         },
@@ -84,7 +83,7 @@ fn rows() -> Vec<Row> {
                 "StartingPosition": "LATEST",
                 "FunctionResponseTypes": [REPORT_BATCH_ITEM_FAILURES],
             }),
-            created_state: STATE_DISABLED,
+            created_state: STATE_CREATING,
             settles_into: STATE_DISABLED,
             response_types: json!([REPORT_BATCH_ITEM_FAILURES]),
         },
@@ -97,7 +96,7 @@ fn rows() -> Vec<Row> {
                 "Topics": ["orders"],
                 "FunctionResponseTypes": [],
             }),
-            created_state: STATE_DISABLED,
+            created_state: STATE_CREATING,
             settles_into: STATE_DISABLED,
             response_types: json!([]),
         },
@@ -138,17 +137,15 @@ fn response_types(configuration: &Value) -> Value {
 /// Whether `state` is one this row's mapping may report BEFORE the instant its create
 /// made a transition due.
 ///
-/// A mapping asked to be active is `Creating` when its create answers, and the clock may
-/// have made the move to its terminal state due before the next read reached the store, so
-/// that state is admissible here too (the terminal state is asserted on its own once the
-/// move is certainly due). A paused mapping is created in its terminal state, so both
-/// readings are that one state.
+/// A mapping is `Creating` when its create answers, and the clock may have made the move to
+/// its terminal state due before the next read reached the store, so that state is admissible
+/// here too (the terminal state is asserted on its own once the move is certainly due).
 fn state_before_settle_is_admissible(row: &Row, state: Option<&str>) -> bool {
     state.is_some_and(|reported| reported == row.created_state || reported == row.settles_into)
 }
 
 #[tokio::test]
-async fn every_mapping_is_created_in_the_state_its_polling_setting_asks_for() {
+async fn every_mapping_is_created_in_the_transitional_state_and_settles_as_asked() {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
 

@@ -3,16 +3,15 @@
 //! End-to-end tests for the `State` a mapping is CREATED in, over every operation that
 //! answers an `EventSourceMappingConfiguration`.
 //!
-//! THE RULE: what `CreateEventSourceMapping` answers is decided by whether the mapping has a
-//! poller being stood up. `Enabled` is "when true, the event source mapping is active. When
-//! false, Lambda pauses polling and invocation. Default: True"
-//! (`smithy_query(query="doc", shape="CreateEventSourceMappingRequest", member="Enabled")`),
-//! so a mapping asked to be ACTIVE is still being stood up when the create answers — the
-//! operation is accepted rather than applied, it answers 202 — and reports the transitional
-//! `Creating` until the clock settles it into `Enabled`; a mapping asked for with polling
-//! PAUSED polls nothing, so nothing is being stood up for it and it is created in the
-//! terminal `Disabled` at once, on the create's own answer and on every later read of the
-//! record.
+//! THE RULE: a create is ACCEPTED rather than applied — it answers 202 — so the mapping it
+//! answers is the one being stood up: `CreateEventSourceMapping` reports the transitional
+//! `Creating` whatever polling the request asked for, and the CLOCK then settles the mapping
+//! into the state its `Enabled` setting asks for — "when true, the event source mapping is
+//! active. When false, Lambda pauses polling and invocation. Default: True"
+//! (`smithy_query(query="doc", shape="CreateEventSourceMappingRequest", member="Enabled")`) —
+//! so an active mapping ends `Enabled` and a paused one ends `Disabled`, on every later read
+//! of the record. A client that polls a mapping it has just created therefore watches it leave
+//! `Creating` for the state it asked for.
 //!
 //! The rows differ along what the rule generalises over: how `Enabled` is stated (omitted,
 //! `true`, `false`) and WHICH event source the mapping polls — a queue, each of the two
@@ -75,7 +74,7 @@ fn rows() -> Vec<Row> {
             function: "created-state-queue-paused",
             event_source: QUEUE_SOURCE,
             extras: json!({ "Enabled": false }),
-            created_as: STATE_DISABLED,
+            created_as: STATE_CREATING,
             settles_into: STATE_DISABLED,
         },
         Row {
@@ -83,7 +82,7 @@ fn rows() -> Vec<Row> {
             function: "created-state-kinesis-paused",
             event_source: KINESIS_SOURCE,
             extras: json!({ "Enabled": false, "StartingPosition": "LATEST" }),
-            created_as: STATE_DISABLED,
+            created_as: STATE_CREATING,
             settles_into: STATE_DISABLED,
         },
         Row {
@@ -99,7 +98,7 @@ fn rows() -> Vec<Row> {
             function: "created-state-msk-paused",
             event_source: MSK_SOURCE,
             extras: json!({ "Enabled": false, "Topics": ["orders"] }),
-            created_as: STATE_DISABLED,
+            created_as: STATE_CREATING,
             settles_into: STATE_DISABLED,
         },
     ]
@@ -129,7 +128,7 @@ async fn listed_state(
 }
 
 #[tokio::test]
-async fn a_mapping_is_created_in_the_state_its_polling_setting_asks_for() {
+async fn a_mapping_is_created_in_creating_and_settles_into_what_its_polling_asks_for() {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
 
@@ -163,38 +162,15 @@ async fn a_mapping_is_created_in_the_state_its_polling_setting_asks_for() {
             )
         });
 
-        // A mapping created in its TERMINAL state owes no transition, so the record every
-        // reader answers from carries that state already — which is what makes the state the
-        // create answered a stored one rather than a value the answer made up. A mapping
-        // still being stood up may have been settled by the clock before these reads
-        // arrived, so for one of those the state is asserted once the settle is certainly
-        // due, below.
-        if row.created_as == row.settles_into {
-            let fetched = get_mapping(&router, &uuid).await;
-            assert_eq!(
-                (fetched.status, fetched.string("State").as_deref()),
-                (200, Some(row.created_as)),
-                "case {case:?}: the read-back must report the stored State {}, got {} {}",
-                row.created_as,
-                fetched.status,
-                fetched.text()
-            );
-            assert_eq!(
-                listed_state(&router, case, row.event_source, &uuid)
-                    .await
-                    .as_deref(),
-                Some(row.created_as),
-                "case {case:?}: the listing must report the stored State {}",
-                row.created_as
-            );
-        }
-
+        // Every mapping is still being stood up when the create answers, and the clock may
+        // have settled it before a read-back arrives, so the STORED state is asserted below
+        // once the settle is certainly due — which is what makes the state a reader answers
+        // one the record carries rather than a value an answer made up.
         created_rows.push((row, uuid));
     }
 
-    // Every row ends in the state its polling setting asks for: for a paused mapping that is
-    // the state it was created in, and for an active one the transition the CLOCK owes brings
-    // it — waited for by looking again until the mapping reports it.
+    // Every row ends in the state its polling setting asks for: the transition the CLOCK owes
+    // brings it there — waited for by looking again until the mapping reports it.
     for (row, uuid) in created_rows {
         let case = row.case;
         await_mapping_state(&router, case, &uuid, row.settles_into).await;

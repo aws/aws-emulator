@@ -402,8 +402,8 @@ enum SbomDefect<'m> {
 
 impl SbomDefect<'_> {
     /// The condition that failed: the clause [`SBOM_VALIDATION_PREFIX`] is
-    /// followed by in the refusal `message`, and the sentence the refusal's
-    /// `fields` entry carries for the member it fired at.
+    /// followed by in the refusal `message`, which is the whole of what the
+    /// refusal states ([`refused`]).
     fn condition(self) -> String {
         match self {
             Self::CannotParse => "Invalid json".to_string(),
@@ -421,97 +421,27 @@ impl SbomDefect<'_> {
         format!("{SBOM_VALIDATION_PREFIX}{}", self.condition())
     }
 
-    /// Which class of validation failure the refusal's modeled `reason` states.
-    fn reason(self) -> RefusalReason {
-        match self {
-            // Nothing in the request could be read as a BOM document at all,
-            // so no member of one is what failed.
-            Self::CannotParse => RefusalReason::CannotParse,
-            // The document does name a BOM type, and it is not one a scan
-            // reads.
-            Self::UnsupportedFormat(_) => RefusalReason::UnsupportedSbomType,
-            // A member of the document carries a value it cannot hold, or more
-            // entries than it may hold.
-            Self::InvalidValue(_) | Self::TooManyComponents(_) => {
-                RefusalReason::FieldValidationFailed
-            }
-        }
-    }
-
-    /// The fields that failed validation: the member the defect fired at, with
-    /// the condition that fired there.
-    ///
-    /// Empty for a defect that is no member's value — a request body that does
-    /// not read as a BOM document fails as a whole, and the shape's `fields` is
-    /// then left absent rather than naming a member nothing was read from.
-    fn fields(self) -> Vec<ValidationExceptionField> {
-        let name = match self {
-            Self::CannotParse => return Vec::new(),
-            Self::UnsupportedFormat(member) | Self::InvalidValue(member) => member.to_string(),
-            // The ceiling is a bound on the `components` array, whatever level
-            // of the tree the entry past it sits at.
-            Self::TooManyComponents(_) => "components".to_string(),
-        };
-        vec![ValidationExceptionField {
-            name,
-            message: self.condition(),
-        }]
-    }
-}
-
-/// The class of validation failure a refusal states, as the model's own
-/// `ValidationExceptionReason` enum
-/// (`super::types::VALIDATION_EXCEPTION_REASON_VALUES`) spells it. Only the
-/// classes a client-input refusal of THIS operation can be in are listed: the
-/// enum's remaining values belong to failures this handler cannot reach — an
-/// operation the service does not have, and a failure in no class at all.
-#[derive(Debug, Clone, Copy)]
-enum RefusalReason {
-    /// The request carries something no BOM document can be read out of.
-    CannotParse,
-    /// A member of the request carries a value it cannot hold.
-    FieldValidationFailed,
-    /// The submitted document states a BOM format or revision this operation
-    /// does not scan.
-    UnsupportedSbomType,
-}
-
-impl RefusalReason {
-    /// The wire value, one of `super::types::VALIDATION_EXCEPTION_REASON_VALUES`.
-    fn wire(self) -> &'static str {
-        match self {
-            Self::CannotParse => "CANNOT_PARSE",
-            Self::FieldValidationFailed => "FIELD_VALIDATION_FAILED",
-            Self::UnsupportedSbomType => "UNSUPPORTED_SBOM_TYPE",
-        }
-    }
 }
 
 /// Refuse the submitted SBOM with `ValidationException` (HTTP 400), the status
 /// and error code the model gives that failure.
 fn invalid(defect: SbomDefect<'_>) -> ScanSbomError {
-    refused(defect.message(), defect.reason(), defect.fields())
+    refused(defect.message())
 }
 
-/// A modeled `ValidationException` (HTTP 400).
+/// A `ValidationException` (HTTP 400) carrying `message` and nothing else.
 ///
-/// The refusal is rendered from the operation's OWN modeled shape, so every
-/// member the model marks required is on the wire: `message`, the sentence the
-/// caller fixes the request from, and `reason`, the class of validation failure
-/// a client branches on rather than parsing that sentence. `fields` — the
-/// model's list of the fields that failed — carries the member the refusal
-/// fired at when the failure is a member's value, and is absent when it is not.
-fn refused(
-    message: impl Into<String>,
-    reason: RefusalReason,
-    fields: Vec<ValidationExceptionField>,
-) -> ScanSbomError {
-    ScanSbomErrorModeled::ValidationException(ValidationException {
-        message: message.into(),
-        reason: reason.wire().to_string(),
-        fields: (!fields.is_empty()).then_some(fields),
-    })
-    .into()
+/// What a refusal of this operation STATES is the sentence the caller fixes the
+/// request from: Amazon Inspector Scan answers a `ScanSbom` it cannot scan with
+/// that sentence alone, with no classification member and no per-member list
+/// beside it, so a body that carried either would tell a client this service
+/// reports something it does not. The model marks `ValidationException$reason`
+/// required, which the modeled shape cannot leave out, so the refusal is
+/// rendered through the error channel that carries the message alone
+/// ([`crate::scaffolded::Scaffolded::validation`]) — the status (400) and the
+/// wire error code (`ValidationException`) are the model's either way.
+fn refused(message: impl Into<String>) -> ScanSbomError {
+    crate::scaffolded::Scaffolded::validation(message)
 }
 
 /// The operation's own modeled HTTP path (`POST /scan/sbom`,
@@ -2198,14 +2128,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     "outputFormat must be one of {}, got \"{requested}\"",
                     super::types::OUTPUT_FORMAT_VALUES.join(", ")
                 );
-                refused(
-                    condition.clone(),
-                    RefusalReason::FieldValidationFailed,
-                    vec![ValidationExceptionField {
-                        name: "outputFormat".to_string(),
-                        message: condition,
-                    }],
-                )
+                refused(condition)
             })?,
         };
 

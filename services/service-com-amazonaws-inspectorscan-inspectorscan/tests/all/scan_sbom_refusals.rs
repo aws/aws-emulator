@@ -8,9 +8,8 @@
 //! naming the CLASS of defect (never an index, a member path, or a value read
 //! back out of the submitted document).
 //!
-//! The refusal is the operation's OWN modeled shape, so it carries the required
-//! `reason` beside that sentence; which `reason` each class states, and the
-//! `fields` entry that goes with it, is pinned in `scan_sbom_refusal_reason.rs`.
+//! The refusal body carries that sentence ALONE: `message` is the whole of it,
+//! as `scan_sbom_refusal_reason.rs` pins over the same classes of defect.
 //!
 //! The table below is that rule's cases, grouped by class. Each class is
 //! exercised in several forms — an absent member and a wrongly-valued one, a
@@ -368,10 +367,9 @@ async fn every_class_of_input_defect_is_refused_with_the_services_own_sentence()
             case.what,
             case.expect
         );
-        // The body carries the members of the MODELED shape and nothing else:
-        // `message` and `reason` are both required, `fields` is optional.
-        // `__type` is the protocol's error discriminator, not a member of the
-        // shape.
+        // The body carries the one member the recorded refusals of this
+        // operation carry: `message`. `__type` is the protocol's error
+        // discriminator, not a member of the shape.
         let members: Vec<String> = response
             .as_object()
             .map(|body| {
@@ -381,17 +379,11 @@ async fn every_class_of_input_defect_is_refused_with_the_services_own_sentence()
                     .collect()
             })
             .unwrap_or_default();
-        assert!(
-            members.iter().all(|member| {
-                member == "message" || member == "reason" || member == "fields"
-            }),
-            "case {:?}: the refusal body must carry only the modeled shape's members, \
-             got {members:?} in {response}",
-            case.what
-        );
-        assert!(
-            response["reason"].is_string(),
-            "case {:?}: the modeled shape requires reason, got {response}",
+        assert_eq!(
+            members,
+            vec!["message".to_string()],
+            "case {:?}: the refusal body carries the message alone, got {members:?} in \
+             {response}",
             case.what
         );
     }

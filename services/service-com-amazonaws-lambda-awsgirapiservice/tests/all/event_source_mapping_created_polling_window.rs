@@ -3,16 +3,15 @@
 //! End-to-end tests for the window `CreateEventSourceMapping` opens — the one a mapping is
 //! transitional in, and the one it is "not available" to be changed in.
 //!
-//! The rule under test: what a create has to STAND UP is the POLLING it was asked for.
-//! `Enabled` is "when true, the event source mapping is active. When false, Lambda pauses
-//! polling and invocation. Default: True", so a create that asks for an ACTIVE mapping is
-//! accepted rather than applied (202) and answers the transitional `Creating` until the
-//! clock settles it into `Enabled`, while a create that asks for polling to be PAUSED asks
-//! for no poller at all and answers the terminal `Disabled` it asked for — on the create,
-//! on the read-back and in the listing, with nothing left for the clock to bring. The same
-//! rule decides the availability window `ResourceInUseException` names ("you tried to
-//! update an event source mapping in the CREATING state"): a mapping that was never
-//! `Creating` takes a change straight away.
+//! The rule under test: a create is ACCEPTED rather than applied (202), so what it answers is
+//! the mapping being stood up — the transitional `Creating`, whatever polling the request
+//! asked for — and the CLOCK then settles the mapping into the state its `Enabled` setting
+//! asks for: "when true, the event source mapping is active. When false, Lambda pauses
+//! polling and invocation. Default: True", so an active mapping ends `Enabled` and a paused
+//! one ends `Disabled`, on the read-back and in the listing as much as on the record. The
+//! window the create opens is the one `ResourceInUseException` names ("you tried to update an
+//! event source mapping in the CREATING state"), and a mapping that has left it takes a
+//! change.
 //!
 //! The rows span what the rule generalises over: HOW the polling setting is stated
 //! (omitted, `true`, `false`) crossed with WHICH event source the mapping polls (a queue,
@@ -31,8 +30,8 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::event_source_mappings::{
     await_mapping_state, call, create_function, create_mapping, create_request, created_state,
-    get_mapping, list_mappings, router_on, Answer, DYNAMODB_SOURCE, KINESIS_SOURCE, MAPPINGS_URI,
-    MSK_SOURCE, QUEUE_SOURCE, STATE_CREATING, STATE_DISABLED, STATE_ENABLED,
+    get_mapping, list_mappings, router_on, settled_state, Answer, DYNAMODB_SOURCE, KINESIS_SOURCE,
+    MAPPINGS_URI, MSK_SOURCE, QUEUE_SOURCE, STATE_CREATING, STATE_DISABLED, STATE_ENABLED,
 };
 
 /// One row: the mapping to create and the terminal state its polling setting asks for.
@@ -116,7 +115,7 @@ async fn update_batch_size(router: &MultiServiceRouter, uuid: &str) -> Answer {
 }
 
 #[tokio::test]
-async fn a_create_answers_the_transitional_state_only_where_it_stands_a_poller_up() {
+async fn a_create_answers_the_transitional_state_and_the_clock_brings_the_terminal_one() {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
 
@@ -139,6 +138,11 @@ async fn a_create_answers_the_transitional_state_only_where_it_stands_a_poller_u
         // these suites share, rather than off the answer being checked.
         let expected = created_state(&row.extras);
         assert_eq!(
+            settled_state(&row.extras),
+            row.settles_into,
+            "case {case:?}: the row's terminal state is the one the rule reads off the request"
+        );
+        assert_eq!(
             created.string("State"),
             Some(expected.to_string()),
             "case {case:?}: expected State {expected}, got {}",
@@ -151,10 +155,9 @@ async fn a_create_answers_the_transitional_state_only_where_it_stands_a_poller_u
             )
         });
 
-        // A mapping created in its terminal state has nothing left for the clock to bring,
-        // so every reader reports that state at once; one created transitional may already
-        // have settled by the time the next read reaches the store, which is the other
-        // state its own row admits.
+        // A mapping is still being stood up when its create answers, and the clock may
+        // already have settled it by the time the next read reaches the store, which is the
+        // other state its own row admits.
         let admissible = |state: Option<&str>| {
             state.is_some_and(|reported| reported == expected || reported == row.settles_into)
         };
@@ -168,21 +171,21 @@ async fn a_create_answers_the_transitional_state_only_where_it_stands_a_poller_u
         );
 
         // The availability window `ResourceInUseException` names is the create's own
-        // stand-up: a mapping that was never `Creating` takes a change straight away.
-        if expected == STATE_DISABLED {
-            let updated = update_batch_size(&router, &uuid).await;
-            assert_eq!(
-                updated.status,
-                202,
-                "case {case:?}: a mapping created in its terminal state is available to be \
-                 updated at once, got {} {}",
-                updated.status,
-                updated.text()
-            );
-        }
+        // stand-up, so a change is taken once the mapping has left it — waited for by
+        // LOOKING for the state it settles into, never by sleeping a span.
+        await_mapping_state(&router, case, &uuid, row.settles_into).await;
+        let updated = update_batch_size(&router, &uuid).await;
+        assert_eq!(
+            updated.status,
+            202,
+            "case {case:?}: a mapping that has left the create's own window is available to \
+             be updated, got {} {}",
+            updated.status,
+            updated.text()
+        );
 
         // Whatever the row asked for, the mapping ends up in the state its polling setting
-        // asks for: waited for by LOOKING for it, never by sleeping a span.
+        // asks for, and that is the state the store holds.
         await_mapping_state(&router, case, &uuid, row.settles_into).await;
         let settled = get_mapping(&router, &uuid).await;
         assert_eq!(
@@ -198,7 +201,7 @@ async fn a_create_answers_the_transitional_state_only_where_it_stands_a_poller_u
 }
 
 #[tokio::test]
-async fn a_mapping_created_paused_is_never_reported_transitional_by_any_reader() {
+async fn a_mapping_created_paused_settles_into_disabled_in_every_reader() {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
     let function = "esm-window-readers";
@@ -226,14 +229,19 @@ async fn a_mapping_created_paused_is_never_reported_transitional_by_any_reader()
             create_mapping(&router, &create_request(function, Some(source), &extras)).await;
         assert_eq!(
             (answered.status, answered.string("State")),
-            (202, Some(STATE_DISABLED.to_string())),
-            "case {case:?}: a create that pauses polling answers {STATE_DISABLED}, got {} {}",
+            (202, Some(STATE_CREATING.to_string())),
+            "case {case:?}: a create is accepted and answers {STATE_CREATING}, got {} {}",
             answered.status,
             answered.text()
         );
         created.push((case, answered.string("UUID").expect("the create answers a UUID")));
     }
 
+    // Every paused mapping settles into the terminal state its polling setting asks for —
+    // waited for by LOOKING for it — and that is what each reader then reports.
+    for (case, uuid) in &created {
+        await_mapping_state(&router, case, uuid, STATE_DISABLED).await;
+    }
     let listed = list_mappings(&router, &format!("FunctionName={function}")).await;
     for (case, uuid) in &created {
         let fetched = get_mapping(&router, uuid).await;
@@ -262,9 +270,9 @@ async fn a_mapping_created_paused_is_never_reported_transitional_by_any_reader()
         );
         assert_ne!(
             reported.get("State").and_then(Value::as_str),
-            Some(STATE_CREATING),
-            "case {case:?}: no reader may report a state nothing is being stood up for, got \
-             {reported}"
+            Some(STATE_ENABLED),
+            "case {case:?}: no reader may report a mapping as polling when its create asked \
+             for none, got {reported}"
         );
     }
 }

@@ -76,20 +76,26 @@ pub(crate) const STATE_DISABLED: &str = "Disabled";
 
 /// The `State` the create of a mapping asked for with `extras` must answer.
 ///
-/// What a create has to stand up is the POLLING: "when true, the event source mapping is
-/// active. When false, Lambda pauses polling and invocation. Default: True" — so a create
-/// that asks for an active mapping is accepted rather than applied (202) and answers the
-/// transitional [`STATE_CREATING`] until the clock settles it, while one that asks for
-/// polling to be paused has no poller to stand up and answers the terminal
-/// [`STATE_DISABLED`] it asked for.
+/// A create is accepted rather than applied (202), so the mapping it answers is the one being
+/// stood up: it reports the transitional [`STATE_CREATING`] whatever polling the request asked
+/// for, and the clock then settles it into the state its `Enabled` setting asks for — "when
+/// true, the event source mapping is active. When false, Lambda pauses polling and
+/// invocation. Default: True" — which is [`settled_state`].
 ///
 /// Stated here from the REQUEST, independently of the store's own resolution of the same
 /// rule, so these assertions check the emulator rather than restate it. `pub(crate)` so
 /// every suite that creates a mapping reads the rule from this one place.
-pub(crate) fn created_state(extras: &Value) -> &'static str {
+pub(crate) fn created_state(_extras: &Value) -> &'static str {
+    STATE_CREATING
+}
+
+/// The terminal `State` the mapping a create asked for with `extras` settles into once the
+/// transition its create owed is due: polling asked for leaves it [`STATE_ENABLED`], polling
+/// paused leaves it [`STATE_DISABLED`].
+pub(crate) fn settled_state(extras: &Value) -> &'static str {
     match extras.get("Enabled").and_then(Value::as_bool) {
         Some(false) => STATE_DISABLED,
-        _ => STATE_CREATING,
+        _ => STATE_ENABLED,
     }
 }
 
@@ -1524,9 +1530,9 @@ async fn a_created_event_source_mapping_is_persisted_and_reported() {
              {MAPPING_ARN_MAX_LEN} length, got {} in {arn:?}",
             arn.len()
         );
-        // Only the POLLING a create asks for has to be stood up, so a mapping asked to be
-        // active is answered in the transitional state and a paused one in the terminal
-        // state it asked for ([`created_state`]).
+        // A create is accepted rather than applied, so the mapping it answers is the one
+        // being stood up: it starts in the transitional state ([`created_state`]) and the
+        // state its polling setting asks for is the clock's to bring.
         let created_state = created_state(&case.request_extras);
         // Which of the two sentences the change is worded with, and whether the mapping
         // reports a processing result before its poller has attempted anything, is the
@@ -1653,10 +1659,15 @@ async fn a_mapping_settles_into_the_state_its_enabled_setting_asks_for() {
             &create_request(function, Some(&source), extras),
         )
         .await;
-        // A create that asks for polling answers the transitional state and the terminal
-        // state is the clock's to bring; one that asks for none answers the terminal state
-        // it asked for ([`created_state`]).
+        // Whatever polling it asked for, a create answers the transitional state and the
+        // terminal state is the clock's to bring ([`created_state`], [`settled_state`]).
         let created_state = created_state(extras);
+        assert_eq!(
+            settled_state(extras),
+            *expected,
+            "case {label:?}: the row's terminal state is the one the rule reads off the \
+             request"
+        );
         assert_eq!(
             (created.status, created.string("State")),
             (202, Some(created_state.to_string())),

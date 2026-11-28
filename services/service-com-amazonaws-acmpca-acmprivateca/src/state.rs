@@ -90,24 +90,6 @@ pub const STATUS_EXPIRED: &str = "EXPIRED";
 /// Private CA could not be created.
 pub const STATUS_FAILED: &str = "FAILED";
 
-/// The `CertificateAuthorityStatus` members a CA could already HAVE ISSUED certificates in.
-///
-/// A CA issues with the private key its own certificate attests, so one that has not been
-/// given that certificate yet (`CREATING`, `PENDING_CERTIFICATE`) and one whose creation did
-/// not complete (`FAILED`) have issued nothing at all, and a CA withdrawn from service by a
-/// deletion (`DELETED`) serves none of what it issued until it is restored. The other three
-/// have: "ACTIVE — the CA is active and can be used to issue and revoke certificates", a CA
-/// that was disabled "can no longer issue certificates, but it continues to revoke them and
-/// to publish CRLs", and one whose own certificate has expired kept everything it issued
-/// before that (the private CA lifecycle).
-///
-/// This is the precondition a READ about one of a CA's certificates is judged on BEFORE the
-/// certificate the request names is looked up: a CA that could not have issued anything is
-/// the wrong STATE for the question rather than a CA holding no such certificate
-/// ([`not_in_state_to_have_issued_message`]).
-pub const STATUSES_THAT_COULD_HAVE_ISSUED: &[&str] =
-    &[STATUS_ACTIVE, STATUS_DISABLED, STATUS_EXPIRED];
-
 /// The `CertificateAuthorityStatus` members a CA can be DELETED from: "A private CA can
 /// be deleted if it is in the PENDING_CERTIFICATE, CREATING, EXPIRED, DISABLED, or FAILED
 /// state. To delete a CA in the ACTIVE state, you must first disable it, or else the
@@ -278,13 +260,13 @@ pub const REVOCABLE_STATUSES: &[&str] = &[STATUS_ACTIVE, STATUS_DISABLED];
 /// revocation, [`REVOCABLE_STATUSES`]): one sentence about the CA, fixed text around the
 /// `CertificateAuthorityArn` the request carried, which is the only value in it.
 ///
-/// It is about the AUTHORITY, so for a read of one of its certificates it decides WHICH
-/// refusal a certificate the CA holds no record of earns: a CA whose status is one it could
-/// not have issued certificates in ([`STATUSES_THAT_COULD_HAVE_ISSUED`]), and one a deletion
-/// withdrew from service, is told so — a state a caller waits out — while a certificate ARN a
-/// CA that COULD have issued it holds no record of is the absence of that certificate
-/// ([`CERTIFICATE_NOT_FOUND_MESSAGE`]), which is terminal. A certificate the CA HOLDS is
-/// served whatever status it rests in.
+/// It is about the AUTHORITY, so it answers a request that names one of a CA's certificates
+/// only where the authority's status is what stands in the way of the action asked for: a
+/// revocation signs and publishes with the CA's key ([`REVOCABLE_STATUSES`]), and a CA a
+/// deletion withdrew from service reaches none of what it holds until it is restored. A read
+/// needs no key, so the certificate the request names is resolved first whatever status the
+/// CA rests in: one the CA HOLDS is served, and an ARN it holds no record of is the absence
+/// of that certificate ([`CERTIFICATE_NOT_FOUND_MESSAGE`]), which is terminal.
 ///
 /// Named after the SENTENCE rather than after one operation, because it is the answer
 /// every operation of this service that reaches for a certificate of a CA in such a status
@@ -1311,13 +1293,6 @@ impl CertificateAuthorityRecord {
     /// refused with the modelled `InvalidStateException`.
     pub fn is_deleted(&self) -> bool {
         self.status == STATUS_DELETED
-    }
-
-    /// Whether this CA's status is one it could already have ISSUED certificates in
-    /// ([`STATUSES_THAT_COULD_HAVE_ISSUED`]), which is the precondition a read about one of
-    /// its certificates is judged on.
-    pub fn could_have_issued(&self) -> bool {
-        STATUSES_THAT_COULD_HAVE_ISSUED.contains(&self.status.as_str())
     }
 
     /// Whether this CA's status allows `UpdateCertificateAuthority`
