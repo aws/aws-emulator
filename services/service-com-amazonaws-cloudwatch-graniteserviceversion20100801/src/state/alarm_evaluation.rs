@@ -73,7 +73,7 @@
 //! The evaluation is a pure function of the stored datapoints and the clock, and it writes
 //! only when the state it computes differs from the state the alarm already reports — so
 //! whichever call materialises it, every later caller sees the same thing. The first
-//! evaluation of an alarm becomes due [`EVALUATION_DELAY_SECS`] after the write that
+//! evaluation of an alarm becomes due [`WRITE_EVALUATION_DELAY_SECS`] after the write that
 //! configured it ("When this operation creates an alarm, the alarm state is immediately set
 //! to INSUFFICIENT_DATA. The alarm is then evaluated and its state is set appropriately." —
 //! `PutMetricAlarm`), and a state `SetAlarmState` forced stands until that alarm's next
@@ -127,23 +127,51 @@ pub use evaluation_window::{AlignmentZone, EvaluationGrid};
 /// while it is in force.
 pub mod warm_up;
 
-/// How long after the write that configured an alarm its FIRST evaluation is owed, and how
-/// long after an evaluation the NEXT one is owed.
+/// How long after a datapoint of the series it grades arrives an alarm's evaluation is owed,
+/// and how long after an evaluation the NEXT one is owed.
 ///
 /// `PutMetricAlarm` creates an alarm in `INSUFFICIENT_DATA` and documents that "the alarm is
-/// then evaluated and its state is set appropriately", so the evaluated state is not due at
-/// the instant of the write: a caller reading straight after the write still sees the state
-/// the write left behind. CloudWatch publishes no duration for that gap, so this span is the
-/// emulator's own choice inside the framework's 250-750 ms window for a transition the clock
-/// owes, and it is never slept on — the due instant is stored and the evaluation is
-/// materialised by the first call at or after it. It is the same span, for the same reason,
-/// as [`super::COMPOSITE_EVALUATION_DELAY_SECS`].
+/// then evaluated and its state is set appropriately", so an evaluated state is not due at
+/// the instant of the write or the publish that made it due: a caller reading straight after
+/// either still sees the state the alarm had. CloudWatch publishes no duration for that gap,
+/// so this span is the emulator's own choice inside the framework's 250-750 ms window for a
+/// transition the clock owes, and it is never slept on — the due instant is stored and the
+/// evaluation is materialised by the first call, or clock tick, at or after it.
 ///
 /// An evaluation RE-ARMS the alarm by the same span, so an alarm just evaluated is not folded
 /// again by every following request: a state its datapoints already imply becomes visible to
 /// the next caller a span later — the same window a clock-owed transition takes — and the fold
 /// one alarm costs is charged at most once per span rather than once per request.
+///
+/// The FIRST evaluation a metric-alarm WRITE owes is owed longer than this
+/// ([`WRITE_EVALUATION_DELAY_SECS`]), because what a client does straight after that write is
+/// not read the alarm.
 pub const EVALUATION_DELAY_SECS: f64 = 0.5;
+
+/// How long the WRITE that configures a metric alarm owes that alarm's FIRST evaluation.
+///
+/// An alarm is evaluated on the cadence its own configuration names — "The length, in seconds,
+/// used each time the metric specified in `MetricName` is evaluated […] the alarm still attempts
+/// to gather data at the period rate that you specify" (`PutMetricAlarmInput$Period`), whose
+/// shortest regular value is a minute — so the state a written alarm's series implies, and the
+/// actions the transition into it fires, follow the write by an interval of that cadence rather
+/// than landing inside the write's own round trips. CloudWatch publishes no duration for the gap,
+/// so this span is THE EMULATOR'S OWN COMPRESSION of that cadence, for the same reason
+/// [`super::log_alarm_evaluation::QUERY_EXECUTION_SPAN_SECS`] compresses a log alarm's schedule:
+/// a client looks for what the evaluation delivers without waiting for the wall clock.
+///
+/// It is a FLOOR as much as a delay, which is why it is the span this project gives a transition
+/// the clock owes rather than the shorter re-arm above: a client that writes an alarm over a
+/// series that is ALREADY breaching goes on to write the rest of its estate, clears the action's
+/// target of whatever was waiting there and only THEN begins watching it — so a transition
+/// materialised inside that sequence of calls fires its action at a target nobody is watching
+/// yet, and nothing ever executes that action again (one record is queued per transition, and
+/// the alarm then stands in the state it moved to, so every later evaluation moves it nowhere).
+/// The re-arm span bounds nothing of the kind: it only keeps one request from re-folding an
+/// alarm it has just folded.
+///
+/// Like every other instant here it is stored and never slept on.
+pub const WRITE_EVALUATION_DELAY_SECS: f64 = 3.0;
 
 /// The most period windows ONE alarm's LOOK-BACK covers.
 ///

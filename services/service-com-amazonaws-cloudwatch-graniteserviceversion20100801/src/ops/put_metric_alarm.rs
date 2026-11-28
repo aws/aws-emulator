@@ -1302,8 +1302,12 @@ fn write_alarm(
             // to INSUFFICIENT_DATA. The alarm is then evaluated and its state is set
             // appropriately." — so this write starts the span during which the alarm
             // still reports the state it left behind, and the first evaluation against
-            // the stored metric data becomes due at its end.
-            evaluation_due_secs: now + crate::state::alarm_evaluation::EVALUATION_DELAY_SECS,
+            // the stored metric data becomes due at its end. The span is the one a WRITE
+            // owes ([`crate::state::alarm_evaluation::WRITE_EVALUATION_DELAY_SECS`]): what a
+            // client does straight after this call is write the rest of its estate and turn
+            // to the target of the actions this alarm fires, not read the alarm.
+            evaluation_due_secs: now
+                + crate::state::alarm_evaluation::WRITE_EVALUATION_DELAY_SECS,
             // "its state is left unchanged" by an update, but no state this write leaves is one
             // a caller FORCED: a configuration write hands the alarm back to its own
             // evaluation, so nothing is standing that the evaluation must not cut short.

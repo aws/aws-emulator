@@ -32,6 +32,40 @@ Actual (emulator): nothing is delivered. Over 300 s of polling with MaxNumberOfM
   AssertionError: the no-warm-up control 'sim2real-warmup-control-81e28199b8c4' delivered its ALARM notification through SNS -> SQS on a series that has been breaching since before it existed did not happen within 300s; last observation {}
 (the 81e28199b8c4 suffix and the 300s budget are this run's values, not requirements). The read-back assertions that precede the barrier all pass, so the emulator does model WarmUpConfiguration and EvaluationState=IN_WARM_UP; it is the alarm evaluation / AlarmActions invocation that produces no observable effect.
 
+## Resolution
+
+* Cause 1 of 1 — "a plain metric alarm over an already breaching custom-namespace series never
+  delivers its ALARM notification" — is FIXED, at WHEN the transition became due rather than at
+  whether it happened. The evaluation and the SNS publish did happen, about half a second after
+  `PutMetricAlarm` — inside the sequence of calls the client that wrote the alarms was still
+  making. A client writes its alarms, reads them back, clears the action target of whatever was
+  waiting there and only THEN begins watching it, so the one publish the transition ever makes had
+  already been delivered into the queue and was taken by that clearing read; nothing publishes it
+  again, because the alarm now stands in the state it moved to and every later evaluation moves it
+  nowhere. The queue therefore stayed empty for the whole barrier.
+* The rule applied: an alarm is evaluated on the cadence its own configuration names ("The length,
+  in seconds, used each time the metric specified in `MetricName` is evaluated […] the alarm still
+  attempts to gather data at the period rate that you specify", `PutMetricAlarmInput$Period`,
+  whose shortest regular value is a minute), so the state a written alarm's series implies — and
+  the actions the transition into it fires — follow the write by an interval of that cadence and
+  never land inside the write's own round trips.
+  - `src/state/alarm_evaluation.rs` now carries `WRITE_EVALUATION_DELAY_SECS` (3 s, the span this
+    project gives a transition the clock owes) as the emulator's compression of that cadence, beside
+    the unchanged re-arm span an evaluation owes the next one.
+  - `src/ops/put_metric_alarm.rs` stores the first evaluation of the alarm it writes at that span.
+    A composite alarm's rule is evaluated continuously from its children's states and is still due
+    at once; a log alarm still runs on its own scheduled-query span; and the evaluation a published
+    datapoint makes due is still the re-arm span, since the arrival of data is not the write that
+    configured the alarm.
+* Pinned end to end by two router suites over the whole mounted service set:
+  `core/router/tests/all/cloudwatch_alarm_action_is_owed_a_span_after_the_write.rs` writes the
+  alarm over a series that is already breaching, reads it back, CLEARS the subscribed queue and only
+  then starts watching — the notification arrives there, `DescribeAlarms` reports `ALARM` and the
+  `Action` history item reports `Succeeded` naming the topic, while a warm-up gated arm on the same
+  series and topic withholds both; and
+  `core/router/tests/all/cloudwatch_breaching_custom_series_alarm_notifies_its_queue.rs` pins the
+  other half of the cadence, that the span delays a verdict and never suppresses one.
+
 ## Steps to Reproduce
 1. sns.CreateTopic; sqs.CreateQueue; read QueueArn via GetQueueAttributes; SetQueueAttributes with a Policy allowing sns.amazonaws.com sqs:SendMessage on the queue for that topic; sns.Subscribe(Protocol="sqs", Endpoint=<queue arn>, ReturnSubscriptionArn=true).
 2. cloudwatch.PutMetricData twice into a unique custom namespace for MetricName=WarmUpSignal, Unit=Count, Value=100.0 — once with Timestamp = now-60s and once with Timestamp = now — so a full period is breaching before any alarm exists.

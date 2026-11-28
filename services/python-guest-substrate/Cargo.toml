@@ -64,7 +64,10 @@ nix = { version = "0.31", default-features = false, features = ["resource"] }
 # here, so cargo is free to resolve a SECOND copy for `pymath` and did — which is how the
 # `rust-version` ahead of this toolchain re-entered the build. The lockfile holds `pymath`'s
 # edge at this same release, which is the only place that edge can be stated, and
-# `cargo update` must not be allowed to move it back.
+# `cargo update` must not be allowed to move it back: a re-resolution had moved that one edge
+# to the 0.15 line again, which refuses to build on this toolchain, so it was pinned back to
+# the release named here (`cargo update -p malachite-bigint@0.15.0 --precise 0.12.0`, which
+# removes the second copy and pulls nothing new in).
 malachite-bigint = "=0.12.0"
 
 [lints]

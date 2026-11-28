@@ -18,7 +18,7 @@
 
 use serde_json::{json, Value};
 
-use crate::harness::{build_router, call, error_code, ok};
+use crate::harness::{build_router, call, error_code, ok, wait_for_evaluation};
 
 /// Wall-clock now as epoch seconds, the clock a query's time range is measured against.
 fn now_secs() -> f64 {
@@ -198,7 +198,7 @@ async fn a_refused_publish_does_not_drive_the_alarm_that_watches_the_reserved_se
     // creation left it in, and its history records the creation only — no state transition,
     // so no action was fired. The wait is past the span an alarm's first evaluation is owed,
     // so the evaluation HAS run by the time the alarm is read.
-    std::thread::sleep(std::time::Duration::from_millis(900));
+    wait_for_evaluation();
     let described = ok(
         &router,
         "DescribeAlarms",

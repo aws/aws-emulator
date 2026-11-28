@@ -23,10 +23,10 @@ pub const TARGET_PREFIX: &str = "GraniteServiceVersion20100801";
 /// Long enough for a metric alarm's first evaluation to come due.
 ///
 /// `PutMetricAlarm` sets a new alarm to `INSUFFICIENT_DATA` and the evaluated state is owed a
-/// span later (`crate::state::alarm_evaluation::EVALUATION_DELAY_SECS`, inside the
-/// framework's 250-750 ms window for a transition the clock owes), so a test that wants the
-/// EVALUATED state waits past the top of that window.
-pub const PAST_EVALUATION_DELAY: Duration = Duration::from_millis(900);
+/// span later (`crate::state::alarm_evaluation::WRITE_EVALUATION_DELAY_SECS`, the emulator's
+/// compression of the per-period cadence an alarm is evaluated on), so a test that wants the
+/// EVALUATED state waits past the top of that span.
+pub const PAST_EVALUATION_DELAY: Duration = Duration::from_millis(3_500);
 
 /// Wait for every alarm evaluation started before now to be due.
 ///

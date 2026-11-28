@@ -17,13 +17,15 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 use std::time::Duration;
 
-/// Long enough for a composite alarm's rule evaluation to come due.
+/// Long enough for a composite alarm's rule evaluation to come due, and for the first
+/// evaluation of the metric alarms its rules read.
 ///
-/// `PutCompositeAlarm` sets a new alarm to `INSUFFICIENT_DATA` and the evaluated state is
-/// owed a span later (`crate::state::COMPOSITE_EVALUATION_DELAY_SECS`, inside the framework's
-/// 250-750 ms window for a transition the clock owes), so a test that wants the EVALUATED
-/// state waits past the top of that window.
-const PAST_EVALUATION_DELAY: Duration = Duration::from_millis(900);
+/// `PutCompositeAlarm` sets a new alarm to `INSUFFICIENT_DATA` and its rule is evaluated from
+/// the states of the alarms that rule names, while a metric alarm's own first evaluation is
+/// owed a span after the write that configured it
+/// (`crate::state::alarm_evaluation::WRITE_EVALUATION_DELAY_SECS`), so a test that wants the
+/// EVALUATED state waits past the top of that span.
+const PAST_EVALUATION_DELAY: Duration = Duration::from_millis(3_500);
 
 /// Wait for every composite-alarm evaluation started before now to be due.
 ///

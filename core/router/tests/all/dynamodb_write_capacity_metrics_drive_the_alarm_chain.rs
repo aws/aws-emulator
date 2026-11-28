@@ -362,6 +362,22 @@ async fn write_traffic_fires_the_capacity_alarm_to_its_queue_while_the_untouched
             "case {case:?}: expected no consumption for the untouched {quiet:?}, got {untouched}"
         );
 
+        // The control's own first evaluation is owed the same span as the subject's, so its
+        // verdict is waited for before its silence is read: a series with nothing in it settles
+        // the alarm in `OK` ("notBreaching"), and only once it stands there can a later reading
+        // of `OK` mean the control never moved.
+        let settling = Instant::now();
+        let mut standing = alarm_state(&router, case, &quiet_alarm).await;
+        while standing != "OK" && settling.elapsed() < CHAIN_DEADLINE {
+            tokio::time::sleep(LOOK_AGAIN).await;
+            standing = alarm_state(&router, case, &quiet_alarm).await;
+        }
+        assert_eq!(
+            standing, "OK",
+            "case {case:?}: the alarm of the table nothing wrote to must settle in OK, got \
+             {standing:?}"
+        );
+
         // The chain: the evaluation the clock owes moves the alarm, its action publishes, and
         // the subscribed queue receives the notification — with no call forcing any of it. The
         // control alarm is looked at every time round, so its silence is checked for as long
