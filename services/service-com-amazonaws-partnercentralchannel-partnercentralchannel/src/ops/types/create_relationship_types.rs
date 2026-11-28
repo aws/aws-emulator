@@ -17,13 +17,15 @@ pub struct CreateRelationshipInput {
     pub catalog: String,
     pub association_type: String,
     pub program_management_account_identifier: String,
-    pub associated_account_id: String,
+    pub associated_account_id: Option<String>,
     pub display_name: String,
     pub resale_account_model: Option<String>,
     pub sector: String,
     pub client_token: Option<String>,
     pub tags: Option<Vec<Tag>>,
     pub requested_support_plan: Option<SupportPlan>,
+    pub account_scope: Option<String>,
+    pub start_date: Option<::aws_smithy_types::DateTime>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralchannel#CreateRelationshipResponse")]

@@ -20,6 +20,7 @@ pub struct CreateProgramManagementAccountInput {
     pub account_id: String,
     pub client_token: Option<String>,
     pub tags: Option<Vec<Tag>>,
+    pub r#type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralchannel#CreateProgramManagementAccountResponse")]

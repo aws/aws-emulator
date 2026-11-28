@@ -15,13 +15,17 @@
 //! ambiguous inside `ops` (`E0659`).
 
 pub mod accept_channel_handshake_types;
+pub mod cancel_channel_contract_types;
 pub mod cancel_channel_handshake_types;
+pub mod create_channel_contract_types;
 pub mod create_channel_handshake_types;
 pub mod create_program_management_account_types;
 pub mod create_relationship_types;
 pub mod delete_program_management_account_types;
 pub mod delete_relationship_types;
+pub mod get_channel_contract_types;
 pub mod get_relationship_types;
+pub mod list_channel_contracts_types;
 pub mod list_channel_handshakes_types;
 pub mod list_program_management_accounts_types;
 pub mod list_relationships_types;
@@ -36,7 +40,11 @@ pub mod update_relationship_types;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use accept_channel_handshake_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use cancel_channel_contract_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_channel_handshake_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_channel_contract_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_channel_handshake_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -48,7 +56,11 @@ pub use delete_program_management_account_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_relationship_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_channel_contract_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_relationship_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_channel_contracts_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_channel_handshakes_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

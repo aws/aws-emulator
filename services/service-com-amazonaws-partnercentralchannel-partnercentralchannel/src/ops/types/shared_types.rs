@@ -71,6 +71,17 @@ pub struct ConflictException {
     pub resource_type: String,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.partnercentralchannel#Address")]
+#[derive(Debug, Clone, Default)]
+pub struct Address {
+    pub city: String,
+    pub state_or_region: String,
+    pub postal_code: String,
+    pub country_code: String,
+    pub address_line: String,
+    pub address_line2: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralchannel#ServiceQuotaExceededException")]
 #[derive(Debug, Clone, Default)]
 pub struct ServiceQuotaExceededException {
@@ -113,8 +124,20 @@ pub struct ResoldUnifiedOperations {
     pub charge_account_id: Option<String>,
 }
 
+/// The values `AccountScope` accepts on the wire.
+pub const ACCOUNT_SCOPE_VALUES: &[&str] = &["ENTIRE_ORGANIZATION", "SPECIFIC_MEMBER_ACCOUNTS"];
+
+
 /// The values `AssociationType` accepts on the wire.
-pub const ASSOCIATION_TYPE_VALUES: &[&str] = &["DOWNSTREAM_SELLER", "END_CUSTOMER", "INTERNAL"];
+pub const ASSOCIATION_TYPE_VALUES: &[&str] = &["DOWNSTREAM_SELLER", "END_CUSTOMER", "INTERNAL", "MANAGED_SERVICES_END_CUSTOMER"];
+
+
+/// The values `ChannelContractStatus` accepts on the wire.
+pub const CHANNEL_CONTRACT_STATUS_VALUES: &[&str] = &["ACCEPTED", "CANCELED", "EXPIRED", "INACTIVE", "PENDING"];
+
+
+/// The values `ChannelContractType` accepts on the wire.
+pub const CHANNEL_CONTRACT_TYPE_VALUES: &[&str] = &["MANAGED_SERVICES_ATTESTATION"];
 
 
 /// The values `Coverage` accepts on the wire.
@@ -137,16 +160,28 @@ pub const LIST_PROGRAM_MANAGEMENT_ACCOUNTS_SORT_NAME_VALUES: &[&str] = &["Update
 pub const LIST_RELATIONSHIPS_SORT_NAME_VALUES: &[&str] = &["UpdatedAt"];
 
 
+/// The values `ManagedServicesAttestationTypeSortName` accepts on the wire.
+pub const MANAGED_SERVICES_ATTESTATION_TYPE_SORT_NAME_VALUES: &[&str] = &["UpdatedAt"];
+
+
+/// The values `ManagedServicesSupportedService` accepts on the wire.
+pub const MANAGED_SERVICES_SUPPORTED_SERVICE_VALUES: &[&str] = &["ARTIFICIAL_INTELLIGENCE_AND_MACHINE_LEARNING_OPERATIONS", "BACKUP_AND_DISASTER_RECOVERY", "FINANCIAL_OPERATIONS", "INFRASTRUCTURE_AS_CODE_AND_AUTOMATION", "MONITORING", "PATCHING", "SECURITY", "WELL_ARCHITECTED"];
+
+
 /// The values `ParticipantType` accepts on the wire.
 pub const PARTICIPANT_TYPE_VALUES: &[&str] = &["RECEIVER", "SENDER"];
 
 
 /// The values `Program` accepts on the wire.
-pub const PROGRAM_VALUES: &[&str] = &["DISTRIBUTION", "DISTRIBUTION_SELLER", "SOLUTION_PROVIDER"];
+pub const PROGRAM_VALUES: &[&str] = &["DISTRIBUTION", "DISTRIBUTION_SELLER", "MANAGED_SERVICES_PROVIDER", "SOLUTION_PROVIDER"];
 
 
 /// The values `ProgramManagementAccountStatus` accepts on the wire.
 pub const PROGRAM_MANAGEMENT_ACCOUNT_STATUS_VALUES: &[&str] = &["ACTIVE", "INACTIVE", "PENDING"];
+
+
+/// The values `ProgramManagementAccountType` accepts on the wire.
+pub const PROGRAM_MANAGEMENT_ACCOUNT_TYPE_VALUES: &[&str] = &["MANAGED_SERVICES", "RESALE_BILLING_TRANSFER"];
 
 
 /// The values `ProgramManagementAccountTypeSortName` accepts on the wire.

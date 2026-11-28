@@ -38,8 +38,11 @@ pub struct RelationshipDetail {
     pub display_name: Option<String>,
     pub resale_account_model: Option<String>,
     pub sector: Option<String>,
+    pub account_scope: Option<String>,
+    pub channel_contract_id: Option<String>,
     pub created_at: Option<::aws_smithy_types::DateTime>,
     pub updated_at: Option<::aws_smithy_types::DateTime>,
     pub start_date: Option<::aws_smithy_types::DateTime>,
+    pub end_date: Option<::aws_smithy_types::DateTime>,
 }
 

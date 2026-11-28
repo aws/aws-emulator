@@ -198,6 +198,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
             }
         }
+        if let Some(scope) = input.account_scope.as_deref() {
+            if !ACCOUNT_SCOPE_VALUES.contains(&scope) {
+                return Err(enum_refusal("accountScope", scope, ACCOUNT_SCOPE_VALUES));
+            }
+        }
 
         // The identifier member accepts either a bare `pma-…` id or the full ARN.
         let Some(parent_id) = crate::state::resolve_identifier(
@@ -327,11 +332,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             display_name: input.display_name,
             resale_account_model: input.resale_account_model,
             sector: input.sector,
+            account_scope: input.account_scope,
             requested_support_plan: input.requested_support_plan,
             revision: crate::state::INITIAL_REVISION,
             created_at,
             updated_at: created_at,
-            start_date: created_at,
+            // A relationship starts when the request says it does, and when the
+            // request says nothing, when it was created.
+            start_date: input.start_date.unwrap_or(created_at),
+            // No channel contract is in effect for a relationship that has just
+            // been created, so it has no end date yet either.
+            end_date: None,
+            channel_contract_id: None,
             tags: input.tags.unwrap_or_default(),
         });
         guard.record_token(

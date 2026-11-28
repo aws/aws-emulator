@@ -26,6 +26,10 @@ use crate::ops::types::{
     ValidationExceptionField,
 };
 
+mod channel_contracts;
+
+pub use channel_contracts::*;
+
 /// The ARN namespace this service stamps on every ARN, from the model's
 /// `aws.api#service` trait (`arnNamespace: partnercentral`).
 const ARN_NAMESPACE: &str = "partnercentral";
@@ -57,6 +61,11 @@ const ID_SUFFIX_LEN: usize = 13;
 /// `PENDING` the non-terminal state a create leaves the account in.
 pub const STATUS_PENDING: &str = "PENDING";
 pub const STATUS_ACTIVE: &str = "ACTIVE";
+
+/// The `Program` whose accounts the model documents a `type` as required for:
+/// `type` is "required for the managed services provider program", so an account
+/// created for this program without one is refused.
+pub const MANAGED_SERVICES_PROVIDER_PROGRAM: &str = "MANAGED_SERVICES_PROVIDER";
 
 /// The `HandshakeStatus` a freshly created channel handshake reports. The
 /// model's value set is `PENDING | ACCEPTED | REJECTED | CANCELED | EXPIRED`,
@@ -116,8 +125,12 @@ pub const RELATIONSHIP_RESOURCE_TYPE: &str = "Relationship";
 pub const CHANNEL_HANDSHAKE_RESOURCE_TYPE: &str = "ChannelHandshake";
 
 /// The `ValidationExceptionReason` a malformed request carries, from the model's
-/// value set `BUSINESS_VALIDATION_FAILED | REQUEST_VALIDATION_FAILED`.
+/// value set `BUSINESS_VALIDATION_FAILED | REQUEST_VALIDATION_FAILED`. A request
+/// whose VALUES are unusable is `REQUEST_VALIDATION_FAILED`; one the stored state
+/// does not allow right now — a resource in the wrong status, a window that has
+/// closed — is `BUSINESS_VALIDATION_FAILED`.
 pub const REQUEST_VALIDATION_FAILED: &str = "REQUEST_VALIDATION_FAILED";
+pub const BUSINESS_VALIDATION_FAILED: &str = "BUSINESS_VALIDATION_FAILED";
 
 /// What this service answers a caller whose account holds no active AWS Partner
 /// benefit: the entitlement gate's refusal, carried by the modelled
@@ -285,6 +298,18 @@ pub fn validation_exception(member: &str, message: impl Into<String>) -> Validat
     field_validation_exception(member, INVALID_VALUE, message)
 }
 
+/// A `ValidationException` (HTTP 400) refusing the request because the stored
+/// state does not allow it, rather than because a member's value is unusable: the
+/// modelled `BUSINESS_VALIDATION_FAILED` reason, and no `fieldList`, because no
+/// one member is at fault.
+pub fn business_validation_exception(message: impl Into<String>) -> ValidationException {
+    ValidationException {
+        message: message.into(),
+        reason: BUSINESS_VALIDATION_FAILED.to_string(),
+        field_list: None,
+    }
+}
+
 /// A `ValidationException` (HTTP 400) refusing `member` because the FORM of the
 /// value is wrong — it is not the id, ARN, pattern or opaque token the member
 /// accepts: [`INVALID_STRING_FORMAT`].
@@ -321,6 +346,9 @@ pub struct ProgramManagementAccount {
     pub program: String,
     pub display_name: String,
     pub account_id: String,
+    /// The modelled `type` member (`ProgramManagementAccountType`), absent for an
+    /// account created without one.
+    pub account_type: Option<String>,
     pub status: String,
     pub revision: u32,
     pub created_at: ::aws_smithy_types::DateTime,
@@ -351,6 +379,7 @@ impl ProgramManagementAccount {
             updated_at: Some(self.updated_at),
             start_date: Some(self.start_date),
             status: Some(self.status.clone()),
+            r#type: self.account_type.clone(),
         }
     }
 }
@@ -363,15 +392,26 @@ pub struct Relationship {
     pub catalog: String,
     pub program_management_account_id: String,
     pub association_type: String,
-    pub associated_account_id: String,
+    /// The account associated in this relationship. Optional in the model, so a
+    /// relationship created without one stores none and reports none.
+    pub associated_account_id: Option<String>,
     pub display_name: String,
     pub resale_account_model: Option<String>,
     pub sector: String,
+    /// The `AccountScope` of a managed services relationship, as the request gave
+    /// it; absent for a relationship created without one.
+    pub account_scope: Option<String>,
     pub requested_support_plan: Option<SupportPlan>,
     pub revision: u32,
     pub created_at: ::aws_smithy_types::DateTime,
     pub updated_at: ::aws_smithy_types::DateTime,
     pub start_date: ::aws_smithy_types::DateTime,
+    /// When this relationship ends: the end date of the channel contract in
+    /// effect for it, so it is absent until one is.
+    pub end_date: Option<::aws_smithy_types::DateTime>,
+    /// The channel contract currently in effect for this relationship — the one
+    /// whose signature has been accepted. Absent while no contract is in effect.
+    pub channel_contract_id: Option<String>,
     pub tags: Vec<Tag>,
 }
 
@@ -385,13 +425,16 @@ impl Relationship {
             catalog: Some(self.catalog.clone()),
             association_type: Some(self.association_type.clone()),
             program_management_account_id: Some(self.program_management_account_id.clone()),
-            associated_account_id: Some(self.associated_account_id.clone()),
+            associated_account_id: self.associated_account_id.clone(),
             display_name: Some(self.display_name.clone()),
             resale_account_model: self.resale_account_model.clone(),
             sector: Some(self.sector.clone()),
+            account_scope: self.account_scope.clone(),
+            channel_contract_id: self.channel_contract_id.clone(),
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
             start_date: Some(self.start_date),
+            end_date: self.end_date,
         }
     }
 
@@ -407,7 +450,7 @@ impl Relationship {
             catalog: Some(self.catalog.clone()),
             association_type: Some(self.association_type.clone()),
             program_management_account_id: Some(self.program_management_account_id.clone()),
-            associated_account_id: Some(self.associated_account_id.clone()),
+            associated_account_id: self.associated_account_id.clone(),
             display_name: Some(self.display_name.clone()),
             sector: Some(self.sector.clone()),
             created_at: Some(self.created_at),
@@ -430,7 +473,11 @@ pub struct ChannelHandshake {
     /// The account that owns the handshake record: the one that created it.
     pub owner_account_id: String,
     pub sender_account_id: String,
-    pub receiver_account_id: String,
+    /// The counterparty the handshake is addressed to: the account the associated
+    /// resource names. Absent when that resource names none — a relationship
+    /// created without an `associatedAccountId` — because there is no stored
+    /// account to report and none is invented.
+    pub receiver_account_id: Option<String>,
     /// The bare id of the associated resource, from the model's
     /// `AssociatedResourceId` (`^(pma|rs)-[a-z0-9]{13}$`).
     pub associated_resource_id: String,
@@ -459,7 +506,7 @@ impl ChannelHandshake {
             owner_account_id: Some(self.owner_account_id.clone()),
             sender_account_id: Some(self.sender_account_id.clone()),
             sender_display_name: None,
-            receiver_account_id: Some(self.receiver_account_id.clone()),
+            receiver_account_id: self.receiver_account_id.clone(),
             associated_resource_id: Some(self.associated_resource_id.clone()),
             detail: self.detail.clone(),
             created_at: Some(self.created_at),
@@ -680,6 +727,8 @@ pub struct ComAmazonawsPartnercentralchannelPartnercentralchannelState {
     pub relationships: RelationshipStore,
     /// Every channel handshake, in creation order.
     pub channel_handshakes: ChannelHandshakeStore,
+    /// Every channel contract, in creation order.
+    pub channel_contracts: ChannelContractStore,
     /// `clientToken` -> what the call that first used it did. Bounded by
     /// [`MAX_IDEMPOTENCY_ENTRIES`] and [`IDEMPOTENCY_TTL`].
     idempotency: HashMap<String, IdempotencyRecord>,
@@ -769,7 +818,8 @@ impl ComAmazonawsPartnercentralchannelPartnercentralchannelState {
             let candidate = format!("{prefix}{suffix}");
             let taken = self.program_management_accounts.contains(&candidate)
                 || self.relationships.contains(&candidate)
-                || self.channel_handshakes.contains(&candidate);
+                || self.channel_handshakes.contains(&candidate)
+                || self.channel_contracts.contains(&candidate);
             if !taken {
                 return candidate;
             }
@@ -870,6 +920,9 @@ pub struct ProgramManagementAccountFilters {
     pub display_names: Option<Vec<String>>,
     pub programs: Option<Vec<String>>,
     pub statuses: Option<Vec<String>>,
+    /// The modelled `type` member: one `ProgramManagementAccountType` value, not
+    /// a list, so it matches only an account stored with that type.
+    pub account_type: Option<String>,
 }
 
 impl ProgramManagementAccountFilters {
@@ -878,7 +931,8 @@ impl ProgramManagementAccountFilters {
     /// The catalog scopes the list (an account lives in exactly one catalog), and
     /// each remaining filter matches when the account's corresponding field
     /// equals any of that filter's values; several filters are ANDed. An omitted
-    /// filter constrains nothing.
+    /// filter constrains nothing, and a filter on a member the account does not
+    /// carry never matches.
     pub fn matches(&self, account: &ProgramManagementAccount) -> bool {
         fn any_equals(values: &Option<Vec<String>>, field: &str) -> bool {
             values
@@ -891,6 +945,10 @@ impl ProgramManagementAccountFilters {
             && any_equals(&self.display_names, &account.display_name)
             && any_equals(&self.programs, &account.program)
             && any_equals(&self.statuses, &account.status)
+            && self
+                .account_type
+                .as_ref()
+                .is_none_or(|wanted| account.account_type.as_ref() == Some(wanted))
     }
 }
 
@@ -914,18 +972,25 @@ impl RelationshipFilters {
     /// The catalog scopes the list (a relationship lives in exactly one catalog),
     /// and each remaining filter matches when the relationship's corresponding
     /// field equals any of that filter's values; several filters are ANDed. An
-    /// omitted filter constrains nothing.
+    /// omitted filter constrains nothing, and a filter on a member the
+    /// relationship does not carry never matches.
     pub fn matches(&self, relationship: &Relationship) -> bool {
         fn any_equals(values: &Option<Vec<String>>, field: &str) -> bool {
             values
                 .as_ref()
                 .is_none_or(|values| values.iter().any(|value| value == field))
         }
+        fn any_equals_opt(values: &Option<Vec<String>>, field: Option<&str>) -> bool {
+            match values {
+                None => true,
+                Some(values) => field.is_some_and(|field| values.iter().any(|v| v == field)),
+            }
+        }
 
         relationship.catalog == self.catalog
-            && any_equals(
+            && any_equals_opt(
                 &self.associated_account_ids,
-                &relationship.associated_account_id,
+                relationship.associated_account_id.as_deref(),
             )
             && any_equals(&self.association_types, &relationship.association_type)
             && any_equals(&self.display_names, &relationship.display_name)
@@ -986,8 +1051,8 @@ impl ChannelHandshakeFilters {
         }
 
         let participant_account = match self.participant_type.as_str() {
-            PARTICIPANT_TYPE_SENDER => &handshake.sender_account_id,
-            PARTICIPANT_TYPE_RECEIVER => &handshake.receiver_account_id,
+            PARTICIPANT_TYPE_SENDER => Some(&handshake.sender_account_id),
+            PARTICIPANT_TYPE_RECEIVER => handshake.receiver_account_id.as_ref(),
             // Not a modelled `ParticipantType`: no handshake has such a side, so
             // nothing matches. The handler refuses such a value before it reaches
             // here, so this is the belt-and-braces arm rather than the live path.
@@ -996,7 +1061,7 @@ impl ChannelHandshakeFilters {
 
         handshake.catalog == self.catalog
             && handshake.handshake_type == self.handshake_type
-            && *participant_account == self.caller_account_id
+            && participant_account == Some(&self.caller_account_id)
             && any_equals(&self.statuses, &handshake.status)
             && any_equals(
                 &self.associated_resource_ids,

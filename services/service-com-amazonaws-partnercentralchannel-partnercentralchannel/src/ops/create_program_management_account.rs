@@ -189,6 +189,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // `type` is the same: an enum the boundary checks, re-checked here so no
+        // value outside the model's own set is ever stored.
+        if let Some(account_type) = input.r#type.as_deref() {
+            if !PROGRAM_MANAGEMENT_ACCOUNT_TYPE_VALUES.contains(&account_type) {
+                return Err(
+                    CreateProgramManagementAccountErrorModeled::ValidationException(
+                        crate::state::enum_validation_exception(
+                            "type",
+                            account_type,
+                            PROGRAM_MANAGEMENT_ACCOUNT_TYPE_VALUES,
+                        ),
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // `type` is optional in the model but documented as required for the
+        // managed services provider program, so an account for that program
+        // without one is refused rather than stored half-described.
+        if input.r#type.is_none() && input.program == crate::state::MANAGED_SERVICES_PROVIDER_PROGRAM
+        {
+            return Err(
+                CreateProgramManagementAccountErrorModeled::ValidationException(
+                    crate::state::validation_exception(
+                        "type",
+                        format!(
+                            "Value at 'type' failed to satisfy constraint: Member is required for \
+                             program '{}'",
+                            crate::state::MANAGED_SERVICES_PROVIDER_PROGRAM
+                        ),
+                    ),
+                )
+                .into(),
+            );
+        }
+
         // The client-token ledger keys on the request WITHOUT its token, so a
         // retry carrying the same token and the same parameters replays, and the
         // same token with different parameters is a conflict.
@@ -312,6 +349,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 program: input.program,
                 display_name: input.display_name,
                 account_id: input.account_id,
+                account_type: input.r#type,
                 // A created account is not usable yet: it reports the modelled
                 // non-terminal `PENDING`, and the clock owes it `ACTIVE`.
                 status: crate::state::STATUS_PENDING.to_string(),

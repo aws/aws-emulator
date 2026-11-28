@@ -345,7 +345,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     return Err(not_found(&resource.id, &input.catalog));
                 };
                 (
-                    account.account_id.clone(),
+                    Some(account.account_id.clone()),
                     Some(account.program.clone()),
                     account.id.clone(),
                 )

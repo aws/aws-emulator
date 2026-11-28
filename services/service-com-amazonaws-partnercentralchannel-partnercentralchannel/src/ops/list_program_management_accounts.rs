@@ -194,6 +194,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // `type` is a single enum value rather than a list, re-checked here for
+        // the same reason: a value outside the model's own set must not silently
+        // match nothing.
+        if let Some(account_type) = input.r#type.as_deref() {
+            if !PROGRAM_MANAGEMENT_ACCOUNT_TYPE_VALUES.contains(&account_type) {
+                return Err(enum_refusal(
+                    "type",
+                    account_type,
+                    PROGRAM_MANAGEMENT_ACCOUNT_TYPE_VALUES,
+                ));
+            }
+        }
+
         // `sort` is optional; when present the model fixes both of its members to
         // a value set, so a value outside one is refused rather than ignored.
         if let Some(sort) = input.sort.as_ref() {
@@ -219,6 +232,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             display_names: input.display_names.clone(),
             programs: input.programs.clone(),
             statuses: input.statuses.clone(),
+            account_type: input.r#type.clone(),
         };
         let descending = input
             .sort

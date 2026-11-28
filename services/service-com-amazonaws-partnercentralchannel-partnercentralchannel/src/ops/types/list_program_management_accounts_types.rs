@@ -22,6 +22,7 @@ pub struct ListProgramManagementAccountsInput {
     pub statuses: Option<Vec<String>>,
     pub sort: Option<ListProgramManagementAccountsSortBase>,
     pub next_token: Option<String>,
+    pub r#type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.partnercentralchannel#ListProgramManagementAccountsSortBase")]
@@ -52,5 +53,6 @@ pub struct ProgramManagementAccountSummary {
     pub updated_at: Option<::aws_smithy_types::DateTime>,
     pub start_date: Option<::aws_smithy_types::DateTime>,
     pub status: Option<String>,
+    pub r#type: Option<String>,
 }
 
