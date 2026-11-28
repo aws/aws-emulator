@@ -51,7 +51,7 @@ use super::{
     IMDS_SUPPORT_V2, ImageSpec, InstanceRecord, InstanceStateName, MAX_METADATA_HOP_LIMIT,
     MIN_METADATA_HOP_LIMIT,
     TRANSITION_DELAY, catalog_member, due_instant, echoed_resource_id,
-    instance_type_record, invalid_parameter_combination, invalid_parameter_value,
+    instance_type_record, invalid_parameter_value,
     region_of_zone_name, supported_boot_modes, system_time_to_date_time,
     unmanaged_operator,
     zone_id_for_zone_name,
@@ -600,7 +600,8 @@ impl InstanceDetail {
 /// core. To disable multithreading for the instance, specify a value of `1`. Otherwise,
 /// specify the default value of `2`" — so what the launch asks for is what the instance
 /// RUNS AS, and a request naming ONE of the two counts without the other asks for a
-/// topology the member does not carry: it is refused rather than completed from the type's
+/// topology the member does not carry: it is refused `InvalidParameterValue` rather than
+/// completed from the type's
 /// defaults. A launch that names NEITHER count asks for no topology at all and runs on the
 /// counts its instance type comes with, which is also what one naming only an option word of
 /// the same member (`$AmdSevSnp`, `$NestedVirtualization`) asks for.
@@ -618,11 +619,13 @@ pub fn requested_cpu_topology<E>(
     let Some(requested) = requested else {
         return Ok((None, None));
     };
-    // The two counts are asked for TOGETHER, so one without the other is a combination the
-    // request cannot carry — stated in the words the member states the requirement in.
+    // The two counts are asked for TOGETHER, so a request naming one without the other has
+    // given the member an invalid value — EC2's `InvalidParameterValue`, the code its
+    // parameter layer answers for a member it will not take, in the sentence EC2 words for
+    // this class, which names both members it requires together.
     if requested.core_count.is_some() != requested.threads_per_core.is_some() {
-        return Err(invalid_parameter_combination(
-            "Both the core count and threads per core must be specified in the request",
+        return Err(invalid_parameter_value(
+            "When specifying CpuOptions you must specify both CoreCount and ThreadsPerCore.",
         ));
     }
     let record = instance_type.and_then(instance_type_record);

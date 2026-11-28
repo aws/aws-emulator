@@ -910,6 +910,9 @@ impl ComAmazonawsEc2Amazonec2State {
                     valid_until_at,
                     &spec.region,
                     None,
+                    // A Spot Fleet's pools are read out of launch specifications this path
+                    // takes no instance profile from, so the instances they place run as none.
+                    None,
                 );
                 placements.push(SpotFleetPlacement {
                     spot_instance_request_id,

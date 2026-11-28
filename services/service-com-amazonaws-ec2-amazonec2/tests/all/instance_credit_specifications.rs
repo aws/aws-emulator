@@ -32,7 +32,6 @@
 //! options and with a launch that names none, beside instance types of several families that
 //! are not burstable at all.
 
-use ec2::state::{ComAmazonawsEc2Amazonec2State as Ec2State, ImageSpec};
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -92,20 +91,20 @@ async fn api(
     call(router, REGION, action, params).await
 }
 
-/// One emulator over its own engine, with one AMI of the calling account seeded the way a
-/// register operation would store it — answered beside its image id.
+/// One emulator over its own engine, answered beside the AMI its rows launch from.
+///
+/// The AMI is an id the account holds no image under: the rows launch instance types of BOTH
+/// processor architectures (the burstable families include AWS Graviton ones), and an instance
+/// runs the machine code its AMI holds — so a launch from a held AMI would have to pair that
+/// AMI's architecture with every type. The credit option a type runs under is independent of
+/// the image, so the rows launch from an id that pins neither.
 fn emulator() -> (MultiServiceRouter, String) {
-    let (router, engine) = super::ec2_query::emulator();
-    let image_id = {
-        let store = engine.state::<Ec2State>();
-        let mut guard = store.lock();
-        guard.insert_image(ImageSpec {
-            name: "instance-credit-specifications".to_string(),
-            ..ImageSpec::default()
-        })
-    };
-    (router, image_id)
+    let (router, _engine) = super::ec2_query::emulator();
+    (router, UNHELD_AMI.to_string())
 }
+
+/// An AMI id of the right FORM that this account holds no image for.
+const UNHELD_AMI: &str = "ami-0123456789abcdef0";
 
 /// One instance type of `family`, taken from the catalog of types this emulator OFFERS
 /// (`DescribeInstanceTypeOfferings`'s own), so a family is driven on a type the service really

@@ -244,13 +244,21 @@ async fn a_launch_from_such_a_template_resolves_the_parameter_to_the_ami_it_publ
         let case = format!("{parameter} -> {image_id}");
         let submitted = alias(parameter);
         let name = format!("published.launch.{index}");
+        // An instance runs the machine code its AMI holds, so the version names a type whose
+        // architecture is that of the AMI the parameter resolves to — read off the AMI rather
+        // than written here.
+        let instance_type = super::ec2_query::launch_type_for_image(&router, REGION, &case, image_id)
+            .await
+            .first()
+            .map(|(_, instance_type)| instance_type.clone())
+            .unwrap_or_else(|| INSTANCE_TYPE.to_string());
         let (status, body) = api(
             &router,
             "CreateLaunchTemplate",
             &[
                 p("LaunchTemplateName", name),
                 data("ImageId", submitted.clone()),
-                data("InstanceType", INSTANCE_TYPE),
+                data("InstanceType", instance_type),
             ],
         )
         .await;

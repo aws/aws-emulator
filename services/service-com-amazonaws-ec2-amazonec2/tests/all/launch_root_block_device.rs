@@ -53,6 +53,11 @@ const UNSUPPORTED_HIBERNATION: &str = "UnsupportedHibernationConfiguration";
 /// request.
 const ROOT_MUST_BE_ENCRYPTED: &str = "For hibernation, the root device volume must be encrypted.";
 
+/// The instance type the hibernation rows launch: hibernation is a published fact of the
+/// instance type and these rows are about the root DEVICE, so they name a type hibernation is
+/// offered on (and whose memory a default-sized root volume holds) and vary the device alone.
+const HIBERNATING_TYPE: &str = "t3.micro";
+
 /// How long a poll loop keeps looking for a clock-owed move before it gives up — a generous
 /// multiple of the service's own span, so a loaded host is never the reason a case fails.
 const POLL_DEADLINE: Duration = Duration::from_secs(120);
@@ -245,7 +250,10 @@ async fn hibernation_is_admitted_on_the_root_volumes_encryption() {
 
     for (case, fields, may_launch) in rows {
         let before = held_counts(&router, case).await;
-        let mut params = vec![p("HibernationOptions.Configured", "true")];
+        let mut params = vec![
+            p("HibernationOptions.Configured", "true"),
+            p("InstanceType", HIBERNATING_TYPE),
+        ];
         params.extend(fields);
         let (status, body) = launch(&router, UNHELD_AMI, &params).await;
 
@@ -561,7 +569,10 @@ async fn an_ec2_fleet_places_the_root_volume_its_version_describes() {
 async fn encryption_by_default_and_a_launch_template_admit_the_same_hibernation() {
     let (router, _engine) = super::ec2_query::emulator();
     let root_device = root_device_of_a_launch(&router, "the probe launch", UNHELD_AMI).await;
-    let hibernate = vec![p("HibernationOptions.Configured", "true")];
+    let hibernate = vec![
+        p("HibernationOptions.Configured", "true"),
+        p("InstanceType", HIBERNATING_TYPE),
+    ];
 
     // Before the Region's default is on, the same launch cannot hibernate …
     let (status, body) = launch(&router, UNHELD_AMI, &hibernate).await;
@@ -623,6 +634,7 @@ async fn encryption_by_default_and_a_launch_template_admit_the_same_hibernation(
         &[
             p("LaunchTemplateName", "hibernation-root-encrypted"),
             p("LaunchTemplateData.ImageId", UNHELD_AMI),
+            p("LaunchTemplateData.InstanceType", HIBERNATING_TYPE),
             p(
                 "LaunchTemplateData.BlockDeviceMapping.1.DeviceName",
                 &root_device,

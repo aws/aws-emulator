@@ -363,7 +363,7 @@ async fn describe_instances_reports_the_fixed_detail_derived_from_state() {
         LaunchRow {
             case: "a single-threaded instance type",
             from_catalog: true,
-            instance_type: "t4g.nano",
+            instance_type: "c8a.medium",
             extra: Vec::new(),
         },
         LaunchRow {

@@ -283,8 +283,9 @@ async fn a_launch_that_asks_for_no_topology_runs_on_the_instance_types_own() {
 
 /// THE OTHER HALF of the member's own rule: "the CPU options for the instance. Both the core
 /// count and threads per core must be specified in the request" (`CpuOptionsRequest`) — so a
-/// launch naming ONE of the two counts without the other is refused
-/// `InvalidParameterCombination` in that requirement's own words, and nothing is launched.
+/// launch naming ONE of the two counts without the other is refused `InvalidParameterValue`,
+/// the code EC2's parameter layer answers for a member it will not take, and nothing is
+/// launched.
 ///
 /// The rows span which of the two the request names, and which value it names it with.
 #[tokio::test]
@@ -325,13 +326,14 @@ async fn a_launch_naming_one_count_without_the_other_is_refused() {
         );
         let code = super::ec2_query::error_code(&body);
         assert_eq!(
-            code, "InvalidParameterCombination",
-            "case {case:?}: expected InvalidParameterCombination, got {code:?} in {body}"
+            code, "InvalidParameterValue",
+            "case {case:?}: expected InvalidParameterValue, got {code:?} in {body}"
         );
         let message = super::ec2_query::error_message(&body);
         assert_eq!(
-            message, "Both the core count and threads per core must be specified in the request",
-            "case {case:?}: expected the member's own requirement, got {message:?}"
+            message,
+            "When specifying CpuOptions you must specify both CoreCount and ThreadsPerCore.",
+            "case {case:?}: expected the sentence EC2 words this refusal with, got {message:?}"
         );
         let described = ok(&router, &case, "DescribeInstances", &[]).await;
         assert!(

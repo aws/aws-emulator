@@ -463,17 +463,12 @@ async fn the_report_names_only_the_resources_of_the_named_vpc() {
     let there = create_vpc("the other VPC", &router, "10.1.0.0/16").await;
     let there_subnet = create_subnet("the other VPC", &router, &there, "10.1.1.0/24").await;
 
-    // Rows: an instance of each VPC, one in a subnet id nothing minted, and one launched
-    // with no subnet at all — the last two sit in no VPC, so no report names them.
+    // Rows: an instance of each VPC, and one launched with no subnet at all — which the
+    // service places in the DEFAULT VPC's own subnet, so neither report below names it. A
+    // launch naming a subnet nothing minted is no row here: the account holds no such subnet,
+    // so EC2 refuses that launch rather than placing an instance outside every VPC.
     let mine = launch("in the VPC under test", &router, Some(&here_subnet), "t2.micro").await;
     let theirs = launch("in the other VPC", &router, Some(&there_subnet), "m4.large").await;
-    let nowhere = launch(
-        "in a subnet nothing minted",
-        &router,
-        Some("subnet-0ffffffffffffffff"),
-        "t2.micro",
-    )
-    .await;
     let subnetless = launch("in no subnet at all", &router, None, "t2.micro").await;
 
     for (case, vpc_id, expected) in [
@@ -487,12 +482,10 @@ async fn the_report_names_only_the_resources_of_the_named_vpc() {
             found, expected,
             "case {case:?}: expected {expected:?} in the report, got {found:?}"
         );
-        for outsider in [&nowhere, &subnetless] {
-            assert!(
-                !found.contains(outsider),
-                "case {case:?}: {outsider} sits in no VPC, got {found:?}"
-            );
-        }
+        assert!(
+            !found.contains(&subnetless),
+            "case {case:?}: {subnetless} sits in neither VPC, got {found:?}"
+        );
     }
 }
 

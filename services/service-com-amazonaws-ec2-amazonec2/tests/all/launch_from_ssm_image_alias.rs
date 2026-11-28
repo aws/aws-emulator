@@ -79,18 +79,36 @@ fn catalog(engine: &engine::InMemoryEngine) -> Vec<(String, String)> {
 }
 
 /// One launch of a single instance from `image_id`, as its HTTP status and XML body.
+///
+/// `runs` is the AMI the launch will really run from: the same value for a request naming an
+/// AMI id, and the AMI the parameter resolves to for one naming a `resolve:ssm:` parameter. An
+/// instance runs the machine code its AMI holds, so the launch names an instance type of THAT
+/// AMI's architecture, read off the AMI rather than written here.
+async fn launch_running(
+    router: &MultiServiceRouter,
+    image_id: &str,
+    runs: &str,
+) -> (u16, String) {
+    let mut params = vec![
+        p("ImageId", image_id),
+        p("MinCount", "1"),
+        p("MaxCount", "1"),
+        p("InstanceType", DEFAULT_INSTANCE_TYPE),
+    ];
+    if let Some((_, instance_type)) =
+        super::ec2_query::launch_type_for_image(router, REGION, "the launch", runs)
+            .await
+            .first()
+    {
+        params.pop();
+        params.push(p("InstanceType", instance_type.clone()));
+    }
+    op(router, "RunInstances", &params).await
+}
+
+/// The same launch for a request whose `ImageId` IS the AMI it runs.
 async fn launch(router: &MultiServiceRouter, image_id: &str) -> (u16, String) {
-    op(
-        router,
-        "RunInstances",
-        &[
-            p("ImageId", image_id),
-            p("MinCount", "1"),
-            p("MaxCount", "1"),
-            p("InstanceType", DEFAULT_INSTANCE_TYPE),
-        ],
-    )
-    .await
+    launch_running(router, image_id, image_id).await
 }
 
 /// The `imageId` `DescribeInstances` reports for `instance_id` — the read-back half of rule 1,
@@ -161,7 +179,7 @@ async fn every_published_parameter_name_launches_from_the_ami_it_resolves_to() {
     for (parameter, image_id) in &published {
         let case = format!("{parameter} -> {image_id}");
         let alias = format!("{SSM_IMAGE_ALIAS_PREFIX}{parameter}");
-        let (status, body) = launch(&router, &alias).await;
+        let (status, body) = launch_running(&router, &alias, image_id).await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected HTTP 200 from RunInstances, got {status} with body {body}"
@@ -247,7 +265,10 @@ async fn a_launch_refuses_the_image_id_values_that_name_no_image() {
     ];
 
     for (case, image_id, expected_status, expected_code, expected_reported) in rows {
-        let (status, body) = launch(&router, &image_id).await;
+        // The AMI the launch will really run from, which for a row naming a parameter is the
+        // AMI that parameter resolves to — the id the row already expects reported.
+        let runs = expected_reported.clone().unwrap_or_else(|| image_id.clone());
+        let (status, body) = launch_running(&router, &image_id, &runs).await;
         assert_eq!(
             status, expected_status,
             "case {case:?}: expected HTTP {expected_status}, got {status} with body {body}"
@@ -274,12 +295,12 @@ async fn a_launch_refuses_the_image_id_values_that_name_no_image() {
 #[tokio::test]
 async fn a_volume_attached_to_an_instance_launched_from_a_parameter_reads_back_and_detaches() {
     let (router, engine) = emulator();
-    let (parameter, _) = catalog(&engine)
+    let (parameter, resolved_image) = catalog(&engine)
         .first()
         .cloned()
         .expect("the image catalog must publish at least one parameter name");
     let alias = format!("{SSM_IMAGE_ALIAS_PREFIX}{parameter}");
-    let (status, body) = launch(&router, &alias).await;
+    let (status, body) = launch_running(&router, &alias, &resolved_image).await;
     assert_eq!(
         status, 200,
         "the launch must succeed, got {status} with body {body}"
@@ -382,11 +403,16 @@ async fn a_volume_attached_to_an_instance_launched_from_a_parameter_reads_back_a
 #[tokio::test]
 async fn a_detach_of_an_attachment_the_volume_does_not_hold_is_not_found() {
     let (router, engine) = emulator();
-    let (parameter, _) = catalog(&engine)
+    let (parameter, resolved_image) = catalog(&engine)
         .first()
         .cloned()
         .expect("the image catalog must publish at least one parameter name");
-    let (status, body) = launch(&router, &format!("{SSM_IMAGE_ALIAS_PREFIX}{parameter}")).await;
+    let (status, body) = launch_running(
+        &router,
+        &format!("{SSM_IMAGE_ALIAS_PREFIX}{parameter}"),
+        &resolved_image,
+    )
+    .await;
     assert_eq!(
         status, 200,
         "the launch must succeed, got {status} with body {body}"

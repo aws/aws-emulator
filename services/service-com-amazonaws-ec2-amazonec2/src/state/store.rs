@@ -1616,9 +1616,11 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// through [`Self::set_vpc_classic_link_dns_enabled`] and reported through
     /// [`Self::classic_link_dns_support_view`]; see [`classic_link`].
     pub classic_link_dns_enabled_vpcs: BTreeSet<String>,
-    /// A `RunInstances` `ClientToken` and the reservation it minted, so a repeat
-    /// of the same request returns that reservation instead of launching again.
-    pub client_tokens: HashMap<String, String>,
+    /// A `RunInstances` `ClientToken` and the launch it claimed — the reservation it minted
+    /// and the digest of the parameters it was spent with — so a repeat of the same request
+    /// returns that reservation instead of launching again, and a request reusing the token
+    /// with other parameters is refused ([`launch_idempotency`]).
+    pub client_tokens: HashMap<String, LaunchClaim>,
     /// Every primary private address in use, so allocating the next one is a
     /// constant-time check rather than a scan of every stored instance.
     pub(super) assigned_private_ips: ::std::collections::HashSet<String>,

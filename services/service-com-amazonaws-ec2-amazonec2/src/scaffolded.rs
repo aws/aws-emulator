@@ -676,6 +676,39 @@ impl<E> Scaffolded<E> {
         )
     }
 
+    /// `UnsupportedHibernationConfiguration` (HTTP 400): a launch asked to enable hibernation
+    /// on an instance type hibernation is not offered on.
+    ///
+    /// "Supported instance families" (the EC2 User Guide's hibernation prerequisites): which
+    /// types hibernate is a published fact of the instance type
+    /// (`InstanceTypeInfo$HibernationSupported`), so the sentence names the type the launch
+    /// asked for — the one value of the request this refusal is about.
+    pub fn hibernation_not_supported_by_instance_type(instance_type: &str) -> Self {
+        Self::service_error(
+            "UnsupportedHibernationConfiguration",
+            400,
+            format!("Hibernation is not supported for instance type '{instance_type}'."),
+        )
+    }
+
+    /// `UnsupportedHibernationConfiguration` (HTTP 400): a launch asked to enable hibernation
+    /// over a root device volume too small to hold the instance's memory beside what it boots
+    /// from.
+    ///
+    /// "The root volume must be large enough to hold the instance's RAM contents" and
+    /// "accommodate your expected usage" (the same prerequisites). AWS's sentence for the class
+    /// is fixed text that interpolates nothing from the request — the sibling
+    /// [`Self::hibernation_requires_encrypted_root_volume`] is worded the same way — because a
+    /// launch names no one volume for it to name.
+    pub fn hibernation_root_volume_too_small() -> Self {
+        Self::service_error(
+            "UnsupportedHibernationConfiguration",
+            400,
+            "For hibernation, the root device volume must be large enough to store the \
+             instance memory (RAM) and accommodate your expected usage.",
+        )
+    }
+
     /// `AuthFailure` (HTTP 400): the caller is not authorized for the resource the
     /// request names — an action the real service permits only to the OWNER of that
     /// resource, asked by an account that does not own it. Distinct from

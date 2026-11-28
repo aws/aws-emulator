@@ -435,8 +435,13 @@ async fn launch_parameters_round_trip_through_describe_instances() {
         image_id: &'static str,
         instance_type: &'static str,
         key_name: Option<&'static str>,
-        subnet_id: Option<&'static str>,
-        group_ids: &'static [&'static str],
+        /// Whether the launch names the SUBNET it goes into — one the account HOLDS, read out
+        /// of the subnet store below, because a launch naming a subnet the account has none of
+        /// is refused `InvalidSubnetID.NotFound`.
+        in_a_subnet: bool,
+        /// How many security groups of that subnet's VPC the launch names; each is created
+        /// below for the same reason.
+        group_count: usize,
         monitoring: Option<bool>,
         tags: &'static [(&'static str, &'static str)],
     }
@@ -444,31 +449,31 @@ async fn launch_parameters_round_trip_through_describe_instances() {
     let cases = [
         Case {
             name: "bare launch",
-            image_id: "ami-00000000000000001",
+            image_id: "ami-0123456789abcdef0",
             instance_type: "t3.micro",
             key_name: None,
-            subnet_id: None,
-            group_ids: &[],
+            in_a_subnet: false,
+            group_count: 0,
             monitoring: None,
             tags: &[],
         },
         Case {
             name: "keyed, subnetted, one group, monitored",
-            image_id: "ami-00000000000000002",
+            image_id: "ami-0123456789abcdef1",
             instance_type: "m5.large",
             key_name: Some("deploy-key"),
-            subnet_id: Some("subnet-0123456789abcdef0"),
-            group_ids: &["sg-0123456789abcdef0"],
+            in_a_subnet: true,
+            group_count: 1,
             monitoring: Some(true),
             tags: &[("Name", "demo")],
         },
         Case {
             name: "two groups, three tags, monitoring off",
-            image_id: "ami-00000000000000003",
+            image_id: "ami-0123456789abcdef2",
             instance_type: "c7g.2xlarge",
             key_name: Some("other-key"),
-            subnet_id: Some("subnet-00000000000000abc"),
-            group_ids: &["sg-aaaaaaaaaaaaaaaaa", "sg-bbbbbbbbbbbbbbbbb"],
+            in_a_subnet: true,
+            group_count: 2,
             monitoring: Some(false),
             tags: &[("Name", "two"), ("env", "test"), ("empty", "")],
         },
@@ -476,6 +481,44 @@ async fn launch_parameters_round_trip_through_describe_instances() {
 
     for case in cases {
         let ec2 = Ec2::new();
+        // The subnet the row is placed in and the groups it names, both resolved against the
+        // account: a launch is held to naming resources the account really holds.
+        let subnets = ec2.call("DescribeSubnets", Vec::new()).await;
+        let held_subnet = ec2_query::elements(&subnets.body, "subnetId")
+            .first()
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {}: the Region must have a default subnet, got {}",
+                    case.name, subnets.body
+                )
+            });
+        let mut group_ids: Vec<String> = Vec::new();
+        for index in 0..case.group_count {
+            let created = ec2
+                .call(
+                    "CreateSecurityGroup",
+                    vec![
+                        p("GroupName", format!("launch-round-trip-{index}")),
+                        p("GroupDescription", "the group the launch names"),
+                    ],
+                )
+                .await;
+            assert_eq!(
+                created.status, 200,
+                "case {}: CreateSecurityGroup must succeed, got {}: {}",
+                case.name, created.status, created.body
+            );
+            group_ids.push(
+                ec2_query::element(&created.body, "groupId").unwrap_or_else(|| {
+                    panic!(
+                        "case {}: CreateSecurityGroup must report the group it minted: {}",
+                        case.name, created.body
+                    )
+                }),
+            );
+        }
+        let subnet_id = case.in_a_subnet.then(|| held_subnet.clone());
         let mut extra = vec![
             p("ImageId", case.image_id),
             p("InstanceType", case.instance_type),
@@ -491,11 +534,11 @@ async fn launch_parameters_round_trip_through_describe_instances() {
             );
             extra.push(p("KeyName", key_name));
         }
-        if let Some(subnet_id) = case.subnet_id {
+        if let Some(subnet_id) = subnet_id.as_deref() {
             extra.push(p("SubnetId", subnet_id));
         }
-        for (index, group_id) in case.group_ids.iter().enumerate() {
-            extra.push(p(&format!("SecurityGroupId.{}", index + 1), *group_id));
+        for (index, group_id) in group_ids.iter().enumerate() {
+            extra.push(p(&format!("SecurityGroupId.{}", index + 1), group_id));
         }
         if let Some(monitoring) = case.monitoring {
             extra.push(p("Monitoring.Enabled", monitoring.to_string()));
@@ -538,7 +581,7 @@ async fn launch_parameters_round_trip_through_describe_instances() {
             case.key_name,
             described.key_name
         );
-        match case.subnet_id {
+        match subnet_id.as_deref() {
             Some(subnet_id) => assert_eq!(
                 described.subnet_id.as_deref(),
                 Some(subnet_id),
@@ -582,7 +625,7 @@ async fn launch_parameters_round_trip_through_describe_instances() {
                 );
             }
         }
-        if case.group_ids.is_empty() {
+        if group_ids.is_empty() {
             // "Default: Amazon EC2 uses the default security group"
             // (`RunInstancesRequest$SecurityGroupIds`): a launch that named no group is
             // given its VPC's `default` group, which is what the instance reports —
@@ -611,15 +654,9 @@ async fn launch_parameters_round_trip_through_describe_instances() {
             );
         } else {
             assert_eq!(
-                described.group_ids,
-                case.group_ids
-                    .iter()
-                    .map(|group| (*group).to_string())
-                    .collect::<Vec<_>>(),
+                described.group_ids, group_ids,
                 "case {}: expected groups {:?}, got {:?}",
-                case.name,
-                case.group_ids,
-                described.group_ids
+                case.name, group_ids, described.group_ids
             );
         }
         assert_eq!(

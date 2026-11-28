@@ -174,7 +174,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::state::{
             deduplicate_ids, request_region, require_instance_record,
             require_service_state, user_initiated_reason,
+            INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_HIBERNATE,
             INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_SHUTDOWN,
+            INSTANCE_STATE_REASON_USER_INITIATED_HIBERNATE,
             INSTANCE_STATE_REASON_USER_INITIATED_SHUTDOWN, InstanceStateName, PendingTransition,
             MAX_RESOURCE_IDS,
         };
@@ -246,6 +248,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(Scaffolded::dry_run_operation());
         }
 
+        // Whether this call HIBERNATES the instances it stops: "hibernates the instance if
+        // the instance was enabled for hibernation" (`StopInstancesRequest$Hibernate`). A
+        // hibernating stop writes the instance's memory to its root volume instead of
+        // discarding it, so the reason it records is the hibernation's own — which is what
+        // tells a caller reading the instance back a hibernation from a plain shutdown. Every
+        // instance of the batch was held to the prerequisite above, so a request that reaches
+        // here hibernates every instance it names or none of them.
+        let (reason_code, reason_message) = if input.hibernate == Some(true) {
+            (
+                INSTANCE_STATE_REASON_USER_INITIATED_HIBERNATE,
+                INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_HIBERNATE,
+            )
+        } else {
+            (
+                INSTANCE_STATE_REASON_USER_INITIATED_SHUTDOWN,
+                INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_SHUTDOWN,
+            )
+        };
         let now = ::std::time::SystemTime::now();
         let mut changes: Vec<InstanceStateChange> = Vec::new();
         // The instances this call really MOVED, which are the ones whose moves it publishes:
@@ -267,10 +287,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     InstanceStateName::Stopped,
                 ));
                 instance.state_transition_reason = Some(user_initiated_reason(now));
-                instance.state_reason = Some((
-                    INSTANCE_STATE_REASON_USER_INITIATED_SHUTDOWN.to_string(),
-                    INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_SHUTDOWN.to_string(),
-                ));
+                instance.state_reason =
+                    Some((reason_code.to_string(), reason_message.to_string()));
                 moved.push(instance_id.clone());
             }
             changes.push(InstanceStateChange {

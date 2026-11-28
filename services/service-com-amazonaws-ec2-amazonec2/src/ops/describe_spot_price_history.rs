@@ -174,8 +174,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             FilterPattern, MAX_FILTER_MATCH_STEPS, MAX_FILTER_VALUE_BYTES, MAX_FILTER_VALUES,
             MAX_FILTERS, MAX_PAGE_SIZE, MAX_RESOURCE_IDS, MatchBudget,
             availability_zone_of_region, availability_zones_in_region, decode_page_token,
-            encode_page_token, instance_type_record, invalid_pagination_token_for,
-            offered_instance_types, request_region,
+            encode_page_token, format_price_micros, instance_type_record,
+            invalid_pagination_token_for, offered_instance_types, on_demand_micros, platform_of,
+            request_region, spot_price_micros, zone_position,
         };
 
         // A Spot price is a fact of a Region derived from the instance type catalog and the
@@ -646,47 +647,10 @@ pub const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 /// earliest the history holds.
 pub const MAX_HISTORY_DAYS: i64 = 90;
 
-/// How often a Spot price changes: the span between two consecutive change points, which is
-/// what makes the history a list of CHANGES rather than one entry per instant.
-///
-/// CHOSEN, like [`crate::state::CAPACITY_BLOCK_FEE_CENTS_PER_UNIT_HOUR`]: AWS publishes no
-/// schedule on which a Spot price moves, and neither the model nor a request carries one. A
-/// caller can rely on the RULE — a price changes at a point on this grid, is in force until
-/// the next one, and is reported with the instant it took effect — not on the span.
-pub const SECONDS_PER_PRICE_PERIOD: i64 = SECONDS_PER_DAY;
-
-/// Where `zone` sits in `zones`, the Availability Zones of its Region: the zone's own
-/// position, which is what [`spot_share_percent`] reads a per-zone share from. A zone the
-/// list does not hold cannot be reached — both callers took `zone` out of `zones` — and is
-/// read as the Region's first.
-fn zone_position(
-    zones: &[crate::state::AvailabilityZoneRecord],
-    zone: &crate::state::AvailabilityZoneRecord,
-) -> usize {
-    zones
-        .iter()
-        .position(|candidate| candidate.zone_id == zone.zone_id)
-        .unwrap_or(0)
-}
-
-/// The product description of a Spot price with the Amazon VPC qualifier stripped: the
-/// PLATFORM the price is for.
-///
-/// `Linux/UNIX` and `Linux/UNIX (Amazon VPC)` are the same platform reported for the two
-/// network kinds a Spot Instance can run in, and AWS prices them alike, so the qualifier is
-/// removed before anything is priced rather than being priced as a second platform.
-fn platform_of(product_description: &str) -> &str {
-    product_description
-        .strip_suffix(AMAZON_VPC_QUALIFIER)
-        .unwrap_or(product_description)
-}
-
-/// The qualifier a `RIProductDescription` carries for the VPC form of a platform.
-const AMAZON_VPC_QUALIFIER: &str = " (Amazon VPC)";
-
-/// The platform whose price carries a licence premium: the `Windows` member of the modelled
-/// `RIProductDescription` enum, as [`platform_of`] reads it.
-const WINDOWS_PLATFORM: &str = "Windows";
+/// How often a Spot price changes, as this crate's ONE Spot price derivation counts a change
+/// point ([`crate::state::SECONDS_PER_SPOT_PRICE_PERIOD`]): named here as well because the
+/// window this operation walks is counted in those periods.
+pub const SECONDS_PER_PRICE_PERIOD: i64 = crate::state::SECONDS_PER_SPOT_PRICE_PERIOD;
 
 // The rates an hour is priced from — per vCPU, per GiB and the Windows licence premium — are
 // this crate's ONE On-Demand basis (`crate::state::MICROS_PER_VCPU_HOUR` and its neighbours,
@@ -695,89 +659,13 @@ const WINDOWS_PLATFORM: &str = "Windows";
 // for the reason that constant gives: AWS's price list is published outside the model, and
 // what a caller can rely on is the RULE — a price is a function of the instance type's
 // published vCPUs and memory and of the platform's licence premium — not the rates.
-
-/// The lowest percentage of the On-Demand rate a Spot price falls to, and the highest. A
-/// Spot price is the On-Demand rate discounted into that band, which is what keeps every
-/// reported price below the On-Demand rate and above zero.
-///
-/// CHOSEN, like the rates themselves: AWS publishes the discount as varying with supply
-/// and demand, which this emulator holds no data for.
-const SPOT_FLOOR_PERCENT: u64 = 30;
-
-/// The top of that band. See [`SPOT_FLOOR_PERCENT`].
-const SPOT_CEILING_PERCENT: u64 = 70;
-
-/// How far along the band the share moves from one change point to the next, and how far it
-/// is offset for each further Availability Zone of the Region.
-///
-/// CHOSEN, with the band itself: the two only have to be shares of the rate that MOVE — a
-/// price history whose price never changed would be a history of nothing, and two zones of a
-/// Region do not sell their spare capacity at one price. Both steps are coprime with the
-/// band's width, so the share walks the whole band before it repeats.
-const SHARE_STEP_PERCENT: u64 = 7;
-
-/// The per-zone offset. See [`SHARE_STEP_PERCENT`].
-const ZONE_SHARE_OFFSET_PERCENT: u64 = 13;
-
-/// The micro-dollars a reported price is a whole multiple of: AWS publishes a Spot price to
-/// four decimal places of the currency, which is this many micro-dollars.
-const PRICE_QUANTUM_MICROS: u64 = 100;
-
-/// What one hour of `record`'s instance type costs On-Demand on `platform`, in
-/// micro-dollars: the crate's one On-Demand hour
-/// (`crate::state::on_demand_hour_micros`), told whether the platform priced carries a
-/// licence premium — which is this operation's own reading of its own `platform` member.
-fn on_demand_micros(record: &crate::state::InstanceTypeRecord, platform: &str) -> u64 {
-    crate::state::on_demand_hour_micros(record, platform == WINDOWS_PLATFORM)
-}
-
-/// The share of the On-Demand rate the Spot price of the Region's `zone_index`-th
-/// Availability Zone is at the change point `period`, as a percentage inside the band
-/// [`SPOT_FLOOR_PERCENT`]..=[`SPOT_CEILING_PERCENT`].
-///
-/// The share walks the band in [`SHARE_STEP_PERCENT`] steps, one step per change point,
-/// offset by [`ZONE_SHARE_OFFSET_PERCENT`] per zone: so it moves from each change point to
-/// the next, two zones of one Region differ at the same change point, and the same zone and
-/// change point always answer the same share.
-fn spot_share_percent(zone_index: usize, period: i64) -> u64 {
-    let band = SPOT_CEILING_PERCENT - SPOT_FLOOR_PERCENT + 1;
-    let zone = u64::try_from(zone_index).unwrap_or(0);
-    // The change point is a count of periods since the epoch, which is negative before it;
-    // `rem_euclid` is what keeps the walk inside the band on either side of it.
-    let steps = period
-        .rem_euclid(i64::try_from(band).unwrap_or(1))
-        .unsigned_abs();
-    let walked = steps
-        .saturating_mul(SHARE_STEP_PERCENT)
-        .saturating_add(zone.saturating_mul(ZONE_SHARE_OFFSET_PERCENT));
-    SPOT_FLOOR_PERCENT + walked % band
-}
-
-/// The Spot price in force from change point `period` in the Region's `zone_index`-th
-/// Availability Zone, for an instance type whose On-Demand rate on the priced platform is
-/// `on_demand_micros`, in micro-dollars: that rate at the share [`spot_share_percent`] gives.
-///
-/// DERIVED, not drawn: the same inputs always answer the same price, so repeated calls report
-/// a stable price and nothing has to be stored for one. The SHARE is a property of the zone
-/// at a change point rather than of one instance type — spare capacity is what a zone has, not
-/// what a type has — so at any one change point every type of a zone is discounted alike, and
-/// a price therefore stays ordered by the On-Demand rate it is a share of.
-fn spot_price_micros(on_demand_micros: u64, zone_index: usize, period: i64) -> u64 {
-    let micros = on_demand_micros.saturating_mul(spot_share_percent(zone_index, period)) / 100;
-    // Rounded to the places a price is published to, and never to nothing: a priced instance
-    // type costs something, however small its share of the rate is.
-    let rounded = micros
-        .saturating_add(PRICE_QUANTUM_MICROS / 2)
-        .saturating_div(PRICE_QUANTUM_MICROS)
-        .saturating_mul(PRICE_QUANTUM_MICROS);
-    rounded.max(PRICE_QUANTUM_MICROS)
-}
-
-/// `micros` micro-dollars as `SpotPrice$SpotPrice` carries a price: a decimal amount with
-/// the six fractional digits AWS publishes a Spot price with.
-fn format_price_micros(micros: u64) -> String {
-    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
-}
+//
+// The DERIVATION itself — the band a price is discounted into, the share one zone is at a
+// change point, the rounding a published price carries and the platform a product description
+// names — lives in `crate::state::spot_market_prices`, this crate's one Spot price. The
+// history this operation reports and the market price a Spot Instance request's bid is judged
+// against are therefore the same price, which is what lets a client pick a bid off this
+// history.
 
 /// `at` in the UTC form the `timestamp` filter's own doc gives — `ddd MMM dd HH:mm:ss UTC
 /// YYYY` — or `None` when `at` is not an instant that form can be written in.

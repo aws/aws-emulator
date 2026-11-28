@@ -223,6 +223,45 @@ pub fn filters(entries: &[(&str, &[&str])]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `InstanceType` a launch from an AMI built for `architecture` may name — `None` where
+/// the type this harness launches by default already runs it.
+///
+/// An instance runs the machine code its AMI holds, so a launch names an instance type whose
+/// processor architecture is the AMI's: a suite launching a published AMI therefore reads the
+/// AMI's own architecture and names a type for it, rather than leaving the pair to chance.
+/// `i386` and the EC2 Mac architectures are left to the default type, which is a
+/// previous-generation x86 type and runs a 32-bit AMI as well.
+pub fn instance_type_for_architecture(architecture: &str) -> Option<&'static str> {
+    match architecture {
+        "arm64" => Some("t4g.micro"),
+        "x86_64" => Some("t3.micro"),
+        _ => None,
+    }
+}
+
+/// The `InstanceType` parameters a launch from `image_id` has to carry so the AMI and the type
+/// have matching architectures — empty where the default type already runs the AMI, and empty
+/// for a value that names no AMI this account can see at all (there is then no architecture to
+/// match, and the launch's own refusal is what the suite is asking about).
+///
+/// The architecture is read off the AMI through `DescribeImages`, the operation that owns it,
+/// so no suite writes down which architecture a published AMI is built for.
+pub async fn launch_type_for_image(
+    router: &MultiServiceRouter,
+    region: &str,
+    _case: &str,
+    image_id: &str,
+) -> Vec<(String, String)> {
+    let (status, body) = call(router, region, "DescribeImages", &indexed("ImageId", &[image_id])).await;
+    if status != 200 {
+        return Vec::new();
+    }
+    let architecture = element(&body, "architecture").unwrap_or_default();
+    instance_type_for_architecture(&architecture)
+        .map(|instance_type| vec![("InstanceType".to_string(), instance_type.to_string())])
+        .unwrap_or_default()
+}
+
 /// The XML namespace this service's response envelopes carry, as the model binds it
 /// (`smithy_query(query="service_info")`'s `xmlNamespace`).
 pub const XML_NAMESPACE: &str = "http://ec2.amazonaws.com/doc/2016-11-15";

@@ -355,17 +355,21 @@ async fn every_request_parameter_round_trips_through_the_describe() {
             vec![("type", request_type.to_string())],
         ));
     }
-    // The `InstanceInterruptionBehavior` catalog, likewise.
+    // The `InstanceInterruptionBehavior` catalog, likewise. A behaviour that KEEPS the
+    // instance for a later start is offered on a persistent request alone, so each of those
+    // rows asks for the request type that can perform it.
     for behavior in ec2::ops::types::INSTANCE_INTERRUPTION_BEHAVIOR_VALUES {
-        rows.push((
-            behavior,
-            [
-                one_request(),
-                vec![p("InstanceInterruptionBehavior", *behavior)],
-            ]
-            .concat(),
-            vec![("instanceInterruptionBehavior", (*behavior).to_string())],
-        ));
+        let mut params = [
+            one_request(),
+            vec![p("InstanceInterruptionBehavior", *behavior)],
+        ]
+        .concat();
+        let mut expected = vec![("instanceInterruptionBehavior", (*behavior).to_string())];
+        if *behavior != "terminate" {
+            params.push(p("Type", SPOT_INSTANCE_TYPE_PERSISTENT));
+            expected.push(("type", SPOT_INSTANCE_TYPE_PERSISTENT.to_string()));
+        }
+        rows.push((behavior, params, expected));
     }
     // The launch specification's scalar members, one row each so no row depends on another.
     rows.push((

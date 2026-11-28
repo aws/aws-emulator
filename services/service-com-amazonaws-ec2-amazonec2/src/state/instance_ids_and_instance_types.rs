@@ -1051,6 +1051,21 @@ pub const INSTANCE_STATE_REASON_USER_INITIATED_SHUTDOWN: &str = "Client.UserInit
 pub const INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_SHUTDOWN: &str =
     "Client.UserInitiatedShutdown: User initiated shutdown";
 
+/// The `StateReason$Code` EC2 records on an instance a caller asked to HIBERNATE —
+/// `StopInstances` with "`Hibernate` […] `true`", which "hibernates the instance if the
+/// instance was enabled for hibernation" (`StopInstancesRequest$Hibernate`).
+///
+/// A hibernating stop is not the same stop: the instance's memory is written to its root
+/// volume and read back on the next start, so the reason a caller reads back is what tells a
+/// hibernation from a plain shutdown — and it is the reason this emulator records for one.
+pub const INSTANCE_STATE_REASON_USER_INITIATED_HIBERNATE: &str = "Client.UserInitiatedHibernate";
+
+/// The `StateReason$Message` that goes with
+/// [`INSTANCE_STATE_REASON_USER_INITIATED_HIBERNATE`], the same shape as the shutdown message
+/// beside it: the code followed by its description.
+pub const INSTANCE_STATE_REASON_MESSAGE_USER_INITIATED_HIBERNATE: &str =
+    "Client.UserInitiatedHibernate: User initiated hibernate";
+
 /// The `StateReason$Code` and `$Message` of an instance that is still being launched.
 ///
 /// "The reason for the most recent state transition" (`Instance$StateReason`): the most
@@ -1917,6 +1932,20 @@ pub(super) const FIRST_HIBERNATION_GENERATION: u32 = 3;
 /// The first burstable generation the hibernation prerequisites name (T2).
 pub(super) const FIRST_HIBERNATION_BURSTABLE_GENERATION: u32 = 2;
 
+/// The families the hibernation prerequisites do NOT name although their family letters and
+/// generation would otherwise admit them: the AMD variants of the fifth-generation compute
+/// optimized family. The prerequisites list the C family's plain, `d` and `n` variants of
+/// that generation and the AMD variants of the general purpose and memory optimized families
+/// beside them, so a type of one of these families cannot hibernate however much memory it
+/// has.
+///
+/// A LIST for the same reason [`PREVIOUS_GENERATION_FAMILIES`] is one: which families the
+/// prerequisites name is published rather than derivable, so the families they leave out are
+/// read from that list rather than from a rule about the capability letters. A family whose
+/// every size this catalog publishes a row for states the fact on those rows instead
+/// (`PublishedInstanceTypeFacts::hibernation`); these are families the catalog derives.
+pub(super) const HIBERNATION_UNSUPPORTED_FAMILIES: [&str; 2] = ["c5a", "c5ad"];
+
 /// The family of the first AWS Graviton instance type.
 pub(super) const FIRST_GRAVITON_FAMILY: &str = "a1";
 
@@ -2408,7 +2437,8 @@ pub(super) fn nvme_instance_storage(name: &InstanceTypeName<'_>) -> bool {
 /// Can this instance type hibernate?
 ///
 /// The hibernation prerequisites name the supported families — the C, M and R families
-/// from their third generation on and the T families from their second — and bound the
+/// from their third generation on and the T families from their second, less the ones
+/// [`HIBERNATION_UNSUPPORTED_FAMILIES`] names — and bound the
 /// instance's RAM at [`MAX_HIBERNATION_MEMORY_MIB`]. Hibernation saves the instance's
 /// memory to its EBS root volume, which a bare metal instance has no hypervisor to do, so
 /// a bare metal size of a supported family cannot hibernate.
@@ -2424,6 +2454,7 @@ pub(super) fn hibernation_supported(name: &InstanceTypeName<'_>, memory_mib: i64
         FIRST_HIBERNATION_GENERATION
     };
     matches!(name.root, "c" | "m" | "r" | "t")
+        && !HIBERNATION_UNSUPPORTED_FAMILIES.contains(&name.family)
         && name.generation.is_some_and(|generation| generation >= first)
         && !name.bare_metal()
         && memory_mib < MAX_HIBERNATION_MEMORY_MIB

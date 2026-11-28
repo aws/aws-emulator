@@ -421,6 +421,18 @@ async fn the_launch_resolves_the_parameter_a_stored_version_carries() {
     let (router, engine) = super::ec2_query::emulator();
     let (published, published_image) = published_parameter(&engine);
     let submitted = alias(&published);
+    // An instance runs the machine code its AMI holds, so the version names a type whose
+    // architecture is that of the AMI the parameter resolves to.
+    let instance_type = super::ec2_query::launch_type_for_image(
+        &router,
+        REGION,
+        "the stored version's launch",
+        &published_image,
+    )
+    .await
+    .first()
+    .map(|(_, instance_type)| instance_type.clone())
+    .unwrap_or_else(|| INSTANCE_TYPE.to_string());
 
     let (status, body) = api(
         &router,
@@ -428,7 +440,7 @@ async fn the_launch_resolves_the_parameter_a_stored_version_carries() {
         &[
             p("LaunchTemplateName", "alias.launch.0"),
             data("ImageId", submitted.clone()),
-            data("InstanceType", INSTANCE_TYPE),
+            data("InstanceType", instance_type),
         ],
     )
     .await;

@@ -37,10 +37,12 @@
 //! and [`crate::state::ComAmazonawsEc2Amazonec2State::withdraw_launch_under_unusable_volume_key`]
 //! is what the refusal leaves behind).
 //! Hibernation is admitted against THAT volume: "set to true to enable your instance for
-//! hibernation" is valid "only if the instance meets the hibernation prerequisites", of which
-//! an encrypted root volume is one, so a launch asking for it over a root device that would
-//! not be encrypted is refused `UnsupportedHibernationConfiguration` before anything is
-//! created. An entry for any OTHER device neither moves the root device nor creates a volume
+//! hibernation" is valid "only if the instance meets the hibernation prerequisites", which
+//! are read in one place ([`crate::state::hibernation_prerequisite_refusal`]) — the instance
+//! type has to be one hibernation is offered on, the root device has to be encrypted and that
+//! volume has to be large enough to hold the instance's memory — so a launch meeting none of
+//! them is refused `UnsupportedHibernationConfiguration` before anything is created. An entry
+//! for any OTHER device neither moves the root device nor creates a volume
 //! of its own here.
 //!
 //! The MOVES every instance of a launch then makes are published as they fall due: an
@@ -945,6 +947,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::ComAmazonawsEc2Amazonec2State::ensure_default_network`]).
         store.ensure_default_network(&region);
 
+        // "The ID of the subnet to launch the instance into" (`RunInstancesRequest$SubnetId`):
+        // the subnet is where every part of the instance's network identity comes from — its
+        // VPC, its Availability Zone, its primary private address and the groups applied to
+        // its interface — so an id the account holds no subnet under names a network no
+        // instance could be placed in. Refused with the subnet's own not-found class
+        // ([`crate::state::invalid_subnet_id_not_found`], the same refusal an interface
+        // specification naming an unknown subnet is already given, so one launch cannot read
+        // the member two ways) rather than served as an instance with no network at all.
+        // Asked HERE, before the first write and before the DryRun arm, with the rest of the
+        // resources the request NAMES.
+        if let Some(subnet_id) = input
+            .subnet_id
+            .as_deref()
+            .filter(|subnet_id| !subnet_id.is_empty())
+        {
+            if !store.subnets.contains_key(subnet_id) {
+                return Err(crate::state::invalid_subnet_id_not_found(subnet_id));
+            }
+        }
+
         // The interfaces the launch named, resolved against the account: the subnet each one
         // sits in and, for an entry that names an interface by id, the interface of the
         // account it attaches. Resolved HERE, before the launch reads its own subnet,
@@ -1018,11 +1040,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // instance holding an interface it could not reach.
         refuse_interfaces_outside_zone(&planned_interfaces, &availability_zone)?;
 
-        // Idempotency: one ClientToken names the one reservation it minted. Looked up
+        // Idempotency: one ClientToken names the one launch it was spent on. Looked up
         // here, answered below the DryRun check, because a replay stores nothing and
-        // so passes the ceilings a fresh launch has to clear.
+        // so passes the ceilings a fresh launch has to clear — and a token spent on ANOTHER
+        // launch is refused here and now ([`crate::state::launch_idempotency`]): the request
+        // is not the one that token named, so there is no reservation to answer it with and
+        // no second launch to make either.
+        let launch_digest = crate::state::launch_parameters_digest(&input);
         let replayed = match input.client_token.as_deref() {
-            Some(token) => store.client_tokens.get(token).cloned(),
+            Some(token) => match store.client_tokens.get(token) {
+                Some(claim) if claim.parameters != launch_digest => {
+                    return Err(crate::state::launch_idempotent_parameter_mismatch());
+                }
+                claim => claim.map(|claim| claim.reservation_id.clone()),
+            },
             None => None,
         };
 
@@ -1053,6 +1084,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &instance_type,
                 &availability_zone,
             ));
+        }
+        // An instance runs the machine code its AMI holds, so an AMI built for a processor
+        // architecture the instance type does not have could never boot on it: "specify an
+        // instance type and an AMI that have matching architectures". Weighed through the ONE
+        // place a launch's AMI and its instance type are weighed against each other
+        // ([`crate::state::ComAmazonawsEc2Amazonec2State::launch_architecture_mismatch`]),
+        // which the launches another service makes into this account already go through — so
+        // no launch path can accept what another refuses — and asked BEFORE the first write,
+        // so a refused launch creates no instance at all.
+        if let Some(message) = store.launch_architecture_mismatch(&image_id, &instance_type) {
+            return Err(Scaffolded::invalid_parameter_value(message));
         }
         // How many interfaces an instance may hold is a fact of its instance type, so a
         // launch that names more than its type can hold is refused before anything is
@@ -1144,22 +1186,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
         // "Set to true to enable your instance for hibernation"
-        // (`HibernationOptionsRequest$Configured`) — and hibernation has prerequisites: the
-        // instance writes its memory to its root volume, so "the root volume must be an
-        // encrypted Amazon EBS volume" (the EC2 User Guide's "Hibernate your Amazon EC2
-        // instance"). A launch that asks for hibernation over a root device that would not be
-        // encrypted is refused HERE, before the first write, so it creates neither an
-        // instance nor a volume.
+        // (`HibernationOptionsRequest$Configured`) is valid "only if the instance meets the
+        // hibernation prerequisites", which are read in the ONE place this crate reads them
+        // ([`crate::state::hibernation_prerequisite_refusal`]): the instance type has to be
+        // one hibernation is offered on, the root device has to be an encrypted Amazon EBS
+        // volume and that volume has to be large enough to hold the memory the instance runs
+        // with. A launch that meets none of them is refused HERE, before the first write, so
+        // it creates neither an instance nor a volume.
         if input
             .hibernation_options
             .as_ref()
             .and_then(|options| options.configured)
             .unwrap_or(false)
-            && root_block_device
-                .as_ref()
-                .is_none_or(|ebs| ebs.encrypted != Some(true))
         {
-            return Err(Scaffolded::hibernation_requires_encrypted_root_volume());
+            if let Some(refusal) = crate::state::hibernation_prerequisite_refusal(
+                &instance_type,
+                root_block_device.as_ref(),
+            ) {
+                return Err(refusal);
+            }
         }
         let monitoring_state = if input
             .monitoring
@@ -1840,7 +1885,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         if let Some(token) = input.client_token.clone() {
-            store.client_tokens.insert(token, reservation_id.clone());
+            store.client_tokens.insert(
+                token,
+                crate::state::LaunchClaim {
+                    reservation_id: reservation_id.clone(),
+                    parameters: launch_digest,
+                },
+            );
         }
 
         // The hosts this launch put instances on now report them: a Dedicated Host's

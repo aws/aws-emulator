@@ -204,17 +204,15 @@ pub(crate) async fn launch_and_read_back(
     router: &MultiServiceRouter,
     image_id: &str,
 ) -> String {
-    let (status, body) = call(
-        router,
-        REGION,
-        "RunInstances",
-        &[
-            param("ImageId", image_id),
-            param("MinCount", "1"),
-            param("MaxCount", "1"),
-        ],
-    )
-    .await;
+    let mut params = vec![
+        param("ImageId", image_id),
+        param("MinCount", "1"),
+        param("MaxCount", "1"),
+    ];
+    // An instance runs the machine code its AMI holds, so the launch names a type whose
+    // architecture is this AMI's own — read off the AMI rather than written here.
+    params.extend(super::ec2_query::launch_type_for_image(router, REGION, case, image_id).await);
+    let (status, body) = call(router, REGION, "RunInstances", &params).await;
     assert_eq!(
         status, 200,
         "case {case:?}: RunInstances with the resolved AMI must succeed, got {status} with \

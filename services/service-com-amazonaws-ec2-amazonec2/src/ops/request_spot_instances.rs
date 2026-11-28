@@ -5,8 +5,12 @@
 //! request's launch specification, stores each in [`crate::state`] as the modelled
 //! `SpotInstanceRequest` `DescribeSpotInstanceRequests` reports, and answers them back out
 //! of the store. A request is `open` / `pending-evaluation`, and the clock — not a caller —
-//! either fulfills it (launching the Spot Instance it asked for) or expires it when its
-//! `ValidUntil` is reached. This is the ONLY file to touch for this operation.
+//! either fulfills it (launching the Spot Instance it asked for), leaves it `price-too-low`
+//! when the maximum price it named is below the Spot price in force
+//! ([`crate::state::spot_market_price_micros`], the price `DescribeSpotPriceHistory`
+//! publishes), or expires it when its `ValidUntil` is reached. A request that names an
+//! `IamInstanceProfile` gives the instance its fulfillment launches that profile. This is the
+//! ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -189,9 +193,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             availability_zones_in_region, date_time_to_system_time, due_instant,
             due_system_time, duration_until, invalid_group_not_found,
             invalid_subnet_id_not_found, request_region, require_service_state,
-            require_visible_image, resource_count_exceeded,
+            require_visible_image, resolve_iam_instance_profile, resource_count_exceeded,
             spot_instance_request_payload_bytes, system_time_to_date_time, tag_list,
-            validate_hourly_price, validate_kernel_or_ramdisk_id, validate_tag_size,
+            unheld_iam_instance_profile, validate_hourly_price, validate_kernel_or_ramdisk_id,
+            validate_tag_size,
         };
 
         // The launch specification IS the request's description of the instance to launch,
@@ -219,11 +224,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(Scaffolded::not_implemented(
                 "RequestSpotInstances with a block device mapping",
-            ));
-        }
-        if launch.iam_instance_profile.is_some() {
-            return Err(Scaffolded::not_implemented(
-                "RequestSpotInstances with an IAM instance profile",
             ));
         }
 
@@ -280,6 +280,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "Invalid value '{interruption_behavior}' for instanceInterruptionBehavior. \
                  Valid values: {}",
                 INSTANCE_INTERRUPTION_BEHAVIOR_VALUES.join(" | ")
+            )));
+        }
+        // Stopping or hibernating an interrupted Spot Instance keeps it to be STARTED again,
+        // which only a request that outlives its instance can do: "the Spot Instance request
+        // type" `one-time` is satisfied the moment its instance launches, so the two
+        // behaviours are offered on a `persistent` request alone (the EC2 User Guide's "Spot
+        // Instance interruptions"). A one-time request asking for either names an
+        // interruption it could never perform, so the two members cannot be served together.
+        if request_type == SPOT_INSTANCE_TYPE_ONE_TIME
+            && interruption_behavior != INSTANCE_INTERRUPTION_BEHAVIOR_TERMINATE
+        {
+            return Err(crate::state::invalid_parameter_combination(format!(
+                "The request with type '{request_type}' is not supported when \
+                 instanceInterruptionBehavior is set to '{interruption_behavior}'."
             )));
         }
 
@@ -379,6 +393,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 |zone| zone.zone_name.as_str(),
             )?;
         }
+
+        // "The IAM instance profile" (`RequestSpotLaunchSpecification$IamInstanceProfile`):
+        // the instance a fulfillment launches RUNS AS that profile, so the reference is read
+        // through the ONE reading of that member this crate has — the same one `RunInstances`
+        // and `AssociateIamInstanceProfile` use, so a profile cannot be spelled one way here
+        // and another there — and the profile has to EXIST, asked of the service that owns it.
+        // A reference this service cannot act on refuses the whole request rather than being
+        // accepted and dropped, which would leave the instance running as no profile at all.
+        // Asked BEFORE this store's guard is taken, because the ask is a call into another
+        // service.
+        let iam_instance_profile = match launch.iam_instance_profile.as_ref() {
+            Some(specification) => {
+                let resolved = resolve_iam_instance_profile(&*self.engine, specification)?;
+                if let Some(refusal) =
+                    unheld_iam_instance_profile(ctx, &region, specification).await
+                {
+                    return Err(refusal);
+                }
+                Some(resolved)
+            }
+            None => None,
+        };
 
         // The request's own window. "The request becomes active at this date and time"
         // (`ValidFrom`), so a start date in the future is when the fulfillment falls due
@@ -545,7 +581,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .collect(),
                 ),
                 block_device_mappings: None,
-                iam_instance_profile: None,
+                // The profile the specification named, reported back as the request's own
+                // launch specification carries it; the association over the instance a
+                // fulfillment launches is recorded there, off the resolved profile stored
+                // with the request.
+                iam_instance_profile: launch.iam_instance_profile.clone(),
                 network_interfaces: None,
             }),
             tags: Some(tag_list(&tags)),
@@ -614,6 +654,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 valid_until_at,
                 &region,
                 input.client_token.as_deref(),
+                iam_instance_profile.clone(),
             ));
         }
         if let Some(token) = input.client_token.clone() {

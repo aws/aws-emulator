@@ -756,6 +756,9 @@ impl ComAmazonawsEc2Amazonec2State {
             valid_until_at,
             spec.region,
             None,
+            // A fleet's pool is placed from a launch template version, which this path reads
+            // no instance profile out of, so the instance it places runs as none.
+            None,
         );
         // The fleet's capacity is placed BY THIS CALL, so the request it placed is fulfilled
         // here rather than left for the clock: the instance the fleet reports has to exist

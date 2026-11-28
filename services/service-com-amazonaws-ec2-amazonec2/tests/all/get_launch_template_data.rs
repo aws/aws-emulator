@@ -402,9 +402,9 @@ async fn reported_data_is_the_instances_own_configuration() {
         Case {
             label: "a burstable launch of another family",
             held_image: true,
-            params: vec![p("InstanceType", "t4g.small")],
+            params: vec![p("InstanceType", "t3a.small")],
             expected: vec![
-                ("instanceType", "t4g.small"),
+                ("instanceType", "t3a.small"),
                 ("creditSpecification.cpuCredits", "unlimited"),
             ],
             absent: vec!["userData"],

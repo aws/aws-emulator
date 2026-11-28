@@ -584,18 +584,19 @@ async fn the_newest_image_matching_a_name_pattern_can_be_launched() {
             "case {pattern:?}: expected the newest match to be {expected_newest:?}, got {newest:?}"
         );
 
-        // The id the newest match carries launches, and the instance reports it back.
-        let run = super::ec2_query::call(
-            &router,
-            REGION,
-            "RunInstances",
-            &[
-                param("ImageId", newest.image_id.clone()),
-                param("MinCount", "1"),
-                param("MaxCount", "1"),
-            ],
-        )
-        .await;
+        // The id the newest match carries launches, and the instance reports it back. The
+        // launch names a type whose architecture is the AMI's own: an instance runs the
+        // machine code its AMI holds.
+        let mut launch = vec![
+            param("ImageId", newest.image_id.clone()),
+            param("MinCount", "1"),
+            param("MaxCount", "1"),
+        ];
+        launch.extend(
+            super::ec2_query::launch_type_for_image(&router, REGION, pattern, &newest.image_id)
+                .await,
+        );
+        let run = super::ec2_query::call(&router, REGION, "RunInstances", &launch).await;
         assert_eq!(
             run.0, 200,
             "case {pattern:?}: RunInstances with the resolved id must succeed, got {} {}",

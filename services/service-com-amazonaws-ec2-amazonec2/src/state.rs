@@ -2738,6 +2738,31 @@ pub use instance_boots::*;
 /// [`ComAmazonawsEc2Amazonec2State::materialize_due_transitions`].
 pub mod instance_mapped_public_ipv4;
 
+/// What a launch has to be for HIBERNATION to be enabled on it — the instance type, the root
+/// device's encryption and its size — read in one place so every launch path that admits
+/// `HibernationOptions` reaches the same verdict. A SUBMODULE for the same reason
+/// [`image_usage_reports`] is one, and `pub use` keeps every name reachable as
+/// `crate::state::<name>`.
+pub mod hibernation_prerequisites;
+pub use hibernation_prerequisites::*;
+
+/// What one `RunInstances` `ClientToken` claimed — the reservation it minted and the digest of
+/// the launch it was spent on — so a replay answers that reservation and a request reusing the
+/// token with other parameters is refused. A SUBMODULE for the same reason
+/// [`image_usage_reports`] is one, and `pub use` keeps every name reachable as
+/// `crate::state::<name>`.
+pub mod launch_idempotency;
+pub use launch_idempotency::*;
+
+/// The Spot PRICE of an instance type in one Availability Zone: the market price a Spot
+/// Instance request's maximum price is weighed against and the one `DescribeSpotPriceHistory`
+/// reports a history of — one derivation, so a bid a client chose off the history is judged
+/// against the price the history showed it. A SUBMODULE for the same reason
+/// [`image_usage_reports`] is one, and `pub use` keeps every name reachable as
+/// `crate::state::<name>`.
+pub mod spot_market_prices;
+pub use spot_market_prices::*;
+
 /// The PROGRAM an instance's own user data gives its guest to run at boot — the commands
 /// cloud-init runs on every boot and the ones it runs once. A SUBMODULE for the same reason
 /// [`image_usage_reports`] is one.

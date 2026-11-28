@@ -9,6 +9,11 @@
 
 use super::*;
 
+// The modelled shape an IAM instance profile reference is reported as
+// (`IamInstanceProfileAssociation$IamInstanceProfile`), which a request stores the resolved
+// profile of its launch specification as.
+use crate::ops::types::IamInstanceProfile;
+
 /// "`open` - The request is waiting to be fulfilled" — the `SpotInstanceState` enum's
 /// `open` member, which is where every request a `RequestSpotInstances` mints starts.
 pub const SPOT_REQUEST_STATE_OPEN: &str = "open";
@@ -38,6 +43,12 @@ pub const SPOT_STATUS_SCHEDULE_EXPIRED: &str = "schedule-expired";
 /// The status code of a request that could not be fulfilled for want of capacity.
 pub const SPOT_STATUS_CAPACITY_NOT_AVAILABLE: &str = "capacity-not-available";
 
+/// The status code of a request whose maximum price is below the Spot price in force: "if you
+/// specify a maximum price, your instances will be interrupted more frequently"
+/// (`RequestSpotInstancesRequest$SpotPrice`), and a maximum below the market price buys no
+/// capacity at all, so the request stays `open` carrying this code and launches nothing.
+pub const SPOT_STATUS_PRICE_TOO_LOW: &str = "price-too-low";
+
 /// The description [`SPOT_STATUS_PENDING_EVALUATION`] carries: "The description for the
 /// status code" (`SpotInstanceStatus$Message`). An EXAMPLE wording of the code, which is
 /// what clients branch on.
@@ -54,6 +65,18 @@ pub const SPOT_STATUS_MESSAGE_SCHEDULE_EXPIRED: &str =
 /// The description [`SPOT_STATUS_CAPACITY_NOT_AVAILABLE`] carries.
 pub const SPOT_STATUS_MESSAGE_CAPACITY_NOT_AVAILABLE: &str =
     "There is no Spot capacity available that matches your request.";
+
+/// The description [`SPOT_STATUS_PRICE_TOO_LOW`] carries, as `(bid, market)` fills it: the
+/// maximum price the request named and the price fulfilling it would take, both read off the
+/// request and this crate's one Spot price ([`spot_market_price_micros`]) rather than written
+/// down here.
+#[must_use]
+pub fn spot_status_message_price_too_low(bid: &str, market: &str) -> String {
+    format!(
+        "Your Spot request price of {bid} is lower than the minimum required Spot request \
+         fulfillment price of {market}."
+    )
+}
 
 /// The `canceled-before-fulfillment` Spot request status code, one of the Spot request status
 /// codes `SpotInstanceStatus$Code` points at: a request cancelled while it was still waiting
@@ -349,6 +372,15 @@ pub struct SpotInstanceRequestRecord {
     /// The Region the request was made in, which the instance a fulfillment launches
     /// needs for its private DNS name. Not a member of any modelled Spot shape.
     pub region: String,
+    /// The IAM instance profile the instance a fulfillment launches RUNS AS, as the request's
+    /// launch specification named it and the account's IAM records resolved it
+    /// ([`resolve_iam_instance_profile`]) — or `None` for a specification that named none.
+    ///
+    /// Resolved by the CALL rather than by the fulfillment, because resolving it is an ask of
+    /// the service that owns the profile; what the fulfillment then does with it is record the
+    /// association over the instance it launches, through the one writer of one
+    /// ([`ComAmazonawsEc2Amazonec2State::insert_iam_instance_profile_association`]).
+    pub iam_instance_profile: Option<IamInstanceProfile>,
 }
 
 /// The caller-chosen bytes one stored Spot Instance request holds: the launch
@@ -399,6 +431,18 @@ pub fn spot_instance_request_payload_bytes(
             .map(super::block_device_mapping_bytes)
             .fold(0usize, usize::saturating_add)
     });
+    // The IAM instance profile the specification named, which the record retains as given and
+    // the instance a fulfillment launches retains resolved.
+    let profile_bytes: usize = launch.map_or(0, |launch| {
+        launch
+            .iam_instance_profile
+            .as_ref()
+            .map_or(0, |profile| {
+                profile.arn.as_ref().map_or(0, String::len)
+                    + profile.name.as_ref().map_or(0, String::len)
+            })
+            .saturating_mul(2)
+    });
     launch
         .and_then(|launch| launch.user_data.as_ref())
         .map_or(0, String::len)
@@ -424,6 +468,7 @@ pub fn spot_instance_request_payload_bytes(
         )
         .saturating_add(group_bytes)
         .saturating_add(mapping_bytes)
+        .saturating_add(profile_bytes)
         .saturating_add(placement_bytes)
         .saturating_add(tag_list_bytes(view.tags.as_deref().unwrap_or_default()))
         .saturating_add(view.launch_group.as_ref().map_or(0, String::len))
@@ -513,6 +558,10 @@ impl ComAmazonawsEc2Amazonec2State {
     /// the view's own `SpotInstanceRequestId` is set from it, and the record's bytes are
     /// charged against [`MAX_STORED_BYTES`] by the one definition of that charge, so no
     /// caller can store a request the byte budget has not been told about.
+    ///
+    /// `iam_instance_profile` is the profile the instance a fulfillment launches runs as,
+    /// already resolved against the account's IAM records by the caller — `None` for a launch
+    /// specification that named none, which is every launch a fleet places.
     pub fn insert_spot_instance_request(
         &mut self,
         mut view: SpotInstanceRequest,
@@ -520,6 +569,7 @@ impl ComAmazonawsEc2Amazonec2State {
         valid_until_at: Instant,
         region: &str,
         client_token: Option<&str>,
+        iam_instance_profile: Option<IamInstanceProfile>,
     ) -> String {
         let request_id = self.next_id(SPOT_INSTANCE_REQUEST_ID_PREFIX);
         view.spot_instance_request_id = Some(request_id.clone());
@@ -531,6 +581,7 @@ impl ComAmazonawsEc2Amazonec2State {
                 fulfillment,
                 valid_until_at,
                 region: region.to_string(),
+                iam_instance_profile,
             },
         );
         request_id
@@ -637,6 +688,19 @@ impl ComAmazonawsEc2Amazonec2State {
             .as_ref()
             .map_or_else(SystemTime::now, |fulfillment| fulfillment.at);
 
+        // "The maximum price per unit hour that you are willing to pay for a Spot Instance"
+        // (`RequestSpotInstancesRequest$SpotPrice`): a maximum BELOW the Spot price in force
+        // buys no capacity, so the request is not fulfilled — it stays `open` carrying
+        // [`SPOT_STATUS_PRICE_TOO_LOW`] and launches no instance. Asked at the instant the
+        // fulfillment falls due, against the price this crate publishes for that zone, type
+        // and product at that instant ([`spot_market_price_micros`], the same price
+        // `DescribeSpotPriceHistory` reports), so a bid a client chose off the history is
+        // judged against the price the history showed it.
+        if let Some((bid, market)) = self.spot_bid_below_market(request_id, at) {
+            self.leave_spot_instance_request_underpriced(request_id, at, &bid, &market);
+            return;
+        }
+
         let Some(launched) = self.launch_specified_instance(SpecifiedLaunch {
             launch: &launch,
             region: &region,
@@ -653,6 +717,23 @@ impl ComAmazonawsEc2Amazonec2State {
             instance_id,
             availability_zone,
         } = launched;
+
+        // "The IAM instance profile" the specification named
+        // (`RequestSpotLaunchSpecification$IamInstanceProfile`): the instance this fulfillment
+        // launched RUNS AS that profile, recorded over it as an association of its own through
+        // the store's one writer of one — so the instance reports the profile off the same
+        // record `DescribeIamInstanceProfileAssociations` reports, exactly as an on-demand
+        // launch that named one does.
+        if let Some(profile) = self
+            .spot_instance_requests
+            .get(request_id)
+            .and_then(|record| record.iam_instance_profile.clone())
+        {
+            self.insert_iam_instance_profile_association(IamInstanceProfileAssociationSpec {
+                instance_id: instance_id.clone(),
+                iam_instance_profile: profile,
+            });
+        }
 
         if let Some(record) = self.spot_instance_requests.get_mut(request_id) {
             record.view.state = Some(SPOT_REQUEST_STATE_ACTIVE.to_string());
@@ -693,6 +774,89 @@ impl ComAmazonawsEc2Amazonec2State {
             });
             record.fulfillment = None;
         }
+    }
+
+    /// Leave one due Spot Instance request `open` carrying [`SPOT_STATUS_PRICE_TOO_LOW`]: the
+    /// maximum price it named (`bid`) is below the Spot price fulfilling it would take
+    /// (`market`), so no capacity was bought and no instance was launched.
+    ///
+    /// The request stays in [`SPOT_REQUEST_STATE_OPEN`] — "the request is waiting to be
+    /// fulfilled" — and owes no further fulfillment: the price was evaluated at the instant
+    /// the fulfillment fell due, and what ends such a request is its own validity window
+    /// ([`Self::materialize_due_spot_instance_requests`]'s expiry, which still applies).
+    pub(super) fn leave_spot_instance_request_underpriced(
+        &mut self,
+        request_id: &str,
+        at: SystemTime,
+        bid: &str,
+        market: &str,
+    ) {
+        if let Some(record) = self.spot_instance_requests.get_mut(request_id) {
+            record.view.status = Some(SpotInstanceStatus {
+                code: Some(SPOT_STATUS_PRICE_TOO_LOW.to_string()),
+                message: Some(spot_status_message_price_too_low(bid, market)),
+                update_time: Some(system_time_to_date_time(at)),
+            });
+            record.fulfillment = None;
+        }
+    }
+
+    /// The maximum price the Spot Instance request `request_id` named and the Spot price in
+    /// force for it at `at`, as `(bid, market)` — or `None` when the bid is at or above that
+    /// price, which is the request this store fulfills.
+    ///
+    /// `None` as well for a request that named NO maximum price: "if you do not specify this
+    /// parameter, you will pay the current Spot price"
+    /// (`RequestSpotInstancesRequest$SpotPrice`), so such a request is never priced out — and
+    /// for one whose instance type this emulator publishes no facts for, which has no price to
+    /// be judged against. The zone the price is read for is the one the launch would be placed
+    /// in, read exactly as [`Self::launch_specified_instance`] reads it, so the request is
+    /// judged against the price of the zone its instance would run in.
+    fn spot_bid_below_market(
+        &self,
+        request_id: &str,
+        at: SystemTime,
+    ) -> Option<(String, String)> {
+        let record = self.spot_instance_requests.get(request_id)?;
+        let bid = record
+            .view
+            .spot_price
+            .as_deref()
+            .filter(|price| !price.is_empty())?;
+        let bid_micros = hourly_price_micros(bid)?;
+        let launch = record.view.launch_specification.as_ref()?;
+        let instance_type = launch
+            .instance_type
+            .as_deref()
+            .filter(|instance_type| !instance_type.is_empty())
+            .unwrap_or(DEFAULT_INSTANCE_TYPE);
+        let zone = launch
+            .placement
+            .as_ref()
+            .and_then(|placement| placement.availability_zone.clone())
+            .filter(|zone| !zone.is_empty())
+            .or_else(|| {
+                availability_zones_in_region(&record.region)
+                    .first()
+                    .map(|zone| zone.zone_name.clone())
+            })
+            .unwrap_or_else(|| record.region.clone());
+        let product_description = record
+            .view
+            .product_description
+            .as_deref()
+            .unwrap_or(PRODUCT_DESCRIPTION_LINUX_UNIX);
+        let market = spot_market_price_micros(
+            &record.region,
+            &zone,
+            instance_type,
+            product_description,
+            at,
+        )?;
+        if bid_micros >= market {
+            return None;
+        }
+        Some((bid.to_string(), format_price_micros(market)))
     }
 
     /// Cancel the one Spot Instance request `request_id` names and answer the state it is in
