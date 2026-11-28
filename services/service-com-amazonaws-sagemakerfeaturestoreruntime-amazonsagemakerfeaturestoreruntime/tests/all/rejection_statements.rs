@@ -740,6 +740,245 @@ async fn an_event_time_without_one_readable_value_leaves_the_record_and_its_expi
     }
 }
 
+/// How a partial update states a posted record-identifier feature whose value IS one this
+/// plane can read but is not the identifier of the record being updated.
+///
+/// A different verdict from [`identifier_refusal`] about a different request: this one is
+/// about a value that disagrees, so it is answered only where the request states a value to
+/// disagree with — never for a request that states none the plane can read, which is what
+/// the rows below separate.
+fn identifier_mismatch_refusal(identifier: &str) -> String {
+    format!(
+        "Features: the record identifier feature '{IDENTIFIER_FEATURE}' must carry the \
+         RecordIdentifierValueAsString of the record being updated ('{identifier}')"
+    )
+}
+
+#[tokio::test]
+async fn a_partial_update_refuses_an_unreadable_record_identifier_with_the_shared_statement() {
+    // The PARTIAL update reads the group's record-identifier feature the way every write of
+    // this data plane reads it, so the two verdicts it can answer for a posted identifier
+    // feature are the two the rule states: the shared refusal for a request that states no
+    // value this plane can read as ONE value, and the mismatch verdict for a readable value
+    // that is not the record's. The rows differ along what the rule generalises over: which
+    // value member the request uses, how many values it carries there, and whether the value
+    // it does state is the record's own.
+    //
+    // (case, the posted record-identifier `FeatureValue`, the refusal expected — `None` when
+    // the update is served)
+    let rows: [(&str, Value, Option<String>); 7] = [
+        (
+            "the record's identifier in ValueAsString",
+            feature(IDENTIFIER_FEATURE, "R1"),
+            None,
+        ),
+        (
+            "the record's identifier in both value members",
+            json!({
+                "FeatureName": IDENTIFIER_FEATURE,
+                "ValueAsString": "R1",
+                "ValueAsStringList": ["R1"]
+            }),
+            None,
+        ),
+        (
+            "the record's identifier as a list of one",
+            feature_list(IDENTIFIER_FEATURE, &["R1"]),
+            Some(identifier_refusal()),
+        ),
+        (
+            "the record's identifier among a list of three",
+            feature_list(IDENTIFIER_FEATURE, &["R1", "R2", "R3"]),
+            Some(identifier_refusal()),
+        ),
+        (
+            "the empty list",
+            feature_list(IDENTIFIER_FEATURE, &[]),
+            Some(identifier_refusal()),
+        ),
+        (
+            "neither value member",
+            feature_without_value(IDENTIFIER_FEATURE),
+            Some(identifier_refusal()),
+        ),
+        (
+            "another record's identifier in ValueAsString",
+            feature(IDENTIFIER_FEATURE, "R2"),
+            Some(identifier_mismatch_refusal("R1")),
+        ),
+    ];
+
+    for (case, posted, expected_refusal) in rows {
+        let emulator = Emulator::new();
+
+        // `UpdateRecord` is a PARTIAL update, so the record has to exist first: it is
+        // written with a future event time under a TTL, so the read below reports the
+        // `ExpiresAt` derived from them.
+        let (status, body) = emulator
+            .put(json!({
+                "Record": [
+                    feature(IDENTIFIER_FEATURE, "R1"),
+                    feature(EVENT_TIME_FEATURE, FUTURE_EVENT_TIME),
+                    feature("feature_a", "original")
+                ],
+                "TtlDuration": ttl()
+            }))
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the seed write to be stored, got {status} with body \
+             {body:?}"
+        );
+        let (_, seeded) = emulator.get("R1").await;
+        let seeded_expiry = expires_at(&seeded);
+        assert!(
+            seeded_expiry.is_some(),
+            "case {case:?}: expected the seeded record to carry an ExpiresAt, got {seeded:?}"
+        );
+
+        // The update posts the identifier feature in the form under test beside a new value
+        // for the record's one ordinary feature.
+        let (status, body) = emulator
+            .update(json!({
+                "RecordIdentifierValueAsString": "R1",
+                "Features": [posted.clone(), feature("feature_a", "replacement")]
+            }))
+            .await;
+
+        let (status_after, served) = emulator.get("R1").await;
+        assert_eq!(
+            status_after, 200,
+            "case {case:?}: expected the record to still be served, got {status_after} with \
+             body {served:?}"
+        );
+
+        match expected_refusal {
+            None => {
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: expected the update to be served, got {status} with body \
+                     {body:?}"
+                );
+                assert_eq!(
+                    served_value(&served, "feature_a"),
+                    json!("replacement"),
+                    "case {case:?}: expected the posted value to be merged, got {served:?}"
+                );
+            }
+            Some(expected_message) => {
+                assert_refused(case, status, &body, &expected_message);
+                // A refused update merges nothing: the record's values, its event time and
+                // the expiry derived from that event time all stand.
+                assert_eq!(
+                    served_value(&served, "feature_a"),
+                    json!("original"),
+                    "case {case:?}: expected the refused update to leave the record's values \
+                     standing, got {served:?}"
+                );
+                assert_eq!(
+                    served_value(&served, EVENT_TIME_FEATURE),
+                    json!(FUTURE_EVENT_TIME),
+                    "case {case:?}: expected the refused update to leave the record's event \
+                     time standing, got {served:?}"
+                );
+                assert_eq!(
+                    expires_at(&served),
+                    seeded_expiry,
+                    "case {case:?}: expected the refused update to leave the record's expiry \
+                     standing, got {served:?}"
+                );
+            }
+        }
+
+        // The identifier the record is stored under is never what an update changes.
+        assert_eq!(
+            served_value(&served, IDENTIFIER_FEATURE),
+            json!("R1"),
+            "case {case:?}: expected the record to keep its identifier, got {served:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_partial_update_and_the_whole_record_writes_state_one_rule_for_each_key_feature() {
+    // One rule, three writers, both features a feature group's definition fixes: a request
+    // that names a key feature without one readable value is refused with the statement for
+    // THAT feature, whichever writer carries it. The rows differ along the two dimensions
+    // the rule spans — which key feature, and which writer — on one form of the value;
+    // `a_key_feature_without_one_readable_value_is_refused_by_every_whole_record_write` and
+    // `an_event_time_without_one_readable_value_leaves_the_record_and_its_expiry_standing`
+    // walk the forms.
+    let keys: [(&str, String); 2] = [
+        (IDENTIFIER_FEATURE, identifier_refusal()),
+        (EVENT_TIME_FEATURE, event_time_refusal()),
+    ];
+
+    for (key_feature, expected_message) in keys {
+        let posted = feature_list(key_feature, &["V1"]);
+        let other_key = if key_feature == IDENTIFIER_FEATURE {
+            feature(EVENT_TIME_FEATURE, FUTURE_EVENT_TIME)
+        } else {
+            feature(IDENTIFIER_FEATURE, "R1")
+        };
+
+        for writer in ["PutRecord", "BatchWriteRecord", "UpdateRecord"] {
+            let case = format!("'{key_feature}' as a list of one through {writer}");
+            let emulator = Emulator::new();
+            let record = json!([posted.clone(), other_key.clone(), feature("feature_a", "v")]);
+
+            match writer {
+                "PutRecord" => {
+                    let (status, body) = emulator
+                        .put(json!({ "Record": record, "TtlDuration": ttl() }))
+                        .await;
+                    assert_refused(&case, status, &body, &expected_message);
+                }
+                "BatchWriteRecord" => {
+                    let (status, body) = emulator.batch_write(&record, &ttl()).await;
+                    assert_eq!(
+                        status, 200,
+                        "case {case:?}: expected BatchWriteRecord to answer 200 and report \
+                         the entry, got {status} with body {body:?}"
+                    );
+                    let errors = reported_errors(&body);
+                    assert_eq!(
+                        errors,
+                        vec![("ValidationError".to_owned(), expected_message.clone())],
+                        "case {case:?}: expected the batch to report that entry's own failure \
+                         stating the rule, got {errors:?}"
+                    );
+                }
+                _ => {
+                    // The partial update needs the record to exist, and refuses the posted
+                    // value before it looks for it either way.
+                    let (status, body) = emulator
+                        .put(json!({
+                            "Record": [
+                                feature(IDENTIFIER_FEATURE, "R1"),
+                                feature(EVENT_TIME_FEATURE, FUTURE_EVENT_TIME),
+                                feature("feature_a", "original")
+                            ],
+                            "TtlDuration": ttl()
+                        }))
+                        .await;
+                    assert_eq!(
+                        status, 200,
+                        "case {case:?}: expected the seed write to be stored, got {status} \
+                         with body {body:?}"
+                    );
+                    let (status, body) = emulator
+                        .update(json!({
+                            "RecordIdentifierValueAsString": "R1",
+                            "Features": [posted.clone(), feature("feature_a", "v")]
+                        }))
+                        .await;
+                    assert_refused(&case, status, &body, &expected_message);
+                }
+            }
+        }
+    }
+}
+
 /// How many entries a `BatchWriteRecord` response reports as not processed.
 fn unprocessed_count(body: &Value) -> usize {
     body.get("UnprocessedEntries")
