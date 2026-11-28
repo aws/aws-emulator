@@ -23,8 +23,10 @@
 //! an entry the catalog publishes an icon for — and, where the provider publishes access
 //! scopes, its
 //! `ResourceServerConfig` — and, beside those flat members, the whole entry once more as
-//! an `ApplicationProvider` structure, which is RECORDED BEHAVIOUR the on-disk model does
-//! not declare (see [`DescribeApplicationProviderOutput`]).
+//! an `ApplicationProvider` structure, which is RECORDED BEHAVIOUR the upstream model does
+//! not declare, so [`DescribeApplicationProviderOutput`] is declared from this crate's
+//! overlay model (`smithy-model/local-additions.json`, see
+//! `smithy-model/LOCAL-ADDITIONS.md`).
 //!
 //! ## Shape of an operation
 //!
@@ -212,8 +214,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             display_data: provider_shape.display_data.clone(),
             resource_server_config: provider_shape.resource_server_config.clone(),
             // The same entry once more as a whole structure, which is what the service
-            // answers this read with beside the flat members — see
-            // `DescribeApplicationProviderOutput` for why the member is hand-written.
+            // answers this read with beside the flat members — a member the upstream
+            // model declares nowhere, so the shape is declared from this crate's overlay
+            // model (see `smithy-model/LOCAL-ADDITIONS.md`).
             // Built from ONE value, so the envelope and the flat members cannot drift.
             application_provider: Some(provider_shape),
         })

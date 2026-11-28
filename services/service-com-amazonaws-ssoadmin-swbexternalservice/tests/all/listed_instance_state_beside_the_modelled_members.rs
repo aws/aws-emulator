@@ -14,11 +14,19 @@
 //! the record it is read from, `listed_instance_state_generated_accounts.rs` the same rule
 //! over drawn populations, and `listed_instance_projection_matches_describe.rs` the two
 //! reads' projections against each other. The axis this suite adds is the member set
-//! against the MODEL: `State` is hand-written into this service's response shape because
-//! the on-disk model declares no member for it, and a hand-written member list is the one
-//! place a modelled member can be dropped or a wire name misspelled without any single
-//! value looking wrong. So each row checks both directions at once — the unmodelled member
-//! is there, and every other name a served view carries is a member the model declares.
+//! against the MODEL: `State` is not a member the upstream snapshot declares, so the shape
+//! that carries it is generated from this crate's own overlay model
+//! (`smithy-model/local-additions.json`, see `smithy-model/LOCAL-ADDITIONS.md`), and a
+//! member list stated outside the snapshot is the one place a modelled member can be
+//! dropped or a wire name misspelled without any single value looking wrong. So each row
+//! checks both directions at once — the unmodelled member is there, and every other name a
+//! served view carries is a member the model declares.
+//!
+//! Two of the tests here read the MODELS rather than the wire: one checks that the overlay
+//! restates the snapshot exactly but for the two members it adds, and the other that every
+//! member name a served view carries is one the overlay declares for the view — so the
+//! served member set is pinned against the model it is generated from rather than against a
+//! second copy of it.
 //!
 //! The member names are the model's own, not this crate's shapes:
 //! `smithy_query(query="shape",shape="com.amazonaws.ssoadmin#InstanceMetadata",model_path="services/service-com-amazonaws-ssoadmin-swbexternalservice/smithy-model/com-amazonaws-ssoadmin-swbexternalservice.json")`
@@ -292,6 +300,321 @@ async fn an_instance_enabled_over_the_wire_serves_the_same_member_set() {
                     entry["Status"].as_str(),
                     Some(expected_status),
                     "case {case:?}: expected Status {expected_status:?}, got {entry}"
+                );
+            }
+        }
+    }
+}
+
+/// The upstream model snapshot this crate's shapes are generated from, embedded at compile
+/// time so the declarations below are checked against the model rather than against a copy
+/// of it.
+const SNAPSHOT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/com-amazonaws-ssoadmin-swbexternalservice.json"
+));
+
+/// The overlay model the two unmodelled declarations are generated from
+/// (`smithy-model/LOCAL-ADDITIONS.md`), embedded for the same reason: what it restates of
+/// the snapshot must still match it.
+const OVERLAY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/smithy-model/local-additions.json"
+));
+
+/// The shapes a local type is declared from, each with the one member the overlay adds to
+/// the snapshot's own: the instance VIEW's lifecycle structure, the envelope the
+/// single-instance read repeats that view in, and the catalog entry the provider read
+/// repeats beside its flat members.
+const RESTATED_WITH_LOCAL_MEMBERS: &[(&str, &str)] = &[
+    ("com.amazonaws.ssoadmin#InstanceMetadata", "State"),
+    ("com.amazonaws.ssoadmin#DescribeInstanceResponse", "Instance"),
+    (
+        "com.amazonaws.ssoadmin#DescribeApplicationProviderResponse",
+        "ApplicationProvider",
+    ),
+];
+
+/// The shapes the overlay ADDS outright, which the snapshot declares nowhere: the
+/// structure the local member carries.
+const LOCAL_SHAPES: &[&str] = &["com.amazonaws.ssoadmin#InstanceState"];
+
+/// The `shapes` object of one model document.
+fn model_shapes(document: &str) -> Value {
+    serde_json::from_str::<Value>(document)
+        .expect("the model is JSON")
+        .get("shapes")
+        .expect("the model carries a shapes object")
+        .clone()
+}
+
+/// The traits one declaration states that codegen reads, as a map — empty where it states
+/// none of them.
+///
+/// What is kept is the `smithy.api` namespace: the `@required`, `@default`, `@length`,
+/// `@pattern`, `@enumValue` and naming traits the validating walk and the codec read. What
+/// is dropped is documentation (prose) and the endpoint-rules annotations, which are
+/// resolved from the snapshot's own service and operation shapes — the overlay declares
+/// neither, so nothing reads them from it.
+fn read_traits(declaration: &Value) -> serde_json::Map<String, Value> {
+    declaration["traits"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(trait_id, _)| trait_id.starts_with("smithy.api#"))
+        .filter(|(trait_id, _)| trait_id.as_str() != "smithy.api#documentation")
+        .map(|(trait_id, value)| (trait_id.clone(), value.clone()))
+        .collect()
+}
+
+/// The declaration of one member or one list slot, as codegen reads it: its target and the
+/// traits above.
+fn as_read(declaration: &Value) -> Value {
+    match declaration {
+        Value::Null => Value::Null,
+        _ => {
+            let mut read = serde_json::Map::new();
+            read.insert("target".to_string(), declaration["target"].clone());
+            read.insert(
+                "traits".to_string(),
+                Value::Object(read_traits(declaration)),
+            );
+            Value::Object(read)
+        }
+    }
+}
+
+/// The traits one declaration states, `Null` where it states none but documentation.
+fn traits_of(declaration: &Value) -> Value {
+    match Value::Object(read_traits(declaration)) {
+        Value::Object(traits) if traits.is_empty() => Value::Null,
+        other => other,
+    }
+}
+
+/// The local member the overlay adds to `shape_id`, or `None` for a shape it restates only
+/// so another one can target it.
+fn local_member_of(shape_id: &str) -> Option<&'static str> {
+    RESTATED_WITH_LOCAL_MEMBERS
+        .iter()
+        .find(|(shape, _)| *shape == shape_id)
+        .map(|(_, member)| *member)
+}
+
+/// The member names the overlay declares for one of its shapes, in the order it states
+/// them.
+fn overlay_members(shape_id: &str) -> Vec<String> {
+    model_shapes(OVERLAY)[shape_id]["members"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the overlay declares no members for {shape_id}"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// THE RULE on the MODEL the unmodelled member is declared from: the overlay restates what
+/// the snapshot declares EXACTLY — the same type, the same constraint traits, the same
+/// member targets, the same enum values — and adds only the two members this service
+/// answers with that the snapshot declares nowhere. Those restatements are what the
+/// framework's validating walk enforces for the shapes declared from them, so a bound
+/// dropped, mistyped or renamed there would silently loosen what the service admits or
+/// change what it serves, with no single value on the wire looking wrong.
+///
+/// The rows span what the rule generalises over: WHICH shape the overlay restates (the
+/// instance view, the single-instance read's whole response) and WHAT it restates of it (a
+/// shape whose members a local type is declared from, and a shape restated only so those
+/// members can target it, whose type and constraint traits are all codegen reads).
+///
+/// When a refreshed snapshot declares one of the local members itself, this fails and the
+/// local declaration should give way to the modelled shape — which is the point: the
+/// overlay exists only for what the snapshot does not carry.
+#[test]
+fn the_overlay_restates_the_snapshot_exactly_but_for_the_members_it_adds() {
+    let snapshot = model_shapes(SNAPSHOT);
+    let overlay = model_shapes(OVERLAY);
+    let restated = overlay
+        .as_object()
+        .expect("the overlay carries a shapes object");
+
+    for (shape_id, declared) in restated {
+        let case = shape_id.as_str();
+        if LOCAL_SHAPES.contains(&case) {
+            assert!(
+                snapshot[case].is_null(),
+                "case {case}: the snapshot now declares this shape, so the local \
+                 declaration should give way to the modelled one"
+            );
+            continue;
+        }
+        let modelled = &snapshot[case];
+        assert!(
+            !modelled.is_null(),
+            "case {case}: the overlay restates a shape the snapshot no longer declares"
+        );
+        assert_eq!(
+            declared["type"], modelled["type"],
+            "case {case}: expected the type the snapshot gives it, got {}",
+            declared["type"]
+        );
+        // The traits of the SHAPE are where a string's length and pattern live, and they
+        // are the bounds the validating walk enforces for every member that targets this
+        // shape — so they must be the snapshot's own.
+        assert_eq!(
+            traits_of(declared),
+            traits_of(modelled),
+            "case {case}: expected the traits the snapshot states for it, got {}",
+            declared["traits"]
+        );
+        // A list's element is read by codegen too.
+        assert_eq!(
+            as_read(&declared["member"]),
+            as_read(&modelled["member"]),
+            "case {case}: expected the member the snapshot declares, got {}",
+            declared["member"]
+        );
+
+        let modelled_members = modelled["members"].as_object().cloned().unwrap_or_default();
+        let declared_members = declared["members"].as_object().cloned().unwrap_or_default();
+        for (member, restated_member) in &declared_members {
+            if Some(member.as_str()) == local_member_of(case) {
+                continue;
+            }
+            assert_eq!(
+                as_read(restated_member),
+                as_read(&modelled_members[member]),
+                "case {case}: member {member} must be restated as the snapshot declares \
+                 it, got {restated_member}"
+            );
+        }
+
+        match local_member_of(case) {
+            // A shape a local type is declared from restates EVERY member the snapshot
+            // declares — a member left out would be dropped from the wire — and adds the
+            // one local member and no other.
+            Some(local) => {
+                let dropped: Vec<&String> = modelled_members
+                    .keys()
+                    .filter(|member| !declared_members.contains_key(*member))
+                    .collect();
+                assert!(
+                    dropped.is_empty(),
+                    "case {case}: every modelled member must be restated, dropped \
+                     {dropped:?}"
+                );
+                let added: Vec<&str> = declared_members
+                    .keys()
+                    .filter(|member| !modelled_members.contains_key(*member))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(
+                    added,
+                    vec![local],
+                    "case {case}: expected the one local member, added {added:?}"
+                );
+            }
+            // A shape restated only so the members above can target it is restated as far
+            // as codegen reads it — its type and its own traits, which the assertions
+            // above compared — and declares no member of its own beside the ones the
+            // snapshot declares.
+            None => {
+                let added: Vec<&str> = declared_members
+                    .keys()
+                    .filter(|member| !modelled_members.contains_key(*member))
+                    .map(String::as_str)
+                    .collect();
+                assert!(
+                    added.is_empty(),
+                    "case {case}: a shape restated to be targeted may add no member, \
+                     added {added:?}"
+                );
+            }
+        }
+    }
+
+    // Every shape a local type is declared from is restated by the overlay, and the
+    // snapshot still declares none of the local members.
+    for (shape_id, local) in RESTATED_WITH_LOCAL_MEMBERS {
+        assert!(
+            restated.contains_key(*shape_id),
+            "case {shape_id}: the overlay must restate the shape its local type is \
+             declared from"
+        );
+        let modelled_members = snapshot[*shape_id]["members"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !modelled_members.contains_key(*local),
+            "case {shape_id}: the snapshot now declares {local}, so the local declaration \
+             should give way to the modelled member"
+        );
+    }
+}
+
+/// THE RULE tied back to the WIRE: the member set a served instance view carries is read
+/// from the model it is declared from, so every member name an entry carries — and the
+/// `Instance` envelope repeats — is one the overlay declares for the view, and the
+/// unmodelled lifecycle structure is among them.
+///
+/// The rows span every lifecycle value the model declares and both instance read paths,
+/// over an account holding three instances that differ in kind and name.
+#[tokio::test]
+async fn a_served_instance_view_carries_only_members_the_overlay_declares() {
+    let declared = overlay_members("com.amazonaws.ssoadmin#InstanceMetadata");
+    assert!(
+        declared.iter().any(|member| member == UNMODELLED_MEMBER),
+        "the overlay must declare the unmodelled {UNMODELLED_MEMBER:?} member, got \
+         {declared:?}"
+    );
+
+    for status in INSTANCE_STATUS_VALUES {
+        let (router, _engine) = seeded_account(status);
+        let case = format!("status {status} / ListInstances");
+        let entries = listed(&case, &router, SEEDED_REGION, None).await;
+        assert_eq!(
+            entries.len(),
+            3,
+            "case {case:?}: every instance the account holds is enumerated, got {entries:?}"
+        );
+
+        for entry in &entries {
+            for member in entry
+                .as_object()
+                .unwrap_or_else(|| panic!("case {case:?}: an entry is a structure: {entry}"))
+                .keys()
+            {
+                assert!(
+                    declared.contains(member),
+                    "case {case:?}: served member {member:?} is not one the overlay \
+                     declares for the instance view ({declared:?}), got {entry}"
+                );
+            }
+
+            let instance_arn = entry["InstanceArn"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case:?}: no InstanceArn in {entry}"));
+            let (http, body) = call_in_region(
+                &router,
+                SEEDED_REGION,
+                "DescribeInstance",
+                &json!({"InstanceArn": instance_arn}),
+            )
+            .await;
+            assert_eq!(
+                http, 200,
+                "case {case:?}: DescribeInstance expected 200, got {http} {body}"
+            );
+            let envelope = body["Instance"]
+                .as_object()
+                .unwrap_or_else(|| {
+                    panic!("case {case:?}: the response carries no Instance envelope: {body}")
+                })
+                .clone();
+            for member in envelope.keys() {
+                assert!(
+                    declared.contains(member),
+                    "case {case:?}: envelope member {member:?} is not one the overlay \
+                     declares for the instance view ({declared:?}), got {body}"
                 );
             }
         }

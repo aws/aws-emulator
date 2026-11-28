@@ -16,6 +16,17 @@
 //! Every page that returned an instance carries a `NextToken`, as AWS's own
 //! `ListInstances` does; following it ends the enumeration with an empty page.
 //!
+//! NOT APPLIED YET — `RegionScope`. The input member the refreshed model added
+//! (`ALL_REGIONS | CURRENT_REGION`, documented as defaulting to `CURRENT_REGION`, which
+//! "Lists only the instances in the Region that you call this API from") is accepted and
+//! does not yet narrow the enumeration: every instance the account holds is enumerated
+//! whichever Region the request was made in and whichever scope it names. Honouring it
+//! means re-stating the rule several of this crate's suites assert deliberately — that an
+//! instance's Regions are a property of the RECORD and not of the read
+//! (`tests/all/instance_regions.rs`, and the every-Region enumeration
+//! `tests/all/listed_instance_state_after_instance_writes.rs` drives through the shared
+//! `listed()` helper) — so it is left to its own issue rather than changed here.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements

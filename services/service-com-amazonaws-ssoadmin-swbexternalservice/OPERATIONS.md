@@ -172,7 +172,7 @@ contents — read that shape in the model above when you need its own members.
 ## DescribeInstance
 
 - **Input:** `InstanceArn` (string, len 10..1224, pattern ^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$, required)
-- **Output:** `InstanceArn` (string, len 10..1224, pattern ^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$), `IdentityStoreId` (string, len 1..64, pattern ^[a-zA-Z0-9-]*$), `IdentityStoreArn` (string, len 62..93, pattern ^arn:aws(-[a-z]{1,5}){0,3}:identitystore::\d{12}:identitystore/(d-[0-9a-f]{10}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a …), `OwnerAccountId` (string, len 12..12, pattern ^\d{12}$), `Name` (string, len 0..255, pattern ^[\w+=,.@-]+$), `CreatedDate` (timestamp), `Status` (InstanceStatus, one of: ACTIVE | CREATE_FAILED | CREATE_IN_PROGRESS | DELETE_IN_PROGRESS), `StatusReason` (string, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}]*$), `PrimaryRegion` (string, len 1..32, pattern ^([a-z]+-){2,3}\d$), `Regions` (list<RegionMetadata>), `EncryptionConfigurationDetails` (EncryptionConfigurationDetails), `PermissionSetsEnabled` (boolean)
+- **Output:** `InstanceArn` (string, len 10..1224, pattern ^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$), `IdentityStoreId` (string, len 1..64, pattern ^[a-zA-Z0-9-]*$), `IdentityStoreArn` (string, len 62..93, pattern ^arn:aws(-[a-z]{1,5}){0,3}:identitystore::\d{12}:identitystore/(d-[0-9a-f]{10}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a …), `OwnerAccountId` (string, len 12..12, pattern ^\d{12}$), `Name` (string, len 0..255, pattern ^[\w+=,.@-]+$), `CreatedDate` (timestamp), `Status` (InstanceStatus, one of: ACTIVE | CREATE_FAILED | CREATE_IN_PROGRESS | DELETE_IN_PROGRESS), `StatusReason` (string, pattern ^[\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}]*$), `PrimaryRegion` (string, len 1..32, pattern ^([a-z]+-){2,3}\d$), `Regions` (list<RegionMetadata>), `EncryptionConfigurationDetails` (EncryptionConfigurationDetails), `NetworkConfigurationDetails` (NetworkConfigurationInfo), `PermissionSetsEnabled` (boolean)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
 ## DescribeInstanceAccessControlAttributeConfiguration
@@ -316,7 +316,7 @@ contents — read that shape in the model above when you need its own members.
 ## ListInstances
 
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=Instances)
-- **Input:** `MaxResults` (integer, range 1..100), `NextToken` (string, len 0..2048, pattern ^[-a-zA-Z0-9+=/_]*$)
+- **Input:** `MaxResults` (integer, range 1..100), `NextToken` (string, len 0..2048, pattern ^[-a-zA-Z0-9+=/_]*$), `RegionScope` (RegionScope, one of: ALL_REGIONS | CURRENT_REGION)
 - **Output:** `Instances` (list<InstanceMetadata>, len 0..10), `NextToken` (string, len 0..2048, pattern ^[-a-zA-Z0-9+=/_]*$)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 
@@ -427,7 +427,7 @@ contents — read that shape in the model above when you need its own members.
 
 ## UpdateInstance
 
-- **Input:** `Name` (string, len 0..255, pattern ^[\w+=,.@-]+$), `InstanceArn` (string, len 10..1224, pattern ^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$, required), `EncryptionConfiguration` (EncryptionConfiguration), `PermissionSetsEnabled` (boolean)
+- **Input:** `Name` (string, len 0..255, pattern ^[\w+=,.@-]+$), `InstanceArn` (string, len 10..1224, pattern ^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$, required), `EncryptionConfiguration` (EncryptionConfiguration), `PermissionSetsEnabled` (boolean), `NetworkConfiguration` (NetworkConfigurationInfo)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `ConflictException (HTTP 409)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

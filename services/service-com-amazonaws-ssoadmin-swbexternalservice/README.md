@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-ssoadmin-swbexternalservice
 service-com-amazonaws-ssoadmin-swbexternalservice/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-ssoadmin-swbexternalservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-ssoadmin-swbexternalservice.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json # overlay model for the three members AWS answers with that the snapshot lacks
+│   └── LOCAL-ADDITIONS.md   # what that overlay restates, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

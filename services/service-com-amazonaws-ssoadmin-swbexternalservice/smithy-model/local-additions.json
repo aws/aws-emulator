@@ -1,0 +1,143 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.ssoadmin#DescribeInstanceResponse": {
+      "type": "structure",
+      "members": {
+        "InstanceArn": { "target": "com.amazonaws.ssoadmin#InstanceArn" },
+        "IdentityStoreId": { "target": "com.amazonaws.ssoadmin#Id" },
+        "IdentityStoreArn": { "target": "com.amazonaws.ssoadmin#InstanceIdentityStoreArn" },
+        "OwnerAccountId": { "target": "com.amazonaws.ssoadmin#AccountId" },
+        "Name": { "target": "com.amazonaws.ssoadmin#NameType" },
+        "CreatedDate": { "target": "com.amazonaws.ssoadmin#Date" },
+        "Status": { "target": "com.amazonaws.ssoadmin#InstanceStatus" },
+        "StatusReason": { "target": "com.amazonaws.ssoadmin#Reason" },
+        "PrimaryRegion": { "target": "com.amazonaws.ssoadmin#RegionName" },
+        "Regions": { "target": "com.amazonaws.ssoadmin#RegionMetadataList" },
+        "EncryptionConfigurationDetails": { "target": "com.amazonaws.ssoadmin#EncryptionConfigurationDetails" },
+        "NetworkConfigurationDetails": { "target": "com.amazonaws.ssoadmin#NetworkConfigurationInfo" },
+        "PermissionSetsEnabled": { "target": "smithy.api#Boolean" },
+        "Instance": { "target": "com.amazonaws.ssoadmin#InstanceMetadata" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.ssoadmin#InstanceMetadata": {
+      "type": "structure",
+      "members": {
+        "InstanceArn": { "target": "com.amazonaws.ssoadmin#InstanceArn" },
+        "IdentityStoreId": { "target": "com.amazonaws.ssoadmin#Id" },
+        "IdentityStoreArn": { "target": "com.amazonaws.ssoadmin#InstanceIdentityStoreArn" },
+        "OwnerAccountId": { "target": "com.amazonaws.ssoadmin#AccountId" },
+        "Name": { "target": "com.amazonaws.ssoadmin#NameType" },
+        "CreatedDate": { "target": "com.amazonaws.ssoadmin#Date" },
+        "Status": { "target": "com.amazonaws.ssoadmin#InstanceStatus" },
+        "StatusReason": { "target": "com.amazonaws.ssoadmin#Reason" },
+        "PrimaryRegion": { "target": "com.amazonaws.ssoadmin#RegionName" },
+        "Regions": { "target": "com.amazonaws.ssoadmin#RegionMetadataList" },
+        "State": { "target": "com.amazonaws.ssoadmin#InstanceState" }
+      }
+    },
+    "com.amazonaws.ssoadmin#InstanceState": {
+      "type": "structure",
+      "members": {
+        "Name": { "target": "com.amazonaws.ssoadmin#InstanceStatus" }
+      }
+    },
+    "com.amazonaws.ssoadmin#DescribeApplicationProviderResponse": {
+      "type": "structure",
+      "members": {
+        "ApplicationProviderArn": {
+          "target": "com.amazonaws.ssoadmin#ApplicationProviderArn",
+          "traits": { "smithy.api#required": {} }
+        },
+        "FederationProtocol": { "target": "com.amazonaws.ssoadmin#FederationProtocol" },
+        "DisplayData": { "target": "com.amazonaws.ssoadmin#DisplayData" },
+        "ResourceServerConfig": { "target": "com.amazonaws.ssoadmin#ResourceServerConfig" },
+        "ApplicationProvider": { "target": "com.amazonaws.ssoadmin#ApplicationProvider" }
+      },
+      "traits": { "smithy.api#output": {} }
+    },
+    "com.amazonaws.ssoadmin#ApplicationProviderArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 10, "max": 1224 },
+        "smithy.api#pattern": "^arn:aws(-[a-z]{1,5}){0,3}:sso::aws:applicationProvider/[a-zA-Z0-9-/]+$"
+      }
+    },
+    "com.amazonaws.ssoadmin#FederationProtocol": {
+      "type": "enum",
+      "members": {
+        "SAML": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "SAML" } },
+        "OAUTH": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "OAUTH" } }
+      }
+    },
+    "com.amazonaws.ssoadmin#DisplayData": { "type": "structure", "members": {} },
+    "com.amazonaws.ssoadmin#ResourceServerConfig": { "type": "structure", "members": {} },
+    "com.amazonaws.ssoadmin#ApplicationProvider": { "type": "structure", "members": {} },
+    "com.amazonaws.ssoadmin#InstanceArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 10, "max": 1224 },
+        "smithy.api#pattern": "^arn:aws(-[a-z]{1,5}){0,3}:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$"
+      }
+    },
+    "com.amazonaws.ssoadmin#Id": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 64 },
+        "smithy.api#pattern": "^[a-zA-Z0-9-]*$"
+      }
+    },
+    "com.amazonaws.ssoadmin#InstanceIdentityStoreArn": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 62, "max": 93 },
+        "smithy.api#pattern": "^arn:aws(-[a-z]{1,5}){0,3}:identitystore::\\d{12}:identitystore/(d-[0-9a-f]{10}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+      }
+    },
+    "com.amazonaws.ssoadmin#AccountId": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 12, "max": 12 },
+        "smithy.api#pattern": "^\\d{12}$"
+      }
+    },
+    "com.amazonaws.ssoadmin#NameType": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 0, "max": 255 },
+        "smithy.api#pattern": "^[\\w+=,.@-]+$"
+      }
+    },
+    "com.amazonaws.ssoadmin#Reason": {
+      "type": "string",
+      "traits": {
+        "smithy.api#pattern": "^[\\p{L}\\p{M}\\p{Z}\\p{S}\\p{N}\\p{P}]*$"
+      }
+    },
+    "com.amazonaws.ssoadmin#RegionName": {
+      "type": "string",
+      "traits": {
+        "smithy.api#length": { "min": 1, "max": 32 },
+        "smithy.api#pattern": "^([a-z]+-){2,3}\\d$"
+      }
+    },
+    "com.amazonaws.ssoadmin#Date": { "type": "timestamp" },
+    "com.amazonaws.ssoadmin#InstanceStatus": {
+      "type": "enum",
+      "members": {
+        "CREATE_IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CREATE_IN_PROGRESS" } },
+        "CREATE_FAILED": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "CREATE_FAILED" } },
+        "DELETE_IN_PROGRESS": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "DELETE_IN_PROGRESS" } },
+        "ACTIVE": { "target": "smithy.api#Unit", "traits": { "smithy.api#enumValue": "ACTIVE" } }
+      }
+    },
+    "com.amazonaws.ssoadmin#RegionMetadataList": {
+      "type": "list",
+      "member": { "target": "com.amazonaws.ssoadmin#RegionMetadata" }
+    },
+    "com.amazonaws.ssoadmin#RegionMetadata": { "type": "structure", "members": {} },
+    "com.amazonaws.ssoadmin#EncryptionConfigurationDetails": { "type": "structure", "members": {} },
+    "com.amazonaws.ssoadmin#NetworkConfigurationInfo": { "type": "structure", "members": {} }
+  }
+}

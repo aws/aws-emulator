@@ -18,6 +18,7 @@ pub struct UpdateInstanceInput {
     pub instance_arn: String,
     pub encryption_configuration: Option<EncryptionConfiguration>,
     pub permission_sets_enabled: Option<bool>,
+    pub network_configuration: Option<NetworkConfigurationInfo>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ssoadmin#EncryptionConfiguration")]

@@ -12,8 +12,8 @@
 //! the resource rule follows:
 //!
 //! * "In a single UpdateInstance request, you can perform only one of the following
-//!   operations … A request that specifies both EncryptionConfiguration and
-//!   PermissionSetsEnabled returns a ValidationException";
+//!   operations … A request that specifies more than one of EncryptionConfiguration,
+//!   PermissionSetsEnabled, and NetworkConfiguration returns a ValidationException";
 //! * `PermissionSetsEnabled` — "Enables permission sets for this Identity Center
 //!   instance. The only accepted value is true. After permission sets are enabled, they
 //!   cannot be disabled", so `true` turns the instance's
@@ -23,17 +23,23 @@
 //! * `EncryptionConfiguration$KmsKeyArn` — "Required when KeyType is
 //!   CUSTOMER_MANAGED_KEY. Cannot be specified when KeyType is AWS_OWNED_KMS_KEY", so
 //!   each half of that pairing is refused (`ValidationException`) when it is missed;
+//! * `NetworkConfiguration` — "If you omit NetworkConfiguration, the stored network
+//!   configuration is preserved. If you specify NetworkConfiguration, it replaces the
+//!   stored network configuration in its entirety", so an accepted one REPLACES the
+//!   instance's [`crate::state::Instance::network_configuration`] whole
+//!   ([`crate::state::NetworkConfigurationRecord::from_shape`] applies the two clearing
+//!   rules the members document);
 //! * an `InstanceArn` this account holds no instance for is a missing resource:
 //!   `ResourceNotFoundException` (404), which this operation's model declares;
 //! * an instance whose CREATION has not finished serves only its own describe and delete —
 //!   "While the instance is in the CREATE_IN_PROGRESS state, you can call only
 //!   DescribeInstance and DeleteInstance operations" — so an update made inside that
 //!   window is refused with the modelled `ConflictException` and writes nothing;
-//! * `Name` "Updates the instance name", independently of the other two members (the
-//!   one-of rule above names only `EncryptionConfiguration` and
-//!   `PermissionSetsEnabled`).
+//! * `Name` "Updates the instance name", independently of the other three members (the
+//!   one-of rule above names only `EncryptionConfiguration`, `PermissionSetsEnabled` and
+//!   `NetworkConfiguration`).
 //!
-//! A request that carries none of the three updatable members changes nothing and
+//! A request that carries none of the four updatable members changes nothing and
 //! succeeds: there is no member to be wrong about.
 //!
 //! An accepted encryption change is ASYNCHRONOUS — the model carries
@@ -83,9 +89,11 @@
 //! Web Services account. In a single UpdateInstance request, you can perform only one of
 //! the following operations: Update the encryption configuration of the instance by
 //! specifying EncryptionConfiguration. Enable permission sets for the instance by
-//! specifying PermissionSetsEnabled. A request that specifies both EncryptionConfiguration
-//! and PermissionSetsEnabled returns a ValidationException. To perform both operations,
-//! call UpdateInstance separately for each. The two calls can be made in parallel.
+//! specifying PermissionSetsEnabled. Update the network configuration of the instance by
+//! specifying NetworkConfiguration. A request that specifies more than one of
+//! EncryptionConfiguration, PermissionSetsEnabled, and NetworkConfiguration returns a
+//! ValidationException. To perform more than one of these operations, call UpdateInstance
+//! separately for each. The calls can be made in parallel.
 //!
 //! ## Input
 //!
@@ -99,6 +107,14 @@
 //!   more information about ARNs, see Amazon Resource Names (ARNs) and Amazon Web Services
 //!   Service Namespaces in the Amazon Web Services General Reference.
 //! * `Name` (NameType, len 0..255, pattern ^[\w+=,.@-]+$) — Updates the instance name.
+//! * `NetworkConfiguration` (NetworkConfigurationInfo) — Specifies the network access
+//!   controls for your Identity Center instance. Use this to require that access to your
+//!   instance and to applications originates from VPC endpoints, and to optionally restrict
+//!   which VPCs are permitted, allow specific IP address ranges that bypass the VPC endpoint
+//!   requirement, or exempt specific applications from the controls. If you omit
+//!   NetworkConfiguration, the stored network configuration is preserved. If you specify
+//!   NetworkConfiguration, it replaces the stored network configuration in its entirety. Any
+//!   list that you omit from the object, or include as an empty list, is cleared.
 //! * `PermissionSetsEnabled` (Boolean) — Enables permission sets for this Identity Center
 //!   instance. The only accepted value is true . After permission sets are enabled, they
 //!   cannot be disabled. You can't set EncryptionConfiguration and PermissionSetsEnabled in
@@ -236,13 +252,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        // "A request that specifies both EncryptionConfiguration and
-        // PermissionSetsEnabled returns a ValidationException. To perform both
-        // operations, call UpdateInstance separately for each."
-        if input.encryption_configuration.is_some() && input.permission_sets_enabled.is_some() {
+        // "In a single UpdateInstance request, you can perform only one of the following
+        // operations … A request that specifies more than one of EncryptionConfiguration,
+        // PermissionSetsEnabled, and NetworkConfiguration returns a ValidationException. To
+        // perform more than one of these operations, call UpdateInstance separately for
+        // each." Counted over the three members rather than compared pairwise, so adding a
+        // member to the rule cannot leave one pairing unchecked.
+        let operations = [
+            input.encryption_configuration.is_some(),
+            input.permission_sets_enabled.is_some(),
+            input.network_configuration.is_some(),
+        ];
+        if operations.iter().filter(|stated| **stated).count() > 1 {
             return Err(validation(
-                "EncryptionConfiguration and PermissionSetsEnabled cannot be set in the same \
-                 UpdateInstance request; call UpdateInstance separately for each",
+                "EncryptionConfiguration, PermissionSetsEnabled and NetworkConfiguration \
+                 cannot be set in the same UpdateInstance request; call UpdateInstance \
+                 separately for each",
             ));
         }
 
@@ -337,6 +362,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 configuration.key_type,
                 configuration.kms_key_arn,
                 now,
+            );
+        }
+        if let Some(configuration) = input.network_configuration.as_ref() {
+            // "If you specify NetworkConfiguration, it replaces the stored network
+            // configuration in its entirety" — so the stored record is the one this
+            // request states, with the clearing rules its members document already
+            // applied, and never a merge of this request with an earlier one.
+            instance.network_configuration = Some(
+                crate::state::NetworkConfigurationRecord::from_shape(configuration),
             );
         }
 

@@ -23,12 +23,19 @@
 //! default ([`crate::state::EncryptionConfigurationRecord::aws_owned_default`]) until an
 //! `UpdateInstance` replaces that configuration with a customer managed key.
 //!
+//! `NetworkConfigurationDetails` is reported only for an instance that HAS network access
+//! controls — the member is documented as "Present only after a network configuration has
+//! been set on the instance" — so it is the stored
+//! [`crate::state::NetworkConfigurationRecord`] an `UpdateInstance` wrote, and absent
+//! until one does.
+//!
 //! Beside those flat members the response carries the `Instance` ENVELOPE: the same
 //! instance again, as the view `ListInstances` serves for it
 //! ([`crate::state::Instance::to_metadata`]), `State` included — recorded behaviour the
-//! on-disk model does not declare, which is why that member's schema and codec are
-//! hand-written (see [`super::types::DescribeInstanceOutput`]). Both views are projected
-//! from the one instance record this handler read, so they cannot disagree.
+//! upstream model does not declare, which is why that member is declared from this crate's
+//! own overlay model (`smithy-model/local-additions.json`, see
+//! `smithy-model/LOCAL-ADDITIONS.md`) rather than from the snapshot. Both views are
+//! projected from the one instance record this handler read, so they cannot disagree.
 //!
 //! ## Shape of an operation
 //!
@@ -100,6 +107,10 @@
 //!   about ARNs, see Amazon Resource Names (ARNs) and Amazon Web Services Service Namespaces
 //!   in the Amazon Web Services General Reference.
 //! * `Name` (NameType, len 0..255, pattern ^[\w+=,.@-]+$) — Specifies the instance name.
+//! * `NetworkConfigurationDetails` (NetworkConfigurationInfo) — The network access controls
+//!   configured for your Identity Center instance, including whether VPC endpoint access is
+//!   required, and any VPC, IP address range, or application controls applied to instance
+//!   traffic. Present only after a network configuration has been set on the instance.
 //! * `OwnerAccountId` (AccountId, len 12..12, pattern ^\d{12}$) — The identifier of the
 //!   Amazon Web Services account for which the instance was created.
 //! * `PermissionSetsEnabled` (Boolean) — Indicates whether permission sets are enabled for
@@ -266,6 +277,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // organization instance, and an account instance serves none of that surface
             // until an `UpdateInstance` enables them on it.
             permission_sets_enabled: Some(instance.permission_sets_enabled),
+            // "Present only after a network configuration has been set on the instance":
+            // the controls an `UpdateInstance` configured, and NOTHING for an instance
+            // nobody has configured any on — an unconfigured instance enforces no network
+            // access control, which is not the same as a stored configuration that allows
+            // everything.
+            network_configuration_details: instance
+                .network_configuration
+                .as_ref()
+                .map(crate::state::NetworkConfigurationRecord::to_shape),
             // The `Instance` envelope, built from the SAME instance record the flat
             // members above come from — the one projection `ListInstances` serves, so a
             // client that reads the lifecycle out of `Instance.State` and one that reads

@@ -16,6 +16,12 @@
 //! `[a-zA-Z0-9-.]` id character class), plus the held instance's id under another
 //! partition, which is a DIFFERENT instance.
 //!
+//! `NetworkConfigurationDetails` has a rule of its own, asserted over its own table below:
+//! the member is "Present only after a network configuration has been set on the instance",
+//! and what it reports is the configuration the last accepted `UpdateInstance` stated —
+//! replaced "in its entirety", with an omitted or empty list cleared and every list cleared
+//! when `VpceAccessRequired` is `false`.
+//!
 //! Every call goes through `MultiServiceRouter::dispatch`, so the modelled constraints and
 //! the `X-Amz-Target` routing are exercised rather than bypassed. The harness is the one
 //! `ssoadmin_permission_sets.rs` owns.
@@ -331,6 +337,270 @@ async fn an_instance_arn_outside_the_pattern_is_a_validation_error() {
             error_code(&body),
             "ValidationException",
             "case {case:?}: expected ValidationException for {arn:?}, got {body}"
+        );
+    }
+}
+
+/// A VPC ARN in each spelling the model's `VpcArn` pattern admits
+/// (`^arn:aws(-[a-z]{1,5}){0,3}:ec2:[a-z0-9-]+:[0-9]{12}:vpc/vpc-([0-9a-f]){8}(([0-9a-f]){9})?$`):
+/// the 8-hex id in the `aws` partition, and the 17-hex id under another partition.
+const VPC_ARN_SHORT: &str = "arn:aws:ec2:us-east-1:123456789012:vpc/vpc-0a1b2c3d";
+const VPC_ARN_LONG: &str =
+    "arn:aws-us-gov:ec2:us-gov-west-1:123456789012:vpc/vpc-0a1b2c3d4e5f6a7b8";
+
+/// An application ARN of the form the model's `FirstOrThirdPartyApplicationArnType`
+/// pattern admits (`^arn:aws(-[a-z]{1,5}){0,3}:[a-z0-9-]+:[a-z0-9-*]*:[0-9]{12}:[-a-zA-Z0-9./:_*]+$`).
+const APPLICATION_ARN: &str =
+    "arn:aws:sso::123456789012:application/ssoins-1234567890abcdef/apl-1234567890abcdef";
+
+/// The `NetworkConfigurationDetails` the described instance reports, or `Value::Null` when
+/// it reports none.
+async fn network_details(router: &MultiServiceRouter, arn: &str) -> Value {
+    let (status, body) = call(router, "DescribeInstance", &json!({"InstanceArn": arn})).await;
+    assert_eq!(
+        status, 200,
+        "DescribeInstance expected 200 for {arn}, got {status} {body}"
+    );
+    body["NetworkConfigurationDetails"].clone()
+}
+
+/// `UpdateInstance` with `NetworkConfiguration` set to `configuration`, which must be
+/// accepted.
+async fn configure_network(router: &MultiServiceRouter, arn: &str, configuration: &Value) {
+    let (status, body) = call(
+        router,
+        "UpdateInstance",
+        &json!({"InstanceArn": arn, "NetworkConfiguration": configuration}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "UpdateInstance expected 200 for {configuration}, got {status} {body}"
+    );
+}
+
+/// THE RULE for `NetworkConfigurationDetails`: it is absent until a network configuration
+/// has been set, and from then on it reports the configuration the last accepted
+/// `UpdateInstance` stated — the stored record replaced whole, with the clearing rules the
+/// members document applied.
+///
+/// The rows differ along what the rule generalises over: whether VPC endpoint access is
+/// required at all, WHICH of the three control lists the configuration carries, how many
+/// entries each list holds, the value spellings each list's member pattern admits (both
+/// `VpcArn` id lengths, an IPv4 address, an IPv4 CIDR block and an IPv6 CIDR block), and a
+/// list stated EMPTY. Each row's expectation is absolute rather than cumulative, so a
+/// configuration that merged into the stored one instead of replacing it fails here.
+#[tokio::test]
+async fn the_reported_network_configuration_is_the_one_the_last_update_stated() {
+    let router = router();
+    let arn = seeded_instance_arn(&router).await;
+
+    // "Present only after a network configuration has been set on the instance."
+    assert_eq!(
+        network_details(&router, &arn).await,
+        Value::Null,
+        "an instance nobody has configured network access controls on must report no \
+         NetworkConfigurationDetails"
+    );
+
+    // (case, the NetworkConfiguration stated, the details the instance must then report)
+    let rows: Vec<(&str, Value, Value)> = vec![
+        (
+            "VPC endpoint access required, no list at all",
+            json!({"VpceAccessRequired": true}),
+            json!({"VpceAccessRequired": true}),
+        ),
+        (
+            "one VPC permitted",
+            json!({"VpceAccessRequired": true, "RestrictSourceVpcs": [VPC_ARN_SHORT]}),
+            json!({"VpceAccessRequired": true, "RestrictSourceVpcs": [VPC_ARN_SHORT]}),
+        ),
+        (
+            "two VPCs permitted, in both id spellings",
+            json!({
+                "VpceAccessRequired": true,
+                "RestrictSourceVpcs": [VPC_ARN_SHORT, VPC_ARN_LONG],
+            }),
+            json!({
+                "VpceAccessRequired": true,
+                "RestrictSourceVpcs": [VPC_ARN_SHORT, VPC_ARN_LONG],
+            }),
+        ),
+        (
+            "an IPv4 address, an IPv4 block and an IPv6 block allowed",
+            json!({
+                "VpceAccessRequired": true,
+                "AllowSourceIps": ["198.51.100.7", "203.0.113.0/24", "2001:db8::/32"],
+            }),
+            json!({
+                "VpceAccessRequired": true,
+                "AllowSourceIps": ["198.51.100.7", "203.0.113.0/24", "2001:db8::/32"],
+            }),
+        ),
+        (
+            "one application exempted",
+            json!({"VpceAccessRequired": true, "ExcludeApplicationArns": [APPLICATION_ARN]}),
+            json!({"VpceAccessRequired": true, "ExcludeApplicationArns": [APPLICATION_ARN]}),
+        ),
+        (
+            "every control at once",
+            json!({
+                "VpceAccessRequired": true,
+                "RestrictSourceVpcs": [VPC_ARN_LONG],
+                "AllowSourceIps": ["203.0.113.0/24"],
+                "ExcludeApplicationArns": [APPLICATION_ARN],
+            }),
+            json!({
+                "VpceAccessRequired": true,
+                "RestrictSourceVpcs": [VPC_ARN_LONG],
+                "AllowSourceIps": ["203.0.113.0/24"],
+                "ExcludeApplicationArns": [APPLICATION_ARN],
+            }),
+        ),
+        (
+            // "Any list that you omit from the object, or include as an empty list, is
+            // cleared."
+            "lists stated empty are cleared",
+            json!({
+                "VpceAccessRequired": true,
+                "RestrictSourceVpcs": [],
+                "AllowSourceIps": [],
+                "ExcludeApplicationArns": [],
+            }),
+            json!({"VpceAccessRequired": true}),
+        ),
+        (
+            // "When this value is false, no network access control is enforced and the
+            // values of RestrictSourceVpcs, AllowSourceIps, and ExcludeApplicationArns are
+            // cleared."
+            "no network access control enforced",
+            json!({
+                "VpceAccessRequired": false,
+                "RestrictSourceVpcs": [VPC_ARN_SHORT],
+                "AllowSourceIps": ["203.0.113.0/24"],
+                "ExcludeApplicationArns": [APPLICATION_ARN],
+            }),
+            json!({"VpceAccessRequired": false}),
+        ),
+    ];
+
+    for (case, configuration, expected) in rows {
+        configure_network(&router, &arn, &configuration).await;
+        let reported = network_details(&router, &arn).await;
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: expected the stated configuration {expected}, got {reported}"
+        );
+        // A read reports rather than changes: the next read answers the same thing.
+        let reread = network_details(&router, &arn).await;
+        assert_eq!(
+            reread, expected,
+            "case {case:?}: a second read must report the same configuration, got {reread}"
+        );
+    }
+}
+
+/// THE RULE where the request does NOT state a network configuration: "If you omit
+/// NetworkConfiguration, the stored network configuration is preserved" — and a request
+/// that states it beside another of the operation's one-of members is refused and writes
+/// nothing.
+#[tokio::test]
+async fn an_omitted_or_refused_network_configuration_leaves_the_stored_one_alone() {
+    let router = router();
+    let arn = seeded_instance_arn(&router).await;
+
+    let stored = json!({
+        "VpceAccessRequired": true,
+        "RestrictSourceVpcs": [VPC_ARN_SHORT],
+        "AllowSourceIps": ["203.0.113.0/24"],
+    });
+    configure_network(&router, &arn, &stored).await;
+    assert_eq!(
+        network_details(&router, &arn).await,
+        stored,
+        "the configuration under test must be the stored one"
+    );
+
+    // (case, the request body, the expected HTTP status, the expected error code)
+    let rows: Vec<(&str, Value, u16, Option<&str>)> = vec![
+        (
+            "only the InstanceArn",
+            json!({"InstanceArn": arn}),
+            200,
+            None,
+        ),
+        (
+            // `Name` is not one of the one-of members, so it travels with anything.
+            "a name update, which names no network configuration",
+            json!({"InstanceArn": arn, "Name": "NetworkControlled"}),
+            200,
+            None,
+        ),
+        (
+            "a network configuration beside PermissionSetsEnabled",
+            json!({
+                "InstanceArn": arn,
+                "PermissionSetsEnabled": true,
+                "NetworkConfiguration": {"VpceAccessRequired": false},
+            }),
+            400,
+            Some("ValidationException"),
+        ),
+        (
+            "a network configuration beside EncryptionConfiguration",
+            json!({
+                "InstanceArn": arn,
+                "EncryptionConfiguration": {"KeyType": "AWS_OWNED_KMS_KEY"},
+                "NetworkConfiguration": {"VpceAccessRequired": false},
+            }),
+            400,
+            Some("ValidationException"),
+        ),
+        (
+            "all three one-of members at once",
+            json!({
+                "InstanceArn": arn,
+                "PermissionSetsEnabled": true,
+                "EncryptionConfiguration": {"KeyType": "AWS_OWNED_KMS_KEY"},
+                "NetworkConfiguration": {"VpceAccessRequired": true},
+            }),
+            400,
+            Some("ValidationException"),
+        ),
+        (
+            // `VpcArnList`'s member pattern admits no such value, so the boundary refuses
+            // the request before the handler runs — and nothing is written either way.
+            "a VPC that is not a VPC ARN",
+            json!({
+                "InstanceArn": arn,
+                "NetworkConfiguration": {
+                    "VpceAccessRequired": true,
+                    "RestrictSourceVpcs": ["vpc-0a1b2c3d"],
+                },
+            }),
+            400,
+            Some("ValidationException"),
+        ),
+    ];
+
+    for (case, request, expected_status, expected_code) in rows {
+        let (status, body) = call(&router, "UpdateInstance", &request).await;
+        assert_eq!(
+            status, expected_status,
+            "case {case:?}: expected HTTP {expected_status}, got {status} {body}"
+        );
+        if let Some(expected_code) = expected_code {
+            assert_eq!(
+                error_code(&body),
+                expected_code,
+                "case {case:?}: expected {expected_code}, got {body}"
+            );
+        }
+        let reported = network_details(&router, &arn).await;
+        assert_eq!(
+            reported, stored,
+            "case {case:?}: the stored network configuration must be preserved, got \
+             {reported} vs {stored}"
         );
     }
 }

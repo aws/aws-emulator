@@ -66,6 +66,12 @@ pub use sign_in_options::*;
 mod provider_icons;
 pub use provider_icons::*;
 
+/// The network access controls an instance is configured with. Re-exported, so
+/// `crate::state::NetworkConfigurationRecord` stays the path the update that writes one and
+/// the read that reports it share.
+mod network_configuration;
+pub use network_configuration::*;
+
 /// The identity-store instance every `InstanceArn`-taking operation resolves against.
 ///
 /// IAM Identity Center allows ONE instance per account, so the emulator seeds exactly
@@ -1500,6 +1506,12 @@ pub struct Instance {
     /// ([`EncryptionConfigurationRecord::aws_owned_default`]), and `UpdateInstance`
     /// REPLACES that configuration rather than bringing one into being.
     pub encryption: EncryptionConfigurationRecord,
+    /// The network access controls configured on this instance, or `None` while nobody has
+    /// configured any: `DescribeInstance$NetworkConfigurationDetails` is "Present only
+    /// after a network configuration has been set on the instance", and
+    /// `UpdateInstance$NetworkConfiguration` is what sets one — replacing it whole, since
+    /// it "replaces the stored network configuration in its entirety".
+    pub network_configuration: Option<NetworkConfigurationRecord>,
     /// The instance's ABAC configuration, or `None` while ABAC is not enabled on it:
     /// `CreateInstanceAccessControlAttributeConfiguration` is what enables it,
     /// `UpdateInstanceAccessControlAttributeConfiguration` replaces the attributes it
@@ -1570,6 +1582,11 @@ impl Instance {
             // starts under the Amazon Web Services owned key default; `UpdateInstance`
             // is what opts it into a customer managed key.
             encryption: EncryptionConfigurationRecord::aws_owned_default(),
+            // No network access control until a caller configures one: `CreateInstance`
+            // takes no network configuration, and the member that reports one is
+            // documented as "Present only after a network configuration has been set on
+            // the instance", so there is none to report until an `UpdateInstance` sets it.
+            network_configuration: None,
             // ABAC is off until a caller enables it: `CreateInstance` takes no attribute
             // configuration, so there is none to report until a
             // `CreateInstanceAccessControlAttributeConfiguration` writes one.
