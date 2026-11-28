@@ -7,6 +7,14 @@
 //! `FlexibleTimeWindow` on every update for exactly that reason). `CreationDate`
 //! and the ARN survive; `LastModificationDate` is re-stamped.
 //!
+//! The `Target.RoleArn` an update states is NOT resolved against IAM here: it is "the IAM
+//! role that EventBridge Scheduler will use for this target when the schedule is invoked",
+//! so the reference is resolved where it is taken up — when the schedule is created, and at
+//! each occurrence ([`crate::state::invocation`]) — and an update is applied with the role
+//! it carries whether or not that role can be assumed. That is what keeps a schedule whose
+//! role was deleted updatable, which is the only way a client re-points one off a broken
+//! role; re-resolving it here would freeze exactly the schedules a client has to repair.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -290,25 +298,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // the model, so an update that would leave a schedule carrying a payload past
             // that bound is refused rather than applied.
             .or_else(|| crate::state::target_input_violation(input.target.input.as_deref()))
-        {
-            return Err(
-                UpdateScheduleErrorModeled::ValidationException(ValidationException { message })
-                    .into(),
-            );
-        }
-
-        // EventBridge Scheduler resolves the execution role on every write that states
-        // one, this one included: a `Target.RoleArn` naming a role this account does not
-        // hold — or one whose trust policy does not let Scheduler assume it — is refused
-        // before the stored schedule is touched, so the schedule keeps delivering under
-        // the role the last accepted write left on it. The IAM lookup runs before the
-        // store is locked: the guard is not held across an await.
-        if let Some(message) = crate::state::execution_role_violation(
-            ctx.callback(),
-            &crate::state::request_region(ctx.parts()),
-            &input.target.role_arn,
-        )
-        .await
         {
             return Err(
                 UpdateScheduleErrorModeled::ValidationException(ValidationException { message })

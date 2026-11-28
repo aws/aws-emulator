@@ -706,13 +706,14 @@ fn trust_policy_admits(document: &str, principal: &str) -> bool {
 
 /// Refuse a target whose execution role EventBridge Scheduler could not assume.
 ///
-/// EventBridge Scheduler resolves `Target.RoleArn` against IAM on every write that
-/// states one — `CreateSchedule` and `UpdateSchedule` alike — and refuses that write
-/// with 400 `ValidationException`, changing nothing, unless the role exists in this
-/// account and its trust policy lets the Scheduler service principal assume it. So an
-/// update naming a role that cannot be assumed leaves the stored `Target.RoleArn`
-/// exactly as the last accepted write left it, and the schedule keeps delivering under
-/// that role.
+/// `Target$RoleArn` is "the IAM role that EventBridge Scheduler will use for this target
+/// when the schedule is invoked", so the role is resolved WHERE IT IS TAKEN UP: when a
+/// schedule is CREATED, which is refused with 400 `ValidationException` and changes
+/// nothing unless the role exists in this account and its trust policy lets the Scheduler
+/// service principal assume it, and again at each OCCURRENCE ([`invocation`]), where a
+/// role that can no longer be assumed leaves the invocation undelivered. An UPDATE does
+/// not resolve it: the schedule's new configuration is applied with the role it states,
+/// which is what lets a client re-point a schedule off a role that has been deleted.
 ///
 /// IAM is reached the way one emulated service reaches another's API: through the
 /// in-process callback ([`smithy_server_runtime::OperationContext::callback`]), so the

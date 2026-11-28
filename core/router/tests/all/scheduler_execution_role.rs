@@ -2,14 +2,15 @@
 
 //! EventBridge Scheduler resolves a schedule's execution role against IAM.
 //!
-//! The rule under test: EventBridge Scheduler resolves `Target.RoleArn` when a schedule is
-//! WRITTEN — on `CreateSchedule` and on `UpdateSchedule` alike, rather than when it fires —
-//! and refuses that write with HTTP 400 `ValidationException`, changing nothing, unless
-//! that role exists in this account and its trust policy lets the Scheduler service
-//! principal assume it. A request naming a role that does exist and does trust Scheduler is
-//! written normally. So a refused `UpdateSchedule` leaves the stored `Target.RoleArn`
-//! exactly as the last accepted write left it, and the schedule keeps delivering under that
-//! role.
+//! The rule under test: `Target$RoleArn` is "the IAM role that EventBridge Scheduler will
+//! use for this target when the schedule is invoked", so the reference is resolved where it
+//! is TAKEN UP — when the schedule is CREATED, and again when it fires — and a
+//! `CreateSchedule` is refused with HTTP 400 `ValidationException`, persisting nothing,
+//! unless that role exists in this account and its trust policy lets the Scheduler service
+//! principal assume it. `UpdateSchedule` does not resolve it: an update states the
+//! schedule's whole configuration and is applied with the role it carries, assumable or
+//! not, which is what leaves a client the one recovery it has for a schedule whose role was
+//! deleted — re-pointing it at a live one.
 //!
 //! This suite needs TWO services on one engine — the scheduler reaches IAM
 //! through the in-process callback, so a single-service router has no IAM to ask
@@ -19,7 +20,7 @@
 //! naming only another service), where the role lives (the default path and a
 //! role under a path), which account the ARN names, whether the role was ever
 //! created or has since been deleted, and both operations that take a `Target`
-//! (`CreateSchedule` and `UpdateSchedule`).
+//! (`CreateSchedule`, which resolves the role, and `UpdateSchedule`, which does not).
 //!
 //! Assembling the whole router costs stack (see `boot_serve.rs`), so it is built
 //! — and the requests driven — on a sized thread.
@@ -418,13 +419,12 @@ fn a_schedule_is_written_only_for_an_execution_role_iam_holds_and_scheduler_may_
                 }
             }
 
-            // `UpdateSchedule` applies the SAME gate: the role is resolved by every write
-            // that states one, so an update naming a role this account cannot let Scheduler
-            // assume is refused and changes nothing — the schedule keeps the role its last
-            // accepted write left on it. Every row is a role the CREATE path above refused,
-            // one of them the schedule's OWN role deleted out of band, so each proves the
-            // gate is the role's rather than one path's.
-            let kept_role = role_arn("scheduler-role");
+            // `UpdateSchedule` does NOT apply that gate: the role is resolved where it is
+            // taken up — on the create above and at each occurrence — so an update is served
+            // and APPLIED with the role it states. Every row is a role the create path above
+            // refused, one of them the schedule's OWN role deleted out of band, and each is
+            // applied by the update while a create naming it is still refused, so the
+            // asymmetry belongs to the role reference rather than to one request.
             let update_cases: [(&str, String); 3] = [
                 // The role the schedule was created with, DELETED out of band and
                 // then re-affirmed by the update.
@@ -455,15 +455,9 @@ fn a_schedule_is_written_only_for_an_execution_role_iam_holds_and_scheduler_may_
                     Some(schedule_body(&role_arn)),
                 );
                 assert_eq!(
-                    (status, error_code(&body).as_str()),
-                    (400, "ValidationException"),
-                    "case {case:?}: UpdateSchedule must refuse a role Scheduler cannot \
-                     assume, got {status} {body}"
-                );
-                assert_eq!(
-                    error_message(&body),
-                    ROLE_REFUSAL,
-                    "case {case:?}: expected the execution-role refusal, got {body}"
+                    status, 200,
+                    "case {case:?}: UpdateSchedule must apply a role it does not resolve, \
+                     got {status} {body}"
                 );
                 let (status, body) =
                     scheduler(&router, &runtime, "GET", "/schedules/trusted", None);
@@ -474,13 +468,13 @@ fn a_schedule_is_written_only_for_an_execution_role_iam_holds_and_scheduler_may_
                             .and_then(|target| target.get("RoleArn"))
                             .and_then(serde_json::Value::as_str)
                     ),
-                    (200, Some(kept_role.as_str())),
-                    "case {case:?}: a refused update must leave the stored role as it was, \
+                    (200, Some(role_arn.as_str())),
+                    "case {case:?}: an applied update must store the role it stated, \
                      got {status} {body}"
                 );
 
-                // The CREATE path refuses that same role in the same words, so the gate is
-                // the role's and not one operation's.
+                // The CREATE path refuses that same role, so what the update applied is a
+                // reference this account cannot assume — the gate is the create's.
                 let (status, body) = scheduler(
                     &router,
                     &runtime,
@@ -501,9 +495,9 @@ fn a_schedule_is_written_only_for_an_execution_role_iam_holds_and_scheduler_may_
                 );
             }
 
-            // The control: an update naming a role this account DOES hold and Scheduler may
-            // assume is served and applied, so what the rows above are refused by is the
-            // role they name rather than the operation they use.
+            // The recovery an update being served is what leaves open: a schedule standing
+            // on a role nothing holds is re-pointed at one this account does hold, and the
+            // read reports it.
             let assumable = role_arn("scheduler-role-lists");
             let (status, body) = scheduler(
                 &router,
