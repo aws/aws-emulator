@@ -16,6 +16,11 @@ use super::*;
 /// published under a guessed binding (see [`crate::state::descriptive_quota_code`]).
 pub(in crate::state) fn dms_quotas() -> Vec<QuotaRow> {
     vec![
+        // The data migrations of the account, published with the terse sentence this
+        // service words that plane's text in.
+        quota("Number of Data Migrations", 1000.0)
+            .code("L-1AB41EE0")
+            .describe("Maximum number of data migrations"),
         // The endpoint plane of one replication instance. The `Description` is this
         // catalog's own wording, in the form AWS's published quota descriptions take: the
         // service publishes one for this quota and its text is not among the data
@@ -23,9 +28,17 @@ pub(in crate::state) fn dms_quotas() -> Vec<QuotaRow> {
         quota("Endpoints per instance", 100.0)
             .code("L-2146F1FD")
             .describe("The maximum number of endpoints allowed per replication instance."),
+        // The data migrations of ONE migration project, which AWS publishes as a hard
+        // limit of the project, and the migration projects of the account below. The
+        // sentence AWS publishes for each is not among the data available here, so neither
+        // row carries one.
+        quota("Number of Data Migrations per Migration Project", 10.0)
+            .code("L-62EFB27A")
+            .fixed(),
         quota("Event subscriptions", 60.0)
             .code("L-D97343A2")
             .describe("The maximum number of AWS DMS events that you can subscribe to."),
+        quota("Number of Migration Projects", 50.0).code("L-DE63148C"),
         quota("Endpoint count", 1000.0)
             .code("L-E17328E9")
             .describe(
@@ -40,5 +53,12 @@ pub(in crate::state) fn dms_quotas() -> Vec<QuotaRow> {
         quota("Number of running Data Migrations", 500.0)
             .code("L-FBEA20FB")
             .describe("Maximum number of running data migrations simultaneously."),
+        // The certificates of the account in the Region.
+        quota("Certificate count", 100.0)
+            .code("L-FE918D88")
+            .describe(
+                "The maximum number of certificates allowed in this account in the current \
+                 Region.",
+            ),
     ]
 }

@@ -31,30 +31,68 @@ fn cognito_identity_request_rate(code: &str, api_name: &str, requests_per_second
 /// and the recorded default-quota listing of that code for which `QuotaCode` names which
 /// operation's rate and at how many requests per second it is served
 /// ([`cognito_identity_request_rate`]): this service publishes a request-rate quota per
-/// identity-pool API operation, and beside those the RESOURCE COUNT of the Amazon Cognito
-/// user pool providers one identity pool may be configured with — the quota the identity
-/// service enforces as `MAX_USER_POOL_PROVIDERS_PER_IDENTITY_POOL`
-/// (`services/service-com-amazonaws-cognitoidentity-awscognitoidentityservice/src/state/pool_configuration.rs`),
-/// published here under the one `L-` code that listing reports for this service code and
-/// the five further resource rows of it do not name. A count is not a rate, so it carries
-/// neither a window nor a usage metric, and no `Description`: the sentence AWS publishes
-/// for it is not one any source available here states, and a row carries the quota's own
-/// published text or none.
+/// identity-pool API operation, and beside those the COUNTS and SIZES of an identity pool
+/// and of the account that holds it, for which that listing states the published name,
+/// text, unit, value and adjustability: the user pool providers and the access-control
+/// rules of one identity pool (the first being the quota the identity service enforces as
+/// `MAX_USER_POOL_PROVIDERS_PER_IDENTITY_POOL`,
+/// `services/service-com-amazonaws-cognitoidentity-awscognitoidentityservice/src/state/pool_configuration.rs`),
+/// the identity pools of the account, the page a list or lookup call answers with, and the
+/// size the two names an identity pool is configured with may reach. A count is not a
+/// rate, so none of those rows carries a window or a usage metric; a size is not a count,
+/// so those rows carry the unit AWS measures them in rather than `None`. Each carries the
+/// service's own published sentence verbatim, a row carrying the quota's own published
+/// text or none.
 ///
-/// The remaining codes that listing reports name quotas no source available here states,
-/// and a code identifies ONE quota, so those rows are left to the default-quota-set gap
-/// rather than published under a binding this catalog would be guessing at (see
-/// [`crate::state::descriptive_quota_code`]).
+/// This catalog publishes a row for every `QuotaCode` that listing reports for this
+/// service code. A code whose quota no source available here states would be left to the
+/// default-quota-set gap rather than published under a binding this catalog would be
+/// guessing at (see [`crate::state::descriptive_quota_code`]), since a code identifies
+/// ONE quota.
 pub(in crate::state) fn cognito_identity_quotas() -> Vec<QuotaRow> {
     vec![
         cognito_identity_request_rate("L-0BF99E8D", "GetOpenIdTokenForDeveloperIdentity", 50.0),
         cognito_identity_request_rate("L-0D31D6D2", "UntagResource", 5.0),
-        quota("Amazon Cognito user pool providers per identity pool", 50.0).code("L-14403AD5"),
+        quota("User pool providers per identity pool", 50.0)
+            .code("L-14403AD5")
+            .describe(
+                "The maximum number of Amazon Cognito user pool providers per identity pool.",
+            ),
+        // The rules of role-based access control, which AWS publishes as a hard limit.
+        quota("Role-based access control rules", 25.0)
+            .code("L-1F1BC060")
+            .fixed()
+            .describe("The maximum number of rules for role-based access control (RBAC)"),
+        // The size an identity pool's own name may reach, published in bytes and as a hard
+        // limit. SOURCE for the 128: the identity service's `IdentityPoolName`, whose
+        // modelled length is what a pool name may reach
+        // (`services/service-com-amazonaws-cognitoidentity-awscognitoidentityservice/smithy-model`).
+        quota("Identity pool name size", 128.0)
+            .code("L-29CA570C")
+            .unit("Bytes")
+            .fixed()
+            .describe("The maximum size of an identity pool name in bytes."),
         cognito_identity_request_rate("L-50C9AAB8", "ListTagsForResource", 10.0),
         cognito_identity_request_rate("L-5AE9F13D", "GetCredentialsForIdentity", 200.0),
+        quota("Identity pools per account", 1000.0)
+            .code("L-8692CE1C")
+            .describe("The maximum number of identity pools per account."),
         cognito_identity_request_rate("L-A38ADA84", "GetId", 25.0),
+        // The size a login provider's name may reach, published in bytes and as a hard
+        // limit.
+        quota("Login provider name size", 2048.0)
+            .code("L-B08F14B9")
+            .unit("Bytes")
+            .fixed()
+            .describe("The maximum size of a login provider name in bytes."),
         cognito_identity_request_rate("L-DAF3EAFF", "TagResource", 5.0),
         cognito_identity_request_rate("L-DBF99350", "ListIdentities", 5.0),
         cognito_identity_request_rate("L-E97D135E", "GetOpenIdToken", 200.0),
+        // The page a list or lookup call answers with, which AWS publishes as a hard
+        // limit of the API rather than a quota an account can have raised.
+        quota("List API call results", 60.0)
+            .code("L-EAF710D2")
+            .fixed()
+            .describe("The maximum number of results from a list or lookup API call."),
     ]
 }

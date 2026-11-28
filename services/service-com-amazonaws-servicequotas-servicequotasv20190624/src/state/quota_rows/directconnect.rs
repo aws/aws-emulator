@@ -40,6 +40,23 @@ fn directconnect_resource_count(resource: &str) -> MetricInfo {
 /// [`crate::state::descriptive_quota_code`]).
 pub(in crate::state) fn directconnect_quotas() -> Vec<QuotaRow> {
     vec![
+        // The virtual-interface plane of one DEDICATED connection, published the way the
+        // resource planes below are: counted per resource, with the resource type that
+        // plane applies to named and metered with the service's `AWS/Usage` resource count
+        // over the window those counts are published over. The recorded listing states the
+        // whole metric block and the resource type; the sentence AWS publishes for the
+        // quota is not among the data available here, so the row carries none.
+        quota(
+            "Public or private virtual interfaces per dedicated connection",
+            50.0,
+        )
+        .code("L-0B7EBFD7")
+        .fixed()
+        .adjustable_at(LEVEL_ALL, "AWS::DirectConnect::Connections")
+        .counted_per_resource()
+        .metric(directconnect_resource_count(
+            "PublicOrPrivateVIFsPerDedicatedConnection",
+        )),
         quota(
             "Private or public or transit virtual interfaces per hosted connection",
             1.0,
@@ -70,15 +87,20 @@ pub(in crate::state) fn directconnect_quotas() -> Vec<QuotaRow> {
                 "The maximum number of dedicated connections or interconnects per link \
                  aggregation group (LAG).",
             ),
+        // The prefix plane of one transit gateway, which AWS publishes as a hard limit of
+        // that gateway: a quota counted per resource, whose records name the EC2 transit
+        // gateway type the plane applies to. The recorded listing states no window or
+        // usage metric for it, so the row carries neither.
+        quota("Prefixes per transit gateway", 200.0)
+            .code("L-A1004C93")
+            .fixed()
+            .adjustable_at(LEVEL_ALL, "AWS::EC2::TransitGateways")
+            .counted_per_resource(),
         // The virtual-private-gateway plane of one Direct Connect gateway, published the
         // same way as the LAG member plane above: a quota counted per resource, whose
         // record names the resource type that plane applies to and which is metered with
         // the service's `AWS/Usage` resource count over the window those counts are
         // published over. AWS publishes it as a hard limit of the gateway.
-        //
-        // The `Description` is this catalog's own wording, in the form AWS's published
-        // quota descriptions take: the service publishes one for this quota and its text
-        // is not among the data available here.
         quota("Virtual private gateways per Direct Connect gateway", 20.0)
             .code("L-FDE06981")
             .fixed()
@@ -88,7 +110,7 @@ pub(in crate::state) fn directconnect_quotas() -> Vec<QuotaRow> {
                 "VirtualPrivateGatewaysPerDirectConnectGateway",
             ))
             .describe(
-                "The maximum number of virtual private gateways per Direct Connect gateway.",
+                "The maximum number of virtual private gateways per AWS Direct Connect gateway.",
             ),
     ]
 }

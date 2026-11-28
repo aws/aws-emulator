@@ -23,11 +23,8 @@ pub(in crate::state) fn quicksight_quotas() -> Vec<QuotaRow> {
             .code("L-12A1F6CA")
             .fixed()
             .describe("Maximum nesting depth allowed in an automation in Amazon Quick Automate"),
-        // A size rather than a count, so the row carries the unit AWS measures it in.
-        // The `Description` is this catalog's own wording, in the form AWS's published
-        // quota descriptions take: the service publishes one for this quota and for the
-        // scheduled-task retention below, and neither text is among the data available
-        // here.
+        // A size rather than a count, so the row carries the unit AWS measures it in,
+        // and the sentence AWS publishes for it names that unit.
         quota(
             "Maximum total size of attached reference documents per chat agent",
             50.0,
@@ -35,16 +32,31 @@ pub(in crate::state) fn quicksight_quotas() -> Vec<QuotaRow> {
         .code("L-26532294")
         .unit("Megabytes")
         .fixed()
-        .describe("The maximum total size of the reference documents attached to one chat agent."),
+        .describe(
+            "The maximum size in megabytes (MBs) of all reference documents attached to a chat \
+             agent.",
+        ),
         // The resource plane of a space, which AWS publishes as fixed.
         quota("Maximum number of resources per space", 100.0)
             .code("L-39A09B2E")
             .fixed()
             .describe("The maximum number of resources that can be linked to a space."),
+        // The hours an approved session stays approved for, which AWS publishes as a hard
+        // limit, and the automations of an account, which it publishes as adjustable. The
+        // sentence AWS publishes for each is not among the data available here, so neither
+        // row carries one.
+        quota("Session approval expiry in hours", 12.0)
+            .code("L-3B893AF4")
+            .fixed(),
+        quota("Amazon Quick Automate Maximum Automations", 1000.0).code("L-5FE00BED"),
         quota("Scheduled task history retention in days", 365.0)
             .code("L-7DB5CFE0")
             .fixed()
-            .describe("The number of days the history of a scheduled task is retained for."),
+            .describe("The number of days scheduled task run history is retained."),
+        // A size measured in gigabytes rather than a count.
+        quota("Maximum custom agent files size", 1.0)
+            .code("L-8926DD84")
+            .unit("Gigabytes"),
         quota("Custom agent artifact retention in days", 365.0)
             .code("L-90F283DF")
             .fixed()

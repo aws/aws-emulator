@@ -71,7 +71,7 @@ struct Context {
 }
 
 /// One published row, with every member AWS publishes for it.
-struct Row {
+pub(crate) struct Row {
     service_code: &'static str,
     service_name: &'static str,
     quota_code: &'static str,
@@ -135,13 +135,11 @@ const ROWS: &[Row] = &[
         service_code: "cognito-identity",
         service_name: "Amazon Cognito Federated Identities",
         quota_code: "L-14403AD5",
-        quota_name: "Amazon Cognito user pool providers per identity pool",
+        quota_name: "User pool providers per identity pool",
         value: 50.0,
         unit: "None",
         adjustable: true,
-        // The sentence AWS publishes for this count is not one this catalog can cite, so
-        // the row publishes no `Description` member at all.
-        description: "",
+        description: "The maximum number of Amazon Cognito user pool providers per identity pool.",
         period: None,
         metric: Metric::None,
         context: None,
@@ -223,6 +221,74 @@ const ROWS: &[Row] = &[
         adjustable: true,
         description: "The maximum number of GetOpenIdToken requests that you can make per \
                       second.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    // Beside those rates the service publishes the COUNTS and the SIZES of an identity
+    // pool and of the account that holds it: an adjustable count, a fixed count, a page
+    // size and two sizes measured in bytes rather than counted.
+    Row {
+        service_code: "cognito-identity",
+        service_name: "Amazon Cognito Federated Identities",
+        quota_code: "L-1F1BC060",
+        quota_name: "Role-based access control rules",
+        value: 25.0,
+        unit: "None",
+        adjustable: false,
+        description: "The maximum number of rules for role-based access control (RBAC)",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "cognito-identity",
+        service_name: "Amazon Cognito Federated Identities",
+        quota_code: "L-29CA570C",
+        quota_name: "Identity pool name size",
+        value: 128.0,
+        unit: "Bytes",
+        adjustable: false,
+        description: "The maximum size of an identity pool name in bytes.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "cognito-identity",
+        service_name: "Amazon Cognito Federated Identities",
+        quota_code: "L-8692CE1C",
+        quota_name: "Identity pools per account",
+        value: 1000.0,
+        unit: "None",
+        adjustable: true,
+        description: "The maximum number of identity pools per account.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "cognito-identity",
+        service_name: "Amazon Cognito Federated Identities",
+        quota_code: "L-B08F14B9",
+        quota_name: "Login provider name size",
+        value: 2048.0,
+        unit: "Bytes",
+        adjustable: false,
+        description: "The maximum size of a login provider name in bytes.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "cognito-identity",
+        service_name: "Amazon Cognito Federated Identities",
+        quota_code: "L-EAF710D2",
+        quota_name: "List API call results",
+        value: 60.0,
+        unit: "None",
+        adjustable: false,
+        description: "The maximum number of results from a list or lookup API call.",
         period: None,
         metric: Metric::None,
         context: None,
@@ -477,6 +543,63 @@ const ROWS: &[Row] = &[
         metric: Metric::None,
         context: None,
     },
+    Row {
+        service_code: "comprehend",
+        service_name: "Amazon Comprehend",
+        quota_code: "L-C7E12CA2",
+        quota_name: "StopKeyPhrasesDetectionJob throttle limit in transactions per second",
+        value: 1.0,
+        unit: "None",
+        adjustable: true,
+        description: "The maximum number of StopKeyPhrasesDetectionJob requests allowed per \
+                      account per second, in the current Region",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "comprehend",
+        service_name: "Amazon Comprehend",
+        quota_code: "L-CF92EEE2",
+        quota_name: "StopTrainingEntityRecognizer throttle limit in transactions per second",
+        value: 1.0,
+        unit: "None",
+        adjustable: false,
+        description: "The maximum number of StopTrainingEntityRecognizer requests allowed per \
+                      account per second, in the current Region",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    // Beside the throttles, the number of RESOURCES of a kind the account may have active
+    // at once — neither a rate nor a job count, and the sentence the service publishes for
+    // each is one this catalog cannot cite, so the rows publish no `Description` at all.
+    Row {
+        service_code: "comprehend",
+        service_name: "Amazon Comprehend",
+        quota_code: "L-55642075",
+        quota_name: "Endpoints max active endpoints",
+        value: 20.0,
+        unit: "None",
+        adjustable: true,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "comprehend",
+        service_name: "Amazon Comprehend",
+        quota_code: "L-AE5B911F",
+        quota_name: "CreateFlywheel max active flywheels",
+        value: 20.0,
+        unit: "None",
+        adjustable: true,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
     // Amazon DynamoDB Accelerator: the node and subnet planes of the Region beside the
     // planes counted inside one cluster or subnet group.
     Row {
@@ -545,9 +668,47 @@ const ROWS: &[Row] = &[
         metric: Metric::None,
         context: None,
     },
-    // AWS Direct Connect: a plain per-connection count beside the two planes AWS applies
-    // to an individual resource — a LAG and a Direct Connect gateway — each metered with
-    // the service's own `AWS/Usage` resource count.
+    // AWS Direct Connect: a plain per-connection count beside the planes AWS applies to
+    // an individual resource — a dedicated connection, a LAG, a transit gateway and a
+    // Direct Connect gateway — the metered ones counted with the service's own
+    // `AWS/Usage` resource count.
+    Row {
+        service_code: "directconnect",
+        service_name: "AWS Direct Connect",
+        quota_code: "L-0B7EBFD7",
+        quota_name: "Public or private virtual interfaces per dedicated connection",
+        value: 50.0,
+        unit: "None",
+        adjustable: false,
+        description: "",
+        period: Some((5, "MINUTE")),
+        metric: Metric::Resources {
+            usage_service: "Direct Connect",
+            resource: "PublicOrPrivateVIFsPerDedicatedConnection",
+        },
+        context: Some(Context {
+            scope: "RESOURCE",
+            scope_type: "AWS::DirectConnect::Connections",
+            adjustable_at_level: "ALL",
+        }),
+    },
+    Row {
+        service_code: "directconnect",
+        service_name: "AWS Direct Connect",
+        quota_code: "L-A1004C93",
+        quota_name: "Prefixes per transit gateway",
+        value: 200.0,
+        unit: "None",
+        adjustable: false,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: Some(Context {
+            scope: "RESOURCE",
+            scope_type: "AWS::EC2::TransitGateways",
+            adjustable_at_level: "ALL",
+        }),
+    },
     Row {
         service_code: "directconnect",
         service_name: "AWS Direct Connect",
@@ -591,7 +752,8 @@ const ROWS: &[Row] = &[
         value: 20.0,
         unit: "None",
         adjustable: false,
-        description: "The maximum number of virtual private gateways per Direct Connect gateway.",
+        description: "The maximum number of virtual private gateways per AWS Direct Connect \
+                      gateway.",
         period: Some((5, "MINUTE")),
         metric: Metric::Resources {
             usage_service: "Direct Connect",
@@ -673,6 +835,59 @@ const ROWS: &[Row] = &[
         metric: Metric::None,
         context: None,
     },
+    Row {
+        service_code: "dms",
+        service_name: "AWS Database Migration Service (AWS DMS)",
+        quota_code: "L-1AB41EE0",
+        quota_name: "Number of Data Migrations",
+        value: 1000.0,
+        unit: "None",
+        adjustable: true,
+        description: "Maximum number of data migrations",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "dms",
+        service_name: "AWS Database Migration Service (AWS DMS)",
+        quota_code: "L-62EFB27A",
+        quota_name: "Number of Data Migrations per Migration Project",
+        value: 10.0,
+        unit: "None",
+        adjustable: false,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "dms",
+        service_name: "AWS Database Migration Service (AWS DMS)",
+        quota_code: "L-DE63148C",
+        quota_name: "Number of Migration Projects",
+        value: 50.0,
+        unit: "None",
+        adjustable: true,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "dms",
+        service_name: "AWS Database Migration Service (AWS DMS)",
+        quota_code: "L-FE918D88",
+        quota_name: "Certificate count",
+        value: 100.0,
+        unit: "None",
+        adjustable: true,
+        description: "The maximum number of certificates allowed in this account in the current \
+                      Region.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
     // Amazon DocumentDB: the cluster, replica, snapshot, subnet-group and subscription
     // planes of the Region beside the security-group plane of a VPC, which AWS publishes
     // as fixed, each described in the terse form this service words its descriptions in.
@@ -697,7 +912,8 @@ const ROWS: &[Row] = &[
         value: 40.0,
         unit: "None",
         adjustable: true,
-        description: "The maximum number of DB clusters",
+        description: "The maximum number of clusters allowed in this account in the current \
+                      Region",
         period: None,
         metric: Metric::None,
         context: None,
@@ -767,6 +983,46 @@ const ROWS: &[Row] = &[
         metric: Metric::None,
         context: None,
     },
+    Row {
+        service_code: "docdb",
+        service_name: "Amazon DocumentDB (with MongoDB compatibility)",
+        quota_code: "L-2A542E16",
+        quota_name: "Cluster parameter groups",
+        value: 50.0,
+        unit: "None",
+        adjustable: false,
+        description: "The maximum number of DB cluster parameter groups",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "docdb",
+        service_name: "Amazon DocumentDB (with MongoDB compatibility)",
+        quota_code: "L-36C7F3F8",
+        quota_name: "Subnets per subnet group",
+        value: 20.0,
+        unit: "None",
+        adjustable: false,
+        description: "The maximum number of subnets per DB subnet group",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "docdb",
+        service_name: "Amazon DocumentDB (with MongoDB compatibility)",
+        quota_code: "L-739A3A85",
+        quota_name: "Instances",
+        value: 40.0,
+        unit: "None",
+        adjustable: true,
+        description: "The maximum number of DB instances allowed in this account in the current \
+                      Region",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
     // Amazon QuickSight: the planes of a space and of the account beside the retention,
     // size and nesting limits of its agent features.
     Row {
@@ -791,8 +1047,8 @@ const ROWS: &[Row] = &[
         value: 50.0,
         unit: "Megabytes",
         adjustable: false,
-        description: "The maximum total size of the reference documents attached to one chat \
-                      agent.",
+        description: "The maximum size in megabytes (MBs) of all reference documents attached to \
+                      a chat agent.",
         period: None,
         metric: Metric::None,
         context: None,
@@ -818,7 +1074,7 @@ const ROWS: &[Row] = &[
         value: 365.0,
         unit: "None",
         adjustable: false,
-        description: "The number of days the history of a scheduled task is retained for.",
+        description: "The number of days scheduled task run history is retained.",
         period: None,
         metric: Metric::None,
         context: None,
@@ -846,6 +1102,46 @@ const ROWS: &[Row] = &[
         adjustable: true,
         description: "The maximum number of approval policies that can be created in a single \
                       account across all asset types.",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "quicksight",
+        service_name: "Amazon QuickSight",
+        quota_code: "L-3B893AF4",
+        quota_name: "Session approval expiry in hours",
+        value: 12.0,
+        unit: "None",
+        adjustable: false,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    Row {
+        service_code: "quicksight",
+        service_name: "Amazon QuickSight",
+        quota_code: "L-5FE00BED",
+        quota_name: "Amazon Quick Automate Maximum Automations",
+        value: 1000.0,
+        unit: "None",
+        adjustable: true,
+        description: "",
+        period: None,
+        metric: Metric::None,
+        context: None,
+    },
+    // A size measured in gigabytes rather than counted.
+    Row {
+        service_code: "quicksight",
+        service_name: "Amazon QuickSight",
+        quota_code: "L-8926DD84",
+        quota_name: "Maximum custom agent files size",
+        value: 1.0,
+        unit: "Gigabytes",
+        adjustable: true,
+        description: "",
         period: None,
         metric: Metric::None,
         context: None,
@@ -892,6 +1188,19 @@ const UNCITED_ROWS: &[Row] = &[
         }),
     },
 ];
+
+/// The published rows of `service_codes`, out of the one table of them this suite owns.
+///
+/// `pub(crate)` with [`assert_row`] so a sibling suite can drive the SAME rows through
+/// another endpoint rather than keeping a second copy of the table, which could drift from
+/// this one.
+pub(crate) fn rows_of<'codes>(
+    service_codes: &'codes [&'codes str],
+) -> impl Iterator<Item = &'static Row> + 'codes {
+    ROWS.iter()
+        .chain(UNCITED_ROWS)
+        .filter(move |row| service_codes.contains(&row.service_code))
+}
 
 /// The whole published catalog of each covered service: its `ServiceCode` and the codes
 /// its rows are keyed on, so a row that silently appears or disappears fails here.
@@ -988,7 +1297,7 @@ async fn listed_codes(caller: &Client, operation: &str, service_code: &str) -> B
 
 /// Assert one row reports the facts AWS publishes for it, through the single read and
 /// through the listing alike.
-async fn assert_row(caller: &Client, region: &str, row: &Row) {
+pub(crate) async fn assert_row(caller: &Client, region: &str, row: &Row) {
     let case = format!("{}/{}", row.service_code, row.quota_code);
     let pair = json!({"ServiceCode": row.service_code, "QuotaCode": row.quota_code});
     let quota = caller.ok("GetAWSDefaultServiceQuota", pair.clone()).await["Quota"].clone();

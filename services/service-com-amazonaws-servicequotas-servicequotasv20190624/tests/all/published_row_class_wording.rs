@@ -189,22 +189,26 @@ const CLASSES: &[Class] = &[
     },
 ];
 
-/// The rows a class service publishes that belong to NO rate class: a COUNT of a
-/// resource rather than a rate, so such a row is published with the quota's own text and
+/// The rows a class service publishes that belong to NO rate class: a COUNT or a SIZE
+/// rather than a rate, so such a row is published with the quota's own text and
 /// with neither a window nor a call count. Named by `(ServiceCode, QuotaName,
 /// Description)`, so a row whose name states a rate can never be excused by this table,
 /// and a count whose text drifts fails too.
 ///
 /// SOURCE: AWS's published Service Quotas data for the service code, as
-/// `src/state/quota_rows/cognito_idp.rs` and `src/state/quota_rows/cognito_identity.rs`
+/// `src/state/quota_rows/cognito_idp.rs`, `src/state/quota_rows/cognito_identity.rs` and
+/// `src/state/quota_rows/comprehend.rs`
 /// carry it: Amazon Cognito User Pools publishes
 /// a count of the account's user pools and a count of one pool's resource servers beside
-/// its category rates, and Amazon Cognito Federated Identities a count of one identity
-/// pool's user pool providers beside its API rates — each with the sentence the service
-/// publishes for that count, a count's text being the quota's own rather than a class
-/// template's. AWS Private CA publishes the revoked certificates of one CA with complete
+/// its category rates, Amazon Cognito Federated Identities the identity pools of the
+/// account, the providers and access-control rules of one pool, the page a list call
+/// answers with and the sizes two of its names may reach beside its API rates, and Amazon
+/// Comprehend the resources of a kind an account may have active beside its throttles —
+/// each with the sentence the service publishes for that quota, a count's text being the
+/// quota's own rather than a class template's. AWS Private CA publishes the revoked
+/// certificates of one CA with complete
 /// CRLs enabled (`src/state/quota_rows/acm_pca.rs`) beside its per-operation rates. An
-/// EMPTY sentence is a count whose published text this catalog cites no
+/// EMPTY sentence is a row whose published text this catalog cites no
 /// source for, which publishes no `Description` member at all rather than wording authored
 /// here.
 const COUNT_ROWS: &[(&str, &str, &str)] = &[
@@ -215,9 +219,36 @@ const COUNT_ROWS: &[(&str, &str, &str)] = &[
     ),
     (
         "cognito-identity",
-        "Amazon Cognito user pool providers per identity pool",
-        "",
+        "User pool providers per identity pool",
+        "The maximum number of Amazon Cognito user pool providers per identity pool.",
     ),
+    (
+        "cognito-identity",
+        "Identity pools per account",
+        "The maximum number of identity pools per account.",
+    ),
+    (
+        "cognito-identity",
+        "List API call results",
+        "The maximum number of results from a list or lookup API call.",
+    ),
+    (
+        "cognito-identity",
+        "Login provider name size",
+        "The maximum size of a login provider name in bytes.",
+    ),
+    (
+        "cognito-identity",
+        "Role-based access control rules",
+        "The maximum number of rules for role-based access control (RBAC)",
+    ),
+    (
+        "cognito-identity",
+        "Identity pool name size",
+        "The maximum size of an identity pool name in bytes.",
+    ),
+    ("comprehend", "CreateFlywheel max active flywheels", ""),
+    ("comprehend", "Endpoints max active endpoints", ""),
     (
         "cognito-idp",
         "Resource servers per user pool",

@@ -41,8 +41,9 @@ const IDENTITY_TARGET_PREFIX: &str = "AWSCognitoIdentityService";
 const SERVICE_CODE: &str = "cognito-identity";
 const QUOTA_CODE: &str = "L-14403AD5";
 
-/// The name AWS publishes that quota under.
-const QUOTA_NAME: &str = "Amazon Cognito user pool providers per identity pool";
+/// The name AWS publishes that quota under, as the recorded default-quota listing of this
+/// service code states it.
+const QUOTA_NAME: &str = "User pool providers per identity pool";
 
 /// The refusal a configuration past the quota earns, and the status this service answers
 /// every client error with.
