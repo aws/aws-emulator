@@ -11,6 +11,36 @@ Issue-Commit: d070972b18118943755a5fa07935407d1da45bd2
 
 # CreateTargetDomain HTTP-route challenge token value diverges from the domain's bound challenge
 
+## Resolution (cause declined: a per-run minted ownership-verification secret)
+
+The emulator's behaviour is correct and the one cause is DECLINED, not implemented. The
+ownership-verification challenge is the proof of control of the domain: the service DRAWS
+it from its own entropy and holds it against the domain, so it cannot be computed from
+anything the request or a third party can see. `src/state.rs` draws it once per domain
+(`IdentifierMint::next_secret`), binds it to the name in its normalised form so one domain
+keeps one challenge across its registrations, its spellings and the deletion of them, and
+`TargetDomainRecord::verification_details` serves that one stored value as both
+`dnsTxt.token` and `httpRoute.token`. `HttpVerification.token` is an unconstrained `String`
+in the model (no `@pattern`, no `@length`), so nothing pins the value, and the step's
+expectation is the secret ONE recorded run drew; the replay key
+`securityagent|CreateTargetDomain|2xx->2xx|$.verificationDetails.httpRoute.token`
+therefore stays failing by construction, as it did for the three earlier behaviours.
+
+Do NOT implement the remedy this report proposes (derive the challenge from the account and
+the normalised domain name): a challenge computable from public information is no proof of
+control at all — anyone could publish it for a domain they do not own — and it contradicts
+the rule the workspace already applies to the other service that issues a domain-ownership
+challenge (`services/common/src/ses_identities.rs` `mint_verification_token`, drawn from the
+registry's counter, system entropy and the minting instant).
+
+What the resolution added instead is the test that pins the rule:
+`tests/all/target_domain_challenge_secret.rs` asserts, over a table of domain-name SHAPES and
+both challenge-publishing verification methods, that one account's challenge for a domain is
+fixed by the domain name alone — the member it is published through and the draws the mint
+made for other resources in between leave it as it was — that no two names share one, and
+that independent mints driven through byte-identical calls in the same order are told to
+publish different challenges, which a value derived from public input could not be.
+
 > _Note: this issue was identified against the code base at commit `d070972b18118943755a5fa07935407d1da45bd2`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation
