@@ -178,3 +178,25 @@ pub const INVALID_TABLE_ARN: &str = "Invalid TableArn";
 /// under: the lowerCamel spelling of `ResourceArn`, which is the path a clause about that
 /// member names it by.
 pub const RESOURCE_ARN_MEMBER_PATH: &str = "resourceArn";
+
+/// The `ValidationException` message a tagging call answers a tag VALUE AWS does not accept
+/// with: the class sentence, over the value as the request spelled it.
+///
+/// DynamoDB's own sentence for the class, not a constraint clause — no `<N> validation
+/// error(s) detected: ` envelope, no member path, no bound — stated the same way the
+/// reserved-namespace refusal of a tag KEY is (`super::reserved_tag_prefix`): the fact is
+/// about the tag the request carried rather than about the member it travelled in. It
+/// answers whatever is wrong with the value, the maximum the model declares on it included
+/// (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#TagValueString")` gives
+/// `@length` 0..256), so `src/service.rs` restates a violation the validating walk reports
+/// against the member from here rather than letting that walk's clause stand.
+pub fn invalid_tag_value_message(value: &str) -> String {
+    format!("The Tag Value provided is invalid, Value: {value}")
+}
+
+/// The same for a tag KEY AWS does not accept — the bound the model declares on it
+/// included (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#TagKeyString")`
+/// gives `@length` 1..128, so the EMPTY key a removal states is refused by this sentence).
+pub fn invalid_tag_key_message(key: &str) -> String {
+    format!("The Tag Key provided is invalid, Key: {key}")
+}

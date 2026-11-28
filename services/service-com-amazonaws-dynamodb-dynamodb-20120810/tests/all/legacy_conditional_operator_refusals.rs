@@ -7,11 +7,11 @@
 //! Three rules are pinned here, each over a TABLE spanning what it generalises over
 //! rather than one recorded request:
 //!
-//! * a value outside `ConditionalOperator`'s set is refused with the REQUIREMENT ALONE —
-//!   the service checks this member itself, so the clause carries neither the rejected
-//!   value nor the member path, and it states the set the service publishes for it. The
-//!   rows vary the rejected value's form and the operation that carried it, and one row
-//!   sends a second defect in the same request to show which one is reported;
+//! * a value outside `ConditionalOperator`'s set is refused with the clause naming the
+//!   member path and the rejected value, over the set the service publishes for this
+//!   member — which is its own and not the model's. The rows vary the rejected value's
+//!   form and the operation that carried it, and one row sends a second defect in the
+//!   same request to show which one is reported;
 //! * `ConditionalOperator` combines the ENTRIES of the legacy map beside it, so the
 //!   sentence a request earns follows how many entries that map holds: none, exactly
 //!   one, or enough to combine (which is served). The rows vary the operation, which map
@@ -20,9 +20,11 @@
 //!   order the operation declares the expression members those asks are stated through,
 //!   which the rows vary by carrying different subsets of both sides on both readers.
 //!
-//! Which FORM a refusal takes follows the surface: a read states the sentence bare, and a
-//! write states it inside the `<N> validation error(s) detected: ` envelope. Everything
-//! is driven over the wire, so nothing is asserted that a client could not observe.
+//! Which FORM a refusal takes follows the member: the clause about `ConditionalOperator` is
+//! stated BARE whichever operation carried it, while the operand-count sentence a write
+//! earns about the map beside it carries the `<N> validation error(s) detected: ` envelope.
+//! Everything is driven over the wire, so nothing is asserted that a client could not
+//! observe.
 
 use serde_json::{json, Value};
 
@@ -42,11 +44,13 @@ const ENVELOPE: &str = "1 validation error detected: ";
 /// while the refusal states `ALL` for the value `AND` spells.
 const CONDITIONAL_OPERATOR_SET: &str = "[ALL, OR]";
 
-/// The clause a value outside that set earns, with no value echoed and no member path.
-fn requirement_clause() -> String {
+/// The clause a value outside that set earns: the member path and the value the request
+/// carried, so a caller can read out of the message which value of which member was
+/// refused.
+fn requirement_clause(value: &str) -> String {
     format!(
-        "Failed to satisfy constraint: Member must satisfy enum value set: \
-         {CONDITIONAL_OPERATOR_SET}"
+        "Value '{value}' at 'conditionalOperator' failed to satisfy constraint: Member must \
+         satisfy enum value set: {CONDITIONAL_OPERATOR_SET}"
     )
 }
 
@@ -83,19 +87,18 @@ async fn seeded() -> smithy_server_runtime::MultiServiceRouter {
     router
 }
 
-/// One surface the member arrives on: the operation, a request carrying the operator the
-/// row rejects, and the envelope that surface states its clause inside.
-type Surface = (&'static str, fn(&str) -> Value, &'static str);
+/// One surface the member arrives on: the operation and a request carrying the operator the
+/// row rejects. The clause this member earns is stated BARE whichever operation carried it.
+type Surface = (&'static str, fn(&str) -> Value);
 
 #[tokio::test]
-async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
+async fn a_conditional_operator_outside_its_set_names_the_member_and_the_value() {
     let router = seeded().await;
 
     // The rows vary the FORM of the rejected value (a misspelling, a declared value in
     // the wrong case, the empty string, a value of another enum, and the value the
     // published set spells that the model does not declare) and the operation that
-    // carried it — the sentence is the same for all of them, and only the envelope
-    // follows the surface.
+    // carried it — the clause is the same for all of them, stated bare.
     let values = ["XOR", "and", "", "ALL_OLD", "ALL"];
     let surfaces: [Surface; 5] = [
         (
@@ -110,7 +113,6 @@ async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
                     },
                 })
             },
-            "",
         ),
         (
             "Query",
@@ -127,7 +129,6 @@ async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
                     },
                 })
             },
-            "",
         ),
         (
             "PutItem",
@@ -142,7 +143,6 @@ async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
                     },
                 })
             },
-            ENVELOPE,
         ),
         (
             "DeleteItem",
@@ -157,7 +157,6 @@ async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
                     },
                 })
             },
-            ENVELOPE,
         ),
         (
             "UpdateItem",
@@ -173,15 +172,14 @@ async fn a_conditional_operator_outside_its_set_states_the_requirement_alone() {
                     },
                 })
             },
-            ENVELOPE,
         ),
     ];
 
-    for (operation, request, envelope) in surfaces {
+    for (operation, request) in surfaces {
         for value in values {
             let case = format!("{operation} carrying the operator {value:?}");
             let (status, answered) = call(&router, operation, request(value)).await;
-            let expected = format!("{envelope}{}", requirement_clause());
+            let expected = requirement_clause(value);
             assert_eq!(
                 (status, error_code(&answered).as_str(), message(&answered)),
                 (400, "ValidationException", expected.clone()),
@@ -231,8 +229,8 @@ async fn the_conditional_operator_defect_is_reported_before_the_handler_reads_th
         ),
     ];
 
-    for (case, operation, request, envelope) in both_defects {
-        let expected = format!("{envelope}{}", requirement_clause());
+    for (case, operation, request, _envelope) in both_defects {
+        let expected = requirement_clause("XOR");
         let (status, answered) = call(&router, operation, request).await;
         assert_eq!(
             (status, error_code(&answered).as_str(), message(&answered)),

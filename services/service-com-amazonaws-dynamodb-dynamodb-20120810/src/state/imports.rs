@@ -416,6 +416,18 @@ pub fn import_not_found(import_arn: &str) -> RequestError {
     ))
 }
 
+/// The MESSAGE an ARN-addressed IMPORT operation refuses an `ImportArn` it cannot read as
+/// one with: the class the member is, then the value as the request spelled it.
+///
+/// Public for the one caller that states it outside a handler: the member's own bounds are
+/// declared by the model (`smithy_query(query="operation", operation="DescribeImport")`
+/// gives `ImportArn` `@length` 37..1024), so the validating walk can reach the value before
+/// any handler does, and `src/service.rs` restates the refusal from here rather than letting
+/// that walk's length clause stand — the value fails as an IMPORT ARN however long it is.
+pub fn invalid_import_arn_message(import_arn: &str) -> String {
+    format!("Invalid ImportArn: Invalid ImportArn provided as input {import_arn}")
+}
+
 /// Hold an ARN-addressed IMPORT operation's `ImportArn` to the form such an ARN takes in
 /// the scope the request itself was made in.
 ///
@@ -428,11 +440,7 @@ pub fn import_not_found(import_arn: &str) -> RequestError {
 /// be looked up, so it is an INPUT failure ([`RequestError::Validation`]) rather than a
 /// missing resource, and only a well-formed, in-scope ARN reaches the catalogue.
 pub fn check_import_arn(import_arn: &str, request_region: &str) -> Result<(), RequestError> {
-    let invalid = || {
-        RequestError::Validation(format!(
-            "Invalid ImportArn: Invalid ImportArn provided as input {import_arn}"
-        ))
-    };
+    let invalid = || RequestError::Validation(invalid_import_arn_message(import_arn));
     // `arn`, partition, service, region, account, resource — the resource field is the
     // last one and carries `/`, so the split stops at six.
     let fields: Vec<&str> = import_arn.splitn(6, ':').collect();

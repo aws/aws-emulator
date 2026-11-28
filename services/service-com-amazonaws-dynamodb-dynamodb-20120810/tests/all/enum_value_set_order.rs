@@ -37,13 +37,39 @@ const STREAM_VIEW_TYPE_SET: &[&str] =
 /// values a corrected request may name, each of which must enable a stream capturing it.
 const VIEW_TYPES: &[&str] = &["NEW_IMAGE", "OLD_IMAGE", "NEW_AND_OLD_IMAGES", "KEYS_ONLY"];
 
-/// The whole message a refusal of ONE value outside ONE enumerated member's set carries.
-fn expected_clause(value: &str, path: &str, set: &[&str]) -> String {
+/// The whole message a refusal of ONE value outside ONE enumerated member's set carries:
+/// the clause, inside the counting envelope for every member of the input itself, and
+/// stated BARE for the members whose refusal DynamoDB states without it.
+fn expected_clause(value: &str, path: &str, set: &[&str], envelope: &str) -> String {
     format!(
-        "1 validation error detected: Value '{value}' at '{path}' failed to satisfy constraint: \
+        "{envelope}Value '{value}' at '{path}' failed to satisfy constraint: \
          Member must satisfy enum value set: [{}]",
         set.join(", ")
     )
+}
+
+/// The envelope a refusal of a member of the input itself carries.
+const ENVELOPE: &str = "1 validation error detected: ";
+
+/// The envelope a refusal of one of the BARE members carries, which is none: the comparator
+/// of a legacy condition entry, the projection type of an index declaration and a vector
+/// index's distance function are each stated as the clause alone.
+const BARE: &str = "";
+
+/// The members whose enum refusal DynamoDB states bare, each named by the member the clause
+/// names it with (the last segment of the path), so the same member is matched wherever the
+/// input nests it.
+const BARE_MEMBERS: &[&str] = &["comparisonOperator", "distanceFunction", "projectionType"];
+
+/// The envelope the refusal of the member at `path` carries.
+///
+/// `pub(crate)` so the suite that reads the same sets back over other carriers
+/// (`crate::scratch_enum_order`) states the split from here rather than from a second copy.
+pub(crate) fn envelope_for(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some(member) if BARE_MEMBERS.contains(&member) => BARE,
+        _ => ENVELOPE,
+    }
 }
 
 /// A `CreateTable` body for a table keyed on `Pk` alone, with `extra` merged in.
@@ -397,7 +423,7 @@ async fn an_enum_refusal_states_the_admissible_set_in_the_order_the_service_stat
             "case {case:?} ({}): expected ValidationException, got {refused}",
             row.operation
         );
-        let expected = expected_clause(row.value, row.path, row.set);
+        let expected = expected_clause(row.value, row.path, row.set, envelope_for(row.path));
         let stated = message(&refused);
         assert_eq!(
             stated, expected,
@@ -435,7 +461,7 @@ async fn a_refused_stream_specification_enables_nothing_and_the_corrected_one_en
             "case {case:?}: a misspelled view type must be refused, got {status} with {refused}"
         );
         let expected = expected_clause(&misspelled, "streamSpecification.streamViewType",
-                                       STREAM_VIEW_TYPE_SET);
+                                       STREAM_VIEW_TYPE_SET, ENVELOPE);
         let stated = message(&refused);
         assert_eq!(
             stated, expected,

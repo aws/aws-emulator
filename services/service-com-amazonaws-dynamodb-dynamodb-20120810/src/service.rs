@@ -192,6 +192,10 @@ mod throttled_request_metrics;
 /// for — read off the request body so their clauses join the walk's in one refusal.
 mod request_constraints;
 
+/// The COLLECTION a constraint clause quotes, read off the request body at the member path
+/// the validating walk reports — the value half that walk hands this service a count for.
+mod submitted_collections;
+
 /// The datatype defect of an `AttributeValue` a request sends, for the members that state
 /// that defect behind a sentence of their own — read off the body, because a value the codec
 /// cannot read never reaches a handler that could name its member.
@@ -317,12 +321,13 @@ fn requirement(kind: &ViolationKind) -> Option<String> {
 
 /// The input members DynamoDB's own request code validates rather than leaving to the
 /// generic request walk, each named by the path that walk reports it under and paired
-/// with the value set that check states.
+/// with the value set that check states and the form its clause takes.
 ///
-/// Their refusals are worded differently from every other enumerated member's: the
-/// clause states the requirement ALONE — neither the rejected value nor the member path
-/// — which is what a check by the service's own code looks like next to the generic
-/// validator's `Value '<v>' at '<path>' failed to satisfy constraint: …`.
+/// Their refusals state a set of the SERVICE's own rather than the model's, and one of
+/// them states the requirement ALONE — neither the rejected value nor the member path —
+/// which is what a check by the service's own code looks like next to the generic
+/// validator's `Value '<v>' at '<path>' failed to satisfy constraint: …`
+/// ([`CheckedEnumClause`]).
 ///
 /// These are NAMED MEMBERS, not a class, because the service's refusals of them are
 /// observed to take that shape while the refusals of the service's other enumerated
@@ -348,21 +353,48 @@ fn requirement(kind: &ViolationKind) -> Option<String> {
 /// client matching the message has to read the same text from the emulator and from
 /// DynamoDB; deriving a set from the model would state a different sentence from the one
 /// the service sends.
-const SERVICE_CHECKED_ENUMS: &[(&str, &[&str])] = &[
+const SERVICE_CHECKED_ENUMS: &[(&str, &[&str], CheckedEnumClause)] = &[
     (
         "returnValues",
         &["ALL_OLD", "UPDATED_OLD", "ALL_NEW", "UPDATE_NEW", "NONE"],
+        CheckedEnumClause::RequirementAlone,
     ),
-    ("conditionalOperator", &["ALL", "OR"]),
+    (
+        "conditionalOperator",
+        &["ALL", "OR"],
+        CheckedEnumClause::PathAndValue,
+    ),
 ];
+
+/// Whether such a check's clause NAMES the member and the value it refused.
+///
+/// A clause of this service's own check states the requirement alone for one of the two
+/// members above and names the member path and the rejected value for the other, so the
+/// form is recorded per member beside the set: a caller reading the message of a member
+/// stated the second way can see WHICH value of WHICH member was refused, exactly as the
+/// generic walk's clause lets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckedEnumClause {
+    /// The requirement with neither the member path nor the rejected value.
+    RequirementAlone,
+    /// The member path and the rejected value, as every other enumerated member's clause
+    /// states them.
+    PathAndValue,
+}
+
+/// The set and the clause form the service's own check states for `path`, or `None` for a
+/// member the generic request walk words.
+fn service_checked_enum(path: &str) -> Option<(&'static [&'static str], CheckedEnumClause)> {
+    SERVICE_CHECKED_ENUMS
+        .iter()
+        .find(|(member, _, _)| *member == path)
+        .map(|(_, stated, form)| (*stated, *form))
+}
 
 /// The set the service's own check states for `path`, or `None` for a member the generic
 /// request walk words.
 fn service_checked_enum_set(path: &str) -> Option<&'static [&'static str]> {
-    SERVICE_CHECKED_ENUMS
-        .iter()
-        .find(|(member, _)| *member == path)
-        .map(|(_, stated)| *stated)
+    service_checked_enum(path).map(|(stated, _)| stated)
 }
 
 /// Whether every violation this refusal reports is about a member the service checks
@@ -394,6 +426,68 @@ const BARE_CLAUSE_OPERATIONS: &[&str] = &["Query", "Scan"];
 /// Whether `operation` states such a clause bare.
 fn states_service_checked_clause_bare(operation: &str) -> bool {
     BARE_CLAUSE_OPERATIONS.binary_search(&operation).is_ok()
+}
+
+/// The operations whose refusal of a member this service RESOLVES ITSELF is stated inside
+/// the `<N> validation error(s) detected: ` envelope rather than as the sentence alone
+/// ([`SelfWordedMember`]).
+///
+/// It is the split this service states everywhere else about the two generations of
+/// condition members (`crate::state`'s enveloped-members rule): a refusal about the members
+/// a single-item WRITE states its intent through carries the envelope, while a READ's — and
+/// a transactional element's, which states every refusal about its own members on its own —
+/// does not.
+///
+/// Sorted, which [`states_sentence_in_the_envelope`] relies on for `binary_search` and
+/// `enveloped_sentence_operations_are_sorted` pins.
+const ENVELOPED_SENTENCE_OPERATIONS: &[&str] = &["DeleteItem", "PutItem", "UpdateItem"];
+
+/// Whether `operation` states such a sentence inside that envelope.
+fn states_sentence_in_the_envelope(operation: &str) -> bool {
+    ENVELOPED_SENTENCE_OPERATIONS
+        .binary_search(&operation)
+        .is_ok()
+}
+
+/// The ENUMERATED members whose refusal is stated BARE — the clause alone, outside the
+/// `<N> validation error(s) detected: ` envelope — whichever operation carried them, each
+/// named by the member the validating walk reports it under (the LAST segment of the path,
+/// so the same member is matched wherever the input nests it).
+///
+/// These are the members an operation reads INSIDE a declaration it was handed rather than
+/// off its own input: the comparator of a legacy condition entry, the projection type of an
+/// index declaration, and the distance function of a vector index. A refusal about one of
+/// them states the clause and nothing around it, while a refusal about a member of the
+/// input ITSELF (`select`, `returnConsumedCapacity`, `billingMode`, …) is counted in the
+/// envelope like every other.
+///
+/// Nothing about the model distinguishes the two groups — the same trait, the same clause,
+/// a different envelope — so this is the only place the difference is recorded, and a
+/// member later found to be stated bare needs its own entry here.
+/// `tests/all/enum_refusal_envelope.rs` reads both groups back side by side, so the
+/// difference is visible rather than silent.
+const BARE_ENUM_MEMBERS: &[&str] = &[
+    "comparisonOperator",
+    "conditionalOperator",
+    "distanceFunction",
+    "projectionType",
+];
+
+/// Whether a clause about the member at `path` is one of those.
+fn states_enum_clause_bare(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .is_some_and(|member| BARE_ENUM_MEMBERS.contains(&member))
+}
+
+/// Whether every violation this refusal reports is one of those members being outside its
+/// set — the refusals stated bare whichever operation was served.
+fn all_bare_enum_members(violations: &[Violation]) -> bool {
+    !violations.is_empty()
+        && violations.iter().all(|violation| {
+            matches!(violation.kind, ViolationKind::EnumValue(_))
+                && states_enum_clause_bare(&violation.path)
+        })
 }
 
 /// The operations whose refusal of an ABSENT member this service's own request code
@@ -612,6 +706,21 @@ const PUBLISHED_ENUM_ORDERS: &[&[&str]] = &[
         "GE",
         "CONTAINS",
     ],
+    // `ListBackups$BackupType`, the filter a backup listing narrows by, whose
+    // `BackupTypeFilter` the model declares as `USER SYSTEM AWS_BACKUP ALL`
+    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#BackupTypeFilter")`),
+    // while the service's refusals state the same four in this one.
+    &["ALL", "AWS_BACKUP", "USER", "SYSTEM"],
+    // `AttributeValueUpdate$Action`, the action a LEGACY per-attribute update names, whose
+    // `AttributeAction` the model declares as `ADD PUT DELETE`
+    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#AttributeAction")`), while
+    // the service's refusals state the same three in this one.
+    &["ADD", "DELETE", "PUT"],
+    // `VectorIndex$DistanceFunction`, which the model declares as
+    // `COSINE DOT_PRODUCT EUCLIDEAN`
+    // (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#VectorDistanceFunction")`),
+    // while the service's refusals state the same three in this one.
+    &["DOT_PRODUCT", "COSINE", "EUCLIDEAN"],
 ];
 
 /// The admissible set `allowed` is STATED in: the order this service publishes for that
@@ -823,6 +932,11 @@ tokio::task_local! {
     /// BARE ([`BARE_CLAUSE_OPERATIONS`]), set and read back the same way.
     static SERVED_BARE_CLAUSE: bool;
 
+    /// Whether that operation states the sentence of a member this service resolves itself
+    /// INSIDE the counting envelope ([`ENVELOPED_SENTENCE_OPERATIONS`]), set and read back
+    /// the same way.
+    static SERVED_ENVELOPED_SENTENCE: bool;
+
     /// Whether that operation states an ABSENT member this service's own request code
     /// requires as the walk's clause ([`VALIDATOR_NULL_CLAUSE_OPERATIONS`]), set and read
     /// back the same way.
@@ -862,6 +976,13 @@ tokio::task_local! {
     /// around the same run and read back by [`validation_envelope`]: the position is a
     /// fact of the BODY, which no refusal seam is handed.
     static SERVED_BODY_READ_END: Option<(usize, usize)>;
+
+    /// The body of the request this task is serving, kept for the clauses of its refusal
+    /// that QUOTE a collection it carried ([`submitted_collections`]), set around the same
+    /// run and read back by [`quoting_the_submitted_collection`]: the validating walk hands
+    /// this service its own count of a collection, and the collection AWS quotes is only in
+    /// the request.
+    static SERVED_SUBMITTED_BODY: Option<submitted_collections::SubmittedBody>;
 }
 
 /// The forms the operation this task is serving states its clauses in.
@@ -881,6 +1002,16 @@ fn served_clause_form() -> ClauseForms {
 /// envelope every other refusal of this service carries.
 fn served_states_clause_bare() -> bool {
     SERVED_BARE_CLAUSE.try_with(|bare| *bare).unwrap_or(false)
+}
+
+/// Whether the operation this task is serving states the sentence of a member this service
+/// resolves itself inside the counting envelope. Absent altogether is a refusal raised
+/// outside an operation's run, which states the sentence alone — the answer every operation
+/// the list does not name gives.
+fn served_states_sentence_in_the_envelope() -> bool {
+    SERVED_ENVELOPED_SENTENCE
+        .try_with(|enveloped| *enveloped)
+        .unwrap_or(false)
 }
 
 /// Whether the operation this task is serving states an absent member this service's own
@@ -951,6 +1082,30 @@ fn served_body_read_end() -> Option<(usize, usize)> {
     SERVED_BODY_READ_END
         .try_with(|held| *held)
         .unwrap_or_default()
+}
+
+/// The collection the request this task is serving carried at `path`, rendered as a clause
+/// quotes one. None at all is a refusal raised outside an operation's run, where there is
+/// no request to have read a collection off — and the walk's own summary is what such a
+/// refusal states.
+fn served_submitted_collection(path: &str) -> Option<String> {
+    SERVED_SUBMITTED_BODY
+        .try_with(|held| {
+            held.as_ref()
+                .and_then(|body| body.collection_at(path))
+        })
+        .ok()
+        .flatten()
+}
+
+/// The STRING the request this task is serving carried at `path`, whole. None at all is a
+/// refusal raised outside an operation's run, where there is no request to have read a
+/// value off — and the walk's own echo of it is what such a refusal names.
+fn served_submitted_string(path: &str) -> Option<String> {
+    SERVED_SUBMITTED_BODY
+        .try_with(|held| held.as_ref().and_then(|body| body.string_at(path)))
+        .ok()
+        .flatten()
 }
 
 /// Serves a request as the operation the generated routing table names, with that
@@ -1094,23 +1249,33 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
                             states_absent_member_as_clause(operation),
                             SERVED_MEMBER_CHECK.scope(
                                 checks_its_own_members(operation),
-                                SERVED_TABLE_NAME_CLAUSES.scope(
-                                    request_constraints::table_name_form_clauses(operation, req),
-                                    SERVED_SERVICE_CHECKED_CLAUSES.scope(
-                                        request_constraints::service_checked_clauses(
+                                SERVED_ENVELOPED_SENTENCE.scope(
+                                    states_sentence_in_the_envelope(operation),
+                                    SERVED_TABLE_NAME_CLAUSES.scope(
+                                        request_constraints::table_name_form_clauses(
                                             operation, req,
                                         ),
-                                        SERVED_CAPPED_LIST_CLAUSE.scope(
-                                            capped_list,
-                                            SERVED_BODY_READ_END.scope(
-                                                request_constraints::body_read_end(
-                                                    operation, req,
-                                                ),
-                                                SERVED_READABLE_BODY.scope(
-                                                    request_constraints::readable_body(
+                                        SERVED_SERVICE_CHECKED_CLAUSES.scope(
+                                            request_constraints::service_checked_clauses(
+                                                operation, req,
+                                            ),
+                                            SERVED_CAPPED_LIST_CLAUSE.scope(
+                                                capped_list,
+                                                SERVED_BODY_READ_END.scope(
+                                                    request_constraints::body_read_end(
                                                         operation, req,
                                                     ),
-                                                    op.run(svc, req, ctx),
+                                                    SERVED_SUBMITTED_BODY.scope(
+                                                        submitted_collections::SubmittedBody::of(
+                                                            req,
+                                                        ),
+                                                        SERVED_READABLE_BODY.scope(
+                                                            request_constraints::readable_body(
+                                                                operation, req,
+                                                            ),
+                                                            op.run(svc, req, ctx),
+                                                        ),
+                                                    ),
                                                 ),
                                             ),
                                         ),
@@ -1322,13 +1487,23 @@ fn violation_clause(violation: &Violation, forms: ClauseForms, alone: bool) -> O
         // a request several of whose members break a declared bound is refused by the
         // validator before any check of the service's own reads it, so every clause of
         // such a refusal is the validator's.
-        ViolationKind::EnumValue(_)
-            if alone && service_checked_enum_set(&violation.path).is_some() =>
-        {
-            Some(format!(
-                "Failed to satisfy constraint: {}",
-                crate::state::enum_value_requirement(service_checked_enum_set(&violation.path)?)
-            ))
+        ViolationKind::EnumValue(_) if alone && service_checked_enum(&violation.path).is_some() => {
+            let (stated, form) = service_checked_enum(&violation.path)?;
+            match form {
+                CheckedEnumClause::RequirementAlone => Some(format!(
+                    "Failed to satisfy constraint: {}",
+                    crate::state::enum_value_requirement(stated)
+                )),
+                CheckedEnumClause::PathAndValue => Some(
+                    Violation {
+                        kind: ViolationKind::EnumValue(
+                            stated.iter().map(|value| (*value).to_string()).collect(),
+                        ),
+                        ..violation.clone()
+                    }
+                    .message(),
+                ),
+            }
         }
         ViolationKind::MissingRequiredMember | ViolationKind::EnumValue(_) => Some(
             Violation {
@@ -1376,38 +1551,48 @@ fn as_stated(violation: &Violation) -> Violation {
             ),
             ..violation.clone()
         },
-        _ => quoting_an_empty_collection(violation),
+        _ => quoting_the_submitted_collection(violation),
     }
 }
 
-/// `violation` with the walk's SUMMARY of an empty collection replaced by the collection
-/// itself, where the clause echoes a value.
+/// `violation` with the walk's SUMMARY of a collection replaced by the collection the
+/// request carried, where the clause echoes a value.
 ///
 /// A clause states the value the request carried, and the validating walk hands this seam
 /// its own summary of a collection it length-checked (`<n> items` for a list, `<n>
-/// entries` for a map) rather than the collection — neither of which any caller sent. For
-/// a collection that HOLDS something there is nothing here to render from (see the
-/// paragraph above [`violation_clause`]), but a collection the walk counted as EMPTY has
-/// exactly one rendering whatever it held nothing of, so that one is restored: an empty
-/// list is quoted as the empty list and an empty map as the empty map, through the shared
-/// renderings every service quotes a submitted collection with
+/// entries` for a map) rather than the collection — neither of which any caller sent. The
+/// collection is restored from the two places it can be had:
+///
+/// * an EMPTY one has exactly one rendering whatever it held nothing of, so the summary
+///   alone determines it — an empty list is quoted as the empty list and an empty map as
+///   the empty map;
+/// * one that HELD something is read back off the body of the request this task is serving
+///   ([`submitted_collections`]), at the member path the walk reports the violation under.
+///
+/// Both go through the shared renderings every service quotes a submitted collection with
 /// (`service_common::validation_message::quoting_the_submitted_collection`, which is also
-/// what holds the restoring to the two `@length` classes). The requirement half, the path
-/// and the envelope stay the framework's.
-fn quoting_an_empty_collection(violation: &Violation) -> Violation {
+/// what holds the restoring to the two `@length` classes). A collection whose elements have
+/// no text rendering — a list of structures — keeps the walk's summary rather than losing
+/// its value half altogether. The requirement half, the path and the envelope stay the
+/// framework's.
+fn quoting_the_submitted_collection(violation: &Violation) -> Violation {
     let Some(stored) = violation.value.as_deref() else {
         return violation.clone();
     };
-    let empty = if ::service_common::validation_message::list_item_count(stored) == Some(0) {
-        ::service_common::validation::rendered_list(&[])
-    } else if ::service_common::validation_message::map_entry_count(stored) == Some(0) {
-        ::service_common::validation::rendered_map(&[])
-    } else {
-        return violation.clone();
+    let elements = ::service_common::validation_message::list_item_count(stored);
+    let entries = ::service_common::validation_message::map_entry_count(stored);
+    let rendered = match (elements, entries) {
+        (Some(0), _) => ::service_common::validation::rendered_list(&[]),
+        (_, Some(0)) => ::service_common::validation::rendered_map(&[]),
+        (Some(_), _) | (_, Some(_)) => match served_submitted_collection(&violation.path) {
+            Some(submitted) => submitted,
+            None => return violation.clone(),
+        },
+        _ => return violation.clone(),
     };
     ::service_common::validation_message::quoting_the_submitted_collection(
         violation.clone(),
-        ::service_common::validation::SubmittedEcho::Rendered(empty),
+        ::service_common::validation::SubmittedEcho::Rendered(rendered),
     )
 }
 
@@ -1432,6 +1617,148 @@ fn masking_violation(violations: &[Violation]) -> Option<&Violation> {
     violations
         .iter()
         .find(|violation| MASKING_MEMBERS.contains(&violation.path.as_str()))
+}
+
+/// The members whose VALUE this service resolves ITSELF, and the sentence each one's
+/// resolution words for a value it cannot resolve.
+///
+/// A member of this group is not held to the bound the model declares on it: the service
+/// reads the value through a resolution of its own — an ARN it parses, a tag the account
+/// will carry, an attribute name an item is keyed by — and the refusal a caller reads is
+/// THAT resolution's sentence whatever way the value failed, the declared `@length`
+/// included. The validating walk nevertheless reaches such a value first, because the model
+/// does declare a bound on the member, so the clause that walk would state is RESTATED here
+/// as the sentence the resolution words — the same restating the ARN-addressed tagging
+/// surface's own selector already gets ([`SELF_CHECKED_MEMBER_OPERATIONS`]).
+///
+/// The table-naming member is NOT one of them: it admits a table's ARN as well as its name,
+/// so a value inside the bound the model declares on it is a value the service goes on to
+/// resolve, and the clause a value OUTSIDE that bound earns is the bound's own
+/// (`tests/all/absent_table_name_refusal_wording.rs` pins it).
+///
+/// Each variant is a MEMBER KIND rather than one operation's member, because the resolution
+/// is the same wherever the member is carried: the table-naming member of a batched element
+/// is resolved exactly as the request-level one is, and the substitution map of a
+/// transactional action exactly as a single read's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelfWordedMember {
+    /// An ARN naming a BACKUP, resolved by `crate::state::check_backup_arn`.
+    BackupArn,
+    /// An ARN naming an IMPORT, resolved by `crate::state::check_import_arn`.
+    ImportArn,
+    /// The VALUE of a tag the request asks the account to carry.
+    TagValue,
+    /// The KEY of a tag the request asks the account to carry, or to drop.
+    TagKey,
+    /// An ATTRIBUTE NAME an item is keyed or projected by, under the key the request carried
+    /// it in where it carried one — the placeholder of a substitution entry — and under none
+    /// where the name IS what the request sent.
+    AttributeName(Option<String>),
+}
+
+/// The leaf member a substitution map carries an attribute NAME under, as the validating
+/// walk spells it.
+const EXPRESSION_ATTRIBUTE_NAMES_MEMBER: &str = "expressionAttributeNames";
+
+/// The list member a read states the attribute names it projects in, spelled the same way.
+const ATTRIBUTES_TO_GET_MEMBER: &str = "attributesToGet";
+
+/// The list member a tag REMOVAL states the keys it drops in.
+const TAG_KEY_LIST_MEMBER: &str = "tagKeys";
+
+/// The list member a tag WRITE states the tags it adds in.
+const TAG_LIST_MEMBER: &str = "tags";
+
+/// Which of those members the violation at `path` is about — `None` for every other member,
+/// whose clause the walk's own words state.
+fn self_worded_member(path: &str) -> Option<SelfWordedMember> {
+    let segments: Vec<&str> = path.split('.').collect();
+    // An ENTRY of a substitution map: the member, then the placeholder the caller chose,
+    // which is the key the sentence names. A map entry is reported under its key with no
+    // collection marker after it, so the key is the last segment.
+    if let [.., member, key] = segments.as_slice() {
+        if *member == EXPRESSION_ATTRIBUTE_NAMES_MEMBER {
+            return Some(SelfWordedMember::AttributeName(Some((*key).to_string())));
+        }
+    }
+    // An ELEMENT of a collection: the member, the selector the walk names the element by,
+    // and the marker it steps into one with.
+    if let [.., member, _selector, marker] = segments.as_slice() {
+        if *marker == COLLECTION_STEP {
+            match *member {
+                // A bare list of attribute names carries the name itself as its element, so
+                // there is no key to name beside it.
+                ATTRIBUTES_TO_GET_MEMBER => {
+                    return Some(SelfWordedMember::AttributeName(None))
+                }
+                TAG_KEY_LIST_MEMBER => return Some(SelfWordedMember::TagKey),
+                _ => {}
+            }
+        }
+    }
+    // A MEMBER of one element of a tag list: its key or its value.
+    if let [.., member, _selector, marker, leaf] = segments.as_slice() {
+        if *member == TAG_LIST_MEMBER && *marker == COLLECTION_STEP {
+            match *leaf {
+                "key" => return Some(SelfWordedMember::TagKey),
+                "value" => return Some(SelfWordedMember::TagValue),
+                _ => {}
+            }
+        }
+    }
+    match *segments.last()? {
+        "backupArn" => Some(SelfWordedMember::BackupArn),
+        "importArn" => Some(SelfWordedMember::ImportArn),
+        _ => None,
+    }
+}
+
+impl SelfWordedMember {
+    /// The whole message the refusal of this member carries: the sentence that member's own
+    /// resolution words for `submitted`, over the member path the walk reported it at.
+    fn refusal(&self, submitted: &str) -> Option<String> {
+        match self {
+            Self::BackupArn => Some(crate::state::INVALID_BACKUP_ARN_MESSAGE.to_string()),
+            Self::ImportArn => Some(crate::state::invalid_import_arn_message(submitted)),
+            Self::TagValue => Some(crate::state::invalid_tag_value_message(submitted)),
+            Self::TagKey => Some(crate::state::invalid_tag_key_message(submitted)),
+            Self::AttributeName(key) => Some(crate::state::attribute_name_too_large_message(
+                key.as_deref(),
+            )),
+        }
+    }
+}
+
+/// How the refusal of a member this service resolves itself is worded, or `None` when this
+/// refusal is about no such member ([`SelfWordedMember`]).
+///
+/// The value the sentence names is the one the REQUEST carried, read whole off the body
+/// ([`submitted_collections`]) because the walk hands this seam the value elided at its own
+/// echo ceiling; where the body cannot be read the walk's own echo stands in, so the
+/// sentence still names a value.
+///
+/// WHICH FORM the sentence is stated in follows the operation that was served, exactly as
+/// the form of a clause about a declared bound does (see "Which form a constraint clause
+/// takes"): the single-item WRITES state it inside the `<N> validation error(s) detected: `
+/// envelope and every other operation states it bare, which is the same split this service
+/// states everywhere else about the members a write states its intent through
+/// ([`ENVELOPED_SENTENCE_OPERATIONS`]).
+///
+/// One request can break several members' rules; the one reported is the first such member
+/// in the order the refusal states its members in, because a value this service resolves
+/// itself is what the request addresses its work with.
+fn self_worded_refusal(violations: &[Violation]) -> Option<String> {
+    let sentence = violations.iter().find_map(|violation| {
+        let member = self_worded_member(&violation.path)?;
+        let submitted = served_submitted_string(&violation.path)
+            .or_else(|| violation.value.clone())
+            .unwrap_or_default();
+        member.refusal(&submitted)
+    })?;
+    if served_states_sentence_in_the_envelope() {
+        return crate::state::validation_message([sentence]);
+    }
+    Some(sentence)
 }
 
 /// The `ValidationException` message for a framework refusal: the same envelope
@@ -1471,6 +1798,19 @@ fn validation_envelope(violations: &[Violation]) -> Option<String> {
     // by ([`TABLE_NAME_FORM_OPERATIONS`]).
     if let Some(refusal) = crate::state::validation_message(served_table_name_clauses()) {
         return Some(refusal);
+    }
+    // Every other member whose VALUE this service resolves itself is refused with the
+    // sentence that resolution words for it, whatever way the value failed — the bound the
+    // model declares on the member included ([`SelfWordedMember`]). An absent member is not
+    // one of them: there is no value to resolve, so its absence keeps the reading the
+    // operation gives it below.
+    if !violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ViolationKind::MissingRequiredMember))
+    {
+        if let Some(refusal) = self_worded_refusal(violations) {
+            return Some(refusal);
+        }
     }
     // The surface whose body reader words an absent member itself answers that reader's
     // own sentence, naming the member it ran out of and the position the read stopped at
@@ -1558,7 +1898,9 @@ fn validation_envelope(violations: &[Violation]) -> Option<String> {
     // validating walk found, or several members at once — is stated inside the envelope
     // whichever operation was served.
     if let [clause] = clauses.as_slice() {
-        if all_service_checked_enums(violations) && served_states_clause_bare() {
+        if (all_service_checked_enums(violations) && served_states_clause_bare())
+            || all_bare_enum_members(violations)
+        {
             return Some(clause.clone());
         }
     }
@@ -2039,9 +2381,10 @@ mod tests {
     use super::{
         checks_its_own_members, clause_forms, holds_table_name_to_its_form,
         reads_body_with_its_own_reader, served_clause_form, stated_enum_order,
-        states_absent_member_as_clause, states_service_checked_clause_bare, ClauseForm,
-        BARE_CLAUSE_OPERATIONS, BODY_READER_OPERATIONS, CLAUSE_FORMS, PUBLISHED_ENUM_ORDERS,
-        SELF_CHECKED_MEMBER_OPERATIONS, TABLE_NAME_FORM_OPERATIONS,
+        states_absent_member_as_clause, states_sentence_in_the_envelope,
+        states_service_checked_clause_bare, ClauseForm, BARE_CLAUSE_OPERATIONS,
+        BODY_READER_OPERATIONS, CLAUSE_FORMS, ENVELOPED_SENTENCE_OPERATIONS,
+        PUBLISHED_ENUM_ORDERS, SELF_CHECKED_MEMBER_OPERATIONS, TABLE_NAME_FORM_OPERATIONS,
         VALIDATOR_NULL_CLAUSE_OPERATIONS,
     };
 
@@ -2122,6 +2465,30 @@ mod tests {
             assert!(
                 !states_service_checked_clause_bare(operation),
                 "case {operation:?}: expected the envelope, got the bare form"
+            );
+        }
+    }
+
+    #[test]
+    fn enveloped_sentence_operations_are_sorted() {
+        let mut sorted = ENVELOPED_SENTENCE_OPERATIONS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            ENVELOPED_SENTENCE_OPERATIONS,
+            sorted.as_slice(),
+            "case the enveloped-sentence list: expected it sorted for `binary_search`, got \
+             {ENVELOPED_SENTENCE_OPERATIONS:?}"
+        );
+        for operation in ENVELOPED_SENTENCE_OPERATIONS {
+            assert!(
+                states_sentence_in_the_envelope(operation),
+                "case {operation:?}: expected the envelope, got the sentence alone"
+            );
+        }
+        for operation in ["GetItem", "BatchGetItem", "Scan", "TransactWriteItems"] {
+            assert!(
+                !states_sentence_in_the_envelope(operation),
+                "case {operation:?}: expected the sentence alone, got the envelope"
             );
         }
     }

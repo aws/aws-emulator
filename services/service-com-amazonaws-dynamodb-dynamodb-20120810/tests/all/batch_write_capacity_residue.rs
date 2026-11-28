@@ -328,8 +328,12 @@ struct Row {
 /// A write costs one unit per 1 KB of the item, and a budget never holds more than 300
 /// seconds of its rate (Developer Guide, "Using burst capacity effectively"), so a table
 /// provisioned for one write unit can hold at most 300 units — which is why a ~400 KB
-/// item is a write it can NEVER admit, however long the caller waits, while an 8 KB item
-/// is one it is merely short of capacity for.
+/// item is a write no amount of waiting admits ONCE THE BUDGET IS SPENT, while an 8 KB
+/// item is one the table is merely short of capacity for. The rows that measure either of
+/// those spend the budget first, because what admits a request is whether the table has
+/// capacity LEFT: a table with capacity in hand serves the request that arrives and
+/// charges what it consumed, however large, and it is the next request that meets the
+/// deficit.
 fn rows() -> Vec<Row> {
     let on_demand = json!({"BillingMode": "PAY_PER_REQUEST"});
     let provisioned = |write: i64| {
@@ -379,25 +383,25 @@ fn rows() -> Vec<Row> {
             answer: Answer::ServedWhole,
         },
         Row {
-            case: "one write unit, a single write past the whole burst",
+            case: "one write unit, budget spent, a single write past the whole burst",
             billing: provisioned(1),
-            spend_budget: false,
+            spend_budget: true,
             batch: vec![399 * 1024],
             one_key: false,
             answer: Answer::Refused,
         },
         Row {
-            case: "one write unit, two writes past the whole burst",
+            case: "one write unit, budget spent, two writes past the whole burst",
             billing: provisioned(1),
-            spend_budget: false,
+            spend_budget: true,
             batch: vec![399 * 1024; 2],
             one_key: false,
             answer: Answer::Refused,
         },
         Row {
-            case: "one write unit, one write past the burst beside one inside it",
+            case: "one write unit, budget spent, one write past the burst beside one inside it",
             billing: provisioned(1),
-            spend_budget: false,
+            spend_budget: true,
             batch: vec![399 * 1024, 900],
             one_key: false,
             answer: Answer::ServedPartly,

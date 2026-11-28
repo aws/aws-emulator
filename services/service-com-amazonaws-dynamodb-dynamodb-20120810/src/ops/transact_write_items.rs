@@ -597,6 +597,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter_map(Outcome::into_planned)
             .collect();
 
+        // A transactional write consumes the write capacity of every table it writes,
+        // exactly as a single-item write of the same item does, so it is ADMITTED from
+        // those tables' budgets before anything is applied
+        // ([`crate::state::Table::write_admits`]). A transaction is all-or-nothing, so one
+        // table with nothing left refuses the whole call rather than part of it; what it
+        // consumed is charged once the ledger below has settled the figure.
+        for table_name in planned
+            .iter()
+            .map(|action| action.table.as_str())
+            .collect::<::std::collections::BTreeSet<&str>>()
+        {
+            if let Err(throttle) = store
+                .active_table(&region, table_name, now)
+                .map_err(lift)?
+                .write_admits(now)
+            {
+                return Err(
+                    TransactWriteItemsErrorModeled::ProvisionedThroughputExceededException(
+                        crate::state::throughput_exceeded(
+                            &crate::state::table_arn(&region, table_name),
+                            throttle,
+                        ),
+                    )
+                    .into(),
+                );
+            }
+        }
+
         // Pass two applies them. Each figure is read back from the table the write
         // landed in, so the capacity fan-out and the item-collection size are computed
         // from stored state rather than from the request.
@@ -697,6 +725,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Transactional write requests require two write capacity units": the whole
         // transaction is billed at twice what the same single-item writes would cost.
         ledger.scale_table_units(crate::state::TRANSACTIONAL_CAPACITY_FACTOR);
+        // And the capacity those units stand for is TAKEN from each table's budget, now
+        // that the ledger has settled it: the admission above only asked whether each table
+        // had capacity, so this is where the transaction's cost drains it
+        // ([`crate::state::Table::charge_write_capacity`]) and so throttles what comes
+        // after it.
+        for (table_name, capacity) in ledger
+            .itemised()
+            .map(|(name, capacity)| (name.to_string(), capacity.total()))
+            .collect::<Vec<(String, f64)>>()
+        {
+            if let Ok(table) = store.table_mut(&region, &table_name) {
+                table.charge_write_capacity(capacity, now);
+            }
+        }
         // What the transaction consumed is also what this service publishes as those tables'
         // throughput: the scaled ledger is the figure the response reports, so counting it
         // here is what puts the transactional cost — twice the single-item one — in the

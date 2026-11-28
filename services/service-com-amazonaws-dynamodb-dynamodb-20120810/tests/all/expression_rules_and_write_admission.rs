@@ -1118,8 +1118,10 @@ async fn a_batch_hands_back_the_writes_the_ceilings_did_not_admit() {
     }
 
     // A batch NONE of whose writes are admitted is answered with the throttle itself,
-    // naming the ceiling that bound: this table is provisioned for one write unit, so
-    // its own burst budget cannot cover a single write of this size.
+    // naming the ceiling that bound. The FIRST write is admitted while the table still has
+    // capacity — the capacity a table is provisioned for is a sustained RATE, so a write
+    // arriving with capacity left is served and charged what it consumed — and it is the
+    // one after it, arriving on a budget that draw left in deficit, that gets no work done.
     table_with(
         &router,
         "Tiny",
@@ -1129,6 +1131,20 @@ async fn a_batch_hands_back_the_writes_the_ceilings_did_not_admit() {
                                          "WriteCapacityUnits": 1}}),
     )
     .await;
+    let (status, drained) = call(
+        &router,
+        "BatchWriteItem",
+        json!({"TableName": "Tiny",
+               "RequestItems": {"Tiny": [
+                   {"PutRequest": {"Item": heavy_item("first", 0, &payload)}}]}}),
+    )
+    .await;
+    assert_eq!(
+        (status, drained["UnprocessedItems"].clone()),
+        (200, json!({})),
+        "case the first write of a provisioned table: capacity is available, so the write \
+         lands whole, got {status} {drained}"
+    );
     let (status, body) = call(
         &router,
         "BatchWriteItem",
@@ -1226,6 +1242,15 @@ async fn a_batch_hands_back_the_writes_the_ceilings_did_not_admit() {
         "UpdateTable",
         json!({"TableName": "Snug", "BillingMode": "PROVISIONED",
                "ProvisionedThroughput": {"ReadCapacityUnits": 4000, "WriteCapacityUnits": 1}}),
+    )
+    .await;
+    // The budget is drained at the rate now in force: one write of this size is admitted
+    // while the table still has capacity, and takes far more than a one-unit table holds, so
+    // the DELETE that follows arrives on the deficit it left.
+    ok(
+        &router,
+        "PutItem",
+        json!({"TableName": "Snug", "Item": heavy_item("one", 1, &payload)}),
     )
     .await;
     let (status, deleted) = call(

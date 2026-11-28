@@ -544,6 +544,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.index_name.as_deref(),
             consistent_read,
             &selection,
+            now,
         )
         .map_err(lift)?;
         // "If you query or scan a global secondary index, you can only request

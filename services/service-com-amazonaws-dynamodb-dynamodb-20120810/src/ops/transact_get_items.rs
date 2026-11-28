@@ -420,14 +420,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The entire transaction is rejected" when any part of it cannot be served, so
-        // every table is asked whether it covers its whole share BEFORE any of them is
-        // debited: a refused transaction leaves every budget where it was, exactly as a
-        // refused transactional WRITE does.
-        for (name, units) in &per_table {
+        // every table is asked whether it has capacity BEFORE any of them is debited: a
+        // refused transaction leaves every budget where it was, exactly as a refused
+        // transactional WRITE does.
+        for name in per_table.keys() {
             if let Err(throttle) = store
                 .active_table(&region, name, now)
                 .map_err(lift)?
-                .read_admits(*units, now)
+                .read_admits(now)
             {
                 record_key_activity(&*self.engine, &store, &region, &key_activity, true, now);
                 return Err(

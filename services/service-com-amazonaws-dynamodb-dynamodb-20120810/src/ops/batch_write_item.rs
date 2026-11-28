@@ -328,21 +328,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // member of that entry rather than of the request the validator was handed, which
         // is how every refusal about an element of a multi-item call is stated
         // ([`crate::state::unenveloped`]).
+        //
+        // It is asked of the KEY a delete addresses as well as of the item a put stores:
+        // both are `AttributeValue` maps a caller chose the nesting of, and every rule below
+        // walks the tree they carry — the value checks, the canonicalisation, the key
+        // resolution and the item-collection measure — so the depth they may be walked to is
+        // bounded before any of those walks starts, whichever request carried the map.
         for (_, requests) in &addressed {
             for request in requests.iter() {
+                let carried = request
+                    .put_request
+                    .as_ref()
+                    .map(|put| &put.item)
+                    .into_iter()
+                    .chain(request.delete_request.as_ref().map(|delete| &delete.key));
+                for map in carried {
+                    for value in map.values() {
+                        if crate::state::attribute_depth_exceeds(
+                            value,
+                            crate::state::MAX_ATTRIBUTE_DEPTH,
+                        ) {
+                            return Err(lift(crate::state::unenveloped(
+                                crate::state::nesting_levels_exceeded(),
+                            )));
+                        }
+                    }
+                }
                 let Some(put) = request.put_request.as_ref() else {
                     continue;
                 };
-                for value in put.item.values() {
-                    if crate::state::attribute_depth_exceeds(
-                        value,
-                        crate::state::MAX_ATTRIBUTE_DEPTH,
-                    ) {
-                        return Err(lift(crate::state::unenveloped(
-                            crate::state::nesting_levels_exceeded(),
-                        )));
-                    }
-                }
                 let mut item = put.item.clone();
                 for (attribute, value) in &item {
                     crate::state::check_attribute_value(attribute, value).map_err(lift)?;
@@ -367,6 +381,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut pending: Vec<(String, PendingWrite, WriteRequest)> = Vec::new();
         let mut keyed: std::collections::BTreeSet<(String, crate::state::ItemKey)> =
             std::collections::BTreeSet::new();
+        // `RequestItems` is keyed by TABLE, and the key accepts a table's name or its ARN —
+        // "Each table name or ARN can be used only once per BatchGetItem request"
+        // (`BatchGetItem$RequestItems`) — so two keys that resolve to ONE table address one
+        // table twice and the whole request is refused, exactly as the batched READ refuses
+        // it ([`crate::state::DUPLICATE_BATCH_TABLE_MESSAGE`], the one sentence both
+        // batched operations state for this rule). The keys are walked in order, so which
+        // request earns the refusal does not depend on the request map's iteration order.
+        let mut entered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (table_name, requests) in addressed {
             // The clause a refused key earns quotes the map that key sat in, in the
             // rendering the refusals of this member state
@@ -377,6 +399,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ))
             })
             .map_err(lift)?;
+            if !entered.insert(name.clone()) {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    crate::state::DUPLICATE_BATCH_TABLE_MESSAGE,
+                ));
+            }
             // The table and the caller's authorization for it are decided BEFORE any of
             // its requests is read: a table that is not there, or that the policies in
             // force do not let this caller write, is answered with that rather than with

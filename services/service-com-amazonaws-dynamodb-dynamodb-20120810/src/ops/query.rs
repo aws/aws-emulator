@@ -595,6 +595,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.index_name.as_deref(),
             consistent_read,
             &selection,
+            now,
         )
         .map_err(lift)?;
         // The key schema the condition is read against is the one the query was pointed

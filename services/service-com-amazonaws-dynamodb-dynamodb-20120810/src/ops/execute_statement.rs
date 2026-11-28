@@ -904,14 +904,17 @@ fn insert_item(
         )
         .into());
     }
-    store
-        .put_item(region, name, now, key, item.clone())
-        .map_err(lift)?;
-
+    // The write is ADMITTED against the capacity the table is provisioned for before
+    // anything is stored, the same as the item API's writes ([`admit_write`]).
     let capacity = store
         .active_table(region, name, now)
         .map_err(lift)?
         .write_capacity(None, Some(&item));
+    admit_write(store, region, name, now, &key, &capacity)?;
+    store
+        .put_item(region, name, now, key, item.clone())
+        .map_err(lift)?;
+
     // What the statement consumed is also what this service publishes as the table's
     // throughput metric ([`crate::state::charge_reported_capacity`]): the figure reported
     // below is the figure counted, so the series cannot drift from the response.
@@ -1038,14 +1041,17 @@ fn update_item(
         }
         table.check_index_keys_of_update(&item).map_err(lift)?;
     }
-    store
-        .put_item(region, name, now, key, item.clone())
-        .map_err(lift)?;
-
+    // The write is ADMITTED against the capacity the table is provisioned for before
+    // anything is stored ([`admit_write`]).
     let capacity = store
         .active_table(region, name, now)
         .map_err(lift)?
         .write_capacity(before.as_ref(), Some(&item));
+    admit_write(store, region, name, now, &key, &capacity)?;
+    store
+        .put_item(region, name, now, key, item.clone())
+        .map_err(lift)?;
+
     // See [`insert_item`]: the units the response reports are the units the table's series
     // carries ([`crate::state::charge_reported_capacity`]).
     crate::state::charge_reported_capacity(
@@ -1127,12 +1133,15 @@ fn delete_item(
             None
         }));
     }
-    let removed = store.delete_item(region, name, now, &key).map_err(lift)?;
-
+    // The write is ADMITTED against the capacity the table is provisioned for before the
+    // item is removed ([`admit_write`]).
     let capacity = store
         .active_table(region, name, now)
         .map_err(lift)?
-        .write_capacity(removed.as_ref(), None);
+        .write_capacity(before.as_ref(), None);
+    admit_write(store, region, name, now, &key, &capacity)?;
+    let removed = store.delete_item(region, name, now, &key).map_err(lift)?;
+
     // See [`insert_item`]: the units the response reports are the units the table's series
     // carries ([`crate::state::charge_reported_capacity`]).
     crate::state::charge_reported_capacity(
@@ -1186,6 +1195,41 @@ fn store_unavailable() -> ExecuteStatementError {
         message: Some("the DynamoDB table store is unavailable".to_string()),
     })
     .into()
+}
+
+/// Hold ONE statement's write to the two ceilings a write of this table is admitted from —
+/// the capacity the table is provisioned for and the per-partition-key ceiling beneath it —
+/// refusing it with `ProvisionedThroughputExceededException` when neither can serve it.
+///
+/// A statement that WRITES consumes the table's write capacity exactly as the item API's
+/// writes do, so it is admitted from the same budgets
+/// ([`crate::state::Table::admit_item_write_counted_elsewhere`]): capacity is a property of
+/// the TABLE and not of the surface a request arrived on, and a surface that was not
+/// metered would accept writes the service turns down while the item API refuses them. The
+/// units are counted into the table's series where this surface reports them
+/// (`crate::state::charge_reported_capacity`), which is why the admission here counts
+/// nothing itself.
+fn admit_write(
+    store: &mut Store,
+    region: &str,
+    name: &str,
+    now: ::std::time::SystemTime,
+    key: &crate::state::ItemKey,
+    capacity: &crate::state::WriteCapacity,
+) -> Result<(), ExecuteStatementError> {
+    store
+        .active_table_mut(region, name, now)
+        .map_err(lift)?
+        .admit_item_write_counted_elsewhere(&key.partition, capacity, now)
+        .map_err(|throttle| {
+            ExecuteStatementErrorModeled::ProvisionedThroughputExceededException(
+                crate::state::throughput_exceeded(
+                    &crate::state::table_arn(region, name),
+                    throttle,
+                ),
+            )
+            .into()
+        })
 }
 
 /// Lift a store refusal into this operation's error channel.

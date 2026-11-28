@@ -664,14 +664,14 @@ fn read_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
         });
     }
     // The read capacity each table is provisioned for bounds a PartiQL read transaction
-    // exactly as it bounds `TransactGetItems`: every table is asked whether it covers its
-    // whole share BEFORE any of them is debited, so a refused transaction leaves every
-    // budget where it was.
-    for (name, units) in &per_table {
+    // exactly as it bounds `TransactGetItems`: every table is asked whether it has capacity
+    // BEFORE any of them is debited, so a refused transaction leaves every budget where it
+    // was.
+    for name in per_table.keys() {
         if let Err(throttle) = store
             .active_table(region, name, now)
             .map_err(lift)?
-            .read_admits(*units, now)
+            .read_admits(now)
         {
             return Err(
                 ExecuteTransactionErrorModeled::ProvisionedThroughputExceededException(
@@ -1100,6 +1100,33 @@ fn write_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
         );
     }
 
+    // A transactional write consumes the write capacity of every table it writes, exactly
+    // as the classic transaction's does, so it is ADMITTED from those tables' budgets
+    // before anything is applied ([`crate::state::Table::write_admits`]). A transaction is
+    // all-or-nothing, so one table with nothing left refuses the whole call rather than part
+    // of it; what it consumed is charged once the ledger below has settled the figure.
+    for table_name in planned
+        .iter()
+        .map(|statement| statement.table.as_str())
+        .collect::<::std::collections::BTreeSet<&str>>()
+    {
+        if let Err(throttle) = store
+            .active_table(region, table_name, now)
+            .map_err(lift)?
+            .write_admits(now)
+        {
+            return Err(
+                ExecuteTransactionErrorModeled::ProvisionedThroughputExceededException(
+                    crate::state::throughput_exceeded(
+                        &crate::state::table_arn(region, table_name),
+                        throttle,
+                    ),
+                )
+                .into(),
+            );
+        }
+    }
+
     // Pass two applies them. Each figure is read back from the table the write landed
     // in, so the capacity fan-out is computed from stored state rather than from the
     // request, and it is totalled PER TABLE: `ConsumedCapacityMultiple` carries one entry
@@ -1198,6 +1225,19 @@ fn write_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     }
 
     recorded.scale_table_units(crate::state::TRANSACTIONAL_CAPACITY_FACTOR);
+    // And the capacity those units stand for is TAKEN from each table's budget, now that
+    // the ledger has settled it: the admission above only asked whether each table had
+    // capacity, so this is where the transaction's cost drains it
+    // ([`crate::state::Table::charge_write_capacity`]) and so throttles what comes after it.
+    for (table_name, units) in recorded
+        .itemised()
+        .map(|(name, capacity)| (name.to_string(), capacity.total()))
+        .collect::<Vec<(String, f64)>>()
+    {
+        if let Ok(table) = store.table_mut(region, &table_name) {
+            table.charge_write_capacity(units, now);
+        }
+    }
     // The transactional cost this statement set consumed is what the tables' throughput
     // series carry for it, the same figures the entries above report
     // ([`crate::state::charge_reported_ledger`]).

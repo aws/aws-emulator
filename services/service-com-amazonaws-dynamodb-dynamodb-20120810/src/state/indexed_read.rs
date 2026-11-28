@@ -67,6 +67,8 @@ pub fn unsupported_index_type(operation: &str) -> String {
 ///   ([`unsupported_index_type`]) rather than reported absent;
 /// * a strongly consistent read of a global secondary index is refused
 ///   ([`CONSISTENT_READ_ON_GLOBAL_INDEX_MESSAGE`]);
+/// * a global secondary index whose BUILD has not finished at `now` is no source a read can
+///   be served from ([`Table::global_index_is_building`]);
 /// * a read of every item attribute can only be served from a global index that projects
 ///   them all ([`all_attributes_unprojected`]).
 ///
@@ -78,6 +80,7 @@ pub fn resolve_index<'t>(
     index_name: Option<&str>,
     consistent_read: bool,
     selection: &Selection,
+    now: ::std::time::SystemTime,
 ) -> Result<Option<SecondaryIndex<'t>>, RequestError> {
     let Some(index_name) = index_name else {
         return Ok(None);
@@ -96,6 +99,15 @@ pub fn resolve_index<'t>(
             unknown_index_named(index_name)
         }
     })?;
+    // A GLOBAL index whose build has not finished holds no complete copy of the table's
+    // items yet, so it is no source a read can be served from: a read naming one is
+    // answered exactly as a read naming an index no table of this account declares is
+    // ([`unknown_index_named`]), rather than served a page out of a half-built index that
+    // the caller would read as the whole answer. The index is still THERE — its description
+    // reports the status it is in — which is what tells a client to wait.
+    if table.global_index_is_building(index_name, now) {
+        return Err(unknown_index_named(index_name));
+    }
     if consistent_read && index.global {
         return Err(RequestError::Validation(
             CONSISTENT_READ_ON_GLOBAL_INDEX_MESSAGE.to_string(),

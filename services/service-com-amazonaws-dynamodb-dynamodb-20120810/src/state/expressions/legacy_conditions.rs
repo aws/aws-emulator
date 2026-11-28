@@ -572,6 +572,19 @@ pub fn check_legacy_conditions(
             conditions.len()
         )));
     }
+    // The attribute NAME each entry is keyed by is the name an item is read at, so it is
+    // held to the bound an attribute name has: the model declares it on the shape the key
+    // targets, and no walk ahead of this reader can state it, because the validating walk
+    // reports a map's KEY as a segment of the path it names a violation under rather than as
+    // a value of its own ([`carries_an_over_long_attribute_name`], the same rule over the
+    // keys a VALUE nests).
+    for name in conditions.keys() {
+        if name.len() > MAX_ATTRIBUTE_NAME_BYTES {
+            return Err(RequestError::Validation(attribute_name_too_large_message(
+                None,
+            )));
+        }
+    }
     for condition in conditions.values() {
         check_legacy_comparison(
             &condition.comparison_operator,

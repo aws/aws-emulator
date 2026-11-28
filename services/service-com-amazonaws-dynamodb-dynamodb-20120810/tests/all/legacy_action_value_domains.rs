@@ -236,7 +236,7 @@ async fn the_legacy_action_value_refusal_does_not_depend_on_the_addressed_item()
             400,
             "ValidationException",
             "1 validation error detected: Invalid UpdateExpression: Incorrect operand type \
-             for operator or function; operator: ADD, operand type: BINARY, typeSet: \
+             for operator or function; operator: ADD, operand type: Binary, typeSet: \
              ALLOWED_FOR_ADD_OPERAND"
                 .to_string()
         ),

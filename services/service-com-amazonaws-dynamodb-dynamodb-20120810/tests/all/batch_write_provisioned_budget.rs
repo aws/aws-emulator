@@ -193,8 +193,11 @@ struct Row {
 /// [`BURST_SECONDS`] of its rate — credit that is capacity which WENT UNUSED, so a table
 /// just created holds only what went unused since — which is why 320 batches of 25 ~1 KB
 /// writes are far past what a one-unit table can absorb, while one such batch against a
-/// table provisioned for fifty units is well inside it, and a 399 KB item is a write a
-/// one-unit table's credit could never admit however long a caller waits.
+/// table provisioned for fifty units is well inside it. A batch of 399 KB writes against a
+/// one-unit table lands exactly the one request the table had capacity in hand for and
+/// hands the rest back: the capacity a table is provisioned for is a sustained RATE, so the
+/// request that arrives with capacity left is charged what it consumed and it is the ones
+/// after it that meet the deficit.
 fn rows() -> Vec<Row> {
     vec![
         Row {
@@ -246,12 +249,12 @@ fn rows() -> Vec<Row> {
             absorption: Absorption::Bounded,
         },
         Row {
-            case: "one write unit, batches of writes past the whole burst",
+            case: "one write unit, one batch of writes past the whole burst",
             write_units: Some(1),
-            batches: 2,
+            batches: 1,
             per_batch: 3,
             payload: 399 * 1024,
-            absorption: Absorption::Refused,
+            absorption: Absorption::Bounded,
         },
     ]
 }

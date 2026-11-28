@@ -19,7 +19,7 @@
 use serde_json::{json, Value};
 
 use crate::emulator::{call, emulator, error_code, message};
-use crate::enum_value_set_order::{COMPARISON_OPERATOR_SET, SELECT_SET};
+use crate::enum_value_set_order::{envelope_for, COMPARISON_OPERATOR_SET, SELECT_SET};
 use crate::table_items::create_active_table;
 
 /// The table the rows are addressed to. It exists and is active before any row runs, so no
@@ -83,8 +83,9 @@ async fn the_admissible_set_is_stated_in_one_order_whichever_request_carried_the
              {answered}"
         );
         let expected = format!(
-            "1 validation error detected: Value '{value}' at '{path}' failed to satisfy \
+            "{}Value '{value}' at '{path}' failed to satisfy \
              constraint: Member must satisfy enum value set: [{}]",
+            envelope_for(path),
             set.join(", ")
         );
         let stated = message(&answered);

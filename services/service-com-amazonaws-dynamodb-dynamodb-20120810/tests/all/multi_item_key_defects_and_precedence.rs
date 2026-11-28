@@ -1000,7 +1000,7 @@ async fn request_shape_is_settled_before_the_table_is_looked_up() {
             json!({"Item": {"pk": {"S": "k"}, "sk": {"S": "s"}},
                    "Expected": {"a": {"ComparisonOperator": "LIKE",
                                       "AttributeValueList": [{"S": "x"}]}}}),
-            "1 validation error detected: Value 'LIKE' at \
+            "Value 'LIKE' at \
              'expected.a.member.comparisonOperator' failed to satisfy constraint: Member must \
              satisfy enum value set: [IN, NULL, BETWEEN, LT, NOT_CONTAINS, EQ, GT, NOT_NULL, \
              NE, LE, BEGINS_WITH, GE, CONTAINS]",

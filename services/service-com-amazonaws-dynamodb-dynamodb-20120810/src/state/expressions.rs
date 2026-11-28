@@ -2086,53 +2086,49 @@ fn appends_lists(member: &str) -> bool {
 }
 
 /// The data type an operand-type refusal names, in the vocabulary that family of
-/// messages spells types with: the `AttributeValue` member's own documented type name —
-/// "An attribute of type String Set" (`AttributeValue$SS`) is `STRING_SET` — rather than
-/// the union member tag a type-MISMATCH clause reports
+/// messages spells types with: the `AttributeValue` member's own type as the union spells
+/// it, one capitalised word per part of the documented type name — "An attribute of type
+/// String Set" (`AttributeValue$SS`) is `StringSet`, `B` is `Binary`, `L` is `List` —
+/// rather than the union member TAG a type-mismatch clause reports
 /// ([`crate::state::attribute_value_type`]).
 fn operand_type_name(value: &AttributeValue) -> &'static str {
     match value {
-        AttributeValue::S(_) => "STRING",
-        AttributeValue::N(_) => "NUMBER",
-        AttributeValue::B(_) => "BINARY",
-        AttributeValue::Ss(_) => "STRING_SET",
-        AttributeValue::Ns(_) => "NUMBER_SET",
-        AttributeValue::Bs(_) => "BINARY_SET",
-        AttributeValue::M(_) => "MAP",
-        AttributeValue::L(_) => "LIST",
-        AttributeValue::Null(_) => "NULL",
-        AttributeValue::Bool(_) => "BOOL",
+        AttributeValue::S(_) => "String",
+        AttributeValue::N(_) => "Number",
+        AttributeValue::B(_) => "Binary",
+        AttributeValue::Ss(_) => "StringSet",
+        AttributeValue::Ns(_) => "NumberSet",
+        AttributeValue::Bs(_) => "BinarySet",
+        AttributeValue::M(_) => "Map",
+        AttributeValue::L(_) => "List",
+        AttributeValue::Null(_) => "Null",
+        AttributeValue::Bool(_) => "Boolean",
     }
 }
 
-/// The ONE name AWS gives the domain a value operand has to fall in, which every refusal
-/// of an operand outside its operator's domain states.
-///
-/// Both operators that take a value operand are the SET-valued actions — "The ADD action
-/// only supports Number and set data types" and "The DELETE action only supports set data
-/// types" (`UpdateItem$UpdateExpression`) — and the recorded refusals of both name this one
-/// type set, the `ADD` operand's, whichever of them the expression wrote: the message names
-/// the operator separately, so the type set is not what tells the two apart. There is no
-/// second name to state, which is why it is a constant of this module rather than a field
-/// of [`ValueOperand`].
-const SET_OPERAND_TYPE_SET: &str = "ALLOWED_FOR_ADD_OPERAND";
-
 /// What ONE update operator may be given as its value operand: the operator keyword a
-/// refusal names, and which values are in the domain that operator takes.
+/// refusal names, the NAME of the domain that operator admits, and which values are in it.
 ///
 /// The domain is a property of the OPERATOR, not of the item: an operand outside it
 /// cannot be applied whatever the attribute holds, so it is refused naming the operator
-/// and the type set above ([`ValueOperand::check`]), while an operand INSIDE the domain
-/// that does not match the type the item holds is the class refusal
+/// and that operator's own type set ([`ValueOperand::check`]), while an operand INSIDE the
+/// domain that does not match the type the item holds is the class refusal
 /// ([`INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE`]) the two set walkers raise.
+///
+/// The type set is a FIELD and not one constant for both operators: the two actions admit
+/// different types — "The ADD action only supports Number and set data types" and "The
+/// DELETE action only supports set data types" (`UpdateItem$UpdateExpression`) — so each
+/// names the domain it holds its operand to, and a refusal cannot point a caller at the
+/// other operator's rule.
 struct ValueOperand {
     operator: &'static str,
+    type_set: &'static str,
     takes: fn(&AttributeValue) -> bool,
 }
 
 impl ValueOperand {
     /// Hold one operand to this operator's domain, refusing it with the operator, its
-    /// own type and this type set's name when it is outside it.
+    /// own type and this operator's type set when it is outside it.
     fn check(&self, member: &str, value: &AttributeValue) -> Result<(), RequestError> {
         if (self.takes)(value) {
             return Ok(());
@@ -2140,7 +2136,7 @@ impl ValueOperand {
         Err(incorrect_update_operand_type_for(
             member,
             self.operator,
-            SET_OPERAND_TYPE_SET,
+            self.type_set,
             value,
         ))
     }
@@ -2150,6 +2146,7 @@ impl ValueOperand {
 /// (`UpdateItem$UpdateExpression`), so a number or one of the three set types.
 const ADD_OPERAND: ValueOperand = ValueOperand {
     operator: "ADD",
+    type_set: "ALLOWED_FOR_ADD_OPERAND",
     takes: |value| {
         matches!(
             value,
@@ -2165,6 +2162,7 @@ const ADD_OPERAND: ValueOperand = ValueOperand {
 /// doc), so one of the three set types and nothing else.
 const DELETE_OPERAND: ValueOperand = ValueOperand {
     operator: "DELETE",
+    type_set: "ALLOWED_FOR_DELETE_OPERAND",
     takes: |value| {
         matches!(
             value,
@@ -2410,6 +2408,11 @@ fn check_value_within_the_item_limits(
     name: &str,
     value: &AttributeValue,
 ) -> Result<(), RequestError> {
+    // The NAME first: a name no attribute can be stored under is refused before anything
+    // about the value it was given, because the name is what the value would be held at.
+    if carries_an_over_long_attribute_name(name, value) {
+        return Err(refused(attribute_name_too_large_message(None)));
+    }
     if attribute_depth_exceeds(value, MAX_ATTRIBUTE_DEPTH) {
         return Err(nesting_levels_exceeded());
     }
@@ -2418,6 +2421,44 @@ fn check_value_within_the_item_limits(
     }
     check_value_rules(value)?;
     Ok(())
+}
+
+/// Whether this request carried an attribute NAME no attribute could be stored under — one
+/// longer than [`MAX_ATTRIBUTE_NAME_BYTES`] — in `name` itself or in any MAP KEY the value
+/// nests.
+///
+/// The model declares that bound on the shape every member carrying an attribute name
+/// targets (`smithy_query(query="shape", shape="com.amazonaws.dynamodb#AttributeName")`),
+/// and the framework's validating walk reports a violation of it on a map's VALUES only: it
+/// treats a map's KEY as a segment of the path it reports a violation under, so no walk
+/// ahead of a handler can report the key at all. The keys of every map a request carries
+/// are therefore held to the bound HERE, where every value a request carries is admitted —
+/// an item's attributes, a nested map inside one, a value an expression binds, a parameter a
+/// statement carries — so one rule answers for all of them rather than one check per
+/// member.
+///
+/// The walk is ITERATIVE, over an explicit stack, for the reason [`value_members`] gives.
+/// Length is counted in BYTES, which is the unit the sentence states the bound in.
+fn carries_an_over_long_attribute_name(name: &str, value: &AttributeValue) -> bool {
+    if name.len() > MAX_ATTRIBUTE_NAME_BYTES {
+        return true;
+    }
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            AttributeValue::L(values) => pending.extend(values.iter()),
+            AttributeValue::M(entries) => {
+                for (key, held) in entries {
+                    if key.len() > MAX_ATTRIBUTE_NAME_BYTES {
+                        return true;
+                    }
+                    pending.push(held);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The same limits for a value an expression of a READ binds — a `Scan`'s or a

@@ -64,3 +64,36 @@ pub fn absent_member_clause(path: &str) -> String {
         "Value null at '{path}' failed to satisfy constraint: Member must not be null"
     )
 }
+
+/// The longest an ATTRIBUTE NAME may be, in bytes: the maximum the shape every member that
+/// carries one targets declares (`smithy_query(query="shape",
+/// shape="com.amazonaws.dynamodb#AttributeName")` gives `@length` 0..65535).
+pub const MAX_ATTRIBUTE_NAME_BYTES: usize = 65535;
+
+/// The `ValidationException` message a request carrying an ATTRIBUTE NAME longer than that
+/// earns, whichever member carried it.
+///
+/// DynamoDB's own sentence for the class, not a constraint clause: it states the ceiling as
+/// the first size that is too large ([`MAX_ATTRIBUTE_NAME_BYTES`] plus one), with no member
+/// path and no constraint.
+///
+/// `key` is the KEY the request carried the name under, where it carried one under a key a
+/// caller would recognise: a substitution entry maps a placeholder to the name, so the
+/// placeholder is what tells a caller WHICH entry of its table was refused. Everywhere else
+/// the over-long name IS the key or the element the request sent — a bare list of attribute
+/// names, a map keyed by one, the key of a nested map — so there is no second name to state
+/// and the sentence is the bound alone.
+///
+/// The names a request can carry one in are the same shape on every member and every
+/// operation, so one sentence answers for all of them; `src/service.rs` is where a violation
+/// the validating walk reports against such a member reaches it, because that walk refuses
+/// the request before any handler could read the name.
+pub fn attribute_name_too_large_message(key: Option<&str>) -> String {
+    let ceiling = MAX_ATTRIBUTE_NAME_BYTES + 1;
+    match key {
+        Some(key) => {
+            format!("Attribute name is too large, must be less than {ceiling} bytes for key {key}")
+        }
+        None => format!("Attribute name is too large, must be less than {ceiling} bytes"),
+    }
+}

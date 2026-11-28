@@ -313,6 +313,16 @@ impl ParsedUpdate {
         if updates.len() > MAX_UPDATE_ACTIONS {
             return Err(too_many_actions(updates.len()));
         }
+        // The attribute NAME each entry is keyed by is the name the action writes at, so
+        // it is held to the bound an attribute name has: the model declares it on the shape
+        // the map's key targets, and the validating walk reports a map's KEY as a segment of
+        // the path it names a violation under rather than as a value of its own, so no walk
+        // ahead of this reader can state it.
+        for name in updates.keys() {
+            if name.len() > MAX_ATTRIBUTE_NAME_BYTES {
+                return Err(refused(attribute_name_too_large_message(None)));
+            }
+        }
         let mut actions = Vec::new();
         for (name, update) in updates {
             let path = DocumentPath::attribute_named(name);

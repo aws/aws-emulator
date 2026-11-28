@@ -1053,6 +1053,23 @@ impl Table {
         })
     }
 
+    /// Whether the GLOBAL secondary index `name` is still being BUILT at `now` — created
+    /// or changed and not yet `ACTIVE`.
+    ///
+    /// "CREATING - The index is being created" and "UPDATING - The index is being updated"
+    /// (`GlobalSecondaryIndexDescription$IndexStatus`): until the build has finished the
+    /// index holds no complete copy of the items it projects, so it is no source a read can
+    /// be served from ([`super::resolve_index`]), while every description of the table
+    /// still reports it in the status it is in. A LOCAL secondary index has no such span —
+    /// it is built with the table and the model declares no status for it — and an index on
+    /// its way OUT is not addressable at all ([`GlobalSecondaryIndex::being_deleted`]), so
+    /// neither is one of these.
+    pub fn global_index_is_building(&self, name: &str, now: SystemTime) -> bool {
+        self.global_secondary_indexes.iter().any(|index| {
+            index.name == name && !index.being_deleted() && index.status(now) != IndexStatus::Active
+        })
+    }
+
     /// One index key schema's elements in the order the index orders its entries by:
     /// every `HASH` element the schema declares, then every `RANGE` one, each group in
     /// the order the schema declared it — "HASH - partition key ... RANGE - sort key"
@@ -1832,15 +1849,16 @@ impl Table {
     }
 
     /// Admit a write that consumes `units` write capacity units, reporting whether the
-    /// capacity this table is provisioned for covered it.
+    /// capacity this table is provisioned for admitted it.
     ///
     /// "Provisioned throughput is the maximum amount of capacity that an application can
     /// consume from a table or index" per second (DynamoDB Developer Guide, "Read/write
-    /// capacity mode"), so a PROVISIONED table admits its provisioned write units each
-    /// second plus whatever of them went unused inside [`BURST_CAPACITY_WINDOW`], and a
-    /// write past that is throttled rather than applied. A table on-demand
-    /// (`PAY_PER_REQUEST`) is provisioned for no capacity to exceed, so every write of
-    /// one is admitted.
+    /// capacity mode"), so what a PROVISIONED table admits is a sustained RATE: a write
+    /// arriving while the table still has capacity — its provisioned units each second plus
+    /// whatever of them went unused inside [`BURST_CAPACITY_WINDOW`] — is served and charged
+    /// what it consumed, and a write arriving with nothing left is throttled rather than
+    /// applied ([`CapacityBudget::take_if_any`]). A table on-demand (`PAY_PER_REQUEST`) is
+    /// provisioned for no capacity to exceed, so every write of one is admitted.
     ///
     /// Only writes are admitted from a budget: a read in this emulator leaves nothing
     /// behind it, so what a later caller is told never depends on how much has been
@@ -1853,7 +1871,9 @@ impl Table {
                 .charge(Consumed::Write, units, now);
             return true;
         };
-        let admitted = self.write_budget.take(provisioned, units, now);
+        let admitted =
+            self.write_budget
+                .take_if_any(provisioned, BURST_CAPACITY_WINDOW, units, now);
         if admitted {
             // What a request consumed is what the service publishes as the table's own
             // throughput metric: counted here, where the capacity is taken, so every write
@@ -1882,7 +1902,9 @@ impl Table {
     /// `ConsumedCapacity.ReadCapacityUnits` — which is why a read is held to it at all.
     ///
     /// A read the budget cannot cover takes nothing from it, so a throttled read is not
-    /// charged for work it was refused.
+    /// charged for work it was refused. What the budget is asked is whether it still has
+    /// capacity at this instant rather than whether it covers the whole draw, exactly as a
+    /// write's admission asks ([`Self::admit_item_write`]).
     pub fn admit_read(&mut self, units: f64, now: SystemTime) -> Result<(), ReadThrottle> {
         self.admit_read_from(None, units, now)
     }
@@ -1908,7 +1930,10 @@ impl Table {
             self.charge_read(global_index, units, now);
             return Ok(());
         };
-        if self.read_budget.take(provisioned, units, now) {
+        if self
+            .read_budget
+            .take_if_any(provisioned, BURST_CAPACITY_WINDOW, units, now)
+        {
             // See [`Self::admit_write`]: the units a served read consumed are the table's own
             // throughput metric, counted where the capacity is taken.
             self.charge_read(global_index, units, now);
@@ -1928,20 +1953,22 @@ impl Table {
         }
     }
 
-    /// Whether the read capacity this table is provisioned for would cover `units` at
-    /// `now`, WITHOUT taking them.
+    /// Whether the read capacity this table is provisioned for admits a read at `now`,
+    /// WITHOUT taking any of it.
     ///
     /// What lets a read that spans SEVERAL tables be admitted all-or-nothing — a
     /// transactional get is one read, and "the entire transaction is rejected" when any
     /// part of it cannot be served, so no table is debited unless every one of them has
-    /// the capacity ([`Self::admit_read`] is what takes it once they all do).
-    pub fn read_admits(&self, units: f64, now: SystemTime) -> Result<(), ReadThrottle> {
+    /// capacity ([`Self::admit_read`] is what takes it once they all do). What is asked is
+    /// whether the table HAS capacity, not whether it covers the whole draw, exactly as a
+    /// single read's admission asks ([`Self::admit_read`]).
+    pub fn read_admits(&self, now: SystemTime) -> Result<(), ReadThrottle> {
         let Some(provisioned) = self.provisioned_read_rate() else {
             return Ok(());
         };
         if self
             .read_budget
-            .covers_within(provisioned, BURST_CAPACITY_WINDOW, units, now)
+            .has_capacity(provisioned, BURST_CAPACITY_WINDOW, now)
         {
             Ok(())
         } else {
@@ -1975,9 +2002,38 @@ impl Table {
     /// first, so a table that is out of capacity reports its own provisioning rather
     /// than blaming the key.
     ///
-    /// Neither budget is debited unless BOTH cover the write: a throttled write does no
-    /// work, so it consumes no capacity anywhere.
+    /// Neither budget is debited unless BOTH admit the write: a throttled write does no
+    /// work, so it consumes no capacity anywhere. What the TABLE's own ceiling asks is
+    /// whether it still has capacity at this instant, not whether it covers the whole draw
+    /// ([`CapacityBudget::has_capacity`]): the capacity a table is provisioned for is a
+    /// sustained rate, so one request is served while there is capacity and charged what it
+    /// consumed, which can leave the budget in deficit and throttle what comes after it
+    /// until the refill clears it.
     pub fn admit_item_write(
+        &mut self,
+        partition: &AttributeValueKey,
+        capacity: &WriteCapacity,
+        now: SystemTime,
+    ) -> Result<(), WriteThrottle> {
+        self.admit_item_write_counted_elsewhere(partition, capacity, now)?;
+        // What a request consumed is what this service publishes as the table's throughput
+        // metrics ([`crate::state::consumed_capacity_metrics`]): counted here, where the
+        // capacity is taken, so every item write this store admits is in the series whichever
+        // operation made it — the table's own units in the table's series and each global
+        // secondary index's in that index's, exactly as this write itemises them.
+        self.pending_consumed.charge_write(capacity, now);
+        Ok(())
+    }
+
+    /// [`Self::admit_item_write`] for a surface that counts the units it consumed ITSELF.
+    ///
+    /// The two ceilings are taken in exactly the same way; what this leaves out is the
+    /// COUNTING into the table's consumption series. The statement surface's write verbs and
+    /// the transactional ledgers read their figure back out of the stored table after the
+    /// write has landed and count it from there
+    /// (`crate::state::charge_reported_capacity`, which says why), so counting it here too
+    /// would put one request's units into the series twice.
+    pub fn admit_item_write_counted_elsewhere(
         &mut self,
         partition: &AttributeValueKey,
         capacity: &WriteCapacity,
@@ -1988,7 +2044,7 @@ impl Table {
         if let Some(provisioned) = provisioned {
             if !self
                 .write_budget
-                .covers_within(provisioned, BURST_CAPACITY_WINDOW, total, now)
+                .has_capacity(provisioned, BURST_CAPACITY_WINDOW, now)
             {
                 return Err(WriteThrottle::TableProvisioned);
             }
@@ -2000,16 +2056,11 @@ impl Table {
             return Err(WriteThrottle::KeyRange);
         }
         if let Some(provisioned) = provisioned {
-            self.write_budget.take(provisioned, total, now);
+            self.write_budget
+                .take_borrowing(provisioned, BURST_CAPACITY_WINDOW, total, now);
         }
         self.key_write_budgets
             .take(partition, capacity.table, now);
-        // What a request consumed is what this service publishes as the table's throughput
-        // metrics ([`crate::state::consumed_capacity_metrics`]): counted here, where the
-        // capacity is taken, so every item write this store admits is in the series whichever
-        // operation made it — the table's own units in the table's series and each global
-        // secondary index's in that index's, exactly as this write itemises them.
-        self.pending_consumed.charge_write(capacity, now);
         Ok(())
     }
 
@@ -2165,6 +2216,47 @@ impl Table {
         // just the same.
         self.pending_consumed.charge_write(capacity, now);
         Ok(())
+    }
+
+    /// Whether the write capacity this table is provisioned for admits a write at `now`,
+    /// WITHOUT taking any of it.
+    ///
+    /// The write side of [`Self::read_admits`], and what lets a write spanning SEVERAL
+    /// tables be admitted all-or-nothing: a transaction is one write, and "the entire
+    /// transaction is rejected" when any part of it cannot be served, so no table is debited
+    /// unless every one of them has capacity ([`Self::charge_write_capacity`] is what takes
+    /// it once they all do). What is asked is whether the table has capacity at this
+    /// instant, exactly as a single item write's admission asks
+    /// ([`Self::admit_item_write`]).
+    pub fn write_admits(&self, now: SystemTime) -> Result<(), WriteThrottle> {
+        let Some(provisioned) = self.provisioned_write_rate() else {
+            return Ok(());
+        };
+        if self
+            .write_budget
+            .has_capacity(provisioned, BURST_CAPACITY_WINDOW, now)
+        {
+            Ok(())
+        } else {
+            Err(WriteThrottle::TableProvisioned)
+        }
+    }
+
+    /// Charge `units` of write capacity against the budget this table's provisioned
+    /// throughput refills, which may leave it in deficit.
+    ///
+    /// For the surfaces whose figure is settled only AFTER the writes have landed — a
+    /// transactional ledger is read back out of the stored tables and then scaled — so the
+    /// capacity cannot be taken at admission. The draw is charged in full and repays at the
+    /// rate in force ([`CapacityBudget::take_borrowing`]), so the sustained rate this table
+    /// admits is exactly the rate it is provisioned for. Nothing is counted into the
+    /// consumption series here: the surface that settles the figure counts it
+    /// (`crate::state::charge_reported_ledger`).
+    pub fn charge_write_capacity(&mut self, units: f64, now: SystemTime) {
+        if let Some(provisioned) = self.provisioned_write_rate() {
+            self.write_budget
+                .take_borrowing(provisioned, BURST_CAPACITY_WINDOW, units, now);
+        }
     }
 
     /// The write units per second this table is PROVISIONED for, or `None` for a table
