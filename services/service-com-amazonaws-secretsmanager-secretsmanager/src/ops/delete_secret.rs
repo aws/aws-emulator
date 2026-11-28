@@ -312,6 +312,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ),
             ));
         }
+        // "You must disassociate a cross-account replica before you call
+        // DeleteSecret for the primary secret. The DeleteSecret call fails if any
+        // replicas are still associated with the primary secret."
+        // (`DisassociateCrossAccountReplica`, this service's Smithy model.) An
+        // association the replica itself detached is not one: there is nothing
+        // left replicating to remove.
+        if let Some(link) = secret.associated_cross_account_replica() {
+            return Err(invalid_parameter(
+                crate::state::primary_has_cross_account_replica_message(
+                    &secret.arn,
+                    &link.replica_secret_arn,
+                ),
+            ));
+        }
 
         if force {
             // A forced deletion skips the recovery window, but it is not

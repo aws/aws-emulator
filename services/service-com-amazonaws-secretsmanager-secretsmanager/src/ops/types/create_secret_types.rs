@@ -24,6 +24,7 @@ pub struct CreateSecretInput {
     pub add_replica_regions: Option<Vec<ReplicaRegionType>>,
     pub force_overwrite_replica_secret: bool,
     pub r#type: Option<String>,
+    pub cross_account_primary_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#CreateSecretResponse")]

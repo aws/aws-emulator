@@ -439,6 +439,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // A create that names a primary to receive from creates a CROSS-ACCOUNT
+        // REPLICA of that primary rather than a secret of its own: "Include this
+        // field to create a cross-account replica secret that receives replicated
+        // data from that primary secret. The primary secret must be in the same
+        // Amazon Web Services Region and partition as the replica, and you must
+        // specify a customer managed KMS key in KmsKeyId. You can't include
+        // SecretString, SecretBinary, Description, AddReplicaRegions, or Type."
+        // (`CreateSecretRequest$CrossAccountPrimaryARN`, this service's Smithy
+        // model.) Every clause is a fact about the request alone — the primary
+        // itself belongs to another account, so nothing about it is read here —
+        // and each is answered before anything is stored.
+        if let Some(primary_arn) = input.cross_account_primary_arn.as_deref() {
+            if !crate::state::same_region_and_partition(&arn, primary_arn) {
+                return Err(invalid_parameter(
+                    crate::state::CROSS_ACCOUNT_REGION_MISMATCH_MESSAGE,
+                ));
+            }
+            if crate::state::envelope::customer_managed_key(input.kms_key_id.as_deref()).is_none()
+            {
+                return Err(invalid_parameter(
+                    crate::state::CROSS_ACCOUNT_REPLICA_NEEDS_KEY_MESSAGE,
+                ));
+            }
+            // What the replica receives from the primary is exactly what these
+            // members would have stated, so a request stating any of them states
+            // two sources for one secret's content.
+            let carries_own_content = input.secret_string.is_some()
+                || input.secret_binary.is_some()
+                || input.description.is_some()
+                || input.r#type.is_some()
+                || input
+                    .add_replica_regions
+                    .as_deref()
+                    .is_some_and(|regions| !regions.is_empty());
+            if carries_own_content {
+                return Err(invalid_parameter(
+                    crate::state::CROSS_ACCOUNT_REPLICA_MEMBERS_MESSAGE,
+                ));
+            }
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(state_unavailable)?;
         // "If you include SecretString or SecretBinary then Secrets Manager
         // creates an initial secret version and automatically attaches the
@@ -618,6 +659,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The ID of the service that created this secret": the service whose own
         // principal made this create, for a secret that service manages.
         secret.owning_service = owner.as_ref().map(|owner| owner.service_id.clone());
+        // The primary this secret is a cross-account REPLICA of, where the create
+        // named one: nothing replicates into it until that primary's owner calls
+        // `AssociateCrossAccountReplica`, which is "Pending, which indicates that
+        // replication has not yet started" (`StatusType`, this service's Smithy
+        // model; see [`crate::state::cross_account`]).
+        secret.cross_account_primary = input
+            .cross_account_primary_arn
+            .clone()
+            .map(crate::state::CrossAccountPrimaryLink::pending);
         let mut stored_tags: Vec<crate::state::StoredTag> =
             tags.iter().map(crate::state::StoredTag::from_modeled).collect();
         // The tag naming that service is applied by SECRETS MANAGER, not by the
@@ -752,6 +802,15 @@ fn answer_existing(
 fn missing_client_request_token() -> CreateSecretError {
     CreateSecretErrorModeled::InvalidRequestException(InvalidRequestException {
         message: Some(crate::state::MISSING_CLIENT_REQUEST_TOKEN_MESSAGE.to_string()),
+    })
+    .into()
+}
+
+/// `InvalidParameterException` — "The parameter name or value is invalid." — for a
+/// parameter, or a combination of them, this create refuses.
+fn invalid_parameter(message: impl Into<String>) -> CreateSecretError {
+    CreateSecretErrorModeled::InvalidParameterException(InvalidParameterException {
+        message: Some(message.into()),
     })
     .into()
 }

@@ -16,6 +16,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-secretsmanager-secretsm
 pub struct PutResourcePolicyInput {
     pub secret_id: String,
     pub resource_policy: String,
+    pub policy_name: Option<String>,
     pub block_public_policy: Option<bool>,
 }
 
@@ -24,6 +25,7 @@ pub struct PutResourcePolicyInput {
 pub struct PutResourcePolicyOutput {
     pub arn: Option<String>,
     pub name: Option<String>,
+    pub policy_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#PublicPolicyException")]

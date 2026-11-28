@@ -24,7 +24,11 @@
 //!   principal; without that flag the same document attaches;
 //! * a `SecretId` that names nothing is `ResourceNotFoundException`, and a
 //!   secret inside its recovery window still exists, so these operations refuse
-//!   it with `InvalidRequestException`.
+//!   it with `InvalidRequestException`;
+//! * the policy a call addresses is the one named `default`, which is the only
+//!   name a secret carries: a write of another name is refused as a parameter and
+//!   a read of another name as a resource that does not exist, and every answer
+//!   reports the name it addressed.
 //!
 //! Every test is a TABLE over the class its rule generalises: the shape, size
 //! and charset of the policy document, the form of the `SecretId`, the
@@ -33,6 +37,10 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use service_com_amazonaws_secretsmanager_secretsmanager::state::{
+    DEFAULT_RESOURCE_POLICY_NAME, ONLY_DEFAULT_RESOURCE_POLICY_MESSAGE,
+    RESOURCE_POLICY_NOT_FOUND_MESSAGE,
+};
 use service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -855,4 +863,139 @@ async fn unknown_and_deleted_secrets_are_refused() {
              refused by its state; got {code}"
         );
     }
+}
+
+/// A secret carries ONE resource policy, named `default`: every call addresses
+/// that name unless the caller states another, a write of another name is
+/// `InvalidParameterException` and a read of another name is
+/// `ResourceNotFoundException` — and each answer reports the name it addressed.
+///
+/// "If you don't specify this field, Secrets Manager uses `default`. You can only
+/// attach the `default` policy; if you specify any other name, the operation
+/// returns an `InvalidParameterException`."
+/// (`PutResourcePolicyRequest$PolicyName`, this service's Smithy model; the same
+/// for `DeleteResourcePolicyRequest$PolicyName`.) "If you specify a name other
+/// than `default` and no policy with that name exists, the operation returns a
+/// `ResourceNotFoundException`." (`GetResourcePolicyRequest$PolicyName`.)
+#[tokio::test]
+async fn only_the_default_resource_policy_is_addressed_by_every_policy_call() {
+    let document = policy_for("arn:aws:iam::123456789012:root");
+    // The names `ResourcePolicyNameType` admits that are not the one policy a
+    // secret carries: each is inside the modelled length bound of 1..64 and its
+    // charset `^[0-9A-Za-z\-\_]+$`, so each reaches the handler and is answered by
+    // the rule rather than by the boundary validator. The rows run over that
+    // charset, both published length bounds, and a spelling that differs from
+    // `default` in case alone.
+    let other_names: Vec<String> = vec![
+        "Default".to_string(),
+        "custom".to_string(),
+        "my-policy_1".to_string(),
+        "a".to_string(),
+        "n".repeat(64),
+    ];
+    let router = emulator();
+    let name = "policy-names";
+    create(&router, name, "setup").await;
+    ok(
+        &router,
+        "PutResourcePolicy",
+        json!({"SecretId": name, "ResourcePolicy": &document}),
+        "setup",
+    )
+    .await;
+
+    // The default name is addressed whether or not the call states it, and every
+    // answer names the policy it addressed.
+    for stated in [false, true] {
+        let case = format!("PolicyName stated: {stated}");
+        for (operation, extra) in [
+            ("PutResourcePolicy", json!({"ResourcePolicy": &document})),
+            ("GetResourcePolicy", json!({})),
+        ] {
+            let mut body = extra.clone();
+            body["SecretId"] = json!(name);
+            if stated {
+                body["PolicyName"] = json!(DEFAULT_RESOURCE_POLICY_NAME);
+            }
+            let answered = ok(&router, operation, body, &case).await;
+            assert_eq!(
+                answered.get("PolicyName").and_then(Value::as_str),
+                Some(DEFAULT_RESOURCE_POLICY_NAME),
+                "case {case:?}: expected {operation} to report the name it addressed, got \
+                 {answered}"
+            );
+        }
+    }
+
+    for policy_name in &other_names {
+        for operation in ["PutResourcePolicy", "DeleteResourcePolicy"] {
+            let case = format!("{operation} naming {policy_name:?}");
+            let mut body = json!({"SecretId": name, "PolicyName": policy_name});
+            if operation == "PutResourcePolicy" {
+                body["ResourcePolicy"] = json!(&document);
+            }
+            let (code, message) = refusal(&router, operation, body, &case).await;
+            assert_eq!(
+                (code.as_str(), message.as_str()),
+                (
+                    "InvalidParameterException",
+                    ONLY_DEFAULT_RESOURCE_POLICY_MESSAGE
+                ),
+                "case {case:?}: expected the parameter refusal, got {code} {message:?}"
+            );
+        }
+
+        let case = format!("GetResourcePolicy naming {policy_name:?}");
+        let (code, message) = refusal(
+            &router,
+            "GetResourcePolicy",
+            json!({"SecretId": name, "PolicyName": policy_name}),
+            &case,
+        )
+        .await;
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            (
+                "ResourceNotFoundException",
+                RESOURCE_POLICY_NOT_FOUND_MESSAGE
+            ),
+            "case {case:?}: expected the not-found refusal, got {code} {message:?}"
+        );
+    }
+
+    // None of those refusals touched the one policy the secret carries, and the
+    // delete that addresses it does: a read then reports neither the document nor
+    // a name.
+    let read = ok(
+        &router,
+        "GetResourcePolicy",
+        json!({"SecretId": name}),
+        "the policy the refusals left alone",
+    )
+    .await;
+    assert_eq!(
+        policy_of(&read),
+        Some(reported_policy(&document).as_str()),
+        "expected the attached document to be untouched, got {read}"
+    );
+    ok(
+        &router,
+        "DeleteResourcePolicy",
+        json!({"SecretId": name, "PolicyName": DEFAULT_RESOURCE_POLICY_NAME}),
+        "the delete that addresses the default policy",
+    )
+    .await;
+    let read = ok(
+        &router,
+        "GetResourcePolicy",
+        json!({"SecretId": name}),
+        "the secret after the delete",
+    )
+    .await;
+    assert_eq!(
+        (policy_of(&read), read.get("PolicyName")),
+        (None, None),
+        "expected a secret carrying no policy to report neither the document nor a name, got \
+         {read}"
+    );
 }

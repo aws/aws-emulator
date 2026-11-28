@@ -41,5 +41,24 @@ pub struct DescribeSecretOutput {
     pub created_date: Option<::aws_smithy_types::DateTime>,
     pub primary_region: Option<String>,
     pub replication_status: Option<Vec<ReplicationStatusType>>,
+    pub cross_account_primary: Option<CrossAccountPrimaryType>,
+    pub cross_account_replicas: Option<Vec<CrossAccountReplicaEntry>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#CrossAccountPrimaryType")]
+#[derive(Debug, Clone, Default)]
+pub struct CrossAccountPrimaryType {
+    pub primary_secret_arn: Option<String>,
+    pub replication_status: Option<String>,
+    pub status_message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#CrossAccountReplicaEntry")]
+#[derive(Debug, Clone, Default)]
+pub struct CrossAccountReplicaEntry {
+    pub replica_secret_arn: Option<String>,
+    pub replication_role_arn: Option<String>,
+    pub replication_status: Option<String>,
+    pub status_message: Option<String>,
 }
 

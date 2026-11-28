@@ -25,7 +25,13 @@
 //!   calls for;
 //! * `PrimaryRegion` belongs to a secret that takes part in replication, so the
 //!   `primary-region` filter selects replicas and replicated primaries and never a
-//!   secret this service reports no `PrimaryRegion` for.
+//!   secret this service reports no `PrimaryRegion` for;
+//! * cross-ACCOUNT replication is the same resource seen from two secrets of their
+//!   own: the replica account creates its secret naming the primary
+//!   (`CreateSecretRequest$CrossAccountPrimaryARN`), nothing replicates until the
+//!   primary's owner associates it, and from then on the replica serves the
+//!   primary's current value until the link is removed, which leaves it `Detached`
+//!   with what it already received.
 //!
 //! Every test is a TABLE over the class its rule generalises: the Region a
 //! replica is placed in and how many, the form of the `SecretId`, the form of the
@@ -37,14 +43,23 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_secretsmanager_secretsmanager::state::{
-    primary_is_replicated_message, ComAmazonawsSecretsmanagerSecretsmanagerState,
-    NOT_PERMITTED_ON_REPLICA_MESSAGE, NOT_PERMITTED_ON_REPLICATED_PRIMARY_MESSAGE,
-    NOT_PERMITTED_ON_STANDALONE_MESSAGE, REPLICATION_FAILED_PREFIX,
-    REPLICATION_SUCCEEDED_MESSAGE, REPLICA_NAME_COLLISION_MESSAGE, REPLICA_STATUS_FAILED,
-    REPLICA_STATUS_IN_PROGRESS, REPLICA_STATUS_IN_SYNC, SECRET_QUOTA,
+    primary_has_cross_account_replica_message, primary_is_replicated_message,
+    ComAmazonawsSecretsmanagerSecretsmanagerState, CROSS_ACCOUNT_REGION_MISMATCH_MESSAGE,
+    CROSS_ACCOUNT_REPLICA_MEMBERS_MESSAGE, CROSS_ACCOUNT_REPLICA_NEEDS_KEY_MESSAGE,
+    CROSS_ACCOUNT_STATUS_DETACHED, CROSS_ACCOUNT_STATUS_PENDING,
+    NOT_PERMITTED_ON_CROSS_ACCOUNT_REPLICA_MESSAGE, NOT_PERMITTED_ON_REPLICA_MESSAGE,
+    NOT_PERMITTED_ON_REPLICATED_PRIMARY_MESSAGE, NOT_PERMITTED_ON_STANDALONE_MESSAGE,
+    ONE_CROSS_ACCOUNT_REPLICA_MESSAGE, REPLICATION_FAILED_PREFIX, REPLICATION_SUCCEEDED_MESSAGE,
+    REPLICA_NAME_COLLISION_MESSAGE, REPLICA_STATUS_FAILED, REPLICA_STATUS_IN_PROGRESS,
+    REPLICA_STATUS_IN_SYNC, SECRET_QUOTA,
 };
 use service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
+
+// The harness that mounts KMS beside this service and mints a real key through KMS's
+// own operations, written ONCE for this test binary rather than per suite: a
+// cross-account replica has to name a customer managed key.
+use crate::secret_kms_key_state::Emulator as KeyedEmulator;
 
 /// The Region the primary of every secret below is created in.
 const PRIMARY_REGION: &str = "us-west-2";
@@ -1206,4 +1221,566 @@ async fn the_promotion_refusal_states_which_class_of_secret_it_was_called_on() {
             "case {row:?}: expected the standalone refusal, got {code} {message:?}"
         );
     }
+}
+
+// --- cross-ACCOUNT replication -----------------------------------------------
+
+/// The one `CrossAccountReplicas` entry a read of a primary reports, or `None`
+/// while it reports none.
+fn cross_account_entry(described: &Value) -> Option<Value> {
+    described
+        .get("CrossAccountReplicas")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+        .cloned()
+}
+
+/// The `CrossAccountPrimary` a read of a replica reports, or `None` while it
+/// reports none.
+fn cross_account_primary(described: &Value) -> Option<Value> {
+    described.get("CrossAccountPrimary").cloned()
+}
+
+/// Create a secret holding `value` in the keyed harness's Region, and answer its
+/// ARN.
+async fn create_in(emulator: &KeyedEmulator, name: &str, value: &str, case: &str) -> String {
+    let created = emulator
+        .sm_ok(
+            "CreateSecret",
+            &json!({"Name": name, "SecretString": value}),
+            case,
+        )
+        .await;
+    text(&created, "ARN", case)
+}
+
+/// Create a cross-account replica of `primary_arn` under a customer managed key
+/// KMS mints for this call, and answer its ARN.
+async fn create_cross_account_replica(
+    emulator: &KeyedEmulator,
+    name: &str,
+    primary_arn: &str,
+    case: &str,
+) -> String {
+    let (key_arn, _) = emulator.create_key(case).await;
+    let created = emulator
+        .sm_ok(
+            "CreateSecret",
+            &json!({
+                "Name": name,
+                "KmsKeyId": key_arn,
+                "CrossAccountPrimaryARN": primary_arn,
+            }),
+            case,
+        )
+        .await;
+    text(&created, "ARN", case)
+}
+
+/// The primary's one cross-account entry once its link has settled.
+///
+/// Looks for the status the store OWES that link until it has been reported,
+/// rather than waiting a span out: the `InProgress` -> `InSync` move is due at an
+/// instant the store recorded, and a request is what materialises it.
+async fn settled_cross_account_entry(
+    emulator: &KeyedEmulator,
+    primary_id: &str,
+    case: &str,
+) -> Value {
+    let deadline = Instant::now() + REPLICA_WAIT;
+    loop {
+        let described = emulator
+            .sm_ok("DescribeSecret", &json!({"SecretId": primary_id}), case)
+            .await;
+        let entry = cross_account_entry(&described)
+            .unwrap_or_else(|| panic!("case {case:?}: no CrossAccountReplicas in {described}"));
+        if member(&entry, "ReplicationStatus").as_deref() != Some(REPLICA_STATUS_IN_PROGRESS) {
+            return entry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the cross-account link never settled, last entry {entry}"
+        );
+        tokio::time::sleep(LOOK_INTERVAL).await;
+    }
+}
+
+/// Look for `GetSecretValue` on `secret_id` to answer `expected`, which is what
+/// replication into a cross-account replica carries.
+async fn wait_for_replicated_value(
+    emulator: &KeyedEmulator,
+    secret_id: &str,
+    expected: &str,
+    case: &str,
+) {
+    let deadline = Instant::now() + REPLICA_WAIT;
+    loop {
+        let (status, parsed) = emulator
+            .sm("GetSecretValue", &json!({"SecretId": secret_id}))
+            .await;
+        if status == 200 && member(&parsed, "SecretString").as_deref() == Some(expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the replica never served the value its primary holds, last answer \
+             {parsed}"
+        );
+        tokio::time::sleep(LOOK_INTERVAL).await;
+    }
+}
+
+#[tokio::test]
+async fn an_associated_cross_account_replica_serves_what_its_primary_holds() {
+    // The rows run over the shape and size of the value the primary holds, the form
+    // of the `SecretId` the association names the primary by, and whether the
+    // association states a `ReplicationRoleARN`: the rule is about the link
+    // carrying the primary's value, not about any of those.
+    let role = format!(
+        "arn:aws:iam::{}:role/cross-account-replication",
+        engine::EMULATOR_ACCOUNT_ID
+    );
+    let rows: Vec<(&str, String, String, IdForm, Option<String>)> = vec![
+        (
+            "a short value, named by name, no replication role",
+            "s3cr3t".to_string(),
+            "s3cr3t-rotated".to_string(),
+            IdForm::Name,
+            None,
+        ),
+        (
+            "a JSON document, named by full ARN, with a replication role",
+            json!({"username": "admin", "password": "p@ssw0rd"}).to_string(),
+            json!({"username": "admin", "password": "r0tated"}).to_string(),
+            IdForm::FullArn,
+            Some(role.clone()),
+        ),
+        (
+            "a long value, named by partial ARN, with a replication role",
+            "x".repeat(1_000),
+            "y".repeat(999),
+            IdForm::PartialArn,
+            Some(role),
+        ),
+    ];
+    for (index, (case, value, updated, form, role_arn)) in rows.iter().enumerate() {
+        let emulator = KeyedEmulator::new();
+        let primary_name = format!("cross-account/primary/{index}");
+        let replica_name = format!("cross-account/replica/{index}");
+        let primary_arn = create_in(&emulator, &primary_name, value, case).await;
+        let replica_arn =
+            create_cross_account_replica(&emulator, &replica_name, &primary_arn, case).await;
+
+        // Before the association nothing replicates: the replica names its primary
+        // and reports `Pending`, "which indicates that replication has not yet
+        // started" (`StatusType`, this service's Smithy model).
+        let described = emulator
+            .sm_ok("DescribeSecret", &json!({"SecretId": &replica_name}), case)
+            .await;
+        let link = cross_account_primary(&described)
+            .unwrap_or_else(|| panic!("case {case:?}: no CrossAccountPrimary in {described}"));
+        assert_eq!(
+            (
+                member(&link, "PrimarySecretARN"),
+                member(&link, "ReplicationStatus")
+            ),
+            (
+                Some(primary_arn.clone()),
+                Some(CROSS_ACCOUNT_STATUS_PENDING.to_string())
+            ),
+            "case {case:?}: expected the replica to name its primary and report Pending, got \
+             {described}"
+        );
+        let described = emulator
+            .sm_ok("DescribeSecret", &json!({"SecretId": &primary_name}), case)
+            .await;
+        assert!(
+            cross_account_entry(&described).is_none() && cross_account_primary(&described).is_none(),
+            "case {case:?}: expected an unassociated primary to report no cross-account link, \
+             got {described}"
+        );
+
+        let mut request = json!({
+            "SecretId": secret_id(*form, &primary_name, &primary_arn),
+            "CrossAccountReplicaARN": replica_arn.clone(),
+        });
+        if let Some(role) = role_arn {
+            request
+                .as_object_mut()
+                .expect("the request body is an object")
+                .insert("ReplicationRoleARN".to_string(), json!(role));
+        }
+        let associated = emulator
+            .sm_ok("AssociateCrossAccountReplica", &request, case)
+            .await;
+        assert_eq!(
+            (
+                member(&associated, "ARN"),
+                member(&associated, "CrossAccountReplicaARN"),
+                member(&associated, "ReplicationStatus")
+            ),
+            (
+                Some(primary_arn.clone()),
+                Some(replica_arn.clone()),
+                Some(REPLICA_STATUS_IN_PROGRESS.to_string())
+            ),
+            "case {case:?}: expected the association to report the pair it linked and that \
+             replication has started, got {associated}"
+        );
+
+        // The clock owes the link its `InSync` move, and the entry the primary
+        // reports carries the role the association stated and nothing it did not.
+        let entry = settled_cross_account_entry(&emulator, &primary_name, case).await;
+        assert_eq!(
+            (
+                member(&entry, "ReplicaSecretARN"),
+                member(&entry, "ReplicationStatus"),
+                member(&entry, "StatusMessage"),
+                member(&entry, "ReplicationRoleARN")
+            ),
+            (
+                Some(replica_arn.clone()),
+                Some(REPLICA_STATUS_IN_SYNC.to_string()),
+                Some(REPLICATION_SUCCEEDED_MESSAGE.to_string()),
+                role_arn.clone()
+            ),
+            "case {case:?}: expected the settled entry for the replica it replicates to, got \
+             {entry}"
+        );
+
+        // What replication carries is the VALUE: the replica serves what the primary
+        // holds, read through the replica's own name, and goes on carrying every
+        // later write — until the link is removed, after which the replica keeps
+        // what it has and the primary's writes are its own.
+        wait_for_replicated_value(&emulator, &replica_name, value, case).await;
+        emulator
+            .sm_ok(
+                "PutSecretValue",
+                &json!({"SecretId": &primary_name, "SecretString": updated}),
+                case,
+            )
+            .await;
+        wait_for_replicated_value(&emulator, &replica_name, updated, case).await;
+
+        // While the replica is associated the primary cannot be deleted: "You must
+        // disassociate a cross-account replica before you call DeleteSecret for the
+        // primary secret."
+        let (code, message) = emulator
+            .sm_err("DeleteSecret", &json!({"SecretId": &primary_name}), case)
+            .await;
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            (
+                "InvalidParameterException",
+                primary_has_cross_account_replica_message(&primary_arn, &replica_arn).as_str()
+            ),
+            "case {case:?}: expected the associated-replica refusal, got {code} {message:?}"
+        );
+
+        let disassociated = emulator
+            .sm_ok(
+                "DisassociateCrossAccountReplica",
+                &json!({
+                    "SecretId": secret_id(*form, &primary_name, &primary_arn),
+                    "CrossAccountReplicaARN": replica_arn.clone(),
+                }),
+                case,
+            )
+            .await;
+        assert_eq!(
+            (
+                member(&disassociated, "ARN"),
+                member(&disassociated, "CrossAccountReplicaARN")
+            ),
+            (Some(primary_arn.clone()), Some(replica_arn.clone())),
+            "case {case:?}: expected the disassociation to report the pair it unlinked, got \
+             {disassociated}"
+        );
+        let described = emulator
+            .sm_ok("DescribeSecret", &json!({"SecretId": &replica_name}), case)
+            .await;
+        let link = cross_account_primary(&described)
+            .unwrap_or_else(|| panic!("case {case:?}: no CrossAccountPrimary in {described}"));
+        assert_eq!(
+            member(&link, "ReplicationStatus"),
+            Some(CROSS_ACCOUNT_STATUS_DETACHED.to_string()),
+            "case {case:?}: expected the detached replica to report Detached, got {described}"
+        );
+        emulator
+            .sm_ok(
+                "PutSecretValue",
+                &json!({"SecretId": &primary_name, "SecretString": "after-the-disassociation"}),
+                case,
+            )
+            .await;
+        let read = emulator
+            .sm_ok("GetSecretValue", &json!({"SecretId": &replica_name}), case)
+            .await;
+        assert_eq!(
+            member(&read, "SecretString").as_deref(),
+            Some(updated.as_str()),
+            "case {case:?}: expected a detached replica to keep what it received and take no \
+             update, got {read}"
+        );
+        // And the primary, replicating to nothing, is deletable.
+        emulator
+            .sm_ok("DeleteSecret", &json!({"SecretId": &primary_name}), case)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn a_cross_account_link_is_refused_for_every_pair_and_member_the_rule_excludes() {
+    let case = "the cross-account links this service does not make";
+    let emulator = KeyedEmulator::new();
+    let primary_arn = create_in(&emulator, "primary", "s3cr3t", case).await;
+    let standalone_arn = create_in(&emulator, "standalone", "stored", case).await;
+    let replica_arn = create_cross_account_replica(&emulator, "replica", &primary_arn, case).await;
+    let (key_arn, _) = emulator.create_key(case).await;
+
+    // A create that names a primary to receive from carries nothing the primary
+    // supplies instead, and has to name a customer managed key: "You must specify a
+    // customer managed KMS key in KmsKeyId. You can't include SecretString,
+    // SecretBinary, Description, AddReplicaRegions, or Type."
+    // (`CreateSecretRequest$CrossAccountPrimaryARN`, this service's Smithy model.)
+    let creates: Vec<(&str, Value, &str)> = vec![
+        (
+            "a value of its own",
+            json!({"KmsKeyId": key_arn.clone(), "SecretString": "its-own"}),
+            CROSS_ACCOUNT_REPLICA_MEMBERS_MESSAGE,
+        ),
+        (
+            "a description of its own",
+            json!({"KmsKeyId": key_arn.clone(), "Description": "its own"}),
+            CROSS_ACCOUNT_REPLICA_MEMBERS_MESSAGE,
+        ),
+        (
+            "replica Regions of its own",
+            json!({
+                "KmsKeyId": key_arn.clone(),
+                "AddReplicaRegions": [{"Region": "us-east-1"}],
+            }),
+            CROSS_ACCOUNT_REPLICA_MEMBERS_MESSAGE,
+        ),
+        (
+            "no KMS key at all",
+            json!({}),
+            CROSS_ACCOUNT_REPLICA_NEEDS_KEY_MESSAGE,
+        ),
+        (
+            "the Amazon Web Services managed key",
+            json!({"KmsKeyId": "alias/aws/secretsmanager"}),
+            CROSS_ACCOUNT_REPLICA_NEEDS_KEY_MESSAGE,
+        ),
+    ];
+    for (index, (row, members, expected)) in creates.iter().enumerate() {
+        let mut body = members.clone();
+        let object = body.as_object_mut().expect("every row's body is an object");
+        object.insert("Name".to_string(), json!(format!("refused/{index}")));
+        object.insert(
+            "CrossAccountPrimaryARN".to_string(),
+            json!(primary_arn.clone()),
+        );
+        let (code, message) = emulator.sm_err("CreateSecret", &body, row).await;
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            ("InvalidParameterException", *expected),
+            "case {row:?}: expected the parameter refusal {expected:?}, got {code} {message:?}"
+        );
+        let (status, _) = emulator
+            .sm(
+                "DescribeSecret",
+                &json!({"SecretId": format!("refused/{index}")}),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "case {row:?}: a refused create stores nothing, so the name holds no secret"
+        );
+    }
+
+    // And the pairs no association links: a secret that is no replica of this
+    // primary, a replica outside its Region, the call made on the replica, and a
+    // second replica of one primary.
+    let other_region_arn = {
+        let mut fields: Vec<&str> = replica_arn.split(':').collect();
+        fields[3] = "us-east-1";
+        fields.join(":")
+    };
+    let associations: Vec<(&str, Value, &str, String)> = vec![
+        (
+            "a secret that is no cross-account replica",
+            json!({"SecretId": "primary", "CrossAccountReplicaARN": standalone_arn.clone()}),
+            "InvalidRequestException",
+            format!("The secret {standalone_arn} is not a cross-account replica of the secret "),
+        ),
+        (
+            "a replica outside the primary's Region",
+            json!({"SecretId": "primary", "CrossAccountReplicaARN": other_region_arn}),
+            "InvalidParameterException",
+            CROSS_ACCOUNT_REGION_MISMATCH_MESSAGE.to_string(),
+        ),
+        (
+            "the association made on the replica rather than the primary",
+            json!({"SecretId": "replica", "CrossAccountReplicaARN": replica_arn.clone()}),
+            "InvalidParameterException",
+            NOT_PERMITTED_ON_CROSS_ACCOUNT_REPLICA_MESSAGE.to_string(),
+        ),
+    ];
+    for (row, request, expected_code, expected_message) in associations {
+        let (code, message) = emulator
+            .sm_err("AssociateCrossAccountReplica", &request, row)
+            .await;
+        assert_eq!(
+            code, expected_code,
+            "case {row:?}: expected {expected_code}, got {code} with message {message:?}"
+        );
+        assert!(
+            message.starts_with(&expected_message),
+            "case {row:?}: expected a message starting {expected_message:?}, got {message:?}"
+        );
+    }
+    let described = emulator
+        .sm_ok("DescribeSecret", &json!({"SecretId": "primary"}), case)
+        .await;
+    assert!(
+        cross_account_entry(&described).is_none(),
+        "case {case:?}: a refused association links nothing, got {described}"
+    );
+
+    emulator
+        .sm_ok(
+            "AssociateCrossAccountReplica",
+            &json!({"SecretId": "primary", "CrossAccountReplicaARN": replica_arn.clone()}),
+            case,
+        )
+        .await;
+    let second_arn =
+        create_cross_account_replica(&emulator, "second-replica", &primary_arn, case).await;
+    let (code, message) = emulator
+        .sm_err(
+            "AssociateCrossAccountReplica",
+            &json!({"SecretId": "primary", "CrossAccountReplicaARN": second_arn}),
+            case,
+        )
+        .await;
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        (
+            "LimitExceededException",
+            ONE_CROSS_ACCOUNT_REPLICA_MESSAGE
+        ),
+        "case {case:?}: expected the one-replica quota refusal, got {code} {message:?}"
+    );
+    // The association of the replica already linked is idempotent: it starts
+    // replication over rather than being refused.
+    let repaired = emulator
+        .sm_ok(
+            "AssociateCrossAccountReplica",
+            &json!({"SecretId": "primary", "CrossAccountReplicaARN": replica_arn}),
+            case,
+        )
+        .await;
+    assert_eq!(
+        member(&repaired, "ReplicationStatus"),
+        Some(REPLICA_STATUS_IN_PROGRESS.to_string()),
+        "case {case:?}: expected a repeat for the same replica to start replication over, got \
+         {repaired}"
+    );
+}
+
+#[tokio::test]
+async fn the_listed_resource_policy_names_follow_the_document_a_secret_carries() {
+    // `ListResourcePolicies` "lists the resource-based policies attached to a
+    // secret. The response contains only the names of the policies" (this service's
+    // Smithy model), and a secret carries the one `default` policy — so the listing
+    // is that name exactly while a document is attached and empty while none is.
+    // The rows run over the form of the `SecretId` and the page size asked for.
+    let document = json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"AWS": format!("arn:aws:iam::{}:root", engine::EMULATOR_ACCOUNT_ID)},
+            "Action": "secretsmanager:GetSecretValue",
+            "Resource": "*",
+        }],
+    })
+    .to_string();
+    for form in [IdForm::Name, IdForm::FullArn, IdForm::PartialArn] {
+        for page in [json!({}), json!({"MaxResults": 1}), json!({"MaxResults": 100})] {
+            let case = format!("listed by {form:?}, page {page}");
+            let emulator = KeyedEmulator::new();
+            let name = "listed-policies";
+            let arn = create_in(&emulator, name, "s3cr3t", &case).await;
+            let id = secret_id(form, name, &arn);
+            let listing = || {
+                let mut body = page.clone();
+                body.as_object_mut()
+                    .expect("a request body is an object")
+                    .insert("SecretId".to_string(), json!(id.clone()));
+                body
+            };
+
+            let listed = emulator
+                .sm_ok("ListResourcePolicies", &listing(), &case)
+                .await;
+            assert_eq!(
+                policy_names(&listed, &case),
+                Vec::<String>::new(),
+                "case {case:?}: expected no names for a secret carrying no policy, got {listed}"
+            );
+            assert!(
+                listed.get("NextToken").is_none(),
+                "case {case:?}: expected no cursor where there is no further page, got {listed}"
+            );
+
+            emulator
+                .sm_ok(
+                    "PutResourcePolicy",
+                    &json!({"SecretId": id.clone(), "ResourcePolicy": document.clone()}),
+                    &case,
+                )
+                .await;
+            let listed = emulator
+                .sm_ok("ListResourcePolicies", &listing(), &case)
+                .await;
+            assert_eq!(
+                policy_names(&listed, &case),
+                vec!["default".to_string()],
+                "case {case:?}: expected the attached policy's name, got {listed}"
+            );
+            assert!(
+                listed.get("NextToken").is_none(),
+                "case {case:?}: the whole listing fits one page, so no cursor is reported, got \
+                 {listed}"
+            );
+
+            emulator
+                .sm_ok(
+                    "DeleteResourcePolicy",
+                    &json!({"SecretId": id.clone()}),
+                    &case,
+                )
+                .await;
+            let listed = emulator
+                .sm_ok("ListResourcePolicies", &listing(), &case)
+                .await;
+            assert_eq!(
+                policy_names(&listed, &case),
+                Vec::<String>::new(),
+                "case {case:?}: expected the detached name to be gone, got {listed}"
+            );
+        }
+    }
+}
+
+/// The `PolicyName` values a `ListResourcePolicies` answer reports, in order.
+fn policy_names(listed: &Value, case: &str) -> Vec<String> {
+    listed
+        .get("ResourcePolicies")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("case {case:?}: no ResourcePolicies in {listed}"))
+        .iter()
+        .map(|entry| text(entry, "PolicyName", case))
+        .collect()
 }

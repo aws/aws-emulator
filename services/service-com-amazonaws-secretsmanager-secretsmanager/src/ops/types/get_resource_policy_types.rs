@@ -15,6 +15,7 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-secretsmanager-secretsm
 #[derive(Debug, Clone, Default)]
 pub struct GetResourcePolicyInput {
     pub secret_id: String,
+    pub policy_name: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#GetResourcePolicyResponse")]
@@ -23,5 +24,6 @@ pub struct GetResourcePolicyOutput {
     pub arn: Option<String>,
     pub name: Option<String>,
     pub resource_policy: Option<String>,
+    pub policy_name: Option<String>,
 }
 

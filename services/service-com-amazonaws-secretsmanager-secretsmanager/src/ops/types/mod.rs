@@ -14,15 +14,18 @@
 //! here named after an operation would make that operation's own module name
 //! ambiguous inside `ops` (`E0659`).
 
+pub mod associate_cross_account_replica_types;
 pub mod batch_get_secret_value_types;
 pub mod cancel_rotate_secret_types;
 pub mod create_secret_types;
 pub mod delete_resource_policy_types;
 pub mod delete_secret_types;
 pub mod describe_secret_types;
+pub mod disassociate_cross_account_replica_types;
 pub mod get_random_password_types;
 pub mod get_resource_policy_types;
 pub mod get_secret_value_types;
+pub mod list_resource_policies_types;
 pub mod list_secret_version_ids_types;
 pub mod list_secrets_types;
 pub mod put_resource_policy_types;
@@ -40,6 +43,8 @@ pub mod update_secret_version_stage_types;
 pub mod validate_resource_policy_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use associate_cross_account_replica_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use batch_get_secret_value_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use cancel_rotate_secret_types::*;
@@ -52,11 +57,15 @@ pub use delete_secret_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_secret_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use disassociate_cross_account_replica_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_random_password_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_resource_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_secret_value_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_resource_policies_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_secret_version_ids_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

@@ -28,7 +28,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::ops::types::{
-    ExternalSecretRotationMetadataItem, Filter, ReplicationStatusType, RotationRulesType, Tag,
+    CrossAccountPrimaryType, CrossAccountReplicaEntry, ExternalSecretRotationMetadataItem, Filter,
+    ReplicationStatusType, RotationRulesType, Tag,
 };
 
 /// The envelope a version's value is stored under, and the KMS calls that seal
@@ -58,6 +59,11 @@ pub mod rotation;
 /// in its Region, how its status settles, and how it is torn down or promoted.
 pub mod replication;
 pub use replication::*;
+
+/// Cross-ACCOUNT replication: the link between a primary secret and the replica of
+/// it another account holds, what that link replicates, and how it is torn down.
+pub mod cross_account;
+pub use cross_account::*;
 
 /// The layout this service reports an attached resource policy document in, which is
 /// the shared rendering every emulated service that attaches an IAM policy reports.
@@ -2090,6 +2096,16 @@ pub struct Secret {
     /// from one, were sealed for the primary's ARN, which is the encryption
     /// context they can only be opened under (see [`envelope::ValueContext`]).
     pub sealed_under: Option<String>,
+    /// The link to the primary another account holds, for a secret created as a
+    /// cross-account replica of it; `None` for every other secret. See
+    /// [`cross_account`].
+    pub cross_account_primary: Option<CrossAccountPrimaryLink>,
+    /// The link to the cross-account replica of this secret another account holds;
+    /// `None` for a secret no such replica was associated with. "A primary secret
+    /// can have at most one cross-account replica"
+    /// (`AssociateCrossAccountReplica`, this service's Smithy model), so there is
+    /// at most one.
+    pub cross_account_replica: Option<CrossAccountReplicaLink>,
     /// The resource-based permission policy document attached to this secret, in
     /// the layout this service reports a policy in (see
     /// [`attached_resource_policy`]); `None` for a secret no policy is attached
@@ -2135,6 +2151,8 @@ impl Secret {
             replicas: Vec::new(),
             replica_of: None,
             sealed_under: None,
+            cross_account_primary: None,
+            cross_account_replica: None,
             resource_policy: None,
             versions: Vec::new(),
         }
@@ -3279,14 +3297,21 @@ impl ComAmazonawsSecretsmanagerSecretsmanagerState {
     /// and never reports a replica as still being created once its span has
     /// elapsed.
     ///
-    /// Nothing is propagated here: a replica holds no copy of its primary to
-    /// bring up to date (see [`replication`]).
+    /// Nothing is propagated to a replica in another Region: it holds no copy of
+    /// its primary to bring up to date (see [`replication`]). A CROSS-ACCOUNT
+    /// replica does hold one, and the copy the clock owes it is made here (see
+    /// [`cross_account`]).
     ///
     /// [`expire_due`]: ComAmazonawsSecretsmanagerSecretsmanagerState::expire_due
     pub fn settle_replicas_due(&mut self, now: SystemTime) {
         for secret in self.secrets.values_mut() {
             secret.settle_replicas(now);
         }
+        // A cross-account link settles the same way, and unlike a replica in
+        // another Region a cross-account replica is a secret of ANOTHER account:
+        // it holds the primary's values as its own, so the copy the clock owes it
+        // is made here too (see [`cross_account`]).
+        self.settle_cross_account_due(now);
     }
 
     /// Whether `region` holds the secret a request's `SecretId` addresses, with the

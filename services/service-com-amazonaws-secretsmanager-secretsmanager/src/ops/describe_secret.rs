@@ -291,6 +291,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // own replica state, and omitted together while it has none.
             primary_region: secret.primary_region_out(),
             replication_status: secret.replication_status_out(),
+            // The cross-ACCOUNT replication view, each half reported only for the
+            // side of a link that has it: the primary it receives from for a
+            // cross-account replica, and the replica it replicates to for a
+            // cross-account primary (see [`crate::state::cross_account`]). Read
+            // from the record this Region holds, which is the secret the link is
+            // on.
+            cross_account_primary: secret.cross_account_primary_out(),
+            cross_account_replicas: secret.cross_account_replicas_out(),
         })
     }
 }

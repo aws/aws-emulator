@@ -161,6 +161,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Self::NAME,
             Some(input.secret_id.as_str()),
         )?;
+        // "The name of the resource policy to delete. If you don't specify this
+        // field, Secrets Manager uses `default`. You can only delete the
+        // `default` policy; if you specify any other name, the operation returns
+        // an `InvalidParameterException`."
+        // (`DeleteResourcePolicyRequest$PolicyName`, this service's Smithy
+        // model.) A property of the request alone, so it is decided before
+        // anything is read or written.
+        if !crate::state::names_default_resource_policy(input.policy_name.as_deref()) {
+            return Err(DeleteResourcePolicyErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(
+                        crate::state::ONLY_DEFAULT_RESOURCE_POLICY_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
         let state = crate::state::service_state(&*self.engine).ok_or_else(state_unavailable)?;
         let region = crate::state::request_region(ctx.parts());
         let mut store = state.lock();
@@ -205,6 +222,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(DeleteResourcePolicyOutput {
             arn: Some(secret.arn.clone()),
             name: Some(secret.name.clone()),
+            // "The name of the resource policy. If you didn't specify PolicyName
+            // in the request, this is `default`."
+            // (`DeleteResourcePolicyResponse$PolicyName`, this service's Smithy
+            // model.) The policy this call addressed, which is the only one a
+            // secret carries.
+            policy_name: Some(
+                crate::state::addressed_resource_policy_name(input.policy_name.as_deref())
+                    .to_string(),
+            ),
         })
     }
 }

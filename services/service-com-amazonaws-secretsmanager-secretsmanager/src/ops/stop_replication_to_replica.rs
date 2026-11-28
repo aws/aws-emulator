@@ -207,6 +207,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // A CROSS-ACCOUNT replica is unlinked here too: "To convert a detached
+        // replica into a standalone secret, call StopReplicationToReplica on the
+        // replica secret" (`DisassociateCrossAccountReplica`, this service's
+        // Smithy model). The secret keeps its ARN and the values replicated into
+        // it, and stops being a replica; the primary's entry for it records that
+        // replication was stopped by the replica (see
+        // [`crate::state::cross_account`]).
+        if secret.is_cross_account_replica() {
+            let arn = store
+                .detach_cross_account_replica(&key, now)
+                .ok_or_else(state_unavailable)?;
+            return Ok(StopReplicationToReplicaOutput { arn: Some(arn) });
+        }
+
         // The secret this Region holds under that id is the PRIMARY (or a
         // standalone secret, which is a primary with no replicas), not a
         // replica, so there is no link to a primary to remove here. Which of the

@@ -11,28 +11,9 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-secretsmanager-secretsmanager.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#Filter")]
-#[derive(Debug, Clone, Default)]
-pub struct Filter {
-    pub key: Option<String>,
-    pub values: Option<Vec<String>>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#DecryptionFailure")]
-#[derive(Debug, Clone, Default)]
-pub struct DecryptionFailure {
-    pub message: Option<String>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#InternalServiceError")]
 #[derive(Debug, Clone, Default)]
 pub struct InternalServiceError {
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#InvalidNextTokenException")]
-#[derive(Debug, Clone, Default)]
-pub struct InvalidNextTokenException {
     pub message: Option<String>,
 }
 
@@ -48,9 +29,34 @@ pub struct InvalidRequestException {
     pub message: Option<String>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#LimitExceededException")]
+#[derive(Debug, Clone, Default)]
+pub struct LimitExceededException {
+    pub message: Option<String>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#ResourceNotFoundException")]
 #[derive(Debug, Clone, Default)]
 pub struct ResourceNotFoundException {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#Filter")]
+#[derive(Debug, Clone, Default)]
+pub struct Filter {
+    pub key: Option<String>,
+    pub values: Option<Vec<String>>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#DecryptionFailure")]
+#[derive(Debug, Clone, Default)]
+pub struct DecryptionFailure {
+    pub message: Option<String>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#InvalidNextTokenException")]
+#[derive(Debug, Clone, Default)]
+pub struct InvalidNextTokenException {
     pub message: Option<String>,
 }
 
@@ -81,12 +87,6 @@ pub struct ReplicationStatusType {
 #[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#EncryptionFailure")]
 #[derive(Debug, Clone, Default)]
 pub struct EncryptionFailure {
-    pub message: Option<String>,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.secretsmanager#LimitExceededException")]
-#[derive(Debug, Clone, Default)]
-pub struct LimitExceededException {
     pub message: Option<String>,
 }
 
@@ -127,6 +127,10 @@ pub struct ExternalSecretRotationMetadataItem {
 pub const FILTER_NAME_STRING_TYPE_VALUES: &[&str] = &["all", "description", "name", "owning-service", "primary-region", "tag-key", "tag-value"];
 
 
+/// The values `ReplicaRestrictionType` accepts on the wire.
+pub const REPLICA_RESTRICTION_TYPE_VALUES: &[&str] = &["NoRestriction", "SameOrg"];
+
+
 /// The values `SortByType` accepts on the wire.
 pub const SORT_BY_TYPE_VALUES: &[&str] = &["created-date", "last-accessed-date", "last-changed-date", "name"];
 
@@ -136,6 +140,6 @@ pub const SORT_ORDER_TYPE_VALUES: &[&str] = &["asc", "desc"];
 
 
 /// The values `StatusType` accepts on the wire.
-pub const STATUS_TYPE_VALUES: &[&str] = &["Failed", "InProgress", "InSync"];
+pub const STATUS_TYPE_VALUES: &[&str] = &["Detached", "Failed", "InProgress", "InSync", "Pending"];
 
 

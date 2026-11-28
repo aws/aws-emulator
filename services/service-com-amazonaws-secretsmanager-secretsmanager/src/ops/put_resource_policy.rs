@@ -186,6 +186,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.block_public_policy,
             ),
         )?;
+        // "The name of the resource policy to attach. If you don't specify this
+        // field, Secrets Manager uses `default`. You can only attach the
+        // `default` policy; if you specify any other name, the operation returns
+        // an `InvalidParameterException`."
+        // (`PutResourcePolicyRequest$PolicyName`, this service's Smithy model.)
+        // A property of the request alone, so it is decided before anything is
+        // read or stored.
+        if !crate::state::names_default_resource_policy(input.policy_name.as_deref()) {
+            return Err(PutResourcePolicyErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(
+                        crate::state::ONLY_DEFAULT_RESOURCE_POLICY_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
         // The document has to be a policy document before anything is stored:
         // "The resource policy has syntax errors."
         // (`MalformedPolicyDocumentException`). Parsed BEFORE the store lock is
@@ -264,6 +281,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(PutResourcePolicyOutput {
             arn: Some(secret.arn.clone()),
             name: Some(secret.name.clone()),
+            // "The name of the resource policy. If you didn't specify PolicyName
+            // in the request, this is `default`."
+            // (`PutResourcePolicyResponse$PolicyName`, this service's Smithy
+            // model.)
+            policy_name: Some(
+                crate::state::addressed_resource_policy_name(input.policy_name.as_deref())
+                    .to_string(),
+            ),
         })
     }
 }

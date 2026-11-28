@@ -197,6 +197,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // "The name of the resource policy to retrieve. If you don't specify this
+        // field, Secrets Manager uses `default`. If you specify a name other than
+        // `default` and no policy with that name exists, the operation returns a
+        // `ResourceNotFoundException`."
+        // (`GetResourcePolicyRequest$PolicyName`, this service's Smithy model.) A
+        // secret carries the `default` policy and no other — it is the only one
+        // that can be attached — so every other name names a policy that does not
+        // exist, and the read is answered for the resource it asked about rather
+        // than for the secret, which was found.
+        if !crate::state::names_default_resource_policy(input.policy_name.as_deref()) {
+            return Err(GetResourcePolicyErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(
+                        crate::state::RESOURCE_POLICY_NOT_FOUND_MESSAGE.to_string(),
+                    ),
+                },
+            )
+            .into());
+        }
+
         Ok(GetResourcePolicyOutput {
             arn: Some(secret.arn.clone()),
             name: Some(secret.name.clone()),
@@ -210,6 +230,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // absent, `NonEmptyResourcePolicyType` being modelled with a minimum
             // length of 1 and there being no document.
             resource_policy: view.content.resource_policy.clone(),
+            // "The name of the resource policy. If you didn't specify PolicyName in
+            // the request, this is `default`."
+            // (`GetResourcePolicyResponse$PolicyName`, this service's Smithy model.)
+            // It names the policy this read answers with, so a secret carrying none
+            // reports no name either.
+            policy_name: view.content.resource_policy.as_ref().map(|_| {
+                crate::state::addressed_resource_policy_name(input.policy_name.as_deref())
+                    .to_string()
+            }),
         })
     }
 }
