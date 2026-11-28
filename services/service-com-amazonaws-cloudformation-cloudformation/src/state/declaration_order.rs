@@ -33,6 +33,9 @@ pub const RESOURCES: &str = "Resources";
 /// The `Mappings` section, whose entries are the maps `Fn::FindInMap` reads.
 pub const MAPPINGS: &str = "Mappings";
 
+/// The `Outputs` section, whose entries are the values a stack publishes.
+pub const OUTPUTS: &str = "Outputs";
+
 /// The keys of `section` in the order `body` declares them, and the EMPTY list where that
 /// order cannot be read (see the module docs).
 pub fn section_keys(body: &str, section: &str) -> Vec<String> {

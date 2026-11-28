@@ -89,7 +89,9 @@
 //! and leaves no stack behind — a body neither reader will read, a function no template may
 //! use, an intrinsic spelled with arguments it does not take, a `Ref` or an `Fn::GetAtt`
 //! naming something the template does not declare, a `Condition` it does not declare, an
-//! `Fn::FindInMap` whose lookup the `Mappings` section does not carry, and a dependency
+//! `Fn::FindInMap` whose lookup the `Mappings` section does not carry, a `Mappings` value
+//! stated as an expression rather than a literal, an output whose `Export.Name` depends on a
+//! resource, an imported value or `Fn::GetAZs`, and a dependency
 //! cycle among the declared resources. See [`crate::state::template_validation`] for the
 //! whole pass. A template whose `Resources` section declares a resource type CloudFormation
 //! does not recognise is refused the same way, naming those types: see

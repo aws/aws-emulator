@@ -44,6 +44,9 @@
 //!   map that section does not declare at all is reported for the missing map; this is the
 //!   one rule decided by EVALUATING the lookup, so only a body submitted for deployment is
 //!   held to it;
+//! * an output's `Export.Name` is fixed from the template and the values in force, so one
+//!   computed from a resource, from a value another stack exports or from the Region's
+//!   Availability Zones is refused, naming the output that declared it;
 //! * and a dependency CYCLE among the declared resources is refused, since no creation
 //!   order satisfies it.
 //!
@@ -188,6 +191,12 @@ fn pass(
     // operations that only report on a body give the same verdict
     // ([`super::template::format_refusal`]).
     if let Some(message) = template::format_refusal(deployed, &template) {
+        return Some(message);
+    }
+    // An export name is the handle OTHER stacks import by, so what it may be computed from is
+    // fixed: an output whose `Export.Name` reads a resource, a value another stack exports or
+    // the Region's Availability Zones is refused for that name ([`export_name_refusal`]).
+    if let Some(message) = export_name_refusal(deployed, &template) {
         return Some(message);
     }
     if let Some(message) = arity_refusal(&template) {
@@ -937,6 +946,109 @@ fn get_att_undefined_resource(name: &str) -> String {
 /// How a reference to a condition the template does not declare is refused.
 fn condition_not_defined(name: &str) -> String {
     format!("Template format error: Condition {name} is not defined.")
+}
+
+// ---------------------------------------------------------------------------
+// Export names: what an output's `Export.Name` may be computed from
+// ---------------------------------------------------------------------------
+
+/// `Some(message)` for an output whose `Export.Name` is computed from something an export name
+/// may not depend on, naming the output that declared it.
+///
+/// An export name is the handle OTHER stacks import a value by, so CloudFormation fixes it
+/// from the template, the parameter values in force and the stack's own pseudo parameters
+/// alone: "the Name field of Export must not depend on any resources, imported values, or
+/// Fn::GetAZs". A `Ref` to a declared RESOURCE, any `Fn::GetAtt` (whose first argument names
+/// nothing but a resource), an `Fn::ImportValue` and an `Fn::GetAZs` are each such a
+/// dependency, however deeply the name's expression nests one — while an `Fn::Sub` or an
+/// `Fn::Join` over parameters and pseudo parameters is a name CloudFormation can fix, so those
+/// are left alone.
+///
+/// The output reported is the FIRST one the body declares ([`super::declaration_order`]),
+/// which is where its author reads it.
+fn export_name_refusal(body: &str, template: &Template) -> Option<String> {
+    let resources: BTreeSet<&str> = template
+        .resources
+        .iter()
+        .map(|resource| resource.logical_id.as_str())
+        .collect();
+    super::declaration_order::as_declared(
+        body,
+        super::declaration_order::OUTPUTS,
+        &template.outputs,
+        |output| output.key.as_str(),
+    )
+    .into_iter()
+    .find(|output| {
+        output
+            .export_name
+            .as_ref()
+            .is_some_and(|name| reads_the_deployment(name, &resources, 0))
+    })
+    .map(|output| malformed_export_name(&output.key))
+}
+
+/// How an output whose `Export.Name` depends on one of them is refused: the OUTPUT is named —
+/// that is the declaration whose author has to change it — followed by the clause stating what
+/// such a name may not read, as the service words it.
+fn malformed_export_name(key: &str) -> String {
+    format!(
+        "Template format error: Output {key} is malformed.  The Name field of Export must not \
+         depend on any resources, imported values, or Fn::GetAZs."
+    )
+}
+
+/// Whether an expression reads something an export name may not depend on: a resource the
+/// template declares, a value another stack exports, or the Availability Zones of a Region.
+fn reads_the_deployment(node: &Value, resources: &BTreeSet<&str>, depth: usize) -> bool {
+    if depth > template::MAX_TEMPLATE_DEPTH {
+        return false;
+    }
+    match node {
+        Value::Array(items) => items
+            .iter()
+            .any(|item| reads_the_deployment(item, resources, depth + 1)),
+        Value::Object(members) => members.iter().any(|(key, member)| {
+            let reads = match key.as_str() {
+                // "Fn::GetAtt returns the value of an attribute from a resource in the
+                // template", and the other two read what no template states at all.
+                template::FN_GET_ATT | template::FN_IMPORT_VALUE | template::FN_GET_AZS => true,
+                // "Ref returns the value of the specified parameter or resource": only a
+                // name the template declares a RESOURCE under is a dependency on one.
+                "Ref" => member
+                    .as_str()
+                    .is_some_and(|name| resources.contains(name)),
+                // An `Fn::Sub` variable names what a `Ref` names (`${Name}`) or what an
+                // `Fn::GetAtt` reads (`${Name.Attribute}`), so it is read the same way. What
+                // the substitution's own variable map supplies is read below, as any other
+                // node of the expression is.
+                "Fn::Sub" => substitution_reads_a_resource(member, resources),
+                _ => false,
+            };
+            reads || reads_the_deployment(member, resources, depth + 1)
+        }),
+        _ => false,
+    }
+}
+
+/// Whether one `Fn::Sub`'s source string reads a resource: a `${Name.Attribute}` reference, or
+/// a `${Name}` naming a declared resource, that the substitution's own variable map does not
+/// supply.
+fn substitution_reads_a_resource(argument: &Value, resources: &BTreeSet<&str>) -> bool {
+    let (source, variables) = match argument {
+        Value::String(source) => (source.as_str(), None),
+        Value::Array(parts) => match parts.first().and_then(Value::as_str) {
+            Some(source) => (source, parts.get(1).and_then(Value::as_object)),
+            None => return false,
+        },
+        _ => return false,
+    };
+    template::substitution_names(source)
+        .into_iter()
+        .any(|(name, path)| {
+            !supplied(variables, &name, path.as_deref())
+                && (path.is_some() || resources.contains(name.as_str()))
+        })
 }
 
 // ---------------------------------------------------------------------------
