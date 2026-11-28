@@ -192,10 +192,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // without its databases.
         application.dbms.start(now);
         application.status = crate::state::APPLICATION_STATUS_STARTING.to_string();
-        application.last_updated = now;
-        application.pending = Some(crate::state::PendingTransition {
-            due_at: now + crate::state::TRANSITION_SPAN,
-            change: crate::state::PendingChange::Status {
+        application.file_pending(
+            now,
+            crate::state::PendingChange::Status {
                 status: crate::state::APPLICATION_STATUS_ACTIVATED.to_string(),
                 // Starting an application does not re-run discovery, so the discovery
                 // status it already reached is the one it keeps.
@@ -204,7 +203,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // explains itself: there is nothing for `StatusMessage` to state.
                 status_message: None,
             },
-        });
+        );
 
         // The application was just found in this Region, so reaching for the partition
         // to write mints nothing.

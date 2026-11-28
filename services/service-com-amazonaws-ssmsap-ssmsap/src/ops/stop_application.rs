@@ -315,10 +315,9 @@ fn record_stop(
     }
 
     application.status = crate::state::APPLICATION_STATUS_STOPPING.to_string();
-    application.last_updated = now;
-    application.pending = Some(crate::state::PendingTransition {
-        due_at: now + crate::state::TRANSITION_SPAN,
-        change: crate::state::PendingChange::Status {
+    application.file_pending(
+        now,
+        crate::state::PendingChange::Status {
             status: crate::state::APPLICATION_STATUS_STOPPED.to_string(),
             // Stopping an application does not re-run discovery, so the discovery
             // status it already reached is the one it keeps — and for an application
@@ -333,7 +332,7 @@ fn record_stop(
             // because that outcome explains itself.
             status_message: application.owed_status_message(),
         },
-    });
+    );
 
     // The operation's `Properties` are the parameters of the call that filed it, so
     // a client reading the record back learns how the stop was asked for.

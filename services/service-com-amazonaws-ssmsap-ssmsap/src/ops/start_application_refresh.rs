@@ -219,10 +219,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // system itself is neither started nor stopped, so the `Status` the application
         // is in is left exactly as it was.
         application.discovery_status = crate::state::DISCOVERY_STATUS_REGISTERING.to_string();
-        application.last_updated = now;
-        application.pending = Some(crate::state::PendingTransition {
-            due_at: now + crate::state::TRANSITION_SPAN,
-            change: crate::state::PendingChange::Status {
+        application.file_pending(
+            now,
+            crate::state::PendingChange::Status {
                 status: application.status.clone(),
                 // What the re-discovery came to is what the refresh settles as, exactly as
                 // a registration settles as what ITS discovery came to: a re-discovery the
@@ -244,7 +243,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // previous failed refresh left behind.
                 status_message: discovery_refusal.clone(),
             },
-        });
+        );
 
         // The application was just found in this Region, so reaching for the partition
         // to write mints nothing.

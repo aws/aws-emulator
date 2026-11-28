@@ -284,23 +284,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Updating the settings is asynchronous: the call answers the record its
         // `OperationIds` names, and the settings themselves fall due one
         // `TRANSITION_SPAN` from now, materialised for every reader at that instant by
-        // `crate::state::StoredApplication::settle` without anything sleeping. The SAP
-        // system is neither started nor stopped and nothing is re-discovered, so the
-        // `Status` and `DiscoveryStatus` the application is in are left as they were.
+        // `crate::state::StoredApplication::settle` without anything sleeping. Accepting
+        // the update changes the application's record, so filing the work stamps
+        // `LastUpdated` with the instant of this call, exactly as every other control
+        // call of this service does (`crate::state::StoredApplication::file_pending`).
+        // The SAP system is neither started nor stopped and nothing is re-discovered, so
+        // the `Status` and `DiscoveryStatus` the application is in are left as they were.
         // `EnsureNoBackupInProcess` asks the service to refuse while a backup of the
         // database is running; the emulator runs no backup, so none ever is. A
         // `DatabaseArn` replaces the application's SAP HANA connection, so from the
         // instant it settles the application shares that database with the application
         // whose database it is and the two report each other as associated applications
         // (`crate::state::RegionState::associated_application_arns`).
-        application.pending = Some(crate::state::PendingTransition {
-            due_at: now + crate::state::TRANSITION_SPAN,
-            change: crate::state::PendingChange::Settings(crate::state::PendingSettings {
+        application.file_pending(
+            now,
+            crate::state::PendingChange::Settings(crate::state::PendingSettings {
                 credentials,
                 backint: input.backint,
                 database_arn: input.database_arn,
             }),
-        });
+        );
 
         // The application was just found in this Region, so reaching for the partition
         // to write mints nothing.

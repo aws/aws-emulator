@@ -924,6 +924,26 @@ impl StoredApplication {
         self.last_updated = pending.due_at.max(self.last_updated);
     }
 
+    /// File the change an accepted asynchronous call owes this application: it falls due
+    /// one [`TRANSITION_SPAN`] from `now`, so a caller acting straight after the call
+    /// still observes the state the application was in.
+    ///
+    /// Accepting the call CHANGES the application's record — the work it filed is part of
+    /// that record ([`Self::pending`]) — so `LastUpdated`, which is what every reader
+    /// reports of when the record last changed (`Application$LastUpdated`,
+    /// `Component$LastUpdated`, `Database$LastUpdated`, all projected from this one
+    /// value), is stamped with the instant of the call here. [`Self::settle`] later
+    /// advances it to the instant the filed change fell due. This is the ONE place a
+    /// control call of this service files work on an application, so every such call
+    /// maintains that field by the same rule whether or not it also moves a status.
+    pub fn file_pending(&mut self, now: SystemTime, change: PendingChange) {
+        self.last_updated = now;
+        self.pending = Some(PendingTransition {
+            due_at: now + TRANSITION_SPAN,
+            change,
+        });
+    }
+
     /// The credentials this application holds after an update that adds or updates
     /// `add_or_update` and removes `remove` — what
     /// `UpdateApplicationSettings$CredentialsToAddOrUpdate` and `CredentialsToRemove`
