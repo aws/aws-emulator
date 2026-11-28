@@ -3800,6 +3800,9 @@ pub struct ComAmazonawsRedshiftdataRedshiftdataState {
     /// ([`statement_events::publish_pending`]), so it holds only what has not
     /// been published yet.
     statement_events: Vec<statement_events::StatementEvent>,
+    /// The one task offering the status changes above to the bus again, while any
+    /// of them is still owed ([`statement_events::OwedEventRetry`]).
+    statement_event_retry: statement_events::OwedEventRetry,
     /// What the CONNECTIONS of this service's statements hold: each live
     /// session's own temporary relations, and the locks the sessions hold (see
     /// [`connections`]).

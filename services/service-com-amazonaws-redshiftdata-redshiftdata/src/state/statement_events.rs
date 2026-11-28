@@ -49,6 +49,13 @@
 //! about — puts its status changes back at the head of the queue
 //! ([`publish_pending`]), so the next drain publishes them: the queue is what
 //! records that the announcement a submission asked for has not been made yet.
+//! And the next drain is one THIS service makes: a drain that leaves anything
+//! owed arms the one task that offers it again ([`OwedEventRetry`]), so the
+//! announcement does not wait for another statement to happen to stop. A client
+//! that submitted ONE statement is the whole reason: it makes no second terminal
+//! transition, so an announcement owed to it would otherwise never be offered a
+//! second time and the submission would be one that asked for an event, was
+//! accepted, and is told nothing for ever.
 //! Dropping them there instead would make a submission that asked for an event one
 //! that never gets it and never can, which is the one outcome this module exists
 //! to prevent, and it would be invisible beside a submission that asked for
@@ -59,14 +66,15 @@
 //! one.
 //!
 //! WHICH call publishes: the task that runs the statement, as soon as it has
-//! recorded the outcome, so the event arrives whether or not anybody polls; and
-//! the cancel that stopped a running statement, for the same reason.
+//! recorded the outcome, so the event arrives whether or not anybody polls; the
+//! cancel that stopped a running statement, for the same reason; and, for what a
+//! publication left owed, this module's own retry ([`OwedEventRetry`]).
 //!
 //! A BATCH is one submission holding one `Id` — the `Id` its caller was answered
 //! with and correlates by — so its status change is announced once under that
 //! `Id`, rather than once per statement of it.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ::smithy_server_runtime::EmbeddedEmulator;
 
@@ -243,10 +251,11 @@ fn epoch_millis(at: SystemTime) -> i64 {
 /// produced it rather than waiting for a later one.
 ///
 /// What the bus did not take of a drain is OWED again: it goes back at the head of
-/// the queue, so the next drain — which every terminal transition makes — offers it
-/// once more, and this call makes no further drain, because a bus that is not
+/// the queue, and this call makes no further drain, because a bus that is not
 /// taking announcements at this instant would do no better with the rest of the
-/// queue. Nothing about the answer an operation gives changes either way.
+/// queue. The announcement is offered again by the retry this call arms
+/// ([`arm_owed_event_retry`]) rather than by the accident of another statement
+/// stopping. Nothing about the answer an operation gives changes either way.
 ///
 /// The batch a drain has taken is held by a guard that gives it back when this
 /// future ends however it ends ([`TakenEvents`]), so a drain abandoned at its
@@ -259,15 +268,30 @@ pub async fn publish_pending<Eng: Send + Sync + 'static>(
     let Some(state) = super::service_state(engine) else {
         return;
     };
+    if !drain_owed(callback, &state).await {
+        arm_owed_event_retry(callback, &state);
+    }
+}
+
+/// Offer what this store owes to the bus, and answer whether the queue is EMPTY
+/// afterwards — `false` when anything is still owed.
+///
+/// The drain loop itself: everything [`publish_pending`] documents about one call's
+/// bounds and about what the bus did not take happens here, and NOTHING here arms
+/// a retry, so the retry task can drain without arming itself.
+async fn drain_owed(
+    callback: &EmbeddedEmulator,
+    state: &::engine::ServiceState<super::ComAmazonawsRedshiftdataRedshiftdataState>,
+) -> bool {
     for _drain in 0..MAX_DRAINS_PER_CALL {
         let taken = state
             .lock()
             .take_statement_events(MAX_PUBLISHED_PER_DRAIN);
         if taken.is_empty() {
-            return;
+            return true;
         }
         let mut held = TakenEvents {
-            state: ::engine::ServiceState::clone(&state),
+            state: ::engine::ServiceState::clone(state),
             events: taken,
         };
         let unpublished = publish_batch(callback, &held.events).await;
@@ -275,9 +299,115 @@ pub async fn publish_pending<Eng: Send + Sync + 'static>(
         // gives back when this scope ends.
         held.events = unpublished;
         if !held.events.is_empty() {
-            return;
+            return false;
         }
     }
+    state.lock().pending_statement_event_count() == 0
+}
+
+/// How long after a publication the bus did not take the FIRST further offer is
+/// made, which each further one doubles up to [`MAX_RETRY_DELAY`].
+///
+/// This module's OWN pacing, not a duration AWS publishes: nothing waits for it and
+/// no answer depends on it. Short, because the announcement is what a client is
+/// waiting on; not zero, because a bus that just refused is not expected to take
+/// the same announcement in the same instant.
+const FIRST_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+/// The longest the retry leaves between two offers, once the doubling has reached
+/// it: far below any client's own patience for an event, and far above the cost of
+/// one in-process publication.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// How many further offers ONE retry makes before it stops.
+///
+/// Bounded so a bus that is refusing PERMANENTLY — a resource policy that denies
+/// this account's own publications, say — does not leave a task offering for the
+/// life of the process. Stopping discards nothing: the status change stays queued,
+/// so a later terminal transition drains it and a later retry is armed with it. The
+/// span these attempts cover (the doubling, then [`MAX_RETRY_DELAY`] each) is far
+/// longer than any configuration change a client makes to let the publication
+/// through.
+const MAX_RETRY_ATTEMPTS: u32 = 32;
+
+/// The ONE task offering this store's owed announcements to the bus again.
+///
+/// Held by the store it drains, so a retry is reachable while it runs and a second
+/// one is never started beside it: every terminal transition that leaves something
+/// owed finds this one already running.
+#[derive(Default)]
+pub struct OwedEventRetry {
+    /// The running retry, or `None` where none has been armed yet.
+    task: Option<::tokio::task::JoinHandle<()>>,
+}
+
+// By hand: what is diagnosable about a retry is whether one is running, not the
+// handle it is running under.
+impl ::std::fmt::Debug for OwedEventRetry {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        formatter
+            .debug_struct("OwedEventRetry")
+            .field("running", &self.is_running())
+            .finish()
+    }
+}
+
+impl OwedEventRetry {
+    /// Whether a retry is running right now.
+    fn is_running(&self) -> bool {
+        self.task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+    }
+}
+
+/// Start the task that offers this store's owed announcements to the bus again,
+/// unless one is already running — or there is no runtime to start it on, in which
+/// case the status change stays queued for the next drain.
+///
+/// The queue is read under the store's guard, which is RELEASED before the task is
+/// started, and the task itself holds no guard across its waits.
+fn arm_owed_event_retry(
+    callback: &EmbeddedEmulator,
+    state: &::engine::ServiceState<super::ComAmazonawsRedshiftdataRedshiftdataState>,
+) {
+    let Ok(runtime) = ::tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let callback = callback.clone();
+    let draining = ::engine::ServiceState::clone(state);
+    // Asked and armed under ONE guard, so two terminal transitions that leave
+    // something owed at the same instant arm ONE retry between them and the store
+    // holds the handle of every retry there is. The task's first act is to wait,
+    // so it reaches for this guard long after it is released.
+    let mut store = state.lock();
+    if store.statement_event_retry.is_running() {
+        return;
+    }
+    store.statement_event_retry.task =
+        Some(runtime.spawn(async move { retry_owed(&callback, &draining).await }));
+}
+
+/// Offer what is owed again, waiting longer between offers each time, until the bus
+/// takes everything or [`MAX_RETRY_ATTEMPTS`] offers have been made.
+async fn retry_owed(
+    callback: &EmbeddedEmulator,
+    state: &::engine::ServiceState<super::ComAmazonawsRedshiftdataRedshiftdataState>,
+) {
+    let mut waiting = FIRST_RETRY_DELAY;
+    for _attempt in 0..MAX_RETRY_ATTEMPTS {
+        ::tokio::time::sleep(waiting).await;
+        if drain_owed(callback, state).await {
+            return;
+        }
+        waiting = waiting.saturating_mul(2).min(MAX_RETRY_DELAY);
+    }
+    ::tracing::warn!(
+        attempts = MAX_RETRY_ATTEMPTS,
+        queued = state.lock().pending_statement_event_count(),
+        "EventBridge took none of these statement status changes, so they stay queued for the \
+         next publication"
+    );
 }
 
 /// The batch ONE drain took out of the store, held for as long as that drain is
