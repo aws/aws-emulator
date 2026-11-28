@@ -63,6 +63,46 @@ pub fn past_the_transition_span() {
     std::thread::sleep(TRANSITION_SPAN + std::time::Duration::from_millis(250));
 }
 
+/// How long [`poll_until`] keeps looking before it gives up.
+///
+/// Generous on purpose: the condition it waits for is a transition this service owes the
+/// clock, which the next call materialises, so the loop normally ends on its first or
+/// second look. The deadline is only there so a suite fails instead of hanging, and it is
+/// wide enough that a loaded or slow host does not change the outcome.
+const POLL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long [`poll_until`] waits between two looks.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Look again at `GET uri` until the status and body it answers satisfy `ready`, and
+/// return that answer.
+///
+/// A suite that needs a record the clock has already settled LOOKS AGAIN rather than
+/// waiting a fixed time: this service never sleeps for a transition — it stores the due
+/// instant and materialises it on the next call — so the condition, not the elapsed time,
+/// is what the test depends on, and the outcome is the same on a fast host and a loaded
+/// one. Panics, naming the case and the last answer, once [`POLL_DEADLINE`] has passed.
+pub async fn poll_until(
+    router: &MultiServiceRouter,
+    uri: &str,
+    case: &str,
+    ready: impl Fn(u16, &Value) -> bool,
+) -> (u16, Value) {
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        let (status, body) = call(router, "GET", uri, None).await;
+        if ready(status, &body) {
+            return (status, body);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: GET {uri} never reached the state the case waits for, last answer \
+             {status} with {body}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// The ARN form the model gives a dictionary: `dictionary/<id>` under this service's
 /// namespace, in the request's region and the emulator's account (the modelled
 /// `resourceArn` pattern admits `:(feed|dictionary)/[a-zA-Z0-9]{1,19}`).
@@ -255,7 +295,9 @@ pub fn list_member(kind: &str) -> &'static str {
 
 /// One `outputConfig` of each kind the `OutputConfig` union models
 /// (`smithy_query(query="shape",shape="OutputConfig")`: cropping, clipping,
-/// subtitling, contextualMetadata).
+/// subtitling, contextualMetadata, function). The `function` member names a function by
+/// its ARN, which only a `CreateFunction` can mint, so it is built by
+/// [`function_output_config`] instead of here.
 pub fn output_config(kind: &str) -> Value {
     match kind {
         "cropping" => json!({"cropping": {"templateGroups": [
@@ -308,36 +350,89 @@ pub fn output(name: &str, kind: &str, status: &str) -> Value {
     json!({"name": name, "outputConfig": output_config(kind), "status": status})
 }
 
-/// The audio input an output is bound to when the request names none: the single input a
-/// feed created with no explicit input exposes, which `GetFeed` reports under
-/// `inputs.audio[*].name`.
-pub const DEFAULT_AUDIO_INPUT: &str = "default-audio";
+/// The smallest `CreateFunction` body named `name`: a passthrough target and a request
+/// expression that references no media, so no media-context rule is in play
+/// (`smithy_query(query="operation",operation="CreateFunction")` requires `name`,
+/// `target` and `requestExpression`).
+pub fn minimal_function(name: &str) -> Value {
+    json!({
+        "name": name,
+        "target": {"passthrough": {}},
+        "requestExpression": "{\"label\": \"constant\"}"
+    })
+}
 
-/// `config` with the audio binding the service resolves for an output that names none
-/// written into it.
+/// Create one function through the wire path and return its id and its ARN.
 ///
-/// EVERY member of the `OutputConfig` union carries `audioInput` — an output of any
-/// feature consumes the audio of one of the feed's inputs — so a suite that expects the
-/// configuration IN FORCE expects the member whichever feature the config is for, and an
-/// expectation built from a submitted config goes through this one place.
-pub fn config_with_resolved_audio_input(config: Value) -> Value {
-    let Value::Object(members) = config else {
-        panic!("an outputConfig is a union object, got {config}");
-    };
-    let resolved = members
-        .into_iter()
-        .map(|(kind, settings)| {
-            let mut settings = match settings {
-                Value::Object(settings) => settings,
-                other => panic!("the {kind} config is an object, got {other}"),
-            };
-            settings
-                .entry("audioInput".to_string())
-                .or_insert_with(|| json!(DEFAULT_AUDIO_INPUT));
-            (kind, Value::Object(settings))
-        })
-        .collect();
-    Value::Object(resolved)
+/// A function output of a feed names the function by ARN, and only a `CreateFunction` can
+/// mint one, so every suite that needs such an output goes through here.
+pub async fn create_function(router: &MultiServiceRouter, name: &str) -> (String, String) {
+    let (status, created) =
+        call(router, "POST", "/v1/function", Some(minimal_function(name))).await;
+    assert_eq!(
+        status, 202,
+        "CreateFunction({name:?}) is accepted, got {status} with {created}"
+    );
+    (
+        created["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a created function carries an id, got {created}"))
+            .to_string(),
+        created["arn"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a created function carries an arn, got {created}"))
+            .to_string(),
+    )
+}
+
+/// The `function` member of the `OutputConfig` union, naming `function_arn` and running
+/// on every shot (`FunctionConfig$functionArn` and `$trigger` are both required).
+pub fn function_output_config(function_arn: &str) -> Value {
+    json!({"function": {"functionArn": function_arn, "trigger": {"perShot": {}}}})
+}
+
+/// The smallest `CreateQuestionSet` body named `name`: one yesNo question, which is the
+/// least a question set may contain ("You must specify at least one question").
+pub fn minimal_question_set(name: &str) -> Value {
+    json!({
+        "name": name,
+        "yesNo": [{"name": "is_live", "question": "Is this live action?"}]
+    })
+}
+
+/// Create one question set through the wire path and return its id.
+pub async fn create_question_set(router: &MultiServiceRouter, name: &str) -> String {
+    let (status, created) = call(
+        router,
+        "POST",
+        "/v1/question-set",
+        Some(minimal_question_set(name)),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "CreateQuestionSet({name:?}) answers 200, got {status} with {created}"
+    );
+    created["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a created question set carries an id, got {created}"))
+        .to_string()
+}
+
+/// The `contextualMetadata` member of the `OutputConfig` union whose custom questions ask
+/// `question_set_id` at `version` about each shot.
+///
+/// A contextual-metadata output is the ONLY way a feed references a question set
+/// (`ContextualMetadataConfig$customQuestions`), and "if you specify customQuestions, you
+/// must also set extendedAnalysis to DISABLED".
+pub fn custom_questions_config(question_set_id: &str, version: &str) -> Value {
+    json!({"contextualMetadata": {
+        "summaryGeneration": "ENABLED",
+        "extendedAnalysis": "DISABLED",
+        "customQuestions": {
+            "shot": {"questionSetId": question_set_id, "version": version}
+        }
+    }})
 }
 
 /// One ENABLED output named `name`, carrying the `kind` config — the output a suite

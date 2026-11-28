@@ -17,22 +17,9 @@ pub struct GetFeedInput {
     pub id: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#AudioInput")]
-#[derive(Debug, Clone, Default)]
-pub struct AudioInput {
-    pub name: String,
-}
-
-#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FeedInputs")]
-#[derive(Debug, Clone, Default)]
-pub struct FeedInputs {
-    pub audio: Vec<AudioInput>,
-}
-
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#GetFeedResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct GetFeedOutput {
-    pub inputs: Option<FeedInputs>,
     pub arn: String,
     pub name: String,
     pub id: String,

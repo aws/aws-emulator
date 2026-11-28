@@ -32,7 +32,7 @@
 //! admits, at the minimum and the maximum of its `@length` 1..2048), and how many times
 //! the request is repeated, with and without `dryRun` on the repeat.
 
-use crate::harness::{call, config_with_resolved_audio_input, output, output_config, router};
+use crate::harness::{call, output, output_config, router};
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -102,8 +102,7 @@ fn described_output(name: &str, kind: &str, status: &str, description: &str) -> 
 
 /// The `GetOutput` projection of `submitted`, with `fromAssociation` set to
 /// `from_association` (`GetOutput$fromAssociation`: true only for an output that entered
-/// the feed through `AssociateFeed`) and with the audio binding the service resolves for
-/// an output that names none ([`config_with_resolved_audio_input`]).
+/// the feed through `AssociateFeed`).
 fn expected_outputs(submitted: &Value, from_association: bool) -> Vec<Value> {
     submitted
         .as_array()
@@ -117,10 +116,7 @@ fn expected_outputs(submitted: &Value, from_association: bool) -> Vec<Value> {
                 .get("outputConfig")
                 .cloned()
                 .expect("an output carries its outputConfig");
-            members.insert(
-                "outputConfig".to_string(),
-                config_with_resolved_audio_input(config),
-            );
+            members.insert("outputConfig".to_string(), config);
             output
         })
         .collect()

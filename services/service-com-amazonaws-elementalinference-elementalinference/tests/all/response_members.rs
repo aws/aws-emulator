@@ -25,8 +25,7 @@
 //!   member never report the same id.
 
 use crate::harness::{
-    call, config_with_resolved_audio_input, expected_data_endpoint, output_config,
-    past_the_transition_span, router,
+    call, expected_data_endpoint, output_config, past_the_transition_span, router,
 };
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -286,12 +285,10 @@ struct ConfigCase {
 
 /// The rows span every member of the `OutputConfig` union
 /// (`smithy_query(query="shape",shape="OutputConfig")`: cropping, clipping,
-/// subtitling, contextualMetadata) and, for those carrying a service-resolved
-/// member, both the omitted and the supplied case. Every row expects the audio binding
-/// the service resolves as well ([`config_with_resolved_audio_input`]), which is the one
-/// resolved member EVERY member of the union carries.
+/// subtitling, contextualMetadata, function) that carries a service-resolved member, in
+/// both the omitted and the supplied case.
 fn config_cases() -> Vec<ConfigCase> {
-    let cases = vec![
+    vec![
         ConfigCase {
             label: "subtitling without an aspect ratio or a profanity filter",
             submitted: json!({"subtitling": {"language": "eng"}}),
@@ -349,14 +346,7 @@ fn config_cases() -> Vec<ConfigCase> {
                 "extendedAnalysis": "ENABLED"
             }}),
         },
-    ];
-    cases
-        .into_iter()
-        .map(|case| ConfigCase {
-            expected: config_with_resolved_audio_input(case.expected),
-            ..case
-        })
-        .collect()
+    ]
 }
 
 /// CreateFeed stores the output with the service's defaults applied, so the create

@@ -83,50 +83,44 @@ pub struct CreateOutput {
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.elementalinference#OutputConfig")]
 #[allow(clippy::large_enum_variant)]
-// `PartialEq` so two output configurations can be compared as DATA: an `@idempotent`
-// create has no idempotency token, so whether a request is one this Region has already
-// served is decided by comparing the request's members with the stored record's
-// (`crate::state::ComAmazonawsElementalinferenceElementalinferenceState::feed_created_from`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum OutputConfig {
     Cropping(CroppingConfig),
     Clipping(ClippingConfig),
     Subtitling(SubtitlingConfig),
     contextualMetadata(ContextualMetadataConfig),
+    Function(FunctionConfig),
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#CroppingConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct CroppingConfig {
-    pub audio_input: Option<String>,
     pub template_groups: Option<Vec<TemplateGroup>>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#TemplateGroup")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct TemplateGroup {
     pub name: String,
     pub template_uris: Vec<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ClippingConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ClippingConfig {
-    pub audio_input: Option<String>,
     pub callback_metadata: Option<String>,
     pub data_source_configuration: Option<DataSourceConfiguration>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#DataSourceConfiguration")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct DataSourceConfiguration {
     pub fixture_id: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#SubtitlingConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct SubtitlingConfig {
-    pub audio_input: Option<String>,
     pub language: String,
     pub aspect_ratio: Option<AspectRatio>,
     pub dictionary: Option<String>,
@@ -134,18 +128,113 @@ pub struct SubtitlingConfig {
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#AspectRatio")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct AspectRatio {
     pub width: i32,
     pub height: i32,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ContextualMetadataConfig")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ContextualMetadataConfig {
-    pub audio_input: Option<String>,
     pub summary_generation: Option<String>,
     pub extended_analysis: Option<String>,
+    pub custom_questions: Option<CustomQuestionsConfig>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#CustomQuestionsConfig")]
+#[derive(Debug, Clone, Default)]
+pub struct CustomQuestionsConfig {
+    pub shot: Option<QuestionSetReference>,
+    pub scene: Option<QuestionSetReference>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#QuestionSetReference")]
+#[derive(Debug, Clone, Default)]
+pub struct QuestionSetReference {
+    pub question_set_id: String,
+    pub version: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FunctionConfig")]
+#[derive(Debug, Clone)]
+pub struct FunctionConfig {
+    pub function_arn: String,
+    pub trigger: Trigger,
+    pub frame_settings: Option<FrameSettings>,
+    pub subtitling_settings: Option<SubtitlingSettings>,
+    pub contextual_metadata_settings: Option<ContextualMetadataSettings>,
+    pub clipping_settings: Option<ClippingSettings>,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.elementalinference#Trigger")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum Trigger {
+    fixedInterval(FixedIntervalTrigger),
+    perShot(ShotTrigger),
+    perScene(SceneTrigger),
+    perClip(ClipTrigger),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FixedIntervalTrigger")]
+#[derive(Debug, Clone, Default)]
+pub struct FixedIntervalTrigger {
+    pub interval_seconds: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ShotTrigger")]
+#[derive(Debug, Clone, Default)]
+pub struct ShotTrigger {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#SceneTrigger")]
+#[derive(Debug, Clone, Default)]
+pub struct SceneTrigger {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ClipTrigger")]
+#[derive(Debug, Clone, Default)]
+pub struct ClipTrigger {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FrameSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct FrameSettings {
+    pub frame_sampling: FrameSamplingStrategy,
+    pub frame_size: Option<FrameSize>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FrameSamplingStrategy")]
+#[derive(Debug, Clone, Default)]
+pub struct FrameSamplingStrategy {
+    pub mode: String,
+    pub count: Option<i32>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FrameSize")]
+#[derive(Debug, Clone, Default)]
+pub struct FrameSize {
+    pub width_pixels: i32,
+    pub height_pixels: i32,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#SubtitlingSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct SubtitlingSettings {
+    pub output_name: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ContextualMetadataSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct ContextualMetadataSettings {
+    pub output_name: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ClippingSettings")]
+#[derive(Debug, Clone, Default)]
+pub struct ClippingSettings {
+    pub output_name: String,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#GetOutput")]
@@ -164,16 +253,127 @@ pub struct FeedAssociation {
     pub associated_resource_name: String,
 }
 
+#[smithy_macros::smithy(union_for = "com.amazonaws.elementalinference#ScheduleActionStartConfiguration")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ScheduleActionStartConfiguration {
+    fixedModeScheduleActionStartSettings(FixedModeScheduleActionStartSettings),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#FixedModeScheduleActionStartSettings")]
+#[derive(Debug, Clone)]
+pub struct FixedModeScheduleActionStartSettings {
+    pub scheduled_at: ::aws_smithy_types::DateTime,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.elementalinference#ScheduleActionOperation")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ScheduleActionOperation {
+    updateOutputStatus(UpdateOutputStatus),
+    updateClippingDataSourceConfiguration(UpdateClippingDataSourceConfiguration),
+    removeClippingDataSourceConfiguration(RemoveClippingDataSourceConfiguration),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#UpdateOutputStatus")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateOutputStatus {
+    pub output_name: String,
+    pub status: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#UpdateClippingDataSourceConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct UpdateClippingDataSourceConfiguration {
+    pub output_name: String,
+    pub data_source_configuration: DataSourceConfiguration,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#RemoveClippingDataSourceConfiguration")]
+#[derive(Debug, Clone, Default)]
+pub struct RemoveClippingDataSourceConfiguration {
+    pub output_name: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ScheduleActionError")]
+#[derive(Debug, Clone, Default)]
+pub struct ScheduleActionError {
+    pub error_code: String,
+    pub error_message: String,
+}
+
+#[smithy_macros::smithy(union_for = "com.amazonaws.elementalinference#FunctionTarget")]
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum FunctionTarget {
+    Bedrock(BedrockFunctionTarget),
+    Passthrough(PassthroughFunctionTarget),
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#BedrockFunctionTarget")]
+#[derive(Debug, Clone, Default)]
+pub struct BedrockFunctionTarget {
+    pub api: String,
+    pub model: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#PassthroughFunctionTarget")]
+#[derive(Debug, Clone, Default)]
+pub struct PassthroughFunctionTarget {
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#YesNoQuestion")]
+#[derive(Debug, Clone, Default)]
+pub struct YesNoQuestion {
+    pub name: String,
+    pub question: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#YesNoPerOptionQuestion")]
+#[derive(Debug, Clone, Default)]
+pub struct YesNoPerOptionQuestion {
+    pub name: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#QuestionOption")]
+#[derive(Debug, Clone, Default)]
+pub struct QuestionOption {
+    pub name: String,
+    pub text: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.elementalinference#ChooseOneQuestion")]
+#[derive(Debug, Clone, Default)]
+pub struct ChooseOneQuestion {
+    pub name: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+}
+
+/// The values `BedrockApi` accepts on the wire.
+pub const BEDROCK_API_VALUES: &[&str] = &["INVOKE_MODEL"];
+
+
+/// The values `ContextType` accepts on the wire.
+pub const CONTEXT_TYPE_VALUES: &[&str] = &["CLIP_METADATA", "CONTEXTUAL_METADATA", "FRAMES", "SUBTITLES"];
+
+
 /// The values `DataSourceSport` accepts on the wire.
 pub const DATA_SOURCE_SPORT_VALUES: &[&str] = &["american-football", "basketball"];
 
 
 /// The values `DictionaryLanguage` accepts on the wire.
-pub const DICTIONARY_LANGUAGE_VALUES: &[&str] = &["deu", "eng", "fra", "ita", "por", "spa"];
+pub const DICTIONARY_LANGUAGE_VALUES: &[&str] = &["ara", "deu", "eng", "fra", "ita", "por", "spa"];
 
 
 /// The values `DictionaryStatus` accepts on the wire.
 pub const DICTIONARY_STATUS_VALUES: &[&str] = &["AVAILABLE", "CREATING", "DELETED", "DELETING", "REFERENCED"];
+
+
+/// The values `EventBridgeDeliveryMode` accepts on the wire.
+pub const EVENT_BRIDGE_DELIVERY_MODE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `ExtendedAnalysisMode` accepts on the wire.
@@ -188,6 +388,14 @@ pub const FEED_STATUS_VALUES: &[&str] = &["ACTIVE", "ARCHIVED", "AVAILABLE", "CR
 pub const FILTER_NAME_VALUES: &[&str] = &["COMPETITOR"];
 
 
+/// The values `FrameSamplingMode` accepts on the wire.
+pub const FRAME_SAMPLING_MODE_VALUES: &[&str] = &["FIRST", "LAST", "UNIFORM"];
+
+
+/// The values `FunctionStatus` accepts on the wire.
+pub const FUNCTION_STATUS_VALUES: &[&str] = &["AVAILABLE", "CREATING", "DELETED", "DELETING", "REFERENCED"];
+
+
 /// The values `OutputStatus` accepts on the wire.
 pub const OUTPUT_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
@@ -196,11 +404,19 @@ pub const OUTPUT_STATUS_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 pub const PROFANITY_FILTER_MODE_VALUES: &[&str] = &["CENSOR", "DISABLED", "DROP"];
 
 
+/// The values `ScheduleActionErrorCode` accepts on the wire.
+pub const SCHEDULE_ACTION_ERROR_CODE_VALUES: &[&str] = &["INTERNAL_ERROR", "INVALID_ACTION_TARGET"];
+
+
+/// The values `ScheduleActionStatus` accepts on the wire.
+pub const SCHEDULE_ACTION_STATUS_VALUES: &[&str] = &["COMPLETED", "FAILED", "PENDING"];
+
+
 /// The values `SummaryGenerationMode` accepts on the wire.
 pub const SUMMARY_GENERATION_MODE_VALUES: &[&str] = &["DISABLED", "ENABLED"];
 
 
 /// The values `TranscriptionLanguage` accepts on the wire.
-pub const TRANSCRIPTION_LANGUAGE_VALUES: &[&str] = &["deu", "eng", "eng-au", "eng-gb", "eng-us", "fra", "ita", "por", "spa"];
+pub const TRANSCRIPTION_LANGUAGE_VALUES: &[&str] = &["ara", "deu", "eng", "eng-au", "eng-gb", "eng-us", "fra", "ita", "por", "spa"];
 
 

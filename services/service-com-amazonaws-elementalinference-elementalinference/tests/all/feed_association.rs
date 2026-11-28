@@ -35,8 +35,7 @@
 //! * an id no live feed has is `ResourceNotFoundException` (HTTP 404) on both.
 
 use crate::harness::{
-    call, config_with_resolved_audio_input, output, output_config, past_the_transition_span,
-    router, REGION, SIGNING_NAME,
+    call, output, output_config, past_the_transition_span, router, REGION, SIGNING_NAME,
 };
 use serde_json::{json, Value};
 use service_com_amazonaws_elementalinference_elementalinference::state::{
@@ -127,8 +126,7 @@ fn expected_arn(id: &str) -> String {
 
 /// The `GetOutput` projection of `submitted`, with `fromAssociation` set to
 /// `from_association` (`GetOutput$fromAssociation`: true only for an output that
-/// entered the feed through `AssociateFeed`) and with the audio binding the service
-/// resolves for an output that names none ([`config_with_resolved_audio_input`]).
+/// entered the feed through `AssociateFeed`).
 fn expected_outputs(submitted: &Value, from_association: bool) -> Vec<Value> {
     submitted
         .as_array()
@@ -142,10 +140,7 @@ fn expected_outputs(submitted: &Value, from_association: bool) -> Vec<Value> {
                 .get("outputConfig")
                 .cloned()
                 .expect("an output carries its outputConfig");
-            members.insert(
-                "outputConfig".to_string(),
-                config_with_resolved_audio_input(config),
-            );
+            members.insert("outputConfig".to_string(), config);
             output
         })
         .collect()

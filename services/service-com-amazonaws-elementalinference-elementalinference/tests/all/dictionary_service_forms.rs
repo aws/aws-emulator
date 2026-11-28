@@ -30,7 +30,7 @@ use smithy_server_runtime::MultiServiceRouter;
 /// The value set this service states when it refuses a `language` outside
 /// `DictionaryLanguage`, written out as the refusal states it — the order the service
 /// issues for that enum, which is not the order the model declares its members in.
-const STATED_LANGUAGE_SET: &str = "spa, por, deu, fra, ita, eng";
+const STATED_LANGUAGE_SET: &str = "spa, por, deu, fra, ita, eng, ara";
 
 /// The constraint sentence a value outside an enum's value set earns: the framework
 /// envelope, the member at fault, the value it carried and the value set.
@@ -211,7 +211,7 @@ async fn an_enum_with_no_stated_order_keeps_the_models_declaration_order() {
                 }]
             }),
             "klingon",
-            "eng, eng-au, eng-gb, eng-us, fra, ita, deu, spa, por",
+            "eng, eng-au, eng-gb, eng-us, fra, ita, deu, spa, por, ara",
         ),
         (
             "CreateFeed.outputs.subtitling.profanityFilter",

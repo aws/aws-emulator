@@ -297,18 +297,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // did not come from `AssociateFeed`) — which is also the form they are compared
         // in below. Built BEFORE the lock, so the store is not held while a request's
         // own members are normalised.
-        //
-        // The audio inputs the feed is about to be minted with are what an output's
-        // audio binding resolves against: a feed exposes its inputs and each output
-        // names the one it consumes, so an output that names none is bound to the feed's
-        // default input (`crate::state::output_config_with_defaults`) and the stored
-        // output reports the binding the service applied rather than only what the
-        // request carried.
         let audio_inputs = crate::state::minted_audio_inputs();
-        let default_audio_input = audio_inputs
-            .first()
-            .map_or(crate::state::DEFAULT_AUDIO_INPUT_NAME, String::as_str)
-            .to_string();
         let outputs: Vec<crate::state::Output> = input
             .outputs
             .into_iter()
@@ -319,27 +308,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     output.status,
                     output.description,
                     false,
-                    &default_audio_input,
                 )
             })
             .collect();
 
-        // An output's audio binding must name an audio input the feed EXPOSES: a name
-        // that is not one of them names nothing the feed has to offer, so it is refused
-        // with the modelled `ValidationException` (HTTP 400) rather than minting a feed
-        // whose binding dangles — the same rule, through the same scan, that every
-        // operation writing outputs into a feed applies.
-        if let Some(unresolved) = crate::state::unresolved_audio_input(
-            outputs.iter().map(|output| &output.output_config),
-            &audio_inputs,
-        ) {
-            return Err(CreateFeedErrorModeled::ValidationException(
-                ValidationException {
-                    message: crate::state::cannot_find_audio_input_message(unresolved),
-                },
-            )
-            .into());
-        }
         let tags: std::collections::BTreeMap<String, String> =
             input.tags.unwrap_or_default().into_iter().collect();
 
@@ -423,9 +395,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // its ARN carries. Every later read and mutation resolves its id within that
             // Region, so no other Region's endpoint lists, reports or changes it.
             region: region.clone(),
-            // The media inputs the feed exposes, minted WITH the feed: a client learns
-            // them from a read of the feed (`GetFeedResponse$inputs`), which is how it
-            // knows what an output's `audioInput` may name.
+            // The media inputs the feed exposes, minted WITH the feed: the media data
+            // plane addresses one of them by its position
+            // (`crate::state::minted_audio_inputs`).
             audio_inputs,
             // Outputs supplied to CreateFeed did not come from AssociateFeed, so
             // `fromAssociation` is false for every one of them.
@@ -448,6 +420,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // runs.
             policy: None,
             tags,
+            // A feed is created with no schedule actions: `CreateScheduleAction` is what
+            // puts one on it, so `ListScheduleActions` has nothing to report until it
+            // runs.
+            schedule_actions: Vec::new(),
             // The move out of `CREATING` is owed from the accept instant on
             // (`crate::state::FEED_CREATION_SPAN`): the recorded service has the feed
             // built by the time the caller's next request arrives, so the next call's

@@ -30,7 +30,7 @@
 //! * a feed whose deletion has been accepted cannot be updated (`ConflictException`).
 
 use crate::harness::{
-    call, config_with_resolved_audio_input, create_feed, expected_data_endpoint, message_of,
+    call, create_feed, expected_data_endpoint, message_of,
     output_config, past_the_transition_span, router, REGION, SIGNING_NAME,
 };
 use serde_json::{json, Value};
@@ -56,9 +56,7 @@ fn expected_arn(id: &str) -> String {
 }
 
 /// The `GetOutput` list a feed reports for outputs that entered it through CreateFeed
-/// or UpdateFeed: the submitted outputs, each carrying `fromAssociation` and the audio
-/// binding the service resolves for an output that names none
-/// ([`config_with_resolved_audio_input`]).
+/// or UpdateFeed: the submitted outputs, each carrying `fromAssociation`.
 fn expected_outputs(submitted: &Value) -> Value {
     Value::Array(
         submitted
@@ -77,10 +75,7 @@ fn expected_outputs(submitted: &Value) -> Value {
                     .get("outputConfig")
                     .cloned()
                     .expect("an output carries its outputConfig");
-                members.insert(
-                    "outputConfig".to_string(),
-                    config_with_resolved_audio_input(config),
-                );
+                members.insert("outputConfig".to_string(), config);
                 output
             })
             .collect(),

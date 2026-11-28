@@ -381,43 +381,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // configuration is kept with this service's defaults materialised
         // (`crate::state::Output::new`), so a requested output and a stored one are
         // comparable member by member.
-        let requested: Vec<crate::state::Output> = {
-            // The audio input an appended output is bound to when the request names
-            // none: the feed's own default input, read from the record, so an appended
-            // output is wired to the same inputs the feed already exposes.
-            let default_audio_input = feed.default_audio_input().to_string();
-            input
-                .outputs
-                .into_iter()
-                .map(|requested| {
-                    crate::state::Output::new(
-                        requested.name,
-                        requested.output_config,
-                        requested.status,
-                        requested.description,
-                        true,
-                        &default_audio_input,
-                    )
-                })
-                .collect()
-        };
-
-        // An appended output's audio binding must name an audio input THIS feed
-        // exposes, on the same rule and through the same scan every operation writing
-        // outputs into a feed applies: a name that is not one of the feed's inputs is
-        // refused with the modelled `ValidationException` (HTTP 400) rather than
-        // appended, and a dry run of it answers the same way.
-        if let Some(unresolved) = crate::state::unresolved_audio_input(
-            requested.iter().map(|output| &output.output_config),
-            &feed.audio_inputs,
-        ) {
-            return Err(AssociateFeedErrorModeled::ValidationException(
-                ValidationException {
-                    message: crate::state::cannot_find_audio_input_message(unresolved),
-                },
-            )
-            .into());
-        }
+        let requested: Vec<crate::state::Output> = input
+            .outputs
+            .into_iter()
+            .map(|requested| {
+                crate::state::Output::new(
+                    requested.name,
+                    requested.output_config,
+                    requested.status,
+                    requested.description,
+                    true,
+                )
+            })
+            .collect();
 
         // What this call would really append. An output the feed ALREADY holds exactly
         // as the request describes it is in place already, so it is neither appended a

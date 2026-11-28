@@ -17,17 +17,31 @@
 pub mod associate_feed_types;
 pub mod create_dictionary_types;
 pub mod create_feed_types;
+pub mod create_function_types;
+pub mod create_question_set_types;
+pub mod create_question_set_version_types;
+pub mod create_schedule_action_types;
 pub mod delete_dictionary_types;
 pub mod delete_feed_policy_types;
 pub mod delete_feed_types;
+pub mod delete_function_types;
+pub mod delete_question_set_types;
+pub mod delete_question_set_version_types;
+pub mod delete_schedule_action_types;
 pub mod disassociate_feed_types;
 pub mod export_dictionary_entries_types;
 pub mod get_dictionary_types;
 pub mod get_feed_policy_types;
 pub mod get_feed_types;
 pub mod get_fixture_types;
+pub mod get_function_types;
+pub mod get_question_set_types;
 pub mod list_dictionaries_types;
 pub mod list_feeds_types;
+pub mod list_functions_types;
+pub mod list_question_set_versions_types;
+pub mod list_question_sets_types;
+pub mod list_schedule_actions_types;
 pub mod list_tags_for_resource_types;
 pub mod put_feed_policy_types;
 pub mod search_fixtures_types;
@@ -36,6 +50,8 @@ pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_dictionary_types;
 pub mod update_feed_types;
+pub mod update_function_types;
+pub mod update_question_set_types;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_feed_types::*;
@@ -44,11 +60,27 @@ pub use create_dictionary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use create_feed_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_function_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_question_set_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_question_set_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use create_schedule_action_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_dictionary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_feed_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_feed_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_function_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_question_set_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_question_set_version_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use delete_schedule_action_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use disassociate_feed_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -62,9 +94,21 @@ pub use get_feed_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_fixture_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_function_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use get_question_set_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_dictionaries_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_feeds_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_functions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_question_set_versions_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_question_sets_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use list_schedule_actions_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_tags_for_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -81,4 +125,8 @@ pub use untag_resource_types::*;
 pub use update_dictionary_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use update_feed_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_function_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use update_question_set_types::*;
 

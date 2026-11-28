@@ -14,16 +14,10 @@
 //! config just read back reports that same config, and so does an `AssociateFeed`
 //! append of it.
 //!
-//! The audio binding is one of those resolved members, and the only one EVERY member of
-//! the union carries, so every row below expects it: an output that names no
-//! `audioInput` is bound to the feed's default audio input — the one input a feed
-//! created with no explicit input exposes, which `GetFeed` reports under `inputs`. The
-//! rule for a SUPPLIED audio binding, and for one that names no input of the feed, is
-//! asserted in `feed_audio_binding`.
+//! The rule for a member the model documents no resolved value for — a cropping output's
+//! template groups, a clipping output's callback metadata — is that it stays absent.
 
-use crate::harness::{
-    call, config_with_resolved_audio_input, output_config, past_the_transition_span, router,
-};
+use crate::harness::{call, output_config, past_the_transition_span, router};
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -191,14 +185,6 @@ fn rows() -> Vec<Row> {
     }
 
     rows
-        .into_iter()
-        .map(|row| Row {
-            // Every config reports the audio input the service bound the output to,
-            // whatever else the row states.
-            expected: config_with_resolved_audio_input(row.expected),
-            ..row
-        })
-        .collect()
 }
 
 /// `POST /v1/feed` with one output carrying `config`; returns (id, create response).
