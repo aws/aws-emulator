@@ -33,7 +33,7 @@ contents — read that shape in the model above when you need its own members.
 ## PutRumEvents
 
 - **Route:** `POST /appmonitors/{Id}/ -> 200`
-- **Input:** `Id` (string, len 36..36, pattern ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$, @httpLabel, required), `BatchId` (string, required), `AppMonitorDetails` (AppMonitorDetails, required), `UserDetails` (UserDetails, required), `RumEvents` (list<RumEvent>, required), `Alias` (string, len 1..255)
+- **Input:** `Id` (string, len 36..36, pattern ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$, @httpLabel, required), `BatchId` (string, required), `AppMonitorDetails` (AppMonitorDetails, required), `UserDetails` (UserDetails, required), `RumEvents` (list<RumEvent>, required), `Alias` (string, len 1..255), `SessionMetadata` (string)
 - **Output:** (no members)
 - **Errors:** `AccessDeniedException (HTTP 403)`, `InternalServerException (HTTP 500)`, `ResourceNotFoundException (HTTP 404)`, `ThrottlingException (HTTP 429)`, `ValidationException (HTTP 400)`
 

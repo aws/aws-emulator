@@ -34,7 +34,9 @@
 //!   [`instant_document`] writes, holding the instant of the event itself — so the name of
 //!   the CloudWatch Logs stream a batch's copies accumulate in
 //!   ([`super::cw_log_delivery::delivery_stream_name`]) is no part of the document;
-//! * `metadata` is the document the client serialized it as, ENRICHED with where the
+//! * `metadata` is the document the client serialized it as, MERGED with the attributes the
+//!   batch declared for every one of its events ([`shared_attributes`]) and
+//!   ENRICHED with where the
 //!   caller is ([`super::caller_location`]), with the `metadata_keys` / `metadata_values`
 //!   projections of it beside it: the keys are its first-level member names, and each value
 //!   entry is that member as the `<key>=<value>` text [`metadata_projections`] writes, so a
@@ -187,6 +189,61 @@ pub struct Delivery<'a> {
     pub user_id: Option<&'a str>,
     /// `UserDetails$sessionId` of that session.
     pub session_id: Option<&'a str>,
+    /// The attributes `PutRumEventsRequest$SessionMetadata` declared for EVERY event of the
+    /// batch, sent once for the batch rather than once per event, which each event's own
+    /// `metadata` is merged with ([`reported_metadata`]).
+    ///
+    /// Resolved ONCE per call, by [`shared_attributes`], rather than per event: the
+    /// document is the same for every event of the batch, and the bound that caps what it
+    /// costs is applied there.
+    pub shared_attributes: Option<&'a Map<String, Value>>,
+}
+
+/// The most one batch's declared attributes may add to the documents of the call that
+/// declared them.
+///
+/// Those attributes are COPIED into each of the batch's events' stored documents
+/// ([`reported_metadata`]), so what one accepted call costs is the declared size TIMES the
+/// number of events it carries — and a caller picks both numbers, so what is bounded here is
+/// their PRODUCT rather than either factor: a call whose copies stay inside this ceiling has
+/// its attributes merged, and one past it has them merged into nothing, so one accepted call
+/// adds at most this many bytes however large a document it declares and however many events
+/// it carries. The attributes RUM describes a batch as declaring (the browser, the device and
+/// the operating system of the end user) are a few hundred bytes, so an ordinary batch of any
+/// size is well inside it; the number is this emulator's own bound and no modelled
+/// constraint, so a call past it is still accepted and every event keeps its own metadata,
+/// which is the same direction as an oversized event copy ([`super::cw_log_delivery`]).
+pub const MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH: usize = 4 * 1024 * 1024;
+
+/// The attributes one batch declared for every event it carries
+/// (`PutRumEventsRequest$SessionMetadata`), as the members to merge into each of those
+/// events' own `metadata` — resolved once for the call, before any of its documents are
+/// built, from the declared document and the number of events `events` it would be copied
+/// into.
+///
+/// `None` for a batch that declared none, one whose document is no JSON OBJECT (such a
+/// document declares no first-level attributes), and one whose copies would pass
+/// [`MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH`]. That bound is checked on the TEXT and on the
+/// event count, BEFORE the document is parsed and before any copy is made, so neither the
+/// parse nor the copies are work a caller can choose the size of.
+pub fn shared_attributes(declared: Option<&str>, events: usize) -> Option<Map<String, Value>> {
+    let declared = declared?;
+    let copied = declared.len().saturating_mul(events);
+    if copied > MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH {
+        ::tracing::warn!(
+            bytes = declared.len(),
+            events,
+            copied,
+            limit = MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH,
+            "the attributes declared for this batch would be copied into its events past \
+             what this emulator merges, so they are not merged"
+        );
+        return None;
+    }
+    match json_member(declared) {
+        Value::Object(members) => Some(members),
+        _ => None,
+    }
 }
 
 /// One delivered `RumEvent` as the RUM event document the service holds, reports and
@@ -200,7 +257,7 @@ pub struct Delivery<'a> {
 /// than nested as escaped text; a value that is not valid JSON is kept verbatim as a
 /// string, since the model constrains neither.
 pub fn event_document(delivery: &Delivery<'_>, event: &RumEvent) -> String {
-    let metadata = reported_metadata(event.metadata.as_deref());
+    let metadata = reported_metadata(event.metadata.as_deref(), delivery.shared_attributes);
     let details = json_member(&event.details);
 
     // The fields go in in the order RUM reports them in, which is the order a recorded
@@ -288,21 +345,34 @@ fn instant_document(instant: &::aws_smithy_types::DateTime) -> Value {
     Value::Object(carried)
 }
 
-/// The event's `metadata` as the SERVICE reports it: the document the client serialized,
-/// with where the caller is added to it ([`super::caller_location`]).
+/// The event's `metadata` as the SERVICE reports it: the document the client serialized for
+/// THIS event, merged with the attributes the batch declared for every one of its events
+/// (`PutRumEventsRequest$SessionMetadata`) and with where the caller is
+/// ([`super::caller_location`]).
 ///
-/// The geolocation is RUM's own, so it is added to the metadata of EVERY event — including
-/// one whose batch carried no metadata at all, whose document is then the location alone.
-/// A member of the same name the CLIENT serialized is left exactly as it arrived, because
-/// `metadata` is the document the client sent ("a JSON serialization of the identity of the
-/// user for this session") and the service fills in what it did not report rather than
-/// re-writing what it did. Metadata the client did not serialize as a JSON object has no
-/// members to add any to, so it is reported exactly as it arrived.
-fn reported_metadata(serialized: Option<&str>) -> Value {
+/// One rule settles all three sources, member by member: an attribute the event's own
+/// document carries is reported exactly as it arrived, and every other source only FILLS IN
+/// a member the event did not report. So a batch's attributes reach every event of that
+/// batch — they are sent once for the batch instead of once per event — while an attribute
+/// spelled in both places is the event's, and the geolocation (RUM's own addition, which no
+/// client serializes) is added to the metadata of EVERY event, including one whose batch and
+/// event carried no metadata at all, whose document is then the location alone. `metadata`
+/// stays the document the client sent ("a JSON serialization of the identity of the user for
+/// this session"): the service fills in what the event did not report rather than re-writing
+/// what it did. A document that is not a JSON OBJECT declares no attributes — so metadata
+/// the client did not serialize as one has no members to add any to and is reported exactly
+/// as it arrived, and a batch whose declared document is not one ([`shared_attributes`])
+/// has no attributes to merge into anything.
+fn reported_metadata(serialized: Option<&str>, shared: Option<&Map<String, Value>>) -> Value {
     let mut carried = serialized
         .map(json_member)
         .unwrap_or_else(|| Value::Object(Map::new()));
     if let Some(members) = carried.as_object_mut() {
+        if let Some(declared) = shared {
+            for (member, value) in declared {
+                members.entry(member.clone()).or_insert_with(|| value.clone());
+            }
+        }
         for (member, value) in super::caller_location::OBSERVED_CALLER_LOCATION.members() {
             members
                 .entry(member.to_string())

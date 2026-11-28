@@ -47,6 +47,7 @@
 //! and the same instant read as SECONDS covers nothing.
 
 use serde_json::{json, Map, Value};
+use service_com_amazonaws_rum_rum::state::rum_event::MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH;
 use smithy_server_runtime::multi_service_router::MultiServiceRouter;
 
 use crate::support::{call, create, emulator, ACCOUNT};
@@ -141,20 +142,16 @@ impl Row {
     }
 
     /// `metadata` as the document reports it: the document the client serialized with the
-    /// caller's location added to it, the empty document plus that location for an event
-    /// that carried none, and metadata the client did not serialize as an object exactly as
-    /// it arrived, since such a document has no members to add any to.
+    /// caller's location added to it ([`with_location`], the one copy of that rule in this
+    /// suite), the empty document plus that location for an event that carried none, and
+    /// metadata the client did not serialize as an object exactly as it arrived, since such a
+    /// document has no members to add any to.
     fn reported_metadata(&self, location: &Map<String, Value>) -> Value {
-        let mut carried = match self.metadata {
+        let carried = match self.metadata {
             Some(metadata) => as_json(metadata),
             None => json!({}),
         };
-        if let Some(members) = carried.as_object_mut() {
-            for (member, value) in location {
-                members.insert(member.clone(), value.clone());
-            }
-        }
-        carried
+        with_location(&carried, location)
     }
 
     /// The whole document the read owes for this row's event, for the monitor
@@ -1117,5 +1114,493 @@ async fn one_document_is_reported_for_every_event_of_a_batch() {
             "case {case:?}: expected every document to name the monitor the batch reached, \
              got {document}"
         );
+    }
+}
+
+/// One event of a batch that declares attributes, and the `metadata` its document owes.
+struct Shared {
+    /// `RumEvent$metadata`, for the events that carry one.
+    metadata: Option<&'static str>,
+    /// The `metadata` the document must report for this event, the caller location aside:
+    /// written out per row rather than recomputed, so each row is a GOLDEN of the merge.
+    merged: &'static str,
+}
+
+/// One batch: the attributes it declares for every event it carries, and those events.
+struct SharedBatch {
+    case: &'static str,
+    /// `PutRumEventsRequest$SessionMetadata`, for the batches that declare attributes.
+    session_metadata: Option<&'static str>,
+    events: Vec<Shared>,
+}
+
+/// `RumEvent$id` of the event at `position` of a batch: the 36-character UUID the member's
+/// modelled pattern admits
+/// (`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`).
+fn shared_event_id(position: usize) -> String {
+    format!("cc11111{position}-1234-4234-8234-123456789012")
+}
+
+/// The instant, in milliseconds, the event at `position` of a shared-attribute batch is
+/// delivered at: one whole second apart, so a window covers the whole batch and each event
+/// is placed at its own instant.
+fn shared_instant(position: usize) -> i64 {
+    1_704_096_000_000 + (position as i64) * MILLIS_PER_SECOND
+}
+
+/// The batches below, one per row of the rule.
+///
+/// `PutRumEventsRequest$SessionMetadata` is "a JSON serialization of attributes that apply to
+/// every event in this batch … CloudWatch RUM merges these attributes into each event in the
+/// batch, so you send them once for the batch instead of once for each event. If an attribute
+/// appears both here and in an individual event's `metadata`, CloudWatch RUM uses the value in
+/// the event's `metadata`" (`smithy_query(query="doc", shape="PutRumEventsRequest",
+/// member="SessionMetadata")`).
+///
+/// The rows span what that rule generalises over: whether the batch declares attributes at
+/// all, whether an event carries metadata of its own, whether an attribute is spelled in both
+/// places, the TYPES the declared values have, how many events of one batch share them, and
+/// documents on either side that are no JSON object (so declare no attributes and have no
+/// members to merge into).
+fn shared_attribute_batches() -> Vec<SharedBatch> {
+    vec![
+        SharedBatch {
+            case: "attributes the events of the batch do not carry themselves",
+            session_metadata: Some(
+                "{\"browserName\":\"Chrome\",\"deviceType\":\"mobile\",\"osName\":\"iOS\"}",
+            ),
+            events: vec![
+                Shared {
+                    metadata: Some("{\"pageId\":\"/home\"}"),
+                    merged: "{\"pageId\":\"/home\",\"browserName\":\"Chrome\",\
+                             \"deviceType\":\"mobile\",\"osName\":\"iOS\"}",
+                },
+                // Sent once for the batch rather than once per event: the event that
+                // serialized no metadata of its own still carries the batch's attributes.
+                Shared {
+                    metadata: None,
+                    merged: "{\"browserName\":\"Chrome\",\"deviceType\":\"mobile\",\
+                             \"osName\":\"iOS\"}",
+                },
+            ],
+        },
+        SharedBatch {
+            case: "an attribute the batch and the event both spell",
+            session_metadata: Some("{\"browserName\":\"Chrome\",\"osName\":\"iOS\"}"),
+            events: vec![
+                Shared {
+                    metadata: Some("{\"browserName\":\"Firefox\"}"),
+                    merged: "{\"browserName\":\"Firefox\",\"osName\":\"iOS\"}",
+                },
+                Shared {
+                    metadata: Some("{\"osName\":\"Android\",\"pageId\":\"/cart\"}"),
+                    merged: "{\"osName\":\"Android\",\"pageId\":\"/cart\",\
+                             \"browserName\":\"Chrome\"}",
+                },
+            ],
+        },
+        SharedBatch {
+            case: "declared attributes whose values are not all strings",
+            session_metadata: Some(
+                "{\"deviceMemory\":8,\"touch\":true,\"sampleRate\":0.25,\
+                 \"screen\":{\"width\":1280,\"height\":720},\"features\":[\"a\",\"b\"],\
+                 \"referrer\":null}",
+            ),
+            events: vec![Shared {
+                metadata: Some("{\"pageId\":\"/specs\"}"),
+                merged: "{\"pageId\":\"/specs\",\"deviceMemory\":8,\"touch\":true,\
+                         \"sampleRate\":0.25,\"screen\":{\"width\":1280,\"height\":720},\
+                         \"features\":[\"a\",\"b\"],\"referrer\":null}",
+            }],
+        },
+        SharedBatch {
+            // The half of the rule that must not move: a batch that declares nothing leaves
+            // every event's metadata the document the client serialized.
+            case: "a batch that declares no attributes at all",
+            session_metadata: None,
+            events: vec![Shared {
+                metadata: Some("{\"pageId\":\"/home\"}"),
+                merged: "{\"pageId\":\"/home\"}",
+            }],
+        },
+        SharedBatch {
+            case: "a batch whose declared attributes are the empty document",
+            session_metadata: Some("{}"),
+            events: vec![Shared {
+                metadata: Some("{\"pageId\":\"/home\"}"),
+                merged: "{\"pageId\":\"/home\"}",
+            }],
+        },
+        SharedBatch {
+            // A `JsonValue` the model constrains in no way: text that is no JSON object
+            // declares no first-level attributes, so there is nothing to merge.
+            case: "declared attributes that are no JSON document at all",
+            session_metadata: Some("not a document"),
+            events: vec![Shared {
+                metadata: Some("{\"pageId\":\"/home\"}"),
+                merged: "{\"pageId\":\"/home\"}",
+            }],
+        },
+        SharedBatch {
+            case: "an event whose own metadata is no JSON document at all",
+            session_metadata: Some("{\"browserName\":\"Chrome\"}"),
+            events: vec![Shared {
+                metadata: Some("not a document"),
+                // No members to merge any attribute into, so it is reported as it arrived.
+                merged: "\"not a document\"",
+            }],
+        },
+        SharedBatch {
+            // An attribute of a name RUM adds itself is still the client's: the service
+            // fills in what the delivery did not report rather than writing over it.
+            case: "an attribute of the name the service adds for the caller's location",
+            session_metadata: Some("{\"countryCode\":\"DE\"}"),
+            events: vec![Shared {
+                metadata: Some("{\"pageId\":\"/home\"}"),
+                merged: "{\"pageId\":\"/home\",\"countryCode\":\"DE\"}",
+            }],
+        },
+    ]
+}
+
+/// `expected` with the caller-location members the merged document does not already carry
+/// added to it, which is the document RUM reports: the location is the service's own, added
+/// to the metadata of every event whose metadata has members at all.
+///
+/// The ONE copy of that rule in this suite — both tables build their expected `metadata`
+/// through it — and it FILLS IN rather than overwrites, which is the precedence the service
+/// applies: a member the delivery reported itself is reported as it arrived, whatever its
+/// name.
+fn with_location(expected: &Value, location: &Map<String, Value>) -> Value {
+    let mut carried = expected.clone();
+    if let Some(members) = carried.as_object_mut() {
+        for (member, value) in location {
+            members
+                .entry(member.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    carried
+}
+
+#[tokio::test]
+async fn declared_batch_attributes_merge_into_every_events_metadata() {
+    for (index, batch) in shared_attribute_batches().iter().enumerate() {
+        let (router, _engine) = emulator();
+        let monitor = format!("shared-attributes-{index}");
+        let monitor_id = create(
+            &router,
+            batch.case,
+            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+        )
+        .await;
+
+        let events: Vec<Value> = batch
+            .events
+            .iter()
+            .enumerate()
+            .map(|(position, event)| {
+                let mut carried = json!({
+                    "id": shared_event_id(position),
+                    "timestamp": shared_instant(position) / MILLIS_PER_SECOND,
+                    "type": "com.amazon.rum.page_view_event",
+                    "details": "{}",
+                });
+                if let Some(metadata) = event.metadata {
+                    carried["metadata"] = json!(metadata);
+                }
+                carried
+            })
+            .collect();
+        let mut body = json!({
+            "BatchId": "cccccccc-3333-4333-8444-555555555555",
+            "AppMonitorDetails": {"name": &monitor, "id": &monitor_id, "version": "1.0.0"},
+            "UserDetails": {"sessionId": "dddddddd-eeee-4ddd-8ccc-bbbbbbbbbbbb"},
+            "RumEvents": Value::Array(events),
+        });
+        if let Some(declared) = batch.session_metadata {
+            body["SessionMetadata"] = json!(declared);
+        }
+        deliver(&router, batch.case, &monitor_id, body).await;
+
+        let last = batch.events.len().saturating_sub(1);
+        let documents = reported(
+            &router,
+            batch.case,
+            &monitor,
+            shared_instant(0),
+            shared_instant(last),
+        )
+        .await;
+        assert_eq!(
+            documents.len(),
+            batch.events.len(),
+            "case {:?}: expected one document per delivered event, got {documents:?}",
+            batch.case
+        );
+
+        for (position, event) in batch.events.iter().enumerate() {
+            let case = format!("{} (event {position})", batch.case);
+            let document = &documents[position];
+            assert_eq!(
+                document["event_id"].as_str(),
+                Some(shared_event_id(position).as_str()),
+                "case {case:?}: expected the events in delivery order, got {document}"
+            );
+            // Where the caller is, as the service reported it for THIS event: a document
+            // with no members at all has none to add it to.
+            let location = if as_json(event.merged).is_object() {
+                caller_location(&case, document)
+            } else {
+                Map::new()
+            };
+            let expected = with_location(&as_json(event.merged), &location);
+            assert_eq!(
+                document["metadata"], expected,
+                "case {case:?}: expected the metadata {expected}, got {document}"
+            );
+            // The projections are of the MERGED document, so a consumer reading them
+            // positionally recovers the batch's attributes too.
+            let (keys, values) = projections(&expected);
+            assert_eq!(
+                document["metadata_keys"],
+                Value::Array(keys),
+                "case {case:?}: expected the keys of the merged metadata, got {document}"
+            );
+            assert_eq!(
+                document["metadata_values"],
+                Value::Array(values),
+                "case {case:?}: expected one <key>=<value> text per merged member, got \
+                 {document}"
+            );
+        }
+
+        // Reading reports the same documents again: the read changed nothing.
+        let again = reported(
+            &router,
+            batch.case,
+            &monitor,
+            shared_instant(0),
+            shared_instant(last),
+        )
+        .await;
+        assert_eq!(
+            again, documents,
+            "case {:?}: expected a second read to report the same documents, got {again:?}",
+            batch.case
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_event_is_selected_by_the_attributes_its_batch_declared() {
+    // The merge is part of the stored document, so an attribute declared once for the batch
+    // is an attribute of every event of it for everything that reads them — including the
+    // dimensions `GetAppMonitorData` searches, which are the attributes of the event's
+    // `metadata` (`smithy_query(query="doc", shape="QueryFilter", member="Name")`: "Valid
+    // values for `Name` are `Browser` | `Device` | `Country` | `Page` | `OS` | `EventType` |
+    // `Invert`"). An event spelling one itself is still selected by ITS value, not the
+    // batch's.
+    let (router, _engine) = emulator();
+    let monitor = "shared-attribute-dimensions";
+    let case = "a batch declaring the browser, the device and the operating system";
+    let monitor_id = create(
+        &router,
+        case,
+        json!({"Name": monitor, "Domain": "documents.example.com"}),
+    )
+    .await;
+    let shared = shared_event_id(0);
+    let own = shared_event_id(1);
+    deliver(
+        &router,
+        case,
+        &monitor_id,
+        json!({
+            "BatchId": "cccccccc-4444-4333-8444-555555555555",
+            "AppMonitorDetails": {"name": monitor, "id": monitor_id},
+            "UserDetails": {"sessionId": "dddddddd-eeee-4ddd-8ccc-bbbbbbbbbbbb"},
+            "SessionMetadata":
+                "{\"browserName\":\"Chrome\",\"deviceType\":\"mobile\",\"osName\":\"iOS\"}",
+            "RumEvents": [
+                {
+                    "id": &shared,
+                    "timestamp": shared_instant(0) / MILLIS_PER_SECOND,
+                    "type": "com.amazon.rum.page_view_event",
+                    "metadata": "{\"pageId\":\"/home\"}",
+                    "details": "{}",
+                },
+                {
+                    "id": &own,
+                    "timestamp": shared_instant(1) / MILLIS_PER_SECOND,
+                    "type": "com.amazon.rum.page_view_event",
+                    "metadata": "{\"pageId\":\"/cart\",\"browserName\":\"Firefox\"}",
+                    "details": "{}",
+                },
+            ],
+        }),
+    )
+    .await;
+
+    // Each row: the filter, and the ids of the events it must select.
+    let rows: [(&str, Value, Vec<&String>); 5] = [
+        (
+            "the browser the batch declared",
+            json!([{"Name": "Browser", "Values": ["Chrome"]}]),
+            vec![&shared],
+        ),
+        (
+            "the browser the event declared itself",
+            json!([{"Name": "Browser", "Values": ["Firefox"]}]),
+            vec![&own],
+        ),
+        (
+            "the device the batch declared, for every event of it",
+            json!([{"Name": "Device", "Values": ["mobile"]}]),
+            vec![&shared, &own],
+        ),
+        (
+            "the operating system the batch declared, for every event of it",
+            json!([{"Name": "OS", "Values": ["iOS"]}]),
+            vec![&shared, &own],
+        ),
+        (
+            "a device no delivery declared",
+            json!([{"Name": "Device", "Values": ["desktop"]}]),
+            vec![],
+        ),
+    ];
+    for (row, filters, expected) in rows {
+        let documents = selected(
+            &router,
+            row,
+            monitor,
+            shared_instant(0),
+            shared_instant(1),
+            Some(filters),
+        )
+        .await;
+        let selected_ids: Vec<&str> = documents
+            .iter()
+            .filter_map(|document| document["event_id"].as_str())
+            .collect();
+        let wanted: Vec<&str> = expected.iter().map(|id| id.as_str()).collect();
+        assert_eq!(
+            selected_ids, wanted,
+            "case {row:?}: expected the events {wanted:?}, got {selected_ids:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_attributes_one_batch_may_declare_are_bounded() {
+    // The declared attributes are copied into EVERY event of the batch, so what one call
+    // may add to the stored documents is the declared size times the event count, and it is
+    // that product this emulator bounds
+    // (`crate::state::rum_event::MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH`): a call whose copies
+    // stay inside the budget has its attributes merged, one past it has them merged into
+    // nothing, and either way the call is accepted and every event keeps its own metadata.
+    // The rows move along BOTH factors and sit on the budget and on each side of it, since
+    // that is where a bound can be wrong.
+    let budget = MAX_SHARED_ATTRIBUTE_BYTES_PER_BATCH;
+    // (case, the bytes the batch declares, the events it carries)
+    let rows: [(&str, usize, usize); 5] = [
+        ("a small document and a small batch", 512, 4),
+        ("one event declaring the whole budget", budget, 1),
+        ("one event declaring one byte past the budget", budget + 1, 1),
+        ("a batch whose copies land exactly on the budget", 1024, budget / 1024),
+        ("one event more than that budget admits", 1024, budget / 1024 + 1),
+    ];
+    for (index, (case, declared_bytes, events)) in rows.into_iter().enumerate() {
+        let (router, _engine) = emulator();
+        let monitor = format!("bounded-attributes-{index}");
+        let monitor_id = create(
+            &router,
+            case,
+            json!({"Name": &monitor, "Domain": "documents.example.com"}),
+        )
+        .await;
+        // One attribute padded to the size the row asks for, so the declared TEXT is
+        // exactly `declared_bytes` long: `{"padding":"<pad>"}` costs the envelope around it.
+        let envelope = json!({"padding": ""}).to_string().len();
+        let padding = "p".repeat(declared_bytes.saturating_sub(envelope));
+        let declared = json!({"padding": &padding}).to_string();
+        assert_eq!(
+            declared.len(),
+            declared_bytes,
+            "case {case:?}: the row must declare exactly {declared_bytes} bytes, got {}",
+            declared.len()
+        );
+        // The event the assertions below read is the batch's FIRST, placed at its own
+        // instant so the window selects it alone however many events follow it.
+        let carried: Vec<Value> = (0..events)
+            .map(|position| {
+                json!({
+                    "id": shared_event_id(position % 10),
+                    "timestamp": shared_instant(position.min(1)) / MILLIS_PER_SECOND,
+                    "type": "com.amazon.rum.page_view_event",
+                    "metadata": "{\"pageId\":\"/home\"}",
+                    "details": "{}",
+                })
+            })
+            .collect();
+
+        deliver(
+            &router,
+            case,
+            &monitor_id,
+            json!({
+                "BatchId": "cccccccc-5555-4333-8444-555555555555",
+                "AppMonitorDetails": {"name": &monitor, "id": &monitor_id},
+                "UserDetails": {"sessionId": "dddddddd-eeee-4ddd-8ccc-bbbbbbbbbbbb"},
+                "SessionMetadata": declared,
+                "RumEvents": Value::Array(carried),
+            }),
+        )
+        .await;
+
+        let documents = reported(
+            &router,
+            case,
+            &monitor,
+            shared_instant(0),
+            shared_instant(0),
+        )
+        .await;
+        assert_eq!(
+            documents.len(),
+            1,
+            "case {case:?}: expected the batch's first event at its own instant, got \
+             {} document(s)",
+            documents.len()
+        );
+        let metadata = &documents[0]["metadata"];
+        assert_eq!(
+            metadata["pageId"].as_str(),
+            Some("/home"),
+            "case {case:?}: the event keeps its own attributes whatever the batch declared, \
+             got {}",
+            documents[0]["event_id"]
+        );
+        let merged = metadata["padding"].as_str();
+        if declared_bytes.saturating_mul(events) <= budget {
+            assert_eq!(
+                merged.map(str::len),
+                Some(padding.len()),
+                "case {case:?}: expected the declared attribute to be merged, got {:?}",
+                merged.map(str::len)
+            );
+            assert_eq!(
+                merged,
+                Some(padding.as_str()),
+                "case {case:?}: expected the declared attribute to be merged as it arrived"
+            );
+        } else {
+            assert_eq!(
+                merged, None,
+                "case {case:?}: expected a call past the budget to merge nothing, got {:?}",
+                merged.map(str::len)
+            );
+        }
     }
 }

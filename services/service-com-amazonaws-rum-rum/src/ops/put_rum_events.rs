@@ -17,7 +17,8 @@
 //! ([`crate::state::cw_log_delivery::deliver_events`]).
 //!
 //! Both destinations hold the SERVICE's document, not the client's structure: every
-//! accepted event is enriched once, here, with the batch's context and with what only the
+//! accepted event is enriched once, here, with the batch's context — the attributes the
+//! batch declares for every one of its events included — and with what only the
 //! service knows — the app monitor the batch was delivered to, the account that owns it
 //! and where the caller is — under the field names RUM publishes for a
 //! RUM event ([`crate::state::rum_event::event_document`]).
@@ -79,6 +80,12 @@
 //!   **required** — The ID of the app monitor that is sending this data.
 //! * `RumEvents` (RumEventList) **required** — An array of structures that contain the
 //!   telemetry event data.
+//! * `SessionMetadata` (JsonValue, @mediaType application/json) — A JSON serialization of
+//!   attributes that apply to every event in this batch, such as the browser, device, and
+//!   operating system of the end user. CloudWatch RUM merges these attributes into each
+//!   event in the batch, so you send them once for the batch instead of once for each
+//!   event. If an attribute appears both here and in an individual event's metadata,
+//!   CloudWatch RUM uses the value in the event's metadata.
 //! * `UserDetails` (UserDetails) **required** — A structure that contains information about
 //!   the user session that this batch of events was collected from.
 //!
@@ -248,6 +255,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let batch_id = input.batch_id;
         let user_id = input.user_details.user_id;
         let session_id = input.user_details.session_id;
+        // The attributes this ONE call declares for every event it carries: they are
+        // delivered once for the batch and merged into each of its events, so they travel
+        // with the delivery rather than with any single event
+        // (`crate::state::rum_event::reported_metadata`). Resolved ONCE here, since the
+        // document is the same for every event of the batch, and bounded as it is resolved
+        // against the number of events it would be copied into, so what one call adds to the
+        // documents it is about to build cannot grow with either size the caller picks
+        // (`crate::state::rum_event::shared_attributes`).
+        let shared_attributes = crate::state::rum_event::shared_attributes(
+            input.session_metadata.as_deref(),
+            input.rum_events.len(),
+        );
         // The stream this batch's copies accumulate in: the session it was collected from,
         // which is the CloudWatch Logs side of the delivery alone and no part of the
         // enriched event document.
@@ -262,6 +281,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             batch_id: &batch_id,
             user_id: user_id.as_deref(),
             session_id: session_id.as_deref(),
+            shared_attributes: shared_attributes.as_ref(),
         };
         // Built once, as a Vec, because the batch has TWO destinations: this monitor's own
         // buffer (what `GetAppMonitorData` reports) and — when the monitor stores copies in

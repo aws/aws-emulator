@@ -20,6 +20,7 @@ pub struct PutRumEventsInput {
     pub user_details: UserDetails,
     pub rum_events: Vec<RumEvent>,
     pub alias: Option<String>,
+    pub session_metadata: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.rum#AppMonitorDetails")]

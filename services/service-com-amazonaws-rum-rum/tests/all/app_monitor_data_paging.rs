@@ -105,6 +105,9 @@ fn stored_event(monitor_id: &str, index: usize, instant: i64) -> StoredRumEvent 
                 batch_id: BATCH_ID,
                 user_id: None,
                 session_id: None,
+                // This case seeds each event's own metadata, so the batch declares no
+                // attributes for every event to share.
+                shared_attributes: None,
             },
             &event,
         ),
