@@ -5,7 +5,8 @@
 //! Inserts a repository into the public registry held in [`crate::state`] and reports
 //! what was inserted. The ARN and `createdAt` are stored, so the `Repository` a later
 //! `DescribeRepositories` reports is the same object, not a recomputed one; its URI is an
-//! address rather than a label, so it is published on the endpoint the answer is served at
+//! address rather than a label, so it is published on the public-registry name this
+//! emulator announces to the answer's reader
 //! ([`crate::state::registry_address`]).
 //!
 //! ## Shape of an operation

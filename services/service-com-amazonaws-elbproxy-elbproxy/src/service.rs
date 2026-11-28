@@ -81,7 +81,8 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // matching on the signing name ALONE makes this service claim their traffic too —
         // which the router answers `500 AmbiguousService`, for every Elastic Load
         // Balancing request (the claim table is
-        // `core/router/tests/all/elb_classic_and_v2_signing_name_routing.rs`).
+        // `core/router/tests/all/elb_classic_and_v2_signing_name_routing.rs`, and the
+        // three-way one is `core/router/tests/all/elasticloadbalancing_signing_name_claims.rs`).
         //
         // So the claim is narrowed to this service's own modelled wire surface, by the one
         // rule `service-common` states for every service under a shared signing name. This

@@ -8,19 +8,21 @@
 //! prefix and the registry alias") and `Repository$repositoryUri` ("The URI for the
 //! repository. You can use this URI for container image `push` and `pull` operations") are
 //! each DIALLED by a container client and PARSED by a client that has to tell which registry
-//! holds the repository, so each carries the address this emulator answers that caller at,
-//! then the account's primary registry alias (`RegistryAlias$primaryRegistryAlias`,
+//! holds the repository, so each carries a PUBLIC-REGISTRY NAME — the fixed `public.ecr.`
+//! labels AWS leads one with, over the DNS zone this emulator announces its own names in, and
+//! no port — then the account's primary registry alias (`RegistryAlias$primaryRegistryAlias`,
 //! "displayed in both the repository URL and the image URI used in the docker pull commands")
 //! — the opaque eight-character identifier the registry was assigned — and, for a repository,
 //! its own name. Nothing else belongs in either: the owning account is reported in
 //! `registryId`, and a public registry is global, so no Region appears either.
 //!
-//! The address published is never a host AWS serves — the gallery's own name, or any host AWS
-//! publishes its endpoints at — since a name under either resolves to AWS rather than to this
-//! process and would send a push or a pull out of the emulated environment, and never a host
-//! the front door resolves to some service, which no registry client can use. It is the
-//! endpoint the CALLER reached, whenever this gallery answers requests there, and otherwise
-//! the address this emulator is served at.
+//! The zone those fixed labels are written over is never one AWS serves — the gallery's own
+//! zone, or any zone AWS publishes its endpoints in — since a name under either resolves to
+//! AWS rather than to this process and would send a push or a pull out of the emulated
+//! environment. It is the zone of the endpoint the CALLER reached, whenever this gallery
+//! answers requests there, and otherwise the zone of the address this emulator is served at;
+//! neither the port nor an address literal of either reaches the published name, so what is
+//! published does not move with the socket this process happens to be bound on.
 //!
 //! The class the rule generalises over is the endpoint a call arrived on crossed with the
 //! repository name and the operation reporting the URI, so the rows span the endpoint forms
@@ -31,7 +33,9 @@
 //! bind was reached by, a host name an operator points a client at, and no `Host` at all —
 //! crossed
 //! with the repository-name forms the modelled `RepositoryName` pattern admits. No row is the
-//! recorded request.
+//! recorded request. The ZONE itself is spanned by the last two tests, which serve one
+//! emulator per address form this process is served at and assert that the published name
+//! moves with the zone and with nothing else — a port included.
 //!
 //! The composition AWS documents is preserved throughout: a repository's URI is the
 //! registry's URI followed by the repository's name, and the four operations that publish
@@ -73,6 +77,20 @@ const SERVED_ENDPOINT: &str = "127.0.0.1:9297";
 /// URI is checked against: a public registry is global, so no Region may appear in one.
 const SIGNED_REGION: &str = "us-east-1";
 
+/// The two fixed labels every public-registry authority AWS publishes leads with, spelled out
+/// here rather than taken from the crate so that a reworded prefix fails this suite.
+const PUBLIC_REGISTRY_PREFIX: &str = "public.ecr.";
+
+/// The public-registry NAME every URI published to a call in this suite carries: the fixed
+/// labels over the LOOPBACK zone, which is the zone this emulator announces its own names in
+/// while it is reached at a loopback address and while it is served at one
+/// ([`SERVED_URL_BASE`]) — spelled out rather than derived, so what is asserted is the name
+/// itself and not a recomputation of the implementation's own reading.
+///
+/// It carries no port and no address literal: both change with the socket this process is
+/// bound on, and neither is part of a registry's name.
+const PUBLISHED_AUTHORITY: &str = "public.ecr.localhost";
+
 /// One endpoint a caller reaches this emulator on: where the endpoint travels (the `Host`
 /// header, the request URI's authority, or neither) and the authority every URI published to
 /// that call is built on.
@@ -81,71 +99,74 @@ struct Endpoint {
     host: Option<&'static str>,
     uri_authority: Option<&'static str>,
     /// The authority this registry publishes to such a call. Spelled out per row rather than
-    /// derived, so what is asserted is the address itself and not a recomputation of the
+    /// derived, so what is asserted is the name itself and not a recomputation of the
     /// implementation's own reading.
     published: &'static str,
 }
 
 /// The endpoints the table drives, spanning the forms a caller reaches this emulator by.
 ///
-/// The endpoint of a call a registry client can dial is the one published; every other form
-/// falls back to the address this emulator is served at.
+/// Every one of them is answered the same public-registry name ([`PUBLISHED_AUTHORITY`]): the
+/// zone read off the endpoint a registry client can dial is the loopback zone, and so is the
+/// zone of the address this emulator is served at, which every other form falls back to. That
+/// is the point of the table — nothing a caller wrote, and no port of the socket it reached,
+/// reaches the name this registry publishes.
 fn endpoints() -> Vec<Endpoint> {
     vec![
         Endpoint {
             case: "the emulator's own socket",
             host: Some(SERVED_ENDPOINT),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             case: "a loopback name with another port",
             host: Some("localhost:39355"),
             uri_authority: None,
-            published: "localhost:39355",
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             case: "a bracketed IPv6 loopback literal",
             host: Some("[::1]:38001"),
             uri_authority: None,
-            published: "[::1]:38001",
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             case: "an endpoint carried only on the request URI",
             host: None,
             uri_authority: Some("127.0.0.1:8443"),
-            published: "127.0.0.1:8443",
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             // A host AWS publishes its own endpoints at routes to a service rather than to a
-            // registry, so the served address is published instead.
+            // registry, so the zone of the served address is read instead.
             case: "this service's endpoint host, which AWS publishes",
             host: Some("api.ecr-public.us-east-1.amazonaws.com"),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
-            // AWS's own gallery resolves to the real public registry, so it is not an address
-            // this emulator may publish: the served address is published instead.
+            // AWS's own gallery zone resolves to the real public registry, so it is not a zone
+            // this emulator may publish in: the served address's zone is read instead.
             case: "the gallery AWS serves",
             host: Some(GALLERY_HOST),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             case: "a Host that is no endpoint at all",
             host: Some("elsewhere.example.com/gallery"),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             // A routable literal a caller reached a wildcard bind by is not an address the
-            // reading of a container reference recognises, so no URI is published on it: the
-            // served address is published instead, and publishing and reading agree.
+            // reading of a container reference recognises, so no zone is read off it: the
+            // served address's zone is read instead, and publishing and reading agree.
             case: "a routable address a wildcard bind was reached by",
             host: Some("10.1.2.3:5000"),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             // A name an operator points a client at carries a first label the front door
@@ -153,13 +174,13 @@ fn endpoints() -> Vec<Endpoint> {
             case: "a host name an operator points a client at",
             host: Some("emulator.internal:8080"),
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
         Endpoint {
             case: "no endpoint on the request at all",
             host: None,
             uri_authority: None,
-            published: SERVED_ENDPOINT,
+            published: PUBLISHED_AUTHORITY,
         },
     ]
 }
@@ -254,8 +275,8 @@ async fn published_registry_uri(router: &MultiServiceRouter, endpoint: &Endpoint
     assert_eq!(
         uri,
         format!("{}/{primary}", endpoint.published),
-        "case {:?}: expected the registry URI on the endpoint this emulator answers at, \
-         scoped by the primary alias, got {uri:?}",
+        "case {:?}: expected the registry URI on the public-registry name this emulator \
+         announces, scoped by the primary alias, got {uri:?}",
         endpoint.case
     );
     assert!(
@@ -276,11 +297,14 @@ fn dialled(case: &str, uri: &str) -> (String, String) {
     let (authority, path) = uri
         .split_once('/')
         .unwrap_or_else(|| panic!("case {case:?}: {uri:?} names no path"));
-    // What makes the authority publishable at all: this emulator answers on it, by the one
-    // reading of that question this service states.
+    assert_public_registry_name(case, authority);
+    // And it has to lead back to this process: the zone announced is one this emulator
+    // answers in, by the one reading of that question this service states — the READING side
+    // of the publishing, so a container reference composed on what was handed out is
+    // recognised as this gallery's.
     assert!(
         registry_address::names_this_emulator(authority),
-        "case {case:?}: expected {uri:?} on an address this emulator answers on"
+        "case {case:?}: expected {uri:?} in a zone this emulator answers in"
     );
     // The addresses a published URI may never name: a host AWS serves and this emulator does
     // not — the gallery's own name, and any zone AWS publishes its endpoints in.
@@ -301,6 +325,31 @@ fn dialled(case: &str, uri: &str) -> (String, String) {
         );
     }
     (authority.to_string(), path.to_string())
+}
+
+/// Assert that `authority` is a PUBLIC-REGISTRY NAME: the fixed labels AWS leads one with,
+/// then at least one further non-empty label, and nothing of the socket this process happens
+/// to be bound on — no port and no address literal, either of which moves on every boot.
+fn assert_public_registry_name(case: &str, authority: &str) {
+    let zone = authority
+        .strip_prefix(PUBLIC_REGISTRY_PREFIX)
+        .unwrap_or_else(|| {
+            panic!(
+                "case {case:?}: expected {authority:?} to lead with {PUBLIC_REGISTRY_PREFIX:?}"
+            )
+        });
+    assert!(
+        !zone.is_empty() && zone.split('.').all(|label| !label.is_empty()),
+        "case {case:?}: expected a real DNS zone behind the fixed labels, got {authority:?}"
+    );
+    assert!(
+        !authority.contains(':'),
+        "case {case:?}: a registry's name carries no port, got {authority:?}"
+    );
+    assert!(
+        zone.parse::<std::net::IpAddr>().is_err(),
+        "case {case:?}: a registry's name is not an address literal, got {authority:?}"
+    );
 }
 
 /// The DNS suffixes AWS publishes its own endpoints under, spelled out here rather than
@@ -419,7 +468,7 @@ async fn the_registry_alias_every_published_uri_carries_is_the_identifier_aws_as
 }
 
 #[tokio::test]
-async fn every_published_repository_uri_names_an_endpoint_this_emulator_answers_on() {
+async fn every_published_repository_uri_names_the_public_registry_this_emulator_announces() {
     for endpoint in endpoints() {
         let router = emulator();
         let registry_uri = published_registry_uri(&router, &endpoint).await;
@@ -449,8 +498,8 @@ async fn every_published_repository_uri_names_an_endpoint_this_emulator_answers_
             let (authority, path) = dialled(&case, &created_uri);
             assert_eq!(
                 authority, endpoint.published,
-                "case {case:?}: expected the dialled authority to be the endpoint this \
-                 emulator answers at, got {authority:?}"
+                "case {case:?}: expected the dialled authority to be the public-registry \
+                 name this emulator announces, got {authority:?}"
             );
             assert_eq!(
                 path,
@@ -517,8 +566,8 @@ async fn every_published_repository_uri_names_an_endpoint_this_emulator_answers_
                 let (listed_authority, _) = dialled(&case, uri);
                 assert_eq!(
                     listed_authority, endpoint.published,
-                    "case {case:?}: every discovered push target is on the endpoint this \
-                     emulator answers at, got {uri:?}"
+                    "case {case:?}: every discovered push target is on the public-registry \
+                     name this emulator announces, got {uri:?}"
                 );
             }
 
@@ -545,10 +594,10 @@ async fn every_published_repository_uri_names_an_endpoint_this_emulator_answers_
 }
 
 #[tokio::test]
-async fn a_published_uri_names_the_endpoint_the_read_was_answered_at() {
+async fn a_published_uri_names_the_public_registry_the_read_was_answered_by() {
     // The stored repository is one record, and its ARN — a LABEL — follows from that record
-    // alone. Its URI is an ADDRESS, so it follows the endpoint the reader reached this
-    // emulator on: a client is never handed a push target it is not already talking to.
+    // alone. Its URI is an ADDRESS, so it is composed per answer, over the zone this emulator
+    // announces its own names in to that reader, and never stored with the record.
     let router = emulator();
     let endpoints = endpoints();
     let creating = &endpoints[0];
@@ -568,7 +617,7 @@ async fn a_published_uri_names_the_endpoint_the_read_was_answered_at() {
             "repository.repositoryUri"
         ),
         format!("{}/{}/{name}", creating.published, registry_alias()),
-        "case {:?}: expected the create to publish the address it was answered at, got \
+        "case {:?}: expected the create to publish the name this emulator announces, got \
          {created}",
         creating.case
     );
@@ -585,7 +634,7 @@ async fn a_published_uri_names_the_endpoint_the_read_was_answered_at() {
         assert_eq!(
             listed_uri,
             format!("{registry_uri}/{name}"),
-            "case {case:?}: expected the read to publish the address it was answered at, \
+            "case {case:?}: expected the read to publish the name this emulator announces, \
              got {listed_uri:?}"
         );
         // A read publishes an address; it changes nothing a later caller sees, so the
@@ -969,5 +1018,344 @@ async fn every_element_of_a_repository_page_publishes_its_own_repositorys_uri() 
             &remaining,
             &left,
         );
+    }
+}
+
+/// One address this emulator is served at: the base it reports as its own endpoint, and the
+/// public-registry name every URI it publishes then carries.
+struct ServedAt {
+    case: &'static str,
+    /// The base this emulator is served at, or `None` for a process served on no port at all,
+    /// which reports the unserved base (`smithy_server_runtime::UNSERVED_URL_BASE`, a name RFC
+    /// 6761 reserves so that nothing resolves it).
+    base: Option<&'static str>,
+    /// The authority published to a call that address answers. Spelled out per row rather than
+    /// derived, so what is asserted is the name itself.
+    published: &'static str,
+}
+
+/// The addresses this emulator is served at, one row each: the class the ZONE of a published
+/// name generalises over.
+fn served_addresses() -> Vec<ServedAt> {
+    vec![
+        ServedAt {
+            case: "served on the loopback IPv4 socket the core binds",
+            base: Some(SERVED_URL_BASE),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            // An address literal names the interface the loopback zone resolves to and names
+            // no zone of its own, so the zone RFC 6761 reserves for it is what is announced.
+            case: "served on another loopback address and port",
+            base: Some("https://127.3.2.1:34427"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            case: "served on the loopback IPv6 socket",
+            base: Some("https://[::1]:38001"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            case: "served under the zone RFC 6761 reserves for that interface",
+            base: Some("https://localhost:39355"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            case: "served under a name an operator runs this process under",
+            base: Some("https://gallery.internal.example:8443"),
+            published: "public.ecr.gallery.internal.example",
+        },
+        ServedAt {
+            // A host is case-insensitive, and a DNS name is published in one spelling.
+            case: "served under that name written in capitals",
+            base: Some("https://GALLERY.INTERNAL.EXAMPLE:8443"),
+            published: "public.ecr.gallery.internal.example",
+        },
+        ServedAt {
+            // A zone AWS publishes its own endpoints in resolves at genuine AWS rather than
+            // here, so it is never a zone this emulator announces a name of its own in.
+            case: "served at a host AWS publishes its own endpoints at",
+            base: Some("https://api.ecr-public.us-east-1.amazonaws.com"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            // Neither is the zone AWS serves its own gallery in: the fixed labels written over
+            // it would spell the real gallery host, so a push to the published name would
+            // leave the emulated environment altogether.
+            case: "served under the zone AWS serves its own gallery in",
+            base: Some("https://gallery.ecr.aws:8443"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            // An endpoint that is ITSELF a name this registry published: the fixed labels come
+            // off before the name is composed again, so publishing is idempotent rather than
+            // nesting them.
+            case: "served under a name this registry itself publishes",
+            base: Some("https://public.ecr.localhost:9297"),
+            published: PUBLISHED_AUTHORITY,
+        },
+        ServedAt {
+            case: "served on no port at all",
+            base: None,
+            published: "public.ecr.emulator.invalid",
+        },
+    ]
+}
+
+/// One emulator carrying only this service over one shared engine, served at `base` — and the
+/// engine it keeps its registry in, so a pull decided in process reads the registry the wire
+/// calls wrote.
+fn emulator_served_at(base: Option<&str>) -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = MultiServiceRouter::new();
+    // The signature itself is not what these cases are about; the credential scope still
+    // routes the request to `ecr-public`.
+    router.set_request_authentication(false);
+    if let Some(base) = base {
+        router.set_url_base(
+            ::smithy_server_runtime::EndpointUrl::parse(base).expect("the base URL must parse"),
+        );
+    }
+    router.register_service(EmulatedService::new(Arc::clone(&engine)));
+    (router, engine)
+}
+
+/// One `awsJson1_1` call that must answer 200 and states no endpoint of its own, so what the
+/// answer publishes is read off the address this emulator is served at.
+async fn call_unaddressed(
+    router: &MultiServiceRouter,
+    case: &str,
+    operation: &str,
+    body: Value,
+) -> Value {
+    call_addressed(router, case, None, None, operation, body).await
+}
+
+#[tokio::test]
+async fn every_published_uri_names_the_public_registry_in_the_zone_this_emulator_is_served_in() {
+    // RULE's other side: the fixed labels are written over the zone this emulator announces
+    // its own names in, which is read off the address it is SERVED at for a call that states
+    // no endpoint of its own. The rows span that address — a loopback socket, another loopback
+    // address and port, the IPv6 loopback socket, the zone RFC 6761 reserves for that
+    // interface, an operator's own name in two spellings, a host AWS publishes its own
+    // endpoints at, and a process served on no port at all — crossed with the repository-name
+    // forms the modelled `RepositoryName` pattern admits and the four operations that publish
+    // such a URI.
+    for served in served_addresses() {
+        let (router, _engine) = emulator_served_at(served.base);
+        let case = served.case;
+        let registries = call_unaddressed(&router, case, "DescribeRegistries", json!({})).await;
+        let registry_uri = string_at(
+            case,
+            &registries["registries"][0]["registryUri"],
+            "registries[0].registryUri",
+        );
+        assert_eq!(
+            registry_uri,
+            format!("{}/{}", served.published, registry_alias()),
+            "case {case:?}: expected the published registry name scoped by the registry's \
+             alias, got {registry_uri:?}"
+        );
+        assert_public_registry_name(case, served.published);
+
+        for name in REPOSITORY_NAMES {
+            let case = format!("{case}, repository {name}");
+            let expected = format!("{registry_uri}/{name}");
+            let created = call_unaddressed(
+                &router,
+                &case,
+                "CreateRepository",
+                json!({"repositoryName": name}),
+            )
+            .await;
+            let listed = call_unaddressed(&router, &case, "DescribeRepositories", json!({})).await;
+            let named = call_unaddressed(
+                &router,
+                &case,
+                "DescribeRepositories",
+                json!({"repositoryNames": [name]}),
+            )
+            .await;
+            let deleted = call_unaddressed(
+                &router,
+                &case,
+                "DeleteRepository",
+                json!({"repositoryName": name}),
+            )
+            .await;
+            let published = [
+                ("CreateRepository", created["repository"].clone()),
+                (
+                    "DescribeRepositories",
+                    listed["repositories"]
+                        .as_array()
+                        .and_then(|page| {
+                            page.iter()
+                                .find(|repository| repository["repositoryName"] == json!(name))
+                                .cloned()
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("case {case:?}: expected it listed, got {listed}")
+                        }),
+                ),
+                (
+                    "DescribeRepositories by name",
+                    named["repositories"][0].clone(),
+                ),
+                ("DeleteRepository", deleted["repository"].clone()),
+            ];
+            for (operation, repository) in published {
+                let uri = string_at(&case, &repository["repositoryUri"], "repositoryUri");
+                assert_eq!(
+                    uri, expected,
+                    "case {case:?}: expected {operation} to publish {expected:?}, got {uri:?}"
+                );
+                let (authority, path) = uri
+                    .split_once('/')
+                    .unwrap_or_else(|| panic!("case {case:?}: {uri:?} names no path"));
+                assert_public_registry_name(&case, authority);
+                assert_eq!(
+                    authority, served.published,
+                    "case {case:?}: expected {operation} to publish the registry name of the \
+                     zone this emulator is served in, got {authority:?}"
+                );
+                // The path is the alias that says which public registry holds the repository,
+                // then the repository's name exactly as the request spelled it — a
+                // slash-nested name included.
+                assert_eq!(
+                    path,
+                    format!("{}/{name}", registry_alias()),
+                    "case {case:?}: expected {operation} to publish the alias-scoped \
+                     repository path, got {path:?}"
+                );
+                assert!(
+                    !uri.contains(REGISTRY_ID) && !uri.contains(SIGNED_REGION),
+                    "case {case:?}: the account is reported in registryId and a public \
+                     registry is global, so neither belongs in {uri:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_published_uri_does_not_move_with_the_socket_this_emulator_is_bound_on() {
+    // What the port in the published value cost a client: it is ephemeral unless an operator
+    // chose it, so a URI carrying it would move on every boot and nothing derived from it
+    // would resolve twice. The rows are one emulator per socket of the same host — ports a
+    // caller cannot predict included — each asked on a socket of its own as well, and every
+    // one of them publishes the identical pair of URIs.
+    let name = "stable/across-boots";
+    let expected = (
+        format!("{PUBLISHED_AUTHORITY}/{}/{name}", registry_alias()),
+        format!("{PUBLISHED_AUTHORITY}/{}", registry_alias()),
+    );
+    for base in [
+        "https://127.0.0.1:9297",
+        "https://127.0.0.1:35093",
+        "https://127.0.0.1:34427",
+        "https://localhost:40831",
+        "https://[::1]:44001",
+    ] {
+        let (router, _engine) = emulator_served_at(Some(base));
+        let created = call_addressed(
+            &router,
+            base,
+            Some("127.0.0.1:35093"),
+            None,
+            "CreateRepository",
+            json!({"repositoryName": name}),
+        )
+        .await;
+        let repository_uri = string_at(
+            base,
+            &created["repository"]["repositoryUri"],
+            "repository.repositoryUri",
+        );
+        let registries = call_unaddressed(&router, base, "DescribeRegistries", json!({})).await;
+        let registry_uri = string_at(
+            base,
+            &registries["registries"][0]["registryUri"],
+            "registries[0].registryUri",
+        );
+        assert_eq!(
+            (repository_uri, registry_uri),
+            expected,
+            "case {base:?}: expected the same published URIs whatever socket this emulator is \
+             served on"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_reference_composed_on_a_published_uri_names_this_gallery_in_every_zone() {
+    // The reading side of the rule, over every zone this emulator can be served in: a client
+    // pushes to the URI the API handed it and a container runtime pulls the reference it
+    // composed on that URI, so the name this registry publishes and the name it answers for
+    // are the same one. The rows cross the served address with the reference forms a runtime
+    // writes (a tag, the implicit tag, and a digest).
+    let name = "team/app";
+    for served in served_addresses() {
+        let (router, engine) = emulator_served_at(served.base);
+        let created = call_unaddressed(
+            &router,
+            served.case,
+            "CreateRepository",
+            json!({"repositoryName": name}),
+        )
+        .await;
+        let published = string_at(
+            served.case,
+            &created["repository"]["repositoryUri"],
+            "repository.repositoryUri",
+        );
+        let pushed = call_unaddressed(
+            &router,
+            served.case,
+            "PutImage",
+            json!({
+                "repositoryName": name,
+                "imageManifest": json!({"schemaVersion": 2, "layers": []}).to_string(),
+                "imageTag": "latest",
+            }),
+        )
+        .await;
+        let digest = string_at(
+            served.case,
+            &pushed["image"]["imageId"]["imageDigest"],
+            "image.imageId.imageDigest",
+        );
+
+        for reference in [
+            format!("{published}:latest"),
+            published.clone(),
+            format!("{published}@{digest}"),
+        ] {
+            let case = format!("{}, reference {reference}", served.case);
+            let parsed = gallery_pull::parse_gallery_reference(&reference).unwrap_or_else(|| {
+                panic!("case {case:?}: expected a reference into this gallery")
+            });
+            assert_eq!(
+                parsed.registry_alias,
+                registry_alias(),
+                "case {case:?}: expected the alias the URI was published with, got {:?}",
+                parsed.registry_alias
+            );
+            assert_eq!(
+                parsed.repository_name, name,
+                "case {case:?}: expected the repository the URI names, got {:?}",
+                parsed.repository_name
+            );
+            assert!(
+                gallery_pull::serves_registry_alias(&*engine, &parsed.registry_alias),
+                "case {case:?}: expected this registry to serve the alias it published"
+            );
+            let answered = gallery_pull::serve_pull(&*engine, &parsed);
+            assert_eq!(
+                answered,
+                Ok(Some(digest.clone())),
+                "case {case:?}: expected the pushed manifest digest, got {answered:?}"
+            );
+        }
     }
 }

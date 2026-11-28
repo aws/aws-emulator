@@ -26,7 +26,10 @@
 //! the shared name, or the endpoint host of an unsigned request), which API version an
 //! envelope names, and an RPC-addressed request naming a service that is NOT ELB Proxy —
 //! which ELB Proxy must decline even though it arrives on the path space its own protocol
-//! uses.
+//! uses, and which the query front doors do not serve either, since their model binds no URI
+//! and their envelope posts to `/`: nothing publishes that path, so the honest answer is the
+//! router's own `404 UnknownService` rather than a front door answering for an endpoint it
+//! does not serve (the principle `service_common::claims_modeled_route` states).
 //!
 //! Every row is driven through the assembled router, so what claims a request here is what
 //! claims it in the emulator a client talks to.
@@ -90,6 +93,11 @@ struct Row {
     carries: &'static [&'static str],
     /// Text the answer must NOT carry, because it would mean another service served it.
     withholds: &'static [&'static str],
+    /// Whether NO service may claim this request — a path no emulated model publishes, which
+    /// the router answers itself. Every other row requires exactly one claimant; this one
+    /// requires none, which is the same rule read from the other side: a service claims only
+    /// what its own wire form names.
+    unclaimed: bool,
 }
 
 /// The marker of an answer ELB PROXY served: its operations are scaffolded, so the service
@@ -116,6 +124,7 @@ const ROWS: &[Row] = &[
         status: 501,
         carries: &[PROXY_ANSWER],
         withholds: &[CLASSIC_ANSWER, V2_ANSWER],
+        unclaimed: false,
     },
     Row {
         // An UNSIGNED query request, addressed at the Elastic Load Balancing endpoint host:
@@ -130,6 +139,7 @@ const ROWS: &[Row] = &[
         status: 200,
         carries: &["<DescribeLoadBalancersResponse", CLASSIC_ANSWER],
         withholds: &[PROXY_ANSWER],
+        unclaimed: false,
     },
     Row {
         // The Classic query API on the shared name: the front door that OWNS the name
@@ -143,6 +153,7 @@ const ROWS: &[Row] = &[
         status: 200,
         carries: &["<DescribeLoadBalancersResponse", CLASSIC_ANSWER],
         withholds: &[PROXY_ANSWER],
+        unclaimed: false,
     },
     Row {
         // The ELBv2 query API on the same shared name: served out of THAT model's shapes,
@@ -156,22 +167,26 @@ const ROWS: &[Row] = &[
         status: 200,
         carries: &["<DescribeLoadBalancersResponse", V2_ANSWER],
         withholds: &[PROXY_ANSWER],
+        unclaimed: false,
     },
     Row {
         // An RPC-addressed request naming a service ELB Proxy is NOT: it arrives on the path
         // space this protocol uses, so a claim that read the path alone would take it. The
-        // service the form NAMES is what decides, so ELB Proxy declines it and the query
-        // front door that owns the shared name answers it in its own envelope — one
-        // claimant either way.
+        // service the form NAMES is what decides, so ELB Proxy declines it — and so do the
+        // query front doors, whose models bind no URI at all and whose envelopes post to `/`.
+        // No emulated model publishes that path, so the router answers it itself
+        // (`404 UnknownService`), which is the honest answer rather than a front door
+        // answering for an endpoint it does not serve.
         case: "an RPC form naming another service on the shared signing name",
         wire: Wire::RpcV2Cbor {
             service: "NotELBProxy",
             operation: "ListProxies",
         },
         addressed: Addressed::SharedName,
-        status: 400,
-        carries: &["<ErrorResponse"],
-        withholds: &[PROXY_ANSWER],
+        status: 404,
+        carries: &["UnknownService"],
+        withholds: &[PROXY_ANSWER, CLASSIC_ANSWER, V2_ANSWER],
+        unclaimed: true,
     },
 ];
 
@@ -239,9 +254,15 @@ fn elb_proxy_and_the_query_apis_are_each_claimed_by_exactly_one_service() {
                         row.case
                     );
                     assert!(
-                        !answered.contains("UnknownService"),
+                        !answered.contains("UnknownService") || row.unclaimed,
                         "case {:?}: no service claimed the request, expected exactly one \
                          claimant, got {status} with {answered}",
+                        row.case
+                    );
+                    assert!(
+                        answered.contains("UnknownService") || !row.unclaimed,
+                        "case {:?}: expected no service to claim a path no model publishes, \
+                         got {status} with {answered}",
                         row.case
                     );
                     assert_eq!(

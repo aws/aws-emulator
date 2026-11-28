@@ -2262,15 +2262,22 @@ impl Repo {
     /// after it is exactly the repository's name (see
     /// [`registry_address`](crate::state::registry_address)). It is the same endpoint the URL
     /// a `docker login` is pointed at carries, so the two addresses this service publishes
-    /// cannot disagree. Which registry HOLDS the repository is reported BESIDE it by the
-    /// members that carry that identity, read off this same record and moved by no reader:
-    /// `registryId`, and the ARN, which names the Region.
+    /// cannot disagree. An emulator served on no port at all has no such endpoint to publish,
+    /// and is published this registry's own name instead
+    /// ([`registry_address::published_repository_authority`]). Which registry HOLDS the
+    /// repository is reported BESIDE it by the members that carry that identity, read off this
+    /// same record and moved by no reader: `registryId`, and the ARN, which names the Region.
     pub fn to_repository(&self, announced_authority: &str) -> Repository {
+        let published = registry_address::published_repository_authority(
+            announced_authority,
+            &self.registry_id,
+            &self.region,
+        );
         Repository {
             repository_arn: Some(self.arn.clone()),
             registry_id: Some(self.registry_id.clone()),
             repository_name: Some(self.name.clone()),
-            repository_uri: Some(repository_uri(announced_authority, &self.name)),
+            repository_uri: Some(repository_uri(&published, &self.name)),
             created_at: Some(reported_instant(self.created_at)),
             image_tag_mutability: Some(self.image_tag_mutability.clone()),
             image_tag_mutability_exclusion_filters: if self

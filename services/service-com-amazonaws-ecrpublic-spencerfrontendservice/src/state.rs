@@ -10,8 +10,8 @@
 //!
 //! * the ARN every repository carries ([`StoredRepository`] is built once, by
 //!   `CreateRepository`, and read back verbatim by every reporting operation) and the
-//!   registry / repository URIs this registry publishes, which are ADDRESSES and so are
-//!   composed per answer from the endpoint the reader reached this emulator on
+//!   registry / repository URIs this registry publishes, which are public-registry NAMES and
+//!   so are composed per answer, over the zone this emulator announces its own names in
 //!   ([`registry_address`]);
 //! * the repository policy document ([`StoredRepository::policy_text`]) that
 //!   `SetRepositoryPolicy` writes in the one rendering this service reports a policy in
@@ -165,8 +165,8 @@ pub fn unsupported_in_region(
 /// this registry ([`gallery_pull::parse_gallery_reference`]).
 ///
 /// It is not the authority this service PUBLISHES: this name resolves to the real public
-/// registry rather than to this process, so a URI this registry hands out carries the address
-/// this emulator answers the reader at instead
+/// registry rather than to this process, so a URI this registry hands out carries the same
+/// fixed labels over a zone that leads back to this emulator instead
 /// ([`registry_address::published_gallery_authority`]).
 pub const GALLERY_HOST: &str = "public.ecr.aws";
 
@@ -759,8 +759,8 @@ impl StoredRepository {
     /// [`ComAmazonawsEcrpublicSpencerfrontendserviceState::registry_uri`]).
     ///
     /// Every other member is the stored record's own: `repositoryUri` is the one ADDRESS in
-    /// the shape, so it follows the endpoint the reader reached this emulator on, while the
-    /// ARN, the registry id, the name and `createdAt` are labels this record carries
+    /// the shape, so it follows the zone this emulator announces its names in for the reader,
+    /// while the ARN, the registry id, the name and `createdAt` are labels this record carries
     /// whoever reads it.
     pub fn as_repository(&self, registry_uri: &str) -> Repository {
         Repository {
@@ -897,9 +897,9 @@ impl ComAmazonawsEcrpublicSpencerfrontendserviceState {
         ::engine::emulator_arn(ARN_NAMESPACE, "", &format!("registry/{}", self.registry_id))
     }
 
-    /// The URI of the registry, on the address this emulator answers the reader at (read
-    /// with [`published_gallery_authority`]): `Registry$registryUri` documents it as "a
-    /// universal prefix and the registry alias", so it is that authority scoped by this
+    /// The URI of the registry, on the public-registry name this emulator publishes to the
+    /// reader (read with [`published_gallery_authority`]): `Registry$registryUri` documents it
+    /// as "a universal prefix and the registry alias", so it is that authority scoped by this
     /// registry's own alias — which is the `repositoryUri` form without the trailing
     /// repository segment.
     pub fn registry_uri(&self, gallery_authority: &str) -> String {

@@ -38,6 +38,17 @@
 //! is said by the credential it presents
 //! (`super::registry_v2::RegistryCredential::region`), obtained per registry.
 //!
+//! So while this emulator IS served at an endpoint, what this registry publishes is that
+//! endpoint — a SOCKET rather than the registry's own name — by design, for the reason above,
+//! and the sibling public registry
+//! (`service-com-amazonaws-ecrpublic-spencerfrontendservice`'s `state::registry_address`)
+//! differs deliberately: a public-registry URI is read by clients that have to tell a global
+//! public registry from a private one, so it carries the fixed `public.ecr.` labels over a
+//! zone instead. The ONE case this endpoint reading has no value to give is an emulator served
+//! on no port at all, where what it reports for itself is a bare reserved host that can neither
+//! be dialled nor read as naming a registry; such a caller is published the registry's own name
+//! ([`published_repository_authority`]).
+//!
 //! A reference a client brings IN is the other side of this. It may be written on the address
 //! this registry published, or by hand on the registry host AWS publishes, and the ONE reading
 //! of a registry host ([`registry_host_parts`]) reads the latter back as naming the registry
@@ -205,6 +216,43 @@ pub fn dialled_registry_region(authority: &str) -> Option<String> {
 /// written on an address of this emulator and one written on the host AWS publishes alike).
 pub fn repository_uri(authority: &str, name: &str) -> String {
     format!("{}/{name}", authority.trim_end_matches('/'))
+}
+
+/// The AUTHORITY a repository of the registry `registry_id` owns in `region` is published at,
+/// for a caller this emulator answers at `announced_endpoint` ([`announced_registry_endpoint`])
+/// — the value [`repository_uri`] is composed on.
+///
+/// That endpoint itself while this emulator is SERVED at one, host and port whole: it is the
+/// address a container client dials, and an address of this process is what a connection opened
+/// to it reaches (see the module docs).
+///
+/// An emulator served on NO port at all is the one case that reading has no value to give: what
+/// it reports for itself is the unserved base ([`::smithy_server_runtime::UNSERVED_URL_BASE`],
+/// a name RFC 6761 reserves so that nothing resolves it), a bare host with no port that neither
+/// a client can dial nor a reader can take a registry out of. So such a caller is published the
+/// registry's OWN name instead — the layout AWS publishes a registry in
+/// ([`registry_host_in_zone`]) over the zone that unserved base names, which is the zone this
+/// emulator announces its own names in
+/// (`service_common::data_plane_addressing::announced_zone_of_authority`) — so the account and
+/// the Region a reader recovers from the authority are there ([`registry_host_parts`], which
+/// reads it back), in a zone that still resolves no further than this process. Nothing a client
+/// could have dialled is lost, because that host answers nowhere either way.
+pub fn published_repository_authority(
+    announced_endpoint: &str,
+    registry_id: &str,
+    region: &str,
+) -> String {
+    let unserved = ::service_common::data_plane_addressing::url_authority(
+        ::smithy_server_runtime::UNSERVED_URL_BASE,
+    );
+    if !announced_endpoint.eq_ignore_ascii_case(unserved) {
+        return announced_endpoint.to_string();
+    }
+    registry_host_in_zone(
+        registry_id,
+        region,
+        &::service_common::data_plane_addressing::announced_zone_of_authority(announced_endpoint),
+    )
 }
 
 /// The host of the Amazon ECR registry `registry_id` owns in `region`, in the spelling AWS
@@ -380,4 +428,89 @@ pub const PARTITION_DNS_SUFFIXES: [(&str, &str); 6] = [
 /// knows it can reach.
 pub fn registry_login_url(announced_endpoint: &str) -> String {
     format!("https://{announced_endpoint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The account every registry of this emulator belongs to, which is the first label of
+    /// the name a registry is published under.
+    fn registry_id() -> String {
+        ::engine::emulator_account_id().to_string()
+    }
+
+    /// The host of the base an emulator served on NO port at all reports for itself — a name
+    /// RFC 6761 reserves so that nothing resolves it.
+    fn unserved_authority() -> &'static str {
+        ::service_common::data_plane_addressing::url_authority(
+            ::smithy_server_runtime::UNSERVED_URL_BASE,
+        )
+    }
+
+    #[test]
+    fn a_served_endpoint_is_published_as_it_is_and_an_unserved_one_names_the_registry() {
+        // RULE: the authority a repository is published at is the endpoint this emulator
+        // answers that caller at while it is SERVED at one, host and port whole — and the
+        // registry's own name over the zone the unserved base names for the one case where
+        // there is no endpoint to publish. The rows span the endpoint forms a caller reaches
+        // this emulator by (a loopback socket, another port on it, a bracketed IPv6 literal,
+        // a loopback name with a port, a host an operator serves this process under, a
+        // registry name of this layout in a local zone) crossed with the Regions whose
+        // registries hold a repository, including partitions whose published suffix differs.
+        let served = [
+            "127.0.0.1:9297",
+            "127.0.0.1:35093",
+            "[::1]:38001",
+            "localhost:39355",
+            "registry.emulator.test:8443",
+            "000000000000.dkr.ecr.us-west-2.localhost:9297",
+        ];
+        let regions = ["us-east-1", "eu-west-1", "cn-north-1", "us-iso-east-1"];
+        let registry_id = registry_id();
+        for region in regions {
+            for endpoint in served {
+                let published = published_repository_authority(endpoint, &registry_id, region);
+                let case = format!("{endpoint} {region}");
+                assert_eq!(
+                    published, endpoint,
+                    "case {case:?}: expected a served endpoint to be published as it is, got \
+                     {published:?}"
+                );
+            }
+
+            // Served on no port at all: the registry's own name in the layout AWS publishes
+            // one in, over the zone that base names — so the account and the Region are
+            // recoverable from the authority, by this tree's one reading of such a host.
+            let case = format!("unserved {region}");
+            let published =
+                published_repository_authority(unserved_authority(), &registry_id, region);
+            assert_eq!(
+                published,
+                registry_host_in_zone(&registry_id, region, unserved_authority()),
+                "case {case:?}: expected the registry's own name over the unserved zone, got \
+                 {published:?}"
+            );
+            assert!(
+                !published.contains(':'),
+                "case {case:?}: a registry's name carries no port, got {published:?}"
+            );
+            let parts = registry_host_parts(&published).unwrap_or_else(|| {
+                panic!("case {case:?}: expected {published:?} to read back as a registry host")
+            });
+            assert_eq!(
+                (parts.registry_id, parts.region, parts.zone),
+                (registry_id.as_str(), region, unserved_authority()),
+                "case {case:?}: expected the account, the Region and the zone to read back off \
+                 {published:?}"
+            );
+            // It is never the host AWS serves that registry at, which resolves at genuine
+            // Amazon ECR rather than anywhere near this process.
+            assert_ne!(
+                published,
+                registry_host(&registry_id, region),
+                "case {case:?}: expected no name in a zone AWS serves, got {published:?}"
+            );
+        }
+    }
 }

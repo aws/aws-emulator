@@ -39,17 +39,20 @@ pub(crate) const ARN_PREFIX: &str = "arn:aws:ecr-public::000000000000:repository
 pub(crate) const PUBLIC_REGISTRY_LABELS: [&str; 2] =
     service_com_amazonaws_ecrpublic_spencerfrontendservice::state::registry_address::GALLERY_HOST_LABELS;
 
-/// The AUTHORITY every URI this registry publishes leads with: the `host[:port]` this
-/// emulator answers the reader at — a repository's and the registry's own URI are the
-/// addresses a container client dials, so each carries an address that leads back to this
-/// process rather than a name AWS resolves. No call in this target arrives on a socket, so
-/// that address is the authority of the unserved base
-/// (`smithy_server_runtime::UNSERVED_URL_BASE`), a name RFC 6761 reserves.
+/// The AUTHORITY every URI this registry publishes leads with: a PUBLIC-REGISTRY NAME — the
+/// fixed `public.ecr.` labels AWS leads one with, over the DNS zone this emulator announces
+/// its own names in, and no port. A repository's and the registry's own URI are read by a
+/// client that has to tell a global public registry from a private one and resolved by a
+/// container client, so each carries a name of that form in a zone that leads back to this
+/// process rather than a socket or a name AWS resolves. No call in this target arrives on a
+/// socket, so that zone is the host of the unserved base
+/// (`smithy_server_runtime::UNSERVED_URL_BASE`, a name RFC 6761 reserves).
 pub(crate) fn published_authority() -> String {
     let base = smithy_server_runtime::UNSERVED_URL_BASE;
-    base.split_once("://")
-        .map_or(base, |(_scheme, authority)| authority)
-        .to_string()
+    let zone = base
+        .split_once("://")
+        .map_or(base, |(_scheme, authority)| authority);
+    format!("public.ecr.{zone}")
 }
 
 /// The alias this account's public registry is assigned
@@ -344,7 +347,7 @@ async fn create_repository_inserts_a_repository_every_valid_name_form_can_be_rea
             uri,
             format!("{}{name}", uri_prefix()),
             "case {case:?}: expected the repository URI to be \
-             <endpoint>/alias/name, got {uri:?}"
+             <public registry name>/alias/name, got {uri:?}"
         );
         assert_eq!(
             text(&created, &["repository", "registryId"], &case),

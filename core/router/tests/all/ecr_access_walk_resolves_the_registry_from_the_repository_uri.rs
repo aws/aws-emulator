@@ -5,13 +5,17 @@
 //! address the walk would dial, read off the URI.
 //!
 //! RULE: `Repository$repositoryUri` ("The URI for the repository. You can use this URI for
-//! container image `push` and `pull` operations") is the ADDRESS this emulator answers that
-//! caller's registry requests at, followed by `/` and the repository's own name — so a reader
-//! that splits the value on the first `/` has the address it dials and the repository it asks
-//! for — while WHICH registry holds the repository is reported beside it, by
-//! `Repository$registryId` (the owning account, `^[0-9]{12}$`) and the Region
-//! `Repository$repositoryArn` names. A walk therefore recovers the account id and the Region
-//! from the repository the read reports, and the dialable address from the URI.
+//! container image `push` and `pull` operations") is the ADDRESS this registry publishes the
+//! repository at, followed by `/` and the repository's own name — so a reader that splits the
+//! value on the first `/` has the address it dials and the repository it asks for — while WHICH
+//! registry holds the repository is reported beside it, by `Repository$registryId` (the owning
+//! account, `^[0-9]{12}$`) and the Region `Repository$repositoryArn` names. A walk therefore
+//! recovers the account id and the Region from the repository the read reports, and the address
+//! to dial from the URI. This emulator is served on no port at all in this suite, so the
+//! address it publishes is the registry's own name in the layout AWS publishes one in
+//! (`<account>.dkr.ecr.<region>.<zone>`) over the zone an unserved emulator names for itself —
+//! the account and the Region are then recoverable from the authority as well, and the zone
+//! still resolves no further than this process.
 //!
 //! That is what makes the value actionable to a consumer: the account id and the Region are
 //! what an `ecr:` resource ARN, a `docker login` target and a cross-account check are composed
@@ -101,7 +105,7 @@ const MANIFEST: &str = concat!(
     r#""layers":[]}"#
 );
 
-/// The authority this emulator publishes every address at while it is served on NO port at
+/// The ZONE this emulator announces every name of its own in while it is served on NO port at
 /// all, which is what the router these rows drive is: the host of the base
 /// `smithy_server_runtime::UNSERVED_URL_BASE` reports for such a process — a name RFC 6761
 /// reserves so that nothing resolves it, which is the honest answer where this emulator has no
@@ -110,6 +114,15 @@ fn unserved_authority() -> &'static str {
     ::smithy_server_runtime::UNSERVED_URL_BASE
         .split_once("://")
         .map_or(::smithy_server_runtime::UNSERVED_URL_BASE, |(_scheme, authority)| authority)
+}
+
+/// The AUTHORITY Amazon ECR publishes a repository of the account `account` in `region` at,
+/// for a call this suite makes: the registry's own name in the layout AWS publishes one in —
+/// the account, the two fixed labels, the Region — over the zone an unserved emulator announces
+/// its names in ([`unserved_authority`]). Spelled out here rather than imported, so a wrong
+/// composition in the implementation fails this suite.
+fn published_authority(account: &str, region: &str) -> String {
+    format!("{account}.dkr.ecr.{region}.{}", unserved_authority())
 }
 
 /// How many digits an account id — and so `Repository$registryId` — carries, as
@@ -366,9 +379,9 @@ struct Resolved {
 /// identity `account` and `region` the response reported for that repository.
 ///
 /// Every structural requirement of the value is asserted here: a repository name behind the
-/// first `/`, an authority that is the address this emulator reports for itself, and never one
-/// in a zone AWS publishes its own endpoints in — so a caller is handed only what a reader can
-/// actually derive from the value.
+/// first `/`, an authority that is the registry's own name over the zone this emulator
+/// announces its names in, and never one in a zone AWS publishes its own endpoints in — so a
+/// caller is handed only what a reader can actually derive from the value.
 fn resolved(case: &str, uri: &str, account: &str, region: &str) -> Resolved {
     let (authority, path) = uri
         .split_once('/')
@@ -379,9 +392,9 @@ fn resolved(case: &str, uri: &str, account: &str, region: &str) -> Resolved {
     );
     assert_eq!(
         authority,
-        unserved_authority(),
-        "case {case:?}: expected the authority of {uri:?} to be the address this emulator \
-         reports for itself, got {authority:?}"
+        published_authority(account, region),
+        "case {case:?}: expected the authority of {uri:?} to be the registry's own name over \
+         the zone this emulator announces its names in, got {authority:?}"
     );
     let host = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
     let lowered = host.to_ascii_lowercase();

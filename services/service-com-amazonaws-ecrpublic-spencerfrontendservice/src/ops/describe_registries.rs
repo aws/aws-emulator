@@ -212,8 +212,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// This registry as the modelled `Registry` shape, published on the endpoint this answer
-/// is served at (`crate::state::published_gallery_authority`).
+/// This registry as the modelled `Registry` shape, published on the public-registry name
+/// this emulator announces to the reader (`crate::state::published_gallery_authority`).
 ///
 /// `verified` is "whether the account is a verified Amazon Web Services Marketplace
 /// vendor" (`Registry$verified`) — a standing outside this API, which no operation of
@@ -224,8 +224,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// `RegistryAlias$defaultRegistryAlias` is the one assigned to the registry itself).
 ///
 /// `registryUri` is the registry-wide prefix a client prepends to a repository name and
-/// points a login at, so it is an ADDRESS first: the endpoint this emulator answers the
-/// reader at, scoped by that alias (`crate::state::registry_address`).
+/// points a login at, so it is an ADDRESS first: the public-registry name this emulator
+/// announces to the reader, scoped by that alias (`crate::state::registry_address`).
 fn registry_of(
     store: &crate::state::ComAmazonawsEcrpublicSpencerfrontendserviceState,
     gallery_authority: &str,

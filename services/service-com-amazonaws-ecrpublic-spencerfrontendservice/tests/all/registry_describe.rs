@@ -195,14 +195,14 @@ fn assert_registry_record(record: &Value, case: &str) -> String {
     });
 
     // `registryUri` is the prefix a client prepends to a repository name and points a
-    // login at, so it is an ADDRESS first: the endpoint this emulator answers the reader
-    // at, scoped by the alias shown in a `docker pull` command — the primary alias — and
-    // carrying neither a region nor an account.
+    // login at, so it is an ADDRESS first: the public-registry name this emulator announces
+    // to the reader, scoped by the alias shown in a `docker pull` command — the primary
+    // alias — and carrying neither a region nor an account.
     let registry_uri = text(record, &["registryUri"], case);
     assert_eq!(
         registry_uri,
         format!("{}/{primary}", published_authority()),
-        "case {case:?}: expected the published endpoint scoped by the primary alias, \
+        "case {case:?}: expected the published registry name scoped by the primary alias, \
          got {registry_uri:?}"
     );
 
