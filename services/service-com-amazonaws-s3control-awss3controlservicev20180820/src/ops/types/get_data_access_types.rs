@@ -21,6 +21,7 @@ pub struct GetDataAccessInput {
     pub privilege: Option<String>,
     pub target_type: Option<String>,
     pub audit_context: Option<String>,
+    pub instance_scope: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#GetDataAccessResult")]
@@ -29,6 +30,7 @@ pub struct GetDataAccessOutput {
     pub credentials: Option<Credentials>,
     pub matched_grant_target: Option<String>,
     pub grantee: Option<Grantee>,
+    pub matched_instance_arn: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#Credentials")]

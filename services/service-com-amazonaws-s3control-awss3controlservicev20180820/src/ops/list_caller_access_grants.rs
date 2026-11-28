@@ -22,6 +22,14 @@
 //! application; `MaxResults` and `NextToken` page it
 //! ([`crate::state::access_grants_listing`]).
 //!
+//! Every entry names the instance the grant it reports was created in, with the ARN that
+//! instance itself reports — which is the instance of the account named, in the Region the
+//! request was signed for. `InstanceScope` widens the set of instances listed from that one
+//! (`SELF`) to it together with every instance shared with the caller's account through
+//! Resource Access Manager (`ALL`); nothing in this emulator shares an S3 Access Grants
+//! instance with another account, so the instances the wider scope adds are none of them and
+//! both values list the grants of the same one instance.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -85,6 +93,11 @@
 //!   would like to access. Must start with s3://. You can optionally pass only the beginning
 //!   characters of a path, and S3 Access Grants will search for all applicable grants for the
 //!   path fragment.
+//! * `InstanceScope` (InstanceScope, one of: SELF | ALL) — The scope of S3 Access Grants
+//!   instances to list grants from. SELF – Lists grants from the instance of the Amazon Web
+//!   Services account ID in the request. ALL – Lists grants from the instance of the Amazon
+//!   Web Services account ID in the request and all instances shared with the caller's
+//!   account through Amazon Web Services Resource Access Manager (RAM).
 //! * `MaxResults` (MaxResults, range 0..1000, default 0) **required** — The maximum number of
 //!   access grants that you would like returned in the List Caller Access Grants response. If
 //!   the results include the pagination token NextToken, make another call using the
@@ -188,13 +201,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::signing_region(ctx.parts());
         let store = state.lock();
         // The grants are the INSTANCE's, so an account with no instance in this
-        // Region has no collection to list rather than an empty one.
-        if !store
-            .access_grants_instances
-            .contains_key(&(input.account_id.clone(), region.clone()))
-        {
+        // Region has no collection to list rather than an empty one — and the
+        // instance that holds them is what every entry names, with the ARN the
+        // instance itself reports.
+        let Some(instance_arn) = store
+            .access_grants_instance(&input.account_id, &region)
+            .map(|instance| instance.arn.clone())
+        else {
             return Err(crate::state::no_such_access_grants_instance());
-        }
+        };
 
         let start = (
             input.account_id.clone(),
@@ -240,6 +255,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         permission: Some(record.permission.clone()),
                         grant_scope: Some(record.grant_scope.clone()),
                         application_arn: record.application_arn.clone(),
+                        access_grants_instance_arn: Some(instance_arn.clone()),
                     })
                     .collect(),
             ),

@@ -19,8 +19,8 @@
 //! the service that mints a credential is not the service that serves the calls
 //! made with it.
 //!
-//! Two parts of the modelled surface cannot change which grant is selected here,
-//! and are recorded rather than silently dropped:
+//! Three parts of the modelled surface cannot change which grant is selected
+//! here, and are recorded rather than silently dropped:
 //!
 //! * The grant's `Grantee` and `ApplicationArn` are NOT compared against the
 //!   caller. A signed request carries an access key id, and this emulator has no
@@ -29,6 +29,13 @@
 //!   service's decision is not expressible, and the decision made here is the
 //!   scope-and-permission half. The matched grant's grantee is reported, so a
 //!   caller still sees which principal the grant it matched was issued to.
+//! * `InstanceScope` widens the SEARCH from the instance of the account the
+//!   request names (`SELF`) to that instance together with every instance shared
+//!   with the caller's account through Resource Access Manager (`ALL`). Nothing
+//!   in this emulator shares an S3 Access Grants instance with another account,
+//!   so the instances the wider scope adds are none of them and both values
+//!   search the same one instance — which is the instance the answer's
+//!   `MatchedInstanceArn` names.
 //! * `TargetType` only states that the target is "a path to an object" rather
 //!   than a bucket or a bucket and prefix, which the target's own path already
 //!   says: coverage is decided by the shape of the path (see
@@ -94,6 +101,11 @@
 //!   or client application. The default value is 1 hour, but the grantee can specify a range
 //!   from 900 seconds (15 minutes) up to 43200 seconds (12 hours). If the grantee requests a
 //!   value higher than this maximum, the operation fails.
+//! * `InstanceScope` (InstanceScope, one of: SELF | ALL) — The scope of S3 Access Grants
+//!   instances to search for a grant matching the requested S3 URI path. SELF – Searches only
+//!   the instance of the Amazon Web Services account ID in the request. ALL – Searches the
+//!   instance of the Amazon Web Services account ID in the request and all instances shared
+//!   with the caller's account through Amazon Web Services Resource Access Manager (RAM).
 //! * `Permission` (Permission, one of: READ | READWRITE | WRITE) **required** — The type of
 //!   permission granted to your S3 data, which can be set to one of the following values:
 //!   READ – Grant read-only access to the S3 data. WRITE – Grant write-only access to the S3
@@ -123,6 +135,10 @@
 //!   sessions, see Granting permissions to use identity-aware console sessions.
 //! * `MatchedGrantTarget` (S3Prefix, len 1..2000, pattern ^.+$) — The S3 URI path of the data
 //!   to which you are being granted temporary access credentials.
+//! * `MatchedInstanceArn` (AccessGrantsInstanceArn, len 1..2048, pattern
+//!   ^arn:[a-z\-]+:s3:[a-z0-9\-]+:\d{12}:access\-grants\/[a-zA-Z0-9\-]+$) — The Amazon
+//!   Resource Name (ARN) of the S3 Access Grants instance containing the grant that matched
+//!   the requested S3 URI path.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -226,18 +242,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // credential — the refusal, not an empty success. The registered
         // location the matched grant narrows is read under the same guard,
         // because the credential is a session of THAT location's role.
-        let (grantee, grant_scope, location_role_arn, session_name) = {
+        let (grantee, grant_scope, location_role_arn, session_name, matched_instance_arn) = {
             let mut store = state.lock();
-            let matched = store
-                .grant_covering(&input.account_id, &region, &input.target, &input.permission)
-                .map(|grant| {
-                    (
-                        grant.grantee.clone(),
-                        grant.grant_scope.clone(),
-                        grant.access_grants_location_id.clone(),
-                    )
-                });
-            let Some((grantee, grant_scope, location_id)) = matched else {
+            // WHICH instance the search is of, and the ARN the answer reports for
+            // it: the one that instance's own record holds. A grant belongs to the
+            // instance of this account in this Region, so an account with none
+            // there has no grant that could cover the target — which is the same
+            // refusal as a target no grant covers.
+            let instance_arn = store
+                .access_grants_instance(&input.account_id, &region)
+                .map(|instance| instance.arn.clone());
+            let matched = instance_arn.and_then(|instance_arn| {
+                store
+                    .grant_covering(&input.account_id, &region, &input.target, &input.permission)
+                    .map(|grant| {
+                        (
+                            instance_arn,
+                            grant.grantee.clone(),
+                            grant.grant_scope.clone(),
+                            grant.access_grants_location_id.clone(),
+                        )
+                    })
+            });
+            let Some((matched_instance_arn, grantee, grant_scope, location_id)) = matched else {
                 // Vending credentials is what this operation is for, so each
                 // decision leaves a record: the operation, who asked, what was
                 // asked for and how it was answered. Never the credential, and
@@ -260,7 +287,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // The session's own name, minted per vend so two vends are two
             // sessions (see `new_data_access_session_name`).
             let session_name = store.new_data_access_session_name();
-            (grantee, grant_scope, location_role_arn, session_name)
+            (
+                grantee,
+                grant_scope,
+                location_role_arn,
+                session_name,
+                matched_instance_arn,
+            )
         };
         let Some(location_role_arn) = location_role_arn else {
             return Err(crate::state::data_access_credential_unscopable());
@@ -355,6 +388,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }),
             matched_grant_target: Some(matched_grant_target),
             grantee: Some(grantee),
+            // Always reported on a vend: the search above found the grant IN this
+            // instance, so a vend without one cannot be reached.
+            matched_instance_arn: Some(matched_instance_arn),
         })
     }
 }

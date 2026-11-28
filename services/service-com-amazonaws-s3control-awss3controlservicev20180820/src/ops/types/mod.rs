@@ -21,6 +21,16 @@
 #[macro_use]
 pub mod unmodelled_member_wire;
 
+// Declared here rather than in `shared_types` — which is rendered from the model
+// — because the wire carries a member the model does not declare on the shape;
+// see this module's own note.
+pub mod access_point_wire;
+
+// Declared here rather than in `shared_types` for the same reason: a job's own
+// document echoes the caller's maps, and their entry order is part of what a read
+// reports.
+pub mod batch_job_maps;
+
 pub mod associate_access_grants_identity_center_types;
 pub mod create_access_grant_types;
 pub mod create_access_grants_instance_types;
@@ -112,6 +122,7 @@ pub mod put_public_access_block_types;
 pub mod put_storage_lens_configuration_tagging_types;
 pub mod put_storage_lens_configuration_types;
 pub mod shared_types;
+pub mod storage_lens_group_conditions;
 pub mod submit_multi_region_access_point_routes_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
@@ -120,6 +131,10 @@ pub mod update_job_priority_types;
 pub mod update_job_status_types;
 pub mod update_storage_lens_group_types;
 
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use access_point_wire::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use batch_job_maps::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use associate_access_grants_identity_center_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
@@ -302,6 +317,8 @@ pub use put_storage_lens_configuration_tagging_types::*;
 pub use put_storage_lens_configuration_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use shared_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use storage_lens_group_conditions::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use submit_multi_region_access_point_routes_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

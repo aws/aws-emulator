@@ -215,14 +215,14 @@ contents — read that shape in the model above when you need its own members.
 ## DeleteStorageLensConfiguration
 
 - **Route:** `DELETE /v20180820/storagelens/{ConfigId} -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
 - **Output:** (no members)
 - **Errors:** (none)
 
 ## DeleteStorageLensConfigurationTagging
 
 - **Route:** `DELETE /v20180820/storagelens/{ConfigId}/tagging -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
 - **Output:** (no members)
 - **Errors:** (none)
 
@@ -390,8 +390,8 @@ contents — read that shape in the model above when you need its own members.
 ## GetDataAccess
 
 - **Route:** `GET /v20180820/accessgrantsinstance/dataaccess -> 200`
-- **Input:** `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `Target` (string, len 1..2000, pattern ^.+$, @httpQuery(target), required), `Permission` (Permission, one of: READ | READWRITE | WRITE, @httpQuery(permission), required), `DurationSeconds` (integer, range 900..43200, @httpQuery(durationSeconds)), `Privilege` (Privilege, one of: Default | Minimal, @httpQuery(privilege)), `TargetType` (S3PrefixType, one of: Object, @httpQuery(targetType)), `AuditContext` (string, len 1..2048, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\t]*$, @httpQuery(auditContext))
-- **Output:** `Credentials` (Credentials), `MatchedGrantTarget` (string, len 1..2000, pattern ^.+$), `Grantee` (Grantee)
+- **Input:** `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `Target` (string, len 1..2000, pattern ^.+$, @httpQuery(target), required), `Permission` (Permission, one of: READ | READWRITE | WRITE, @httpQuery(permission), required), `DurationSeconds` (integer, range 900..43200, @httpQuery(durationSeconds)), `Privilege` (Privilege, one of: Default | Minimal, @httpQuery(privilege)), `TargetType` (S3PrefixType, one of: Object, @httpQuery(targetType)), `AuditContext` (string, len 1..2048, pattern ^[\u0020-\uD7FF\uE000-\uFFFD\uD800\uDC00-\uDBFF\uDFFF\t]*$, @httpQuery(auditContext)), `InstanceScope` (InstanceScope, one of: ALL | SELF, @httpQuery(instanceScope))
+- **Output:** `Credentials` (Credentials), `MatchedGrantTarget` (string, len 1..2000, pattern ^.+$), `Grantee` (Grantee), `MatchedInstanceArn` (string, len 1..2048, pattern ^arn:[a-z\-]+:s3:[a-z0-9\-]+:\d{12}:access\-grants\/[a-zA-Z0-9\-]+$)
 - **Errors:** (none)
 
 ## GetJobTagging
@@ -439,14 +439,14 @@ contents — read that shape in the model above when you need its own members.
 ## GetStorageLensConfiguration
 
 - **Route:** `GET /v20180820/storagelens/{ConfigId} -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
 - **Output:** `StorageLensConfiguration` (StorageLensConfiguration, @httpPayload)
 - **Errors:** (none)
 
 ## GetStorageLensConfigurationTagging
 
 - **Route:** `GET /v20180820/storagelens/{ConfigId}/tagging -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required)
 - **Output:** `Tags` (list<StorageLensTag>)
 - **Errors:** (none)
 
@@ -509,7 +509,7 @@ contents — read that shape in the model above when you need its own members.
 
 - **Route:** `GET /v20180820/accessgrantsinstance/caller/grants -> 200`
 - **Traits:** @paginated(inputToken=NextToken, outputToken=NextToken, items=CallerAccessGrantsList)
-- **Input:** `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `GrantScope` (string, len 1..2000, pattern ^.+$, @httpQuery(grantscope)), `NextToken` (string, @httpQuery(nextToken)), `MaxResults` (integer, range 0..1000, default 0, @httpQuery(maxResults), required), `AllowedByApplication` (boolean, default false, @httpQuery(allowedByApplication), required)
+- **Input:** `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `GrantScope` (string, len 1..2000, pattern ^.+$, @httpQuery(grantscope)), `NextToken` (string, @httpQuery(nextToken)), `MaxResults` (integer, range 0..1000, default 0, @httpQuery(maxResults), required), `AllowedByApplication` (boolean, default false, @httpQuery(allowedByApplication), required), `InstanceScope` (InstanceScope, one of: ALL | SELF, @httpQuery(instanceScope))
 - **Output:** `NextToken` (string), `CallerAccessGrantsList` (list<ListCallerAccessGrantsEntry>)
 - **Errors:** (none)
 
@@ -654,14 +654,14 @@ contents — read that shape in the model above when you need its own members.
 ## PutStorageLensConfiguration
 
 - **Route:** `PUT /v20180820/storagelens/{ConfigId} -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `StorageLensConfiguration` (StorageLensConfiguration, required), `Tags` (list<StorageLensTag>)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `StorageLensConfiguration` (StorageLensConfiguration, required), `Tags` (list<StorageLensTag>)
 - **Output:** (no members)
 - **Errors:** (none)
 
 ## PutStorageLensConfigurationTagging
 
 - **Route:** `PUT /v20180820/storagelens/{ConfigId}/tagging -> 200`
-- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_\.]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `Tags` (list<StorageLensTag>, required)
+- **Input:** `ConfigId` (string, len 1..64, pattern ^[a-zA-Z0-9\-\_]+$, @httpLabel, required), `AccountId` (string, len 0..64, pattern ^\d{12}$, @httpHeader(x-amz-account-id), required), `Tags` (list<StorageLensTag>, required)
 - **Output:** (no members)
 - **Errors:** (none)
 

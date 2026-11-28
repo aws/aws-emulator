@@ -19,6 +19,7 @@ pub struct ListCallerAccessGrantsInput {
     pub next_token: Option<String>,
     pub max_results: i32,
     pub allowed_by_application: bool,
+    pub instance_scope: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#ListCallerAccessGrantsResult")]
@@ -34,5 +35,6 @@ pub struct ListCallerAccessGrantsEntry {
     pub permission: Option<String>,
     pub grant_scope: Option<String>,
     pub application_arn: Option<String>,
+    pub access_grants_instance_arn: Option<String>,
 }
 

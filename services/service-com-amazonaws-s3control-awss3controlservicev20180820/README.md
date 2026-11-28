@@ -14,7 +14,9 @@ cargo test  -p service-com-amazonaws-s3control-awss3controlservicev20180820
 service-com-amazonaws-s3control-awss3controlservicev20180820/
 ├── build.rs              # calls emulator_core_build_support::generate(...)
 ├── smithy-model/
-│   └── com-amazonaws-s3control-awss3controlservicev20180820.json      # the Smithy model — drives routing + wire shapes
+│   ├── com-amazonaws-s3control-awss3controlservicev20180820.json      # the Smithy model — drives routing + wire shapes
+│   ├── local-additions.json  # overlay model for the shapes AWS answers with differently from the snapshot
+│   └── LOCAL-ADDITIONS.md    # what is in that overlay, and why
 ├── OPERATIONS.md         # every operation's contract, re-rendered from the model
 ├── tests/
 │   └── state_roundtrip.rs  # compiled example of the state API

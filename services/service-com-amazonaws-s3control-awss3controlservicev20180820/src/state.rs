@@ -2145,6 +2145,22 @@ impl ComAmazonawsS3controlAwss3controlservicev20180820State {
         )
     }
 
+    /// The S3 Access Grants instance `account_id` owns in `region`, or `None`
+    /// when that account has none there.
+    ///
+    /// The instance is what every location and grant of that account and Region
+    /// belongs to, so an answer ABOUT one of them reads the instance's own
+    /// record through this reader — the ARN it reports is the instance's
+    /// recorded ARN rather than one the answer derives again.
+    pub fn access_grants_instance(
+        &self,
+        account_id: &str,
+        region: &str,
+    ) -> Option<&AccessGrantsInstanceRecord> {
+        self.access_grants_instances
+            .get(&(account_id.to_string(), region.to_string()))
+    }
+
     /// The location `location_id` names in `account_id`'s instance in `region`,
     /// or `None` when that instance has no such location.
     pub fn access_grants_location(

@@ -38,7 +38,15 @@ aws-smithy-types = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 bytes = { workspace = true }
 http = { workspace = true }
-serde_json = { workspace = true }
+# `preserve_order`: two suites read the member ORDER a shape of the Smithy model
+# declares straight out of the model file (`tests/all/
+# access_point_listing_member_declaration.rs`, `tests/all/
+# storage_lens_group_bound_declaration.rs`), and that order is what the codec
+# writes a response's members in; with the feature off a JSON object is held as a
+# sorted map and those suites would compare alphabetical names against document
+# order, so this crate declares the feature its own assertions depend on rather
+# than inheriting it from another crate's manifest.
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing = { workspace = true }
 # Access point aliases are derived from the access point's identity with a
 # SHA-256 digest, rendered as hex; `hex` also encodes the ListAccessPoints page

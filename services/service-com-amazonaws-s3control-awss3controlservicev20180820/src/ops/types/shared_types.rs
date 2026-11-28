@@ -106,20 +106,11 @@ pub struct JobOperation {
     pub s3_update_object_encryption: Option<S3UpdateObjectEncryptionOperation>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.s3control#LambdaInvokeOperation")]
-#[derive(Debug, Clone, Default)]
-pub struct LambdaInvokeOperation {
-    pub function_arn: Option<String>,
-    pub invocation_schema_version: Option<String>,
-    /// Order-preserving, like every map member this service writes back: a read
-    /// of the job echoes these pairs, and the codec writes them in the order the
-    /// map holds, so a `BTreeMap` is what makes two reads of one unchanged job
-    /// answer the same document. (A map member whose entry order AWS fixes is
-    /// held in an `indexmap::IndexMap` instead — see
-    /// `GetAccessPointOutput::endpoints` — which the derive that builds this
-    /// shape's codec does not admit as a map type.)
-    pub user_arguments: Option<std::collections::BTreeMap<String, String>>,
-}
+// `com.amazonaws.s3control#LambdaInvokeOperation` is NOT declared here: it
+// carries a caller-supplied map a job's own document echoes, whose entry ORDER a
+// read reports, so it is declared over an ordered map in `batch_job_maps.rs`,
+// which this model refresh does not rewrite. `types/mod.rs` re-exports it like
+// every other shape, so it resolves unchanged.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#S3CopyObjectOperation")]
 #[derive(Debug, Clone, Default)]
@@ -162,25 +153,8 @@ pub struct S3Grantee {
     pub display_name: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.s3control#S3ObjectMetadata")]
-#[derive(Debug, Clone, Default)]
-pub struct S3ObjectMetadata {
-    pub cache_control: Option<String>,
-    pub content_disposition: Option<String>,
-    pub content_encoding: Option<String>,
-    pub content_language: Option<String>,
-    /// Order-preserving, for the same reason as
-    /// [`LambdaInvokeOperation::user_arguments`]: a read of the job echoes
-    /// these pairs, so the order they are written in is one order rather than a
-    /// hash order that changes per response.
-    pub user_metadata: Option<std::collections::BTreeMap<String, String>>,
-    pub content_length: Option<i64>,
-    pub content_md5: Option<String>,
-    pub content_type: Option<String>,
-    pub http_expires_date: Option<::aws_smithy_types::DateTime>,
-    pub requester_charged: bool,
-    pub sse_algorithm: Option<String>,
-}
+// `com.amazonaws.s3control#S3ObjectMetadata` is NOT declared here either, and
+// for the same reason as `LambdaInvokeOperation` above: see `batch_job_maps.rs`.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#S3Tag")]
 #[derive(Debug, Clone, Default)]
@@ -499,181 +473,13 @@ pub struct StorageLensGroupFilter {
     pub or: Option<StorageLensGroupOrOperator>,
 }
 
-// `MatchObjectAge` and `MatchObjectSize` below are declared BY HAND rather than through
-// `smithy_macros::smithy(shape = …)`, because each of their two members carries a
-// modelled `@default` of 0 and the macro's rule for a defaulted member is a non-`Option`
-// field written on every response. A bound the request never sent would then be reported
-// back as `0` — a value these members' own documentation excludes ("must be a positive
-// number, greater than 0", `MatchObjectSize$BytesGreaterThan`; "greater than the minimum
-// object size", `BytesLessThan`; the same of both `MatchObjectAge` members) and which,
-// read literally, is an empty range. AWS OMITS the member it was not given, so an absent
-// bound has to stay absent through deserialize → store → serialize, which is what
-// `Option` here gives it. Everything else matches what the macro emits for a structure:
-// the member schemas carry the shape ids, wire names and member indices the model
-// declares, the restXml codec reads the element name off them, and the two members carry
-// no constraint traits because the model declares none on them
-// (smithy_query(query="shape",shape="MatchObjectSize,MatchObjectAge,ObjectSizeValue")).
-//
-// REMOVE THIS BLOCK once the vendored codegen keeps a `@default` member's PRESENCE —
-// delete the two hand-written schema/serialize/deserialize blocks and put
-// `#[smithy_macros::smithy(shape = "com.amazonaws.s3control#MatchObjectAge")]` /
-// `…#MatchObjectSize")]` back on the structs with `Option` fields.
-
-/// `MatchObjectAge`: the object-age range a Storage Lens group filters on, in days.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MatchObjectAge {
-    /// `DaysGreaterThan`, absent when the filter sets no lower bound.
-    pub days_greater_than: Option<i32>,
-    /// `DaysLessThan`, absent when the filter sets no upper bound.
-    pub days_less_than: Option<i32>,
-}
-
-#[allow(non_upper_case_globals)]
-impl MatchObjectAge {
-    const M_DAYS_GREATER_THAN: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.s3control#MatchObjectAge$DaysGreaterThan",
-                "com.amazonaws.s3control",
-                "DaysGreaterThan",
-            ),
-            ::aws_smithy_schema::ShapeType::Integer,
-            "DaysGreaterThan",
-            0,
-        );
-    const M_DAYS_LESS_THAN: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.s3control#MatchObjectAge$DaysLessThan",
-            "com.amazonaws.s3control",
-            "DaysLessThan",
-        ),
-        ::aws_smithy_schema::ShapeType::Integer,
-        "DaysLessThan",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.s3control#MatchObjectAge",
-            "com.amazonaws.s3control",
-            "MatchObjectAge",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_DAYS_GREATER_THAN, &Self::M_DAYS_LESS_THAN],
-    );
-}
-
-pub static MATCH_OBJECT_AGE_SCHEMA: &::aws_smithy_schema::Schema = &MatchObjectAge::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for MatchObjectAge {
-    fn serialize_members(
-        &self,
-        __s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(__v) = self.days_greater_than.as_ref() {
-            __s.write_integer(&Self::M_DAYS_GREATER_THAN, *__v)?;
-        }
-        if let Some(__v) = self.days_less_than.as_ref() {
-            __s.write_integer(&Self::M_DAYS_LESS_THAN, *__v)?;
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for MatchObjectAge {
-    fn deserialize(
-        __d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut __out = Self::default();
-        __d.read_struct(&Self::SCHEMA, &mut |__member, __d| {
-            match __member.member_index() {
-                Some(0) => __out.days_greater_than = Some(__d.read_integer(__member)?),
-                Some(1) => __out.days_less_than = Some(__d.read_integer(__member)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(__out)
-    }
-}
-
-/// `MatchObjectSize`: the object-size range a Storage Lens group filters on, in bytes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MatchObjectSize {
-    /// `BytesGreaterThan`, absent when the filter sets no lower bound.
-    pub bytes_greater_than: Option<i64>,
-    /// `BytesLessThan`, absent when the filter sets no upper bound.
-    pub bytes_less_than: Option<i64>,
-}
-
-#[allow(non_upper_case_globals)]
-impl MatchObjectSize {
-    const M_BYTES_GREATER_THAN: ::aws_smithy_schema::Schema =
-        ::aws_smithy_schema::Schema::new_member(
-            ::aws_smithy_schema::ShapeId::from_static(
-                "com.amazonaws.s3control#MatchObjectSize$BytesGreaterThan",
-                "com.amazonaws.s3control",
-                "BytesGreaterThan",
-            ),
-            ::aws_smithy_schema::ShapeType::Long,
-            "BytesGreaterThan",
-            0,
-        );
-    const M_BYTES_LESS_THAN: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.s3control#MatchObjectSize$BytesLessThan",
-            "com.amazonaws.s3control",
-            "BytesLessThan",
-        ),
-        ::aws_smithy_schema::ShapeType::Long,
-        "BytesLessThan",
-        1,
-    );
-
-    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
-        ::aws_smithy_schema::ShapeId::from_static(
-            "com.amazonaws.s3control#MatchObjectSize",
-            "com.amazonaws.s3control",
-            "MatchObjectSize",
-        ),
-        ::aws_smithy_schema::ShapeType::Structure,
-        &[&Self::M_BYTES_GREATER_THAN, &Self::M_BYTES_LESS_THAN],
-    );
-}
-
-pub static MATCH_OBJECT_SIZE_SCHEMA: &::aws_smithy_schema::Schema = &MatchObjectSize::SCHEMA;
-
-impl ::aws_smithy_schema::serde::SerializableStruct for MatchObjectSize {
-    fn serialize_members(
-        &self,
-        __s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
-    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        if let Some(__v) = self.bytes_greater_than.as_ref() {
-            __s.write_long(&Self::M_BYTES_GREATER_THAN, *__v)?;
-        }
-        if let Some(__v) = self.bytes_less_than.as_ref() {
-            __s.write_long(&Self::M_BYTES_LESS_THAN, *__v)?;
-        }
-        Ok(())
-    }
-}
-
-impl ::aws_smithy_schema_server::DeserializableStruct for MatchObjectSize {
-    fn deserialize(
-        __d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
-    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
-        let mut __out = Self::default();
-        __d.read_struct(&Self::SCHEMA, &mut |__member, __d| {
-            match __member.member_index() {
-                Some(0) => __out.bytes_greater_than = Some(__d.read_long(__member)?),
-                Some(1) => __out.bytes_less_than = Some(__d.read_long(__member)?),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        Ok(__out)
-    }
-}
+// `com.amazonaws.s3control#MatchObjectAge` and
+// `com.amazonaws.s3control#MatchObjectSize` are NOT declared here: a bound
+// neither condition was given stays absent from what a read reports, which the
+// bare field a `@default` renders as cannot express — so both are declared in
+// `storage_lens_group_conditions.rs`, which this model refresh does not rewrite.
+// `types/mod.rs` re-exports them like every other shape, so both resolve
+// unchanged.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensGroupAndOperator")]
 #[derive(Debug, Clone, Default)]
@@ -951,10 +757,12 @@ pub struct StorageLensConfiguration {
     pub exclude: Option<Exclude>,
     pub data_export: Option<StorageLensDataExport>,
     pub expanded_prefixes_data_export: Option<StorageLensExpandedPrefixesDataExport>,
+    pub cost_and_usage_reports_publish: Option<StorageLensCostAndUsageReportsPublish>,
     pub is_enabled: bool,
     pub aws_org: Option<StorageLensAwsOrg>,
     pub storage_lens_arn: Option<String>,
     pub prefix_delimiter: Option<String>,
+    pub int_access_tiers: Option<IntAccessTiers>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#AccountLevel")]
@@ -1115,10 +923,36 @@ pub struct StorageLensExpandedPrefixesDataExport {
     pub storage_lens_table_destination: Option<StorageLensTableDestination>,
 }
 
+#[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensCostAndUsageReportsPublish")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageLensCostAndUsageReportsPublish {
+    pub prefix_level: Option<StorageLensCostAndUsageReportsPrefixLevel>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensCostAndUsageReportsPrefixLevel")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageLensCostAndUsageReportsPrefixLevel {
+    pub is_enabled: bool,
+    pub selection_criteria: Option<StorageLensCostAndUsageReportsSelectionCriteria>,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensCostAndUsageReportsSelectionCriteria")]
+#[derive(Debug, Clone, Default)]
+pub struct StorageLensCostAndUsageReportsSelectionCriteria {
+    pub min_depth: Option<i32>,
+    pub max_depth: Option<i32>,
+}
+
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensAwsOrg")]
 #[derive(Debug, Clone, Default)]
 pub struct StorageLensAwsOrg {
     pub arn: String,
+}
+
+#[smithy_macros::smithy(shape = "com.amazonaws.s3control#IntAccessTiers")]
+#[derive(Debug, Clone, Default)]
+pub struct IntAccessTiers {
+    pub is_enabled: bool,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.s3control#StorageLensTag")]
@@ -1128,99 +962,13 @@ pub struct StorageLensTag {
     pub value: String,
 }
 
-/// One entry of an access point listing: the modelled `AccessPoint`, plus
-/// `AccessPointType`.
-///
-/// Member set, order and requiredness from
-/// `smithy_query(query="shape", shape="com.amazonaws.s3control#AccessPoint")`,
-/// plus `AccessPointType`, which is RECORDED BEHAVIOUR rather than modelled:
-/// the on-disk model declares only
-/// `Name`/`NetworkOrigin`/`VpcConfiguration`/`Bucket`/`AccessPointArn`/`Alias`/
-/// `BucketAccountId`/`DataSourceId`/`DataSourceType`, while the service reports
-/// the access point's type on every entry of every listing. The model evidently
-/// predates the member, so it is appended LAST and the shape is hand-written
-/// (see `types::unmodelled_member_wire`): the derive admits only the members
-/// the model declares.
-#[derive(Debug, Clone, Default)]
-pub struct AccessPoint {
-    pub name: String,
-    pub network_origin: String,
-    pub vpc_configuration: Option<VpcConfiguration>,
-    pub bucket: String,
-    pub access_point_arn: Option<String>,
-    pub alias: Option<String>,
-    pub bucket_account_id: Option<String>,
-    pub data_source_id: Option<String>,
-    pub data_source_type: Option<String>,
-    pub access_point_type: Option<String>,
-}
-
-s3c_schema_and_codec!(
-    AccessPoint,
-    ACCESS_POINT_SCHEMA,
-    "com.amazonaws.s3control#AccessPoint",
-    "com.amazonaws.s3control",
-    "AccessPoint",
-    (M_NAME, name, "Name", 0, req, string),
-    (
-        M_NETWORK_ORIGIN,
-        network_origin,
-        "NetworkOrigin",
-        1,
-        req,
-        string
-    ),
-    (
-        M_VPC_CONFIGURATION,
-        vpc_configuration,
-        "VpcConfiguration",
-        2,
-        opt,
-        struct_of(VpcConfiguration)
-    ),
-    (M_BUCKET, bucket, "Bucket", 3, req, string),
-    (
-        M_ACCESS_POINT_ARN,
-        access_point_arn,
-        "AccessPointArn",
-        4,
-        opt,
-        string
-    ),
-    (M_ALIAS, alias, "Alias", 5, opt, string),
-    (
-        M_BUCKET_ACCOUNT_ID,
-        bucket_account_id,
-        "BucketAccountId",
-        6,
-        opt,
-        string
-    ),
-    (
-        M_DATA_SOURCE_ID,
-        data_source_id,
-        "DataSourceId",
-        7,
-        opt,
-        string
-    ),
-    (
-        M_DATA_SOURCE_TYPE,
-        data_source_type,
-        "DataSourceType",
-        8,
-        opt,
-        string
-    ),
-    (
-        M_ACCESS_POINT_TYPE,
-        access_point_type,
-        "AccessPointType",
-        9,
-        opt,
-        string
-    ),
-);
+// `com.amazonaws.s3control#AccessPoint` is NOT declared here: every answer that
+// reports an access point reports what kind of access point it is, and this
+// model declares no member for that on this shape — so it is declared in
+// `access_point_wire.rs`, which this model refresh does not rewrite, with the
+// schema and codec `types::unmodelled_member_wire` emits in the derive's place.
+// `types/mod.rs` re-exports it like every other shape, so `AccessPoint`
+// resolves unchanged.
 
 /// The values `AsyncOperationName` accepts on the wire.
 pub const ASYNC_OPERATION_NAME_VALUES: &[&str] = &["CreateMultiRegionAccessPoint", "DeleteMultiRegionAccessPoint", "PutMultiRegionAccessPointPolicy"];
@@ -1268,6 +1016,10 @@ pub const GENERATED_MANIFEST_FORMAT_VALUES: &[&str] = &["S3InventoryReport_CSV_2
 
 /// The values `GranteeType` accepts on the wire.
 pub const GRANTEE_TYPE_VALUES: &[&str] = &["DIRECTORY_GROUP", "DIRECTORY_USER", "IAM"];
+
+
+/// The values `InstanceScope` accepts on the wire.
+pub const INSTANCE_SCOPE_VALUES: &[&str] = &["ALL", "SELF"];
 
 
 /// The values `JobManifestFieldName` accepts on the wire.

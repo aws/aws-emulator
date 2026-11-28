@@ -1,0 +1,21 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "com.amazonaws.s3control#MatchObjectAge": {
+      "type": "structure",
+      "members": {
+        "DaysGreaterThan": { "target": "com.amazonaws.s3control#ObjectAgeValue" },
+        "DaysLessThan": { "target": "com.amazonaws.s3control#ObjectAgeValue" }
+      }
+    },
+    "com.amazonaws.s3control#MatchObjectSize": {
+      "type": "structure",
+      "members": {
+        "BytesGreaterThan": { "target": "com.amazonaws.s3control#ObjectSizeValue" },
+        "BytesLessThan": { "target": "com.amazonaws.s3control#ObjectSizeValue" }
+      }
+    },
+    "com.amazonaws.s3control#ObjectAgeValue": { "type": "integer" },
+    "com.amazonaws.s3control#ObjectSizeValue": { "type": "long" }
+  }
+}
